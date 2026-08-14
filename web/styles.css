@@ -4463,6 +4463,46 @@ tr.is-holdout-best td,
   }
 }
 
+/* Result-first header and compact provider links. */
+
+.header-status-strip {
+  grid-template-columns: minmax(150px, 0.85fr) minmax(260px, 1.35fr);
+}
+
+.source-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.source-links a {
+  min-height: 36px;
+  padding: 8px 11px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-soft);
+  color: var(--ink-soft);
+  font-size: 12px;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.source-links a:hover,
+.source-links a:focus-visible {
+  border-color: var(--brand);
+  color: var(--brand);
+}
+
+@media (max-width: 760px) {
+  .header-status-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .header-status-strip article:first-child {
+    display: grid;
+  }
+}
+
 @media print {
   .probability-shift-card[hidden] {
     display: none !important;

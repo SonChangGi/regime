@@ -290,8 +290,8 @@ def test_dashboard_assets_are_local_and_present() -> None:
         "https://sonchanggi.github.io/sox/",
         "https://sonchanggi.github.io/port/",
         "https://sonchanggi.github.io/regime/",
-        "https://fred.stlouisfed.org/docs/api/terms_of_use.html",
-        "https://www.alphavantage.co/terms_of_service/",
+        "https://fred.stlouisfed.org/",
+        "https://www.alphavantage.co/",
     }
     external_links = {
         href
@@ -334,15 +334,12 @@ def test_required_result_surfaces_exist() -> None:
         "feature-catalog",
         "header-data-as-of",
         "header-analysis-date",
-        "header-mode",
-        "model-diagnostic",
         "model-loss-chart",
         "transition-horizon-bars",
         "transition-model-section",
         "transition-horizon-select",
         "transition-model-summary",
         "transition-leaderboard-body",
-        "shadow-nowcast-summary",
     }
     assert required_ids <= parsed_html().ids
 
@@ -403,15 +400,16 @@ def test_chart_exploration_is_single_focus_and_state_isolated() -> None:
     assert 'circle.setAttribute("tabindex"' not in script
 
 
-def test_model_selection_and_holdout_diagnostic_are_distinct() -> None:
+def test_model_results_remain_visible_without_generalization_warning_surface() -> None:
     document = HTML_PATH.read_text(encoding="utf-8")
     script = JS_PATH.read_text(encoding="utf-8")
-    assert 'id="model-diagnostic"' in document
+    assert 'id="model-diagnostic"' not in document
     assert "holdout_diagnostic" in script
     assert "선정 구간" in script
-    assert "진단 결과는 선정에 미사용" in script
+    assert "holdoutBestName" in script
     assert "is-holdout-best" in script
     assert "2023+ 1위" in script
+    assert "진단 주의" not in script
 
 
 def test_comparison_visuals_use_existing_probability_and_model_values() -> None:
@@ -614,10 +612,9 @@ def test_v3_transition_models_have_horizon_specific_diagnostic_surface() -> None
     for label in ("AP ↑", "Precision ↑", "Recall ↑", "False alarms / 연 ↓"):
         assert label in document
     assert "선정 구간 · 2023+ 진단" in document
-    assert "2023+ 진단(선정 미사용)" in script
+    assert "${horizon}주 이탈 · 선정 구간 / 2023+ 진단" in script
     assert "function renderTransitionModels" in script
     assert "function renderTransitionHorizons" in script
-    assert "function renderShadowNowcast" in script
     assert "section.hidden = true" in script
     assert "min-height: 44px" in styles
     assert "#transition-leaderboard-table" in styles
@@ -630,21 +627,19 @@ def test_browser_contract_requires_provisional_predeployment_selection_status() 
     assert 'createElement("span", null, "선정 모델")' in script
 
 
-def test_research_notices_are_preserved_but_collapsed_below_results() -> None:
+def test_operations_are_collapsed_below_results_without_warning_surfaces() -> None:
     document = HTML_PATH.read_text(encoding="utf-8")
     script = JS_PATH.read_text(encoding="utf-8")
     overview_end = document.index("</section>", document.index('id="overview"'))
-    alerts_position = document.index('id="data-alerts"')
-    diagnostic_position = document.index('id="model-diagnostic"')
-    assert alerts_position > overview_end
-    assert diagnostic_position > overview_end
-    assert '<details class="model-review-details">' in document
+    operations_position = document.index('id="data-health"')
+    assert operations_position > overview_end
     assert '<details class="research-notice-details operations-details">' in document
     assert 'id="research-notice-summary"' in document
     assert '<details class="research-notice-details operations-details" open' not in document
-    assert "개인·비상업 파생 결과" in document
-    assert "renderMethodNotices" in script
-    assert "alertCount" in script and "알림 ${alertCount}" in script
+    for warning_surface in ("data-alerts", "model-diagnostic", "method-notices", "publication-gate"):
+        assert warning_surface not in document
+    assert "renderAlerts" not in script
+    assert "renderMethodNotices" not in script
 
 
 def test_default_canvas_uses_compact_copy_and_one_operations_disclosure() -> None:
@@ -654,10 +649,12 @@ def test_default_canvas_uses_compact_copy_and_one_operations_disclosure() -> Non
     assert 'class="table-scroll-hint"' not in document
     assert 'class="method-note"' not in document
     assert document.count('class="research-notice-details operations-details"') == 1
-    assert 'id="method-notices"' in document
+    assert 'class="source-links"' in document
     assert "공개 배포 전 권리 확인 필요:" not in script
     assert "사후 진단 일반화" not in document
-    assert "This product uses the FRED® API" in document
+    assert "This product uses the FRED® API" not in document
+    assert "개인·비상업 파생 결과" not in document
+    assert "투자 조언 아님" not in document
 
 
 def test_dashboard_uses_only_real_payload_values() -> None:
@@ -669,7 +666,7 @@ def test_dashboard_uses_only_real_payload_values() -> None:
     assert "mockData" not in script
     assert "sampleData" not in script
     assert ".innerHTML" not in script
-    assert "DEMO · 모의자료" in script
+    assert 'payload.meta.mode' in script
 
 
 def test_history_window_never_claims_more_weeks_than_are_available() -> None:

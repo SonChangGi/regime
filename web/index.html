@@ -9,8 +9,8 @@
       content="선택한 시점까지 공개된 정보로 미국 증시 국면을 판단하고 다음 주 국면 확률을 보여주는 연구 대시보드"
     >
     <title>US Market Regime Lab | Quant Research</title>
-    <link rel="stylesheet" href="./styles.css?v=20260814-1">
-    <script src="./app.js?v=20260814-3" defer></script>
+    <link rel="stylesheet" href="./styles.css?v=20260814-2">
+    <script src="./app.js?v=20260814-4" defer></script>
   </head>
   <body id="top">
     <a class="skip-link" href="#main-content">본문으로 건너뛰기</a>
@@ -48,13 +48,6 @@
         <article>
           <span>데이터 기준</span>
           <strong id="header-data-as-of">불러오는 중</strong>
-        </article>
-        <article class="header-result-status">
-          <span>상태</span>
-          <strong class="header-status-badges">
-            <span id="header-health" class="status-badge status-unknown"><span class="status-symbol" aria-hidden="true">?</span><span>확인 중</span></span>
-            <span id="header-mode" class="status-badge status-unknown"><span class="status-symbol" aria-hidden="true">?</span><span>MODE 확인 중</span></span>
-          </strong>
         </article>
       </div>
     </header>
@@ -155,7 +148,6 @@
               <div>
                 <p id="next-regime-name" class="regime-name">데이터 없음</p>
                 <p id="next-regime-confidence" class="regime-confidence">확률 —</p>
-                <span id="next-forecast-status" class="forecast-status" hidden></span>
               </div>
             </div>
             <div id="next-probabilities" class="probability-list" aria-label="다음 주 국면별 예측 확률"></div>
@@ -165,10 +157,6 @@
           <article id="transition-card" class="transition-card card" aria-labelledby="transition-title">
             <div class="card-kicker">
               <span id="transition-title">이탈 위험</span>
-              <span id="transition-level" class="status-badge status-unknown">
-                <span class="status-symbol" aria-hidden="true">?</span>
-                <span>확인 필요</span>
-              </span>
             </div>
             <div class="transition-value-row">
               <strong id="transition-value">—</strong>
@@ -186,7 +174,6 @@
               <span></span>
             </div>
             <div id="transition-horizon-bars" class="transition-horizon-bars" hidden></div>
-            <p id="transition-copy" class="card-note" hidden>모델 결과를 불러오는 중입니다.</p>
           </article>
           </div>
 
@@ -378,11 +365,6 @@
               </table>
             </div>
           </details>
-          <details class="model-review-details">
-            <summary>선정·진단 상세</summary>
-            <aside id="model-diagnostic" class="model-diagnostic" aria-label="모델 일반화 진단"></aside>
-            <aside id="shadow-nowcast-summary" class="shadow-nowcast-summary" aria-label="Shadow nowcast 민감도 점검" hidden></aside>
-          </details>
         </section>
 
         <section id="transition-model-section" class="dashboard-section transition-model-section card" aria-labelledby="transition-model-title" hidden>
@@ -436,8 +418,6 @@
               <span id="source-freshness">기준 시점 —</span>
             </summary>
             <div class="research-notice-body operations-body">
-              <section id="data-alerts" class="alert-stack" aria-label="데이터 및 모델 알림" aria-live="polite"></section>
-
               <div class="table-scroll" tabindex="0" aria-label="데이터 소스 상태와 이용 범위 표">
                 <table>
                   <caption class="sr-only">데이터 소스의 상태와 이용 범위</caption>
@@ -459,17 +439,10 @@
                 <div id="feature-catalog" class="feature-catalog"></div>
               </details>
 
-              <section class="method-rights" aria-labelledby="method-rights-title">
-                <h3 id="method-rights-title">방법론 · 권리</h3>
-                <p id="transition-thresholds" class="method-line">경보 기준 —</p>
-                <ul id="method-notices" class="method-notices"></ul>
-                <p class="publication-gate"><strong>공개 범위</strong> 개인·비상업 파생 결과</p>
-                <p class="provider-disclaimer">
-                  This product uses the FRED® API but is not endorsed or certified by the Federal Reserve Bank of St. Louis.
-                  <a href="https://fred.stlouisfed.org/docs/api/terms_of_use.html">FRED API Terms</a>
-                  · <a href="https://www.alphavantage.co/terms_of_service/">Alpha Vantage Terms</a>
-                </p>
-              </section>
+              <nav class="source-links" aria-label="데이터 제공처">
+                <a href="https://fred.stlouisfed.org/">FRED</a>
+                <a href="https://www.alphavantage.co/">Alpha Vantage</a>
+              </nav>
 
               <dl class="footer-meta operations-meta">
                 <div><dt>모델 버전</dt><dd id="footer-model-version">—</dd></div>
@@ -480,9 +453,6 @@
           </details>
         </section>
 
-        <footer class="dashboard-footer">
-          <p>연구용 · 투자 조언 아님</p>
-        </footer>
       </div>
     </main>
 

@@ -17,7 +17,7 @@ def test_document_has_language_landmarks_and_skip_link() -> None:
     assert '<header class="page-header" aria-labelledby="page-title">' in HTML
     assert '<nav class="section-nav" aria-label="페이지 섹션 바로가기">' in HTML
     assert '<main id="main-content" tabindex="-1">' in HTML
-    assert '<footer class="dashboard-footer">' in HTML
+    assert 'id="data-health"' in HTML
 
 
 def test_interactive_controls_have_accessible_names() -> None:
@@ -55,12 +55,13 @@ def test_visuals_have_semantic_fallbacks_and_non_color_encoding() -> None:
     assert "border-style: double" in CSS
 
 
-def test_loading_error_empty_and_degraded_states_are_visible_contracts() -> None:
-    for state_id in ("loading-state", "error-state", "empty-state", "data-alerts"):
+def test_loading_error_and_empty_states_remain_visible_contracts() -> None:
+    for state_id in ("loading-state", "error-state", "empty-state"):
         assert f'id="{state_id}"' in HTML
-    assert "renderAlerts" in JS
-    assert "선택 주 결과가 저하 상태입니다" in JS
-    assert "소스 상태 확인 필요" in JS
+    assert "DataContractError" in JS
+    assert "renderAlerts" not in JS
+    assert "선택 주 결과가 저하 상태입니다" not in JS
+    assert "소스 상태 확인 필요" not in JS
 
 
 def test_keyboard_focus_reduced_motion_and_mobile_rules_exist() -> None:
@@ -89,15 +90,19 @@ def test_mobile_navigation_reveals_active_project() -> None:
     assert 'window.addEventListener("resize", revealActiveProjectLink)' in JS
 
 
-def test_health_and_research_limitations_remain_visible_on_mobile() -> None:
-    assert 'id="header-health"' in HTML
-    assert 'id="header-mode"' in HTML
-    assert 'id="model-diagnostic"' in HTML
-    assert 'id="shadow-nowcast-summary"' in HTML
-    assert "개인·비상업 파생 결과" in HTML
+def test_warning_and_limitation_copy_is_removed_without_hiding_results() -> None:
+    assert 'id="header-health"' not in HTML
+    assert 'id="header-mode"' not in HTML
+    assert 'id="model-diagnostic"' not in HTML
+    assert 'id="shadow-nowcast-summary"' not in HTML
+    assert "개인·비상업 파생 결과" not in HTML
     assert '<details class="research-notice-details operations-details">' in HTML
     assert "데이터 · 출처 · 운영" in HTML
-    assert "This product uses the FRED® API" in HTML
+    assert "This product uses the FRED® API" not in HTML
+    assert "진단 주의" not in JS
+    assert "투자 조언 아님" not in HTML
+    assert 'id="model-loss-chart"' in HTML
+    assert 'id="leaderboard-body"' in HTML
     assert ".header-status-strip" in CSS
 
 

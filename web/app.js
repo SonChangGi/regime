@@ -871,24 +871,24 @@
   function initializeDom() {
     const ids = [
       "app-state", "loading-state", "error-state", "empty-state", "error-title", "error-detail", "retry-button",
-      "dashboard", "header-analysis-date", "header-data-as-of", "header-mode", "header-health", "theme-toggle",
-      "theme-toggle-text", "dashboard-subtitle", "data-alerts", "date-form", "analysis-date", "week-select",
+      "dashboard", "header-analysis-date", "header-data-as-of", "theme-toggle",
+      "theme-toggle-text", "dashboard-subtitle", "date-form", "analysis-date", "week-select",
       "snap-note", "previous-week", "next-week", "latest-week", "history-window",
       "current-regime-card", "current-horizon", "current-regime-symbol", "current-regime-name",
       "current-regime-confidence", "current-probabilities", "current-entropy", "next-regime-card", "next-horizon",
-      "next-regime-symbol", "next-regime-name", "next-regime-confidence", "next-forecast-status",
-      "next-probabilities", "next-entropy", "probability-shifts", "model-diagnostic",
-      "transition-card", "transition-level", "transition-value", "transition-value-label", "transition-meter",
-      "transition-horizon-bars", "transition-copy", "transition-thresholds", "probability-chart",
+      "next-regime-symbol", "next-regime-name", "next-regime-confidence",
+      "next-probabilities", "next-entropy", "probability-shifts",
+      "transition-card", "transition-value", "transition-value-label", "transition-meter",
+      "transition-horizon-bars", "probability-chart",
       "probability-chart-wrap", "chart-tooltip", "history-caption",
       "chart-selection-readout", "chart-interaction-hint",
       "chart-readout-date", "chart-readout-risk-on", "chart-readout-transition", "chart-readout-risk-off",
       "history-data-body", "factor-axis", "factor-caption", "factor-scores", "regime-timeline", "timeline-start",
       "timeline-end", "top-drivers", "market-context", "champion-summary", "model-caption", "model-loss-caption",
-      "model-loss-chart", "model-loss-axis", "leaderboard-body", "shadow-nowcast-summary",
+      "model-loss-chart", "model-loss-axis", "leaderboard-body",
       "transition-model-section", "transition-model-caption", "transition-horizon-select",
       "transition-model-summary", "transition-leaderboard-caption", "transition-leaderboard-body",
-      "research-notice-summary", "method-notices",
+      "research-notice-summary",
       "source-freshness", "source-health-body", "feature-catalog", "footer-model-version", "footer-schema-version",
       "footer-generated-at", "screen-reader-status",
     ];
@@ -1081,15 +1081,12 @@
       firstValue(state.raw.meta, ["data_as_of", "dataAsOf", "cutoff_at"]);
     setText(dom["header-analysis-date"], formatDate(week.date));
     setText(dom["header-data-as-of"], cutoff ? formatDateTime(cutoff) : "미기재");
-    const selectedStatus = worstStatus([overallHealth(), week.health].filter(Boolean));
-    setStatusBadge(dom["header-health"], selectedStatus, resultStatusLabel(selectedStatus, week.health));
     dom["dashboard-subtitle"].textContent = `${formatDate(week.date)} 관측 주${cutoff ? ` · 컷오프 ${formatDateTime(cutoff)}` : ""}`;
 
     renderRegime("current", week.current, week.date);
     renderRegime("next", week.next_week, firstValue(week.next_week, ["date", "target_date", "period_end"]));
     renderTransition(week);
     renderProbabilityShifts(week);
-    renderAlerts(week);
     renderHistory();
     renderTimeline();
     renderFactors(week.scores);
@@ -1109,8 +1106,6 @@
     const confidence = extractConfidence(result);
     setText(dom[`${prefix}-regime-confidence`], `확률 ${formatPercent(confidence)}`);
     dom[`${prefix}-horizon`].textContent = `${prefix === "current" ? "t" : "t+1"}${horizonDate ? ` · ${formatDate(horizonDate, false)}` : ""}`;
-    if (prefix === "next") renderForecastStatus(result);
-
     const probabilityContainer = dom[`${prefix}-probabilities`];
     probabilityContainer.replaceChildren();
     for (const stateCode of STATE_ORDER) {
@@ -1176,45 +1171,10 @@
     }
   }
 
-  function renderForecastStatus(result) {
-    const badge = dom["next-forecast-status"];
-    if (!badge) return;
-    const rawFallback = isObject(result) ? result.fallback : false;
-    const fallback = rawFallback === true || String(rawFallback).toLowerCase() === "true";
-    if (!fallback) {
-      badge.hidden = true;
-      badge.className = "forecast-status";
-      badge.removeAttribute("title");
-      badge.removeAttribute("aria-label");
-      badge.replaceChildren();
-      return;
-    }
-
-    const reason = textValue(firstValue(result, ["fallback_reason", "reason"]), "학습 모델 예측을 사용할 수 없어 대체 확률을 사용했습니다.");
-    setStatusBadge(badge, "degraded", "Fallback 예측");
-    badge.classList.add("forecast-status");
-    badge.hidden = false;
-    badge.title = reason;
-    badge.setAttribute("aria-label", `Fallback 예측. ${reason}`);
-  }
-
-  function transitionThresholds() {
-    const configured = firstValue(state.raw.meta, ["transition_alert_thresholds", "alert_thresholds"]);
-    const mediumCandidate = isObject(configured) ? probability(firstValue(configured, ["medium", "warning", "watch"])) : null;
-    const highCandidate = isObject(configured) ? probability(firstValue(configured, ["high", "critical"])) : null;
-    const medium = mediumCandidate === null ? 0.4 : mediumCandidate;
-    const high = highCandidate === null || highCandidate <= medium ? 0.65 : highCandidate;
-    return { medium, high, configured: mediumCandidate !== null && highCandidate !== null && highCandidate > mediumCandidate };
-  }
-
   function renderTransition(week) {
     const riskByHorizon = isObject(week.transition_risk) ? week.transition_risk : null;
     const primaryRisk = riskByHorizon && isObject(riskByHorizon["1w"]) ? riskByHorizon["1w"] : null;
     const value = probability(primaryRisk ? primaryRisk.probability : week.transition_probability);
-    const thresholds = transitionThresholds();
-    let level = "unknown";
-    if (value !== null) level = value >= thresholds.high ? "high" : value >= thresholds.medium ? "medium" : "low";
-
     setText(dom["transition-value"], formatPercent(value));
     setText(
       dom["transition-value-label"],
@@ -1222,10 +1182,6 @@
         ? "1주 이탈 확률"
         : "다음 주 국면 변경 확률",
     );
-    setStatusBadge(dom["transition-level"], level);
-    dom["transition-card"].classList.remove("alert-high", "alert-medium", "alert-low");
-    if (level !== "unknown") dom["transition-card"].classList.add(`alert-${level}`);
-
     const fill = dom["transition-meter"].querySelector("span");
     dom["transition-meter"].setAttribute(
       "aria-label",
@@ -1235,18 +1191,11 @@
     if (value === null) {
       dom["transition-meter"].removeAttribute("aria-valuenow");
       dom["transition-meter"].setAttribute("aria-valuetext", "국면 변경 확률 결과 없음");
-      setText(dom["transition-copy"], "이 관측 주에는 국면 변경 확률 결과가 없습니다.");
     } else {
       dom["transition-meter"].setAttribute("aria-valuenow", String(Math.round(value * 100)));
       dom["transition-meter"].setAttribute("aria-valuetext", formatPercent(value));
-      const copies = { high: "높음", medium: "주의", low: "낮음" };
-      setText(dom["transition-copy"], copies[level]);
     }
     renderTransitionHorizons(riskByHorizon);
-    setText(
-      dom["transition-thresholds"],
-      `경보 기준 · 주의 ${formatPercent(thresholds.medium, 0)} · 높음 ${formatPercent(thresholds.high, 0)}`,
-    );
   }
 
   function renderTransitionHorizons(riskByHorizon) {
@@ -1266,102 +1215,18 @@
         createElement("span", null, `${horizon}주 이내`),
         createElement("strong", null, formatPercent(value)),
       );
-      if (isObject(result) && result.fallback === true) {
-        heading.append(createElement("small", "transition-fallback-label", "대체 확률"));
-      }
       const meter = createElement("span", "transition-horizon-meter");
       const meterFill = createElement("span");
       meterFill.style.width = value === null ? "0" : `${(value * 100).toFixed(2)}%`;
       meter.append(meterFill);
       row.setAttribute(
         "aria-label",
-        `향후 ${horizon}주 안에 한 번 이상 현재 국면에서 이탈할 확률 ${formatPercent(value)}${isObject(result) && result.fallback === true ? ", 대체 확률 사용" : ""}`,
+        `향후 ${horizon}주 안에 한 번 이상 현재 국면에서 이탈할 확률 ${formatPercent(value)}`,
       );
       row.append(heading, meter);
       container.append(row);
     }
     container.hidden = false;
-  }
-
-  function appendAlert(kind, title, detail) {
-    const alert = createElement("div", `alert alert-${kind}`);
-    alert.setAttribute("role", kind === "error" ? "alert" : "status");
-    const marker = createElement("span", "status-symbol", kind === "error" ? "×" : "!");
-    marker.setAttribute("aria-hidden", "true");
-    const copy = createElement("div");
-    copy.append(createElement("strong", null, `${title} `), document.createTextNode(detail));
-    alert.append(marker, copy);
-    dom["data-alerts"].append(alert);
-  }
-
-  function extractHealthReason(value) {
-    if (!isObject(value)) return null;
-    return firstValue(value, ["reason", "message", "detail", "warning"]);
-  }
-
-  function compactMethodNotice(value) {
-    const message = textValue(value, "").trim();
-    if (!message) return "";
-    if (/2023\+.*일반화|사후 진단 일반화/.test(message)) return "";
-    if (message.startsWith("Alpha Vantage adjusted history")) {
-      return "Alpha Vantage 조정계수 변경은 신규 snapshot부터 추적합니다.";
-    }
-    if (message.startsWith("ALFRED는 일자 단위 vintage")) {
-      return "ALFRED 발표시각 미기재 값은 18:00 ET proxy 후 다음 주부터 반영합니다.";
-    }
-    if (message.startsWith("Top drivers는 SHAP")) {
-      return "52주 표준화 지표이며 모델 기여도가 아닙니다.";
-    }
-    return message;
-  }
-
-  function renderMethodNotices(caveats) {
-    const container = dom["method-notices"];
-    container.replaceChildren();
-    const notices = [...new Set((Array.isArray(caveats) ? caveats : [])
-      .map(compactMethodNotice)
-      .filter(Boolean))];
-    for (const notice of notices) container.append(createElement("li", null, notice));
-    container.hidden = notices.length === 0;
-  }
-
-  function renderAlerts(week) {
-    dom["data-alerts"].replaceChildren();
-    const mode = String(firstValue(state.raw.meta, ["mode", "data_mode"]) || "unknown").toLowerCase();
-    if (mode === "demo" || mode === "fixture" || mode === "synthetic") {
-      appendAlert("error", "DEMO · 모의자료:", "이 결과는 UI와 분석 경로 검증용이며 실제 미국 증시 판단이 아닙니다.");
-    } else if (mode !== "live" && mode !== "production") {
-      appendAlert("warning", "실데이터 모드 확인 필요:", `현재 결과 모드는 ${textValue(mode)}입니다.`);
-    }
-    const selectedStatus = normalizeStatus(week.health);
-    const selectedReason = extractHealthReason(week.health);
-    if (["blocked", "error"].includes(selectedStatus)) {
-      appendAlert("error", "선택 주 결과 상태:", textValue(selectedReason, STATUS_META[selectedStatus].label));
-    } else if (["degraded", "stale"].includes(selectedStatus)) {
-      appendAlert("warning", "선택 주 결과가 저하 상태입니다:", textValue(selectedReason, STATUS_META[selectedStatus].label));
-    }
-
-    const sourceIssues = (state.raw.sources || [])
-      .map((source) => ({
-        name: textValue(firstValue(source, ["name", "provider", "source", "id"]), "이름 없는 소스"),
-        rawStatus: firstValue(source, ["status", "health", "quality_status"]),
-        status: normalizeStatus(firstValue(source, ["status", "health", "quality_status"])),
-      }))
-      .filter((source) => STATUS_META[source.status].severity >= STATUS_META.degraded.severity);
-    if (sourceIssues.length) {
-      const names = sourceIssues.slice(0, 4).map((source) => `${source.name}(${healthLabel(source.rawStatus)})`).join(", ");
-      const remainder = sourceIssues.length > 4 ? ` 외 ${sourceIssues.length - 4}개` : "";
-      appendAlert("warning", "소스 상태 확인 필요:", `${names}${remainder}`);
-    }
-
-    if (state.validationWarnings.length) {
-      appendAlert("warning", "데이터 계약 경고:", `${state.validationWarnings[0]}${state.validationWarnings.length > 1 ? ` 외 ${state.validationWarnings.length - 1}건` : ""}`);
-    }
-
-    const caveats = firstValue(state.raw.meta, ["warnings", "caveats", "notices"]);
-    renderMethodNotices(caveats);
-    const alertCount = dom["data-alerts"].querySelectorAll(".alert").length;
-    setText(dom["research-notice-summary"], `데이터 · 출처 · 운영${alertCount ? ` · 알림 ${alertCount}` : ""}`);
   }
 
   function makeLinePath(points) {
@@ -1840,80 +1705,6 @@
     return finiteNumber(firstValue(isObject(row) ? row.metrics : null, keys));
   }
 
-  function renderHoldoutDiagnostic(model, championName) {
-    const container = dom["model-diagnostic"];
-    if (!container) return;
-    const diagnostic = isObject(model.holdout_diagnostic) ? model.holdout_diagnostic : null;
-    container.replaceChildren();
-    container.className = "model-diagnostic";
-    container.removeAttribute("role");
-    if (!diagnostic || diagnostic.applicable === false) {
-      container.hidden = true;
-      return;
-    }
-
-    const weak = diagnostic.status === "weak_generalization";
-    const rank = finiteNumber(diagnostic.champion_rank);
-    const modelCount = finiteNumber(diagnostic.model_count);
-    const championLogLoss = finiteNumber(diagnostic.champion_log_loss);
-    const bestLogLoss = finiteNumber(diagnostic.best_log_loss);
-    const regret = finiteNumber(diagnostic.absolute_regret);
-    const frozenModel = textValue(diagnostic.champion_model, championName);
-    const bestModel = textValue(diagnostic.best_model, "미기재");
-    const rankText = rank === null || modelCount === null ? "순위 미기재" : `${formatNumber(rank, 0)}/${formatNumber(modelCount, 0)}위`;
-
-    const badge = createElement("span");
-    setStatusBadge(badge, weak ? "degraded" : "ok", weak ? "진단 주의" : "진단 정상");
-    const copy = createElement("div", "model-diagnostic-copy");
-    copy.append(createElement("strong", null, "2023+ 진단"));
-
-    const comparison = weak
-      ? `선정 ${frozenModel} ${formatNumber(championLogLoss, 4)} (${rankText}) · 2023+ 1위 ${bestModel} ${formatNumber(bestLogLoss, 4)} · 차이 +${formatNumber(regret, 4)}`
-      : `선정 ${frozenModel} · ${formatNumber(championLogLoss, 4)} (${rankText})`;
-    const lock = diagnostic.selection_locked
-      ? "진단 결과는 선정에 미사용"
-      : "선정 고정 미적용";
-    copy.append(createElement("p", null, `${comparison} · ${lock}`));
-
-    container.classList.add(weak ? "is-weak" : "is-ok");
-    container.setAttribute("role", "status");
-    container.hidden = false;
-    container.append(badge, copy);
-  }
-
-  function renderShadowNowcast(model) {
-    const container = dom["shadow-nowcast-summary"];
-    const summary = isObject(model.shadow_nowcast) ? model.shadow_nowcast : null;
-    container.replaceChildren();
-    if (!summary || summary.status !== "shadow_only") {
-      container.hidden = true;
-      return;
-    }
-
-    const header = createElement("div", "shadow-nowcast-heading");
-    const badge = createElement("span", "method-badge", "민감도 · 예측 미사용");
-    const copy = createElement("div");
-    copy.append(createElement("strong", null, "Shadow nowcast"));
-    header.append(badge, copy);
-
-    const metrics = createElement("dl", "shadow-nowcast-metrics");
-    const entries = [
-      ["Canonical 일치율", formatPercent(summary.canonical_agreement_rate)],
-      ["최근 shadow 상태", stateMeta(summary.latest_state).ko],
-      ["최근 지속 기간", `${formatNumber(summary.latest_duration_weeks, 0)}주`],
-      ["완료 구간 평균", `${formatNumber(summary.mean_completed_duration_weeks, 1)}주`],
-      ["상태 변경", `${formatNumber(summary.state_changes, 0)}회`],
-      ["직접 점프 경로", `${formatNumber(summary.routed_direct_jumps, 0)}회`],
-    ];
-    for (const [label, value] of entries) {
-      const wrapper = createElement("div");
-      wrapper.append(createElement("dt", null, label), createElement("dd", null, value));
-      metrics.append(wrapper);
-    }
-    container.append(header, metrics);
-    container.hidden = false;
-  }
-
   function transitionSplitLabel(value) {
     return value === "selection" ? "선정 구간" : "2023+ 진단";
   }
@@ -1946,7 +1737,7 @@
     setText(dom["transition-leaderboard-caption"], `${horizon}주 이탈 모델 진단 지표`);
     setText(
       dom["transition-model-caption"],
-      `${horizon}주 이탈 · 선정 구간 / 2023+ 진단(선정 미사용)`,
+      `${horizon}주 이탈 · 선정 구간 / 2023+ 진단`,
     );
 
     const preferred = rows.find((row) => row.selected && row.evaluation_split === "retrospective_diagnostic")
@@ -1991,12 +1782,8 @@
         const nameCell = createElement("td", null, modelName(rowData));
         if (rowData.selected) nameCell.append(createElement("span", "champion-label", "선정"));
         const splitCell = createElement("td", null, transitionSplitLabel(rowData.evaluation_split));
-        const fallbackCount = finiteNumber(rowData.fallback_count);
         const sampleText = `${formatNumber(rowData.n_predictions, 0)} / ${formatNumber(rowData.event_count, 0)}`;
         const sampleCell = createElement("td", null, sampleText);
-        if (fallbackCount !== null && fallbackCount > 0) {
-          sampleCell.append(createElement("span", "source-detail", `fallback ${formatNumber(fallbackCount, 0)}`));
-        }
         row.append(
           nameCell,
           splitCell,
@@ -2117,8 +1904,6 @@
       createElement("span", null, "선정 모델"),
       createElement("strong", null, championName),
     );
-    renderHoldoutDiagnostic(model, championName);
-    renderShadowNowcast(model);
     renderTransitionModels();
     const selection = firstValue(model, ["selection_period"]);
     const holdout = firstValue(model, ["holdout_period", "validation_period", "evaluation_period", "oos_period"]);
@@ -2254,48 +2039,10 @@
     }
   }
 
-  function overallHealth() {
-    const statuses = [];
-    statuses.push(firstValue(state.raw.meta, ["status", "health", "quality_status"]));
-    for (const source of state.raw.sources || []) {
-      statuses.push(firstValue(source, ["status", "health", "quality_status"]));
-    }
-    return worstStatus(statuses.filter((value) => value !== null));
-  }
-
-  function resultStatusLabel(status, weekHealth = null) {
-    const sourceStatus = worstStatus((state.raw.sources || [])
-      .map((source) => firstValue(source, ["status", "health", "quality_status"]))
-      .filter((value) => value !== null));
-    const selectedStatus = normalizeStatus(weekHealth);
-    const sourceOrWeekIssue = [sourceStatus, selectedStatus]
-      .some((value) => STATUS_META[value].severity >= STATUS_META.degraded.severity);
-    const diagnostic = isObject(state.raw.model && state.raw.model.holdout_diagnostic)
-      ? state.raw.model.holdout_diagnostic
-      : null;
-    if (status === "degraded" && !sourceOrWeekIssue && diagnostic && diagnostic.status === "weak_generalization") {
-      return "진단 주의";
-    }
-    return STATUS_META[status].label;
-  }
-
   function renderGlobalMetadata() {
     const meta = state.raw.meta || {};
     const dataAsOf = firstValue(meta, ["data_as_of", "dataAsOf", "cutoff_at"]);
-    const mode = String(firstValue(meta, ["mode", "data_mode"]) || "unknown").toLowerCase();
     setText(dom["header-data-as-of"], dataAsOf ? formatDateTime(dataAsOf) : "미기재");
-    if (["demo", "fixture", "synthetic"].includes(mode)) {
-      dom["header-mode"].hidden = false;
-      setStatusBadge(dom["header-mode"], "high", "DEMO · 모의자료");
-    } else if (["live", "production"].includes(mode)) {
-      setStatusBadge(dom["header-mode"], "ok", "LIVE");
-      dom["header-mode"].hidden = true;
-    } else {
-      dom["header-mode"].hidden = false;
-      setStatusBadge(dom["header-mode"], "degraded", mode === "unknown" ? "MODE 미기재" : mode.toUpperCase());
-    }
-    const status = overallHealth();
-    setStatusBadge(dom["header-health"], status, resultStatusLabel(status));
     setText(dom["source-freshness"], dataAsOf ? formatDateTime(dataAsOf) : "기준 시점 미기재");
 
     const model = state.raw.model || {};
@@ -2316,9 +2063,6 @@
     showAppState("loading");
     setText(dom["header-analysis-date"], "불러오는 중");
     setText(dom["header-data-as-of"], "불러오는 중");
-    dom["header-mode"].hidden = false;
-    setStatusBadge(dom["header-mode"], "unknown", "MODE 확인 중");
-    setStatusBadge(dom["header-health"], "unknown", "확인 중");
 
     try {
       const response = await fetch(DATA_URL, {
@@ -2358,9 +2102,6 @@
       showAppState("error", "국면 결과를 표시할 수 없습니다", detail);
       setText(dom["header-analysis-date"], "사용 불가");
       setText(dom["header-data-as-of"], "사용 불가");
-      dom["header-mode"].hidden = false;
-      setStatusBadge(dom["header-mode"], "unknown", "MODE 사용 불가");
-      setStatusBadge(dom["header-health"], "error");
     }
   }
 
