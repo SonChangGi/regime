@@ -1,0 +1,126 @@
+{
+  "cutoff": {
+    "timezone": "America/New_York",
+    "weekday": "Friday",
+    "time": "16:00",
+    "same_day_release_policy": "next_week_when_time_unknown"
+  },
+  "alfred": {
+    "base_url": "https://api.stlouisfed.org/fred",
+    "rights_ack_env": "ALFRED_ML_RIGHTS_ACK",
+    "api_key_env": "FRED_API_KEY",
+    "series": [
+      {"id": "DGS3MO", "domain": "rates", "frequency": "daily"},
+      {"id": "DGS1", "domain": "rates", "frequency": "daily"},
+      {"id": "DGS2", "domain": "rates", "frequency": "daily"},
+      {"id": "DGS5", "domain": "rates", "frequency": "daily"},
+      {"id": "DGS7", "domain": "rates", "frequency": "daily"},
+      {"id": "DGS10", "domain": "rates", "frequency": "daily"},
+      {"id": "DGS20", "domain": "rates", "frequency": "daily"},
+      {"id": "DGS30", "domain": "rates", "frequency": "daily"},
+      {"id": "DFII10", "domain": "rates", "frequency": "daily"},
+      {"id": "T10Y2Y", "domain": "rates", "frequency": "daily", "realtime_start": "2014-01-01"},
+      {"id": "T10YIE", "domain": "inflation", "frequency": "daily", "realtime_start": "2014-01-01"},
+      {"id": "DTWEXBGS", "domain": "fx", "frequency": "daily"},
+      {"id": "ICSA", "domain": "labor", "frequency": "weekly"},
+      {"id": "CCSA", "domain": "labor", "frequency": "weekly"},
+      {"id": "NFCI", "domain": "financial_conditions", "frequency": "weekly"},
+      {"id": "ANFCI", "domain": "financial_conditions", "frequency": "weekly"},
+      {"id": "NFCIRISK", "domain": "financial_conditions", "frequency": "weekly"},
+      {"id": "NFCICREDIT", "domain": "financial_conditions", "frequency": "weekly"},
+      {"id": "NFCILEVERAGE", "domain": "financial_conditions", "frequency": "weekly"},
+      {"id": "NFCINONFINLEVERAGE", "domain": "financial_conditions", "frequency": "weekly"},
+      {"id": "STLFSI4", "domain": "financial_conditions", "frequency": "weekly"},
+      {"id": "WALCL", "domain": "liquidity", "frequency": "weekly"},
+      {"id": "TOTBKCR", "domain": "bank_credit", "frequency": "weekly"},
+      {"id": "TOTCI", "domain": "bank_credit", "frequency": "weekly"},
+      {"id": "DPSACBW027SBOG", "domain": "bank_credit", "frequency": "weekly"},
+      {"id": "H8B3094NCBA", "domain": "bank_credit", "frequency": "weekly"},
+      {"id": "UNRATE", "domain": "labor", "frequency": "monthly"},
+      {"id": "PAYEMS", "domain": "labor", "frequency": "monthly"},
+      {"id": "INDPRO", "domain": "growth", "frequency": "monthly"},
+      {"id": "RSAFS", "domain": "growth", "frequency": "monthly"},
+      {"id": "HOUST", "domain": "growth", "frequency": "monthly"},
+      {"id": "CPIAUCSL", "domain": "inflation", "frequency": "monthly"},
+      {"id": "PCEPI", "domain": "inflation", "frequency": "monthly"},
+      {"id": "FEDFUNDS", "domain": "rates", "frequency": "monthly"},
+      {"id": "GDPC1", "domain": "growth", "frequency": "quarterly"}
+    ]
+  },
+  "alpha_vantage": {
+    "base_url": "https://www.alphavantage.co/query",
+    "api_key_env": "ALPHA_VANTAGE_API_KEY",
+    "daily_request_cap": 25,
+    "initial_baseline_minimum_coverage": 0.9,
+    "initial_baseline_max_latest_lag_days": 10,
+    "history_start_by_symbol": {
+      "XLC": "2018-06-18",
+      "XLRE": "2015-10-07"
+    },
+    "fields": ["open", "high", "low", "close", "adjusted_close", "volume"],
+    "ohlc_feature_symbols": ["SPY", "IWM", "RSP", "HYG", "TLT"],
+    "symbol_groups": {
+      "gics_sector": ["XLB", "XLC", "XLE", "XLF", "XLI", "XLK", "XLP", "XLRE", "XLU", "XLV", "XLY"],
+      "broad_size_style": ["SPY", "QQQ", "IWM", "DIA", "RSP"],
+      "cross_asset": ["SHY", "IEF", "TLT", "HYG", "LQD", "GLD", "UUP"]
+    },
+    "symbols": [
+      "SPY", "QQQ", "IWM", "DIA", "RSP",
+      "XLB", "XLC", "XLE", "XLF", "XLI", "XLK", "XLP", "XLRE", "XLU", "XLV", "XLY",
+      "SHY", "IEF", "TLT", "HYG", "LQD", "GLD", "UUP"
+    ]
+  },
+  "feature_engineering": {
+    "nelson_siegel": {
+      "series_months": {
+        "DGS3MO": 3,
+        "DGS1": 12,
+        "DGS2": 24,
+        "DGS5": 60,
+        "DGS7": 84,
+        "DGS10": 120,
+        "DGS20": 240,
+        "DGS30": 360
+      },
+      "lambda_per_month": 0.0609,
+      "minimum_maturities": 4
+    },
+    "bank_credit": {
+      "total_credit": "TOTBKCR",
+      "commercial_industrial": "TOTCI",
+      "deposits": "DPSACBW027SBOG",
+      "borrowings_millions": "H8B3094NCBA"
+    },
+    "financial_conditions": {
+      "series": "ANFCI",
+      "features": ["level", "change_1w", "change_4w", "z_52w"]
+    },
+    "release_innovation": {
+      "series": ["UNRATE", "PAYEMS", "INDPRO", "RSAFS", "HOUST", "CPIAUCSL", "PCEPI", "GDPC1"],
+      "prior_release_window": 12,
+      "minimum_prior_releases": 4
+    }
+  },
+  "model": {
+    "state_order": ["risk_on", "transition", "risk_off"],
+    "horizon_weeks": 1,
+    "transition_horizons_weeks": [1, 4, 13],
+    "minimum_train_weeks": 520,
+    "gap_weeks": 1,
+    "final_holdout_start": "2023-01-01",
+    "selection_metric": "log_loss",
+    "transition_selection_metric": "binary_log_loss",
+    "transition_models": [
+      "empirical_hazard",
+      "markov_hazard",
+      "duration_tvtp_hurdle",
+      "regularized_logistic",
+      "binary_xgboost"
+    ],
+    "transition_threshold_policy": "selection_only_balanced_accuracy_with_0.5_fallback",
+    "shadow_nowcast": {
+      "method": "causal_explicit_duration_filter",
+      "canonical_target": false
+    }
+  }
+}

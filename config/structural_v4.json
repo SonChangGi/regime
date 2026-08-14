@@ -1,0 +1,115 @@
+{
+  "schema_version": "1.0.0",
+  "preregistered_at": "2026-08-13",
+  "purpose": "structural weekly US equity regime upgrade without post-2023 model selection",
+  "protected_contracts": {
+    "state_order": ["risk_on", "transition", "risk_off"],
+    "label_version": "market-causal-3state-v1",
+    "primary_horizon_weeks": 1,
+    "selection_end": "2023-01-01",
+    "diagnostic_role": "retrospective_development_only",
+    "minimum_train_weeks": 520,
+    "gap_weeks": 1
+  },
+  "data_blocks": {
+    "treasury_curve": {
+      "series": ["DGS3MO", "DGS1", "DGS2", "DGS5", "DGS7", "DGS10", "DGS20", "DGS30"],
+      "features": ["nelson_siegel_level", "nelson_siegel_slope", "nelson_siegel_curvature"],
+      "lambda_per_month": 0.0609,
+      "minimum_maturities": 4
+    },
+    "bank_credit": {
+      "series": ["TOTBKCR", "TOTCI", "DPSACBW027SBOG", "H8B3094NCBA"],
+      "features": ["log_growth_4w", "log_growth_13w", "ci_share", "deposit_funding_ratio", "borrowing_ratio"],
+      "release_policy": "unknown_or_post_16_et_release_is_next_week"
+    },
+    "financial_conditions": {
+      "series": ["ANFCI"],
+      "features": ["level", "change_1w", "change_4w", "z_52w"]
+    },
+    "sector_breadth": {
+      "new_symbols": ["XLB", "XLC", "XLRE"],
+      "groups": {
+        "gics_sector": ["XLB", "XLC", "XLE", "XLF", "XLI", "XLK", "XLP", "XLRE", "XLU", "XLV", "XLY"],
+        "broad_size_style": ["SPY", "QQQ", "IWM", "DIA", "RSP"],
+        "cross_asset": ["SHY", "IEF", "TLT", "HYG", "LQD", "GLD", "UUP"]
+      },
+      "maximum_alpha_requests": 23
+    },
+    "release_innovation": {
+      "series": ["UNRATE", "PAYEMS", "INDPRO", "RSAFS", "HOUST", "CPIAUCSL", "PCEPI", "GDPC1"],
+      "expectation": "past_release_delta_rolling_median",
+      "scale": "past_release_delta_rolling_mad",
+      "minimum_prior_releases": 4,
+      "future_fill": false
+    }
+  },
+  "structural_models": {
+    "xgb_hazard_destination": {
+      "hazard": "binary_xgboost_oos_probability",
+      "destination": "multiclass_xgboost_oos_probability_conditioned_on_leaving",
+      "direct_jump_floor": 0.000001
+    },
+    "causal_dynamic_ensemble": {
+      "experts": ["markov", "xgboost", "xgb_hazard_destination"],
+      "loss": "multiclass_log_loss",
+      "weight_update": "discounted_exponential_weights",
+      "half_life_weeks": 52,
+      "eligible_loss": "target_date_strictly_before_origin",
+      "minimum_history_rows": 26,
+      "warmup": "equal_weights"
+    },
+    "joint_survival_hazard": {
+      "base_target_weeks": 1,
+      "horizons_weeks": [1, 4, 13],
+      "future_covariates": "origin_values_frozen",
+      "duration": "increment_one_week_per_step",
+      "identity": "one_minus_product_one_minus_weekly_hazard"
+    }
+  },
+  "evaluation": {
+    "primary_metric": "multiclass_log_loss",
+    "transition_metric": "binary_log_loss",
+    "secondary_metrics": ["brier", "balanced_accuracy", "macro_f1", "calibration"],
+    "promotion_minimum_log_loss_improvement": 0.05,
+    "promotion_maximum_brier_degradation": 0.01,
+    "bootstrap_block_weeks": 13,
+    "bootstrap_resamples": 1999,
+    "multiple_testing": "holm",
+    "fallback_rows_allowed": 0,
+    "common_origin_required": true,
+    "post_2023_may_change_selection": false
+  },
+  "feature_ablation": {
+    "anchor_model": "xgboost",
+    "reference_variant": "legacy_v3",
+    "published_variant": "all_structural",
+    "variants": {
+      "legacy_v3": ["legacy_v3"],
+      "legacy_plus_market_structure": [
+        "legacy_v3",
+        "sector_breadth",
+        "broad_size_style_breadth",
+        "cross_asset_breadth"
+      ],
+      "legacy_plus_treasury_curve": ["legacy_v3", "treasury_curve"],
+      "legacy_plus_bank_credit": ["legacy_v3", "bank_credit"],
+      "legacy_plus_financial_conditions": ["legacy_v3", "financial_conditions"],
+      "legacy_plus_release_innovation": ["legacy_v3", "release_innovation"],
+      "all_structural": [
+        "legacy_v3",
+        "sector_breadth",
+        "broad_size_style_breadth",
+        "cross_asset_breadth",
+        "treasury_curve",
+        "bank_credit",
+        "financial_conditions",
+        "release_innovation"
+      ]
+    },
+    "comparison_scope": "strict_common_origin",
+    "primary_period": "pre_2023_selection_oos",
+    "post_2023_role": "retrospective_diagnostic_only",
+    "may_change_published_variant": false
+  }
+}

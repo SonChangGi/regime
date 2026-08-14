@@ -1,0 +1,32 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+
+# Provider responses and credentials never belong in source control.
+data/raw/
+data/cache/
+# Private provider snapshots (including SQLite WAL/SHM sidecars).
+data/*.sqlite3*
+.env
+.env.*
+!.env.example
+
+# Live research outputs can contain provider-derived values. They stay local.
+web/data/regime-results.json
+web/data/regime-results.live.json
+web/data/regime-results.tmp.json
+web/data/.regime-results*.tmp
+# No generated research artifacts belong in the source repository. Pages is
+# built only from the synthetic allowlist under dist/ inside CI.
+artifacts/
+artifacts/latest/
+artifacts/baselines/
+
+# Only the allowlisted demo package under dist/ is suitable for publication.
+# dist/ and build/ are already ignored above; publish them explicitly, never the repo root.
