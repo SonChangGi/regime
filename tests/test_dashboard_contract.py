@@ -288,7 +288,6 @@ def test_dashboard_assets_are_local_and_present() -> None:
         "https://sonchanggi.github.io/best-factor/",
         "https://sonchanggi.github.io/etf-tracking/",
         "https://sonchanggi.github.io/sox/",
-        "https://sonchanggi.github.io/port/",
         "https://sonchanggi.github.io/regime/",
         "https://fred.stlouisfed.org/",
         "https://www.alphavantage.co/",
