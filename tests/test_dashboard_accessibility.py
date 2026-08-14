@@ -86,7 +86,9 @@ def test_keyboard_focus_reduced_motion_and_mobile_rules_exist() -> None:
 def test_mobile_navigation_reveals_active_project() -> None:
     assert "function revealActiveProjectLink()" in JS
     assert "links.querySelector('[aria-current=\"page\"]')" in JS
-    assert "links.scrollLeft += activeRect.right - linksRect.right" in JS
+    assert "links.scrollLeft += activeRect.right - linksRect.right + edgePadding" in JS
+    assert 'window.addEventListener("load", revealActiveProjectLink, { once: true })' in JS
+    assert "document.fonts.ready.then(revealActiveProjectLink)" in JS
     assert 'window.addEventListener("resize", revealActiveProjectLink)' in JS
 
 

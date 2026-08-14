@@ -902,10 +902,11 @@
 
     const linksRect = links.getBoundingClientRect();
     const activeRect = active.getBoundingClientRect();
+    const edgePadding = 1;
     if (activeRect.left < linksRect.left) {
-      links.scrollLeft -= linksRect.left - activeRect.left;
+      links.scrollLeft -= linksRect.left - activeRect.left + edgePadding;
     } else if (activeRect.right > linksRect.right) {
-      links.scrollLeft += activeRect.right - linksRect.right;
+      links.scrollLeft += activeRect.right - linksRect.right + edgePadding;
     }
   }
 
@@ -2109,6 +2110,10 @@
     initializeDom();
     setupTheme();
     revealActiveProjectLink();
+    window.addEventListener("load", revealActiveProjectLink, { once: true });
+    if (document.fonts && document.fonts.ready) {
+      document.fonts.ready.then(revealActiveProjectLink);
+    }
     window.addEventListener("resize", revealActiveProjectLink);
     bindEvents();
     loadData();
