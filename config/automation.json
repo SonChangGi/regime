@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "automation_id": "weekly-regime-release-v1",
+  "schedule": {
+    "hour": 21,
+    "minute": 17,
+    "minimum_cutoff_age_hours": 24,
+    "require_ac_power": true
+  },
+  "build": {
+    "profile": "standard",
+    "database": "data/regime.sqlite3",
+    "payload": "build/weekly-automation/generation/regime-results.json",
+    "artifacts": "build/weekly-automation/generation/artifacts",
+    "state_directory": "build/weekly-automation",
+    "authorization": "data/automation/authorization.json"
+  },
+  "github": {
+    "repository": "SonChangGi/regime",
+    "remote": "origin",
+    "branch": "main",
+    "workflow": "pages.yml",
+    "public_root": "https://sonchanggi.github.io/regime/",
+    "workflow_timeout_minutes": 60,
+    "public_readback_timeout_minutes": 10
+  }
+}

@@ -13,6 +13,7 @@ data/raw/
 data/cache/
 # Private provider snapshots (including SQLite WAL/SHM sidecars).
 data/*.sqlite3*
+data/automation/
 .env
 .env.*
 !.env.example

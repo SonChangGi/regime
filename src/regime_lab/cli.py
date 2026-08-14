@@ -32,6 +32,7 @@ from regime_lab.pipeline import build_dashboard_result
 from regime_lab.schema import validate_dashboard_payload
 from regime_lab.server import serve_dashboard
 from regime_lab.smoke import main as smoke_main
+from regime_lab.automation import AlreadyRunning, automation_lock, command_automation
 
 
 def _root_path(value: str) -> Path:
@@ -336,38 +337,47 @@ def command_build(args: argparse.Namespace) -> int:
     database = _mutable_path(args.database, label="snapshot database")
     output = _mutable_path(args.output, label="dashboard output")
     artifacts = _mutable_path(args.artifacts, label="artifact output")
-    credentials = (
-        nullcontext()
-        if args.from_env
-        else provider_environment_from_keychain(rights_acknowledged=True)
-    )
-    with credentials:
-        collection = collect_live_data(
-            config,
-            database_path=database,
-            progress=_flush_progress,
-        )
-    print("Point-in-time weekly frame 조립", flush=True)
-    dataset = build_weekly_dataset(config, collection.cutoffs, collection.records)
-    print(
-        f"모델 비교 시작: {len(dataset.features):,} weeks × "
-        f"{dataset.features.shape[1]:,} features ({args.profile})",
-        flush=True,
-    )
-    payload, benchmark = build_dashboard_result(
-        dataset,
-        collection,
-        profile_name=args.profile,
-        mode="live",
-        selection_end=str(config["model"]["final_holdout_start"]),
-        progress=_flush_progress,
-    )
-    _publish_active_generation(
-        payload,
-        benchmark,
-        output=output,
-        artifacts=artifacts,
-    )
+    live_build_lock = database.with_name(f"{database.name}.live-build.lock")
+    try:
+        with automation_lock(live_build_lock):
+            credentials = (
+                nullcontext()
+                if args.from_env
+                else provider_environment_from_keychain(rights_acknowledged=True)
+            )
+            with credentials:
+                collection = collect_live_data(
+                    config,
+                    database_path=database,
+                    progress=_flush_progress,
+                )
+            print("Point-in-time weekly frame 조립", flush=True)
+            dataset = build_weekly_dataset(
+                config, collection.cutoffs, collection.records
+            )
+            print(
+                f"모델 비교 시작: {len(dataset.features):,} weeks × "
+                f"{dataset.features.shape[1]:,} features ({args.profile})",
+                flush=True,
+            )
+            payload, benchmark = build_dashboard_result(
+                dataset,
+                collection,
+                profile_name=args.profile,
+                mode="live",
+                selection_end=str(config["model"]["final_holdout_start"]),
+                progress=_flush_progress,
+            )
+            _publish_active_generation(
+                payload,
+                benchmark,
+                output=output,
+                artifacts=artifacts,
+            )
+    except AlreadyRunning as exc:
+        raise SystemExit(
+            f"live build refused because another build owns {live_build_lock}: {exc}"
+        ) from exc
     print(
         json.dumps(
             {
@@ -492,6 +502,31 @@ def build_parser() -> argparse.ArgumentParser:
             ]
         )
     )
+
+    automation = subparsers.add_parser(
+        "automation",
+        help="preflight, run, or manage the local weekly release automation",
+    )
+    automation.add_argument(
+        "action",
+        choices=("preflight", "run", "install", "uninstall", "status"),
+    )
+    automation.add_argument(
+        "--config",
+        type=Path,
+        default=Path("config/automation.json"),
+    )
+    automation.add_argument(
+        "--alfred-rights-confirmed",
+        action="store_true",
+        help="confirm ALFRED local storage and ML-training permission for install",
+    )
+    automation.add_argument(
+        "--acknowledge-personal-noncommercial-publication",
+        action="store_true",
+        help="confirm personal noncommercial derived-output publication for install",
+    )
+    automation.set_defaults(func=command_automation)
     return parser
 
 

@@ -66,6 +66,68 @@ inventory·해시를 모두 검사하며, DB·원관측치·모델 artifact는 �
 `main`의 Pages workflow도 API를 호출하지 않고 이 공개 스냅샷만 재검증해
 `https://sonchanggi.github.io/regime/`에 배포합니다.
 
+## 주간 수집·재학습·배포 자동화
+
+자동화는 private revision DB와 macOS Keychain을 보존하기 위해 두 실행면으로
+분리합니다. 로컬 macOS LaunchAgent가 수집·재학습·감사·공개 후보 승격을 담당하고,
+GitHub-hosted Pages workflow는 provider 호출 없이 검증된 파생 결과만 배포합니다.
+
+```bash
+# API 호출 없이 cutoff, origin/main, 공개 dataAsOf와 실행 필요 여부 확인
+.venv/bin/regime-lab automation preflight
+
+# 아래 두 권리 범위를 직접 확인한 뒤 LaunchAgent를 설치·갱신합니다.
+# 설치 직후 catch-up due-check를 한 번 수행합니다.
+.venv/bin/regime-lab automation install \
+  --alfred-rights-confirmed \
+  --acknowledge-personal-noncommercial-publication
+
+# 등록 및 최근 실행 health 확인
+.venv/bin/regime-lab automation status
+```
+
+LaunchAgent는 로컬 시각 매일 21:17에 실행하고 로그인 시에도 누락분을 확인하지만,
+Python gate가 새 Friday 16:00 `America/New_York` cutoff에서 24시간이 지난 경우에만
+실제 작업을 시작합니다. 공개 snapshot이 이미 같은 cutoff이면 Keychain·provider·
+모델을 건드리지 않고 종료합니다. Mac이 꺼져 있던 동안에는 다음 로그인 또는
+일일 실행에서 최신 cutoff 하나만 catch-up합니다.
+
+실제 실행은 다음 순서를 fail-closed로 적용합니다.
+
+1. 단일-process lock, clean tracked working tree, `origin/main` source 일치와 Git
+   fetch/push 경계를 확인합니다. 새 수집 직전에만 180일 만료의 로컬 권리 확인 파일과 AC
+   전원을 확인합니다. 설치 명령의 첫 번째 동의는 ALFRED를 로컬에 저장해 ML 학습에
+   쓰는 권리, 두 번째 동의는 파생 결과를 개인·비상업 공개하는 권리를 뜻합니다.
+2. Alpha Vantage의 23회 전체 batch가 rolling-24h ledger에 들어갈 수 있는지
+   예약 없이 먼저 확인하고, 실제 collector가 다시 원자 예약합니다.
+3. 수동 build 경로와 분리된 `build/weekly-automation/generation/`에서 `standard`
+   live build를 수행한 뒤 SQLite `quick_check`, payload validation,
+   `audit_outputs.py --mode live`, 공개 package verifier를 통과시킵니다.
+4. 정확한 cutoff, Alpha/ALFRED `ok`, 최신 주 `ok`, Alpha coverage, forecast fallback
+   부재를 확인합니다. `weak_generalization`만 원인인 전역 `degraded`는 경고를
+   보존한 채 허용하지만 provider degradation은 자동 공개하지 않습니다.
+5. 사용자 working tree와 분리된 임시 checkout에서 preflight로 고정한 원격 SHA와
+   publication 경로의 regular-file 상태를 다시 확인한 뒤
+   `publication/live/regime-results.json` 한 파일만 commit/push합니다. 기존 Pages
+   workflow는 배포 직전 `main` SHA가 자기 커밋과 같은지 확인합니다. 완료 후 public
+   JSON·manifest SHA-256·`dataAsOf`·HTML을 다시 읽습니다. 불일치하면 같은 검증
+   snapshot을 유지하는 빈 복구 commit을 원격 HEAD 고정 하에 push하여 Pages를 다시
+   시작하고, 공개 파일이 정확히 일치할 때까지 기다립니다. GitHub CLI token에는
+   의존하지 않습니다.
+
+상태, lock, 검증된 재시도 후보와 launchd 로그는 Git에서 제외된
+`build/weekly-automation/`에 저장합니다. 권리 확인은 credential 없이
+`data/automation/authorization.json`에 `0600`으로 저장됩니다. push나 Pages가
+실패하면 이전 공개 페이지는 유지되고, 다음 실행은 source tree·핵심 config hash·
+`generation_id`가 모두 같은 cached candidate부터 재개해 provider 호출과 장시간
+재학습을 반복하지 않습니다. 수동 live build와 예약 build는 같은 DB lock을 공유하며,
+payload와 artifact는 서로 다른 경로를 사용해 예약 audit 중 교체될 수 없습니다.
+자동화 해제는 다음과 같습니다.
+
+```bash
+.venv/bin/regime-lab automation uninstall
+```
+
 ## 실데이터 실행
 
 기본 실행은 macOS Keychain의 `regime-fred-api-key`,
