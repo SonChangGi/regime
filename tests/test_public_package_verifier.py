@@ -10,6 +10,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_SCRIPT = ROOT / "scripts" / "package_public_demo.py"
 VERIFY_SCRIPT = ROOT / "scripts" / "verify_public_package.py"
+LIVE_PUBLICATION = ROOT / "publication" / "live" / "regime-results.json"
 
 
 def _load_script(name: str, path: Path):
@@ -110,6 +111,22 @@ def test_verifier_accepts_exact_synthetic_package(tmp_path: Path) -> None:
     assert result["payload_mode"] == "demo"
 
 
+def test_verifier_accepts_exact_live_derived_package(tmp_path: Path) -> None:
+    output = tmp_path / "public-live"
+    package_public_demo.package_public_dashboard(
+        web_root=_web_root(tmp_path),
+        payload_path=LIVE_PUBLICATION,
+        output_directory=output,
+        publication_mode=package_public_demo.PUBLICATION_MODE_LIVE_DERIVED,
+        rights_acknowledged=True,
+    )
+
+    result = verify_public_package.verify_public_package(output)
+    assert result["ok"] is True
+    assert result["package_kind"] == "personal_noncommercial_live_derived"
+    assert result["payload_mode"] == "live"
+
+
 def test_verifier_refuses_extra_file(tmp_path: Path) -> None:
     output = _package(tmp_path)
     (output / "live.sqlite3").write_bytes(b"provider data")
@@ -121,6 +138,17 @@ def test_verifier_refuses_tampered_allowlisted_asset(tmp_path: Path) -> None:
     output = _package(tmp_path)
     (output / "app.js").write_text("console.log('changed');\n", encoding="utf-8")
     with pytest.raises(verify_public_package.VerificationError, match="mismatch"):
+        verify_public_package.verify_public_package(output)
+
+
+def test_verifier_refuses_manifest_data_as_of_drift(tmp_path: Path) -> None:
+    output = _package(tmp_path)
+    manifest_path = output / "publication-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["payload_data_as_of"] = "1999-01-01T00:00:00Z"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(verify_public_package.VerificationError, match="data_as_of mismatch"):
         verify_public_package.verify_public_package(output)
 
 

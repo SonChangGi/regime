@@ -3,7 +3,7 @@
 미국 증시의 **현재 주간 국면**과 **다음 주 국면 확률**을 point-in-time
 정보로 산출하고, 날짜를 선택해 결과를 탐색하는 로컬 연구 프로젝트입니다.
 실제 투자 주문·자산배분 백테스트는 범위에 포함하지 않습니다. 공개 페이지는
-고정 seed 합성 데모만 제공하며, 실데이터 결과는 로컬에만 유지합니다.
+로컬 live v4 분석에서 생성한 개인·비상업 파생 결과 스냅샷을 제공합니다.
 
 ## 무엇을 보여주나
 
@@ -17,10 +17,10 @@
 
 대시보드는 Python 결과를 다시 계산하지 않습니다. Python 파이프라인이
 `web/data/regime-results.json`을 만들고, dependency-free 정적 웹 앱이 그
-계약을 읽습니다. GitHub Pages는 이 파일이 아닌 별도로 검증된 합성 데모
-payload와 정적 자산 allowlist만 배포합니다.
+계약을 읽습니다. GitHub Pages는 원자료나 DB가 아니라 별도로 검증된
+`publication/live/regime-results.json`과 정적 자산 allowlist만 배포합니다.
 
-공개 합성 데모: [sonchanggi.github.io/regime](https://sonchanggi.github.io/regime/)
+공개 live 파생 결과: [sonchanggi.github.io/regime](https://sonchanggi.github.io/regime/)
 
 ## 빠른 실행: 격리된 연구용 데모
 
@@ -45,12 +45,26 @@ brew install libomp
 `meta.mode=demo`가 아니거나 모든 source가 `synthetic_fixture`가 아니면 실패하며,
 기존 출력 디렉터리를 덮어쓰지 않습니다.
 
+## 공개 live 파생 결과 갱신
+
 `web/data/regime-results.json`, `artifacts/latest/`, SQLite와 provider raw/cache는
-로컬 전용이며 Git 대상에서 제외됩니다. 정적 미리보기나 향후 공개 작업에서도
-저장소 루트나 `web/` 전체를 업로드하지 말고 위 allowlist package만 사용하세요.
-위 명령 자체는 로컬 미리보기만 만듭니다. `main`의 Pages workflow는 동일한
-합성 자료를 새로 만들고 manifest·파일 inventory·해시·credential 검사를 모두
-통과한 `dist/public-demo`만 `https://sonchanggi.github.io/regime/`에 배포합니다.
+계속 로컬 전용입니다. 공개 갱신 시 검증이 끝난 live JSON만
+`publication/live/regime-results.json`으로 복사하고 다음 패키징 계약을 확인합니다.
+
+```bash
+.venv/bin/python scripts/package_public_demo.py \
+  --payload publication/live/regime-results.json \
+  --publication-mode live-derived \
+  --acknowledge-personal-noncommercial-publication \
+  --output dist/public-dashboard
+.venv/bin/python scripts/verify_public_package.py dist/public-dashboard
+```
+
+패키지는 `index.html`, `styles.css`, `app.js`, 파생 결과 JSON, manifest만 포함합니다.
+live v4·최소 52주·정확한 source 이용범위·금지된 원자료 필드·credential 패턴·파일
+inventory·해시를 모두 검사하며, DB·원관측치·모델 artifact는 복사하지 않습니다.
+`main`의 Pages workflow도 API를 호출하지 않고 이 공개 스냅샷만 재검증해
+`https://sonchanggi.github.io/regime/`에 배포합니다.
 
 ## 실데이터 실행
 
@@ -77,13 +91,11 @@ brew install libomp
 [FRED API Terms](https://fred.stlouisfed.org/docs/api/terms_of_use.html),
 [Alpha Vantage Terms](https://www.alphavantage.co/terms_of_service/).
 
-공개 페이지는 별도 권리 검토 대상입니다. 로컬 저장·ML 권리 확인을 공개 전송이나
-재배포 허가로 확대 해석하지 않습니다. 특히 Alpha Vantage 실데이터와 그 파생
-산출물은 공개 표시 범위를 서면으로 확인하기 전까지 비공개로 유지합니다. ALFRED는
-Bank 허가 범위뿐 아니라 각 series의 원저작권·표시 조건과 citation을 확인해야
-합니다. FRED API를 사용하는 live 공개 앱에는 다음 고지를 눈에 띄게 표시하고,
-다른 사용자가 쓰는 앱이라면 공식 API 약관 링크와 이용자 적용 문구도 제공해야
-합니다.
+현재 공개 범위는 사용자가 확인한 개인·비상업 목적의 대시보드 파생 결과입니다.
+Alpha Vantage 원시 시계열은 공개하지 않으며, ALFRED는 사용자가 확인한 저장·ML·
+파생결과 범위와 각 series의 표시 조건을 전제로 합니다. 이 확인은 상업 이용이나
+원자료 재배포 권리로 확대되지 않습니다. 공개 앱에는 다음 FRED 고지와 공식 약관
+링크를 유지합니다.
 
 > This product uses the FRED® API but is not endorsed or certified by the Federal Reserve Bank of St. Louis.
 
@@ -295,8 +307,7 @@ tests/                  누수·계약·모델·UI 회귀 테스트
 
 Regime은 관측 가능한 정답이 아니라 잠재적 시장 요약입니다. 높은 accuracy는
 지속성 baseline만 반복해도 나올 수 있으므로 확률 score와 전환 성능을 함께
-봐야 합니다. 공개 배포 전에는 각 source의 파생결과 표시 권리와 Alpha
-Vantage 사용 범위를 다시 검토해야 하며, 현재 산출물은 개인·비상업 연구용입니다.
+봐야 합니다. 현재 공개 산출물은 개인·비상업 연구용 파생 결과입니다.
 
 개별 기업 재무·실적은 현재 무료 source에서 장기간의 발표 당시 값과 수정 이력을
 일관되게 재현하기 어려워 직접 feature로 넣지 않았습니다. 대신 규모·동일가중·섹터

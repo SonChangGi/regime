@@ -1,4 +1,4 @@
-name: Deploy synthetic Regime demo to Pages
+name: Deploy personal Regime dashboard to Pages
 
 on:
   push:
@@ -40,29 +40,24 @@ jobs:
             tests/test_dashboard_accessibility.py \
             tests/test_schema.py
 
-      - name: Generate fixed-seed synthetic demo
-        run: |
-          regime-lab demo \
-            --profile quick \
-            --output build/public-demo-source/regime-results.json \
-            --artifacts build/public-demo-artifacts
-
-      - name: Build allowlisted public package
+      - name: Build allowlisted live-derived package
         run: |
           python scripts/package_public_demo.py \
-            --payload build/public-demo-source/regime-results.json \
-            --output dist/public-demo
+            --payload publication/live/regime-results.json \
+            --publication-mode live-derived \
+            --acknowledge-personal-noncommercial-publication \
+            --output dist/public-dashboard
 
       - name: Verify exact release manifest and public boundary
-        run: python scripts/verify_public_package.py dist/public-demo
+        run: python scripts/verify_public_package.py dist/public-dashboard
 
       - name: Configure Pages
         uses: actions/configure-pages@v5
 
-      - name: Upload synthetic-only Pages artifact
+      - name: Upload derived-results-only Pages artifact
         uses: actions/upload-pages-artifact@v4
         with:
-          path: dist/public-demo
+          path: dist/public-dashboard
 
   deploy:
     environment:

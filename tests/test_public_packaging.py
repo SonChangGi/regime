@@ -11,6 +11,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "package_public_demo.py"
 PAGES_WORKFLOW = ROOT / ".github" / "workflows" / "pages.yml"
+LIVE_PUBLICATION = ROOT / "publication" / "live" / "regime-results.json"
 SPEC = importlib.util.spec_from_file_location("package_public_demo", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
 package_public_demo = importlib.util.module_from_spec(SPEC)
@@ -136,6 +137,80 @@ def test_package_refuses_live_payload_without_creating_output(tmp_path: Path) ->
     assert not output.exists()
 
 
+def test_live_derived_package_requires_explicit_rights_acknowledgement(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "public-live"
+    with pytest.raises(package_public_demo.PackagingError, match="rights acknowledgement"):
+        package_public_demo.package_public_dashboard(
+            web_root=_web_root(tmp_path),
+            payload_path=LIVE_PUBLICATION,
+            output_directory=output,
+            publication_mode=package_public_demo.PUBLICATION_MODE_LIVE_DERIVED,
+            rights_acknowledged=False,
+        )
+    assert not output.exists()
+
+
+def test_package_copies_only_allowlisted_assets_and_live_derived_snapshot(
+    tmp_path: Path,
+) -> None:
+    web_root = _web_root(tmp_path)
+    (web_root / "provider.sqlite3").write_bytes(b"private database")
+    output = tmp_path / "public-live"
+    manifest = package_public_demo.package_public_dashboard(
+        web_root=web_root,
+        payload_path=LIVE_PUBLICATION,
+        output_directory=output,
+        publication_mode=package_public_demo.PUBLICATION_MODE_LIVE_DERIVED,
+        rights_acknowledged=True,
+    )
+
+    assert manifest["package_kind"] == "personal_noncommercial_live_derived"
+    assert manifest["payload_mode"] == "live"
+    assert manifest["publication_scope"] == "personal_noncommercial_derived_results"
+    assert manifest["contains_raw_observations"] is False
+    assert manifest["source_ids"] == ["alfred", "alpha_vantage"]
+    assert not (output / "provider.sqlite3").exists()
+    payload = json.loads((output / "data/regime-results.json").read_text())
+    assert payload["meta"]["mode"] == "live"
+    assert len(payload["weekly"]) >= 52
+
+
+def test_live_derived_package_refuses_raw_observation_material(tmp_path: Path) -> None:
+    payload = json.loads(LIVE_PUBLICATION.read_text(encoding="utf-8"))
+    payload["sources"][0]["observations"] = [{"date": "2026-08-07", "value": 1.0}]
+    payload_path = tmp_path / "unsafe-live.json"
+    payload_path.write_text(json.dumps(payload), encoding="utf-8")
+    output = tmp_path / "public-live"
+
+    with pytest.raises(package_public_demo.PackagingError, match="forbidden provider material"):
+        package_public_demo.package_public_dashboard(
+            web_root=_web_root(tmp_path),
+            payload_path=payload_path,
+            output_directory=output,
+            publication_mode=package_public_demo.PUBLICATION_MODE_LIVE_DERIVED,
+            rights_acknowledged=True,
+        )
+    assert not output.exists()
+
+
+def test_live_derived_package_refuses_machine_local_paths(tmp_path: Path) -> None:
+    payload = json.loads(LIVE_PUBLICATION.read_text(encoding="utf-8"))
+    payload["meta"]["debug_path"] = "/Users/example/private-output.json"
+    payload_path = tmp_path / "unsafe-path-live.json"
+    payload_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(package_public_demo.PackagingError, match="machine-local path"):
+        package_public_demo.package_public_dashboard(
+            web_root=_web_root(tmp_path),
+            payload_path=payload_path,
+            output_directory=tmp_path / "public-live",
+            publication_mode=package_public_demo.PUBLICATION_MODE_LIVE_DERIVED,
+            rights_acknowledged=True,
+        )
+
+
 def test_package_refuses_provider_data_mislabeled_as_demo(tmp_path: Path) -> None:
     output = tmp_path / "public-demo"
     with pytest.raises(package_public_demo.PackagingError, match="synthetic fixture"):
@@ -221,14 +296,16 @@ def test_private_live_outputs_are_ignored_by_repository_contract() -> None:
     assert "artifacts/latest/" in ignored
 
 
-def test_pages_workflow_uploads_only_verified_synthetic_package() -> None:
+def test_pages_workflow_uploads_only_verified_live_derived_package() -> None:
     workflow = PAGES_WORKFLOW.read_text(encoding="utf-8")
-    assert "regime-lab demo" in workflow
-    assert "--output build/public-demo-source/regime-results.json" in workflow
-    assert "--output dist/public-demo" in workflow
-    assert "verify_public_package.py dist/public-demo" in workflow
+    assert "regime-lab demo" not in workflow
+    assert "publication/live/regime-results.json" in workflow
+    assert "--publication-mode live-derived" in workflow
+    assert "--acknowledge-personal-noncommercial-publication" in workflow
+    assert "--output dist/public-dashboard" in workflow
+    assert "verify_public_package.py dist/public-dashboard" in workflow
     assert "actions/upload-pages-artifact@v4" in workflow
-    assert "path: dist/public-demo" in workflow
+    assert "path: dist/public-dashboard" in workflow
     assert "web/data/regime-results.json" not in workflow
     assert "data/regime.sqlite3" not in workflow
     assert "artifacts/latest" not in workflow

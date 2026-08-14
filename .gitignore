@@ -17,16 +17,17 @@ data/*.sqlite3*
 .env.*
 !.env.example
 
-# Live research outputs can contain provider-derived values. They stay local.
+# Working live outputs stay local. Only the separately validated derived snapshot
+# at publication/live/regime-results.json is eligible for source control.
 web/data/regime-results.json
 web/data/regime-results.live.json
 web/data/regime-results.tmp.json
 web/data/.regime-results*.tmp
 # No generated research artifacts belong in the source repository. Pages is
-# built only from the synthetic allowlist under dist/ inside CI.
+# built only from the static allowlist plus the reviewed publication snapshot.
 artifacts/
 artifacts/latest/
 artifacts/baselines/
 
-# Only the allowlisted demo package under dist/ is suitable for publication.
-# dist/ and build/ are already ignored above; publish them explicitly, never the repo root.
+# Only the verified allowlisted package under dist/ is suitable for publication.
+# dist/ and build/ are already ignored above; publish it explicitly, never the repo root.

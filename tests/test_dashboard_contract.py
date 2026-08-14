@@ -642,7 +642,7 @@ def test_research_notices_are_preserved_but_collapsed_below_results() -> None:
     assert '<details class="research-notice-details operations-details">' in document
     assert 'id="research-notice-summary"' in document
     assert '<details class="research-notice-details operations-details" open' not in document
-    assert "원자료 권리 확인 전 차단" in document
+    assert "개인·비상업 파생 결과" in document
     assert "renderMethodNotices" in script
     assert "alertCount" in script and "알림 ${alertCount}" in script
 

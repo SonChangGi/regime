@@ -94,7 +94,7 @@ def test_health_and_research_limitations_remain_visible_on_mobile() -> None:
     assert 'id="header-mode"' in HTML
     assert 'id="model-diagnostic"' in HTML
     assert 'id="shadow-nowcast-summary"' in HTML
-    assert "원자료 권리 확인 전 차단" in HTML
+    assert "개인·비상업 파생 결과" in HTML
     assert '<details class="research-notice-details operations-details">' in HTML
     assert "데이터 · 출처 · 운영" in HTML
     assert "This product uses the FRED® API" in HTML
