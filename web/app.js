@@ -95,6 +95,7 @@
     weekly: [],
     selectedIndex: -1,
     historyWindow: 52,
+    preferredHistoryWindow: 52,
     validationWarnings: [],
     chartHistory: [],
     chartPinnedDate: null,
@@ -830,6 +831,35 @@
     return state.weekly[state.selectedIndex] || null;
   }
 
+  function resolveHistoryWindow(availableCount, requestedWindow) {
+    const available = Number.isInteger(availableCount) && availableCount > 0 ? availableCount : 0;
+    if (requestedWindow === "all") return "all";
+    const requested = Number(requestedWindow);
+    return Number.isInteger(requested) && requested > 0 && requested <= available ? requested : "all";
+  }
+
+  function syncHistoryWindowControl() {
+    const available = Math.max(0, state.selectedIndex + 1);
+    const select = dom["history-window"];
+    const requested = state.preferredHistoryWindow;
+    const resolved = resolveHistoryWindow(available, requested);
+
+    for (const option of select.options) {
+      if (option.value === "all") {
+        option.textContent = available ? `전체 · ${available}주` : "전체";
+        option.disabled = false;
+        continue;
+      }
+      const weeks = Number(option.value);
+      option.textContent = `${weeks}주`;
+      option.disabled = weeks > available;
+    }
+
+    select.value = String(resolved);
+    select.setAttribute("aria-label", `표시 기간 · 사용 가능 ${available}주`);
+    state.historyWindow = resolved;
+  }
+
   function selectedHistory() {
     if (state.selectedIndex < 0) return [];
     const end = state.selectedIndex + 1;
@@ -991,7 +1021,10 @@
       if (state.weekly.length) selectWeek(state.weekly.length - 1, true);
     });
     dom["history-window"].addEventListener("change", () => {
-      state.historyWindow = dom["history-window"].value === "all" ? "all" : Number(dom["history-window"].value);
+      state.preferredHistoryWindow = dom["history-window"].value === "all"
+        ? "all"
+        : Number(dom["history-window"].value);
+      syncHistoryWindowControl();
       renderHistory();
       renderTimeline();
     });
@@ -1023,6 +1056,7 @@
   function selectWeek(index, announce = false, preserveSnapNote = false) {
     if (!Number.isInteger(index) || index < 0 || index >= state.weekly.length) return;
     state.selectedIndex = index;
+    syncHistoryWindowControl();
     const week = selectedWeek();
     if (!preserveSnapNote) {
       setSnapNote();
@@ -1568,7 +1602,7 @@
     }
 
     const range = `${formatDate(history[0].date)}–${formatDate(history[history.length - 1].date)}`;
-    dom["history-caption"].textContent = `${range} · 현재 국면 확률 · 0–100% 축`;
+    dom["history-caption"].textContent = `${range} · ${history.length}주 관측 · 현재 국면 확률 · 0–100% 축`;
     renderChartReadout(state.chartPinnedDate);
     requestAnimationFrame(() => scrollChartDateIntoView(state.chartPinnedDate));
   }
@@ -2299,7 +2333,10 @@
       state.raw = payload;
       state.weekly = validation.weekly;
       state.validationWarnings = validation.warnings;
-      state.historyWindow = dom["history-window"].value === "all" ? "all" : Number(dom["history-window"].value);
+      state.preferredHistoryWindow = dom["history-window"].value === "all"
+        ? "all"
+        : Number(dom["history-window"].value);
+      state.historyWindow = state.preferredHistoryWindow;
 
       if (!state.weekly.length) {
         renderGlobalMetadata();
@@ -2347,6 +2384,7 @@
     isoDateOffset,
     normalizeStatus,
     snapToPriorDate,
+    resolveHistoryWindow,
     validatePayload,
   });
 

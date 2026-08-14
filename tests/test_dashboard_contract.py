@@ -213,6 +213,27 @@ process.stdin.on("end", () => {
     return json.loads(completed.stdout)
 
 
+def _browser_history_window_cases() -> list[object]:
+    program = """
+const api = require(process.argv[1]);
+process.stdout.write(JSON.stringify([
+  api.resolveHistoryWindow(11, 52),
+  api.resolveHistoryWindow(52, 52),
+  api.resolveHistoryWindow(51, 52),
+  api.resolveHistoryWindow(120, 104),
+  api.resolveHistoryWindow(11, "all"),
+  api.resolveHistoryWindow(0, 26),
+]));
+"""
+    completed = subprocess.run(
+        ["node", "-e", program, str(JS_PATH)],
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    return json.loads(completed.stdout)
+
+
 class DashboardParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__()
@@ -649,6 +670,17 @@ def test_dashboard_uses_only_real_payload_values() -> None:
     assert "sampleData" not in script
     assert ".innerHTML" not in script
     assert "DEMO · 모의자료" in script
+
+
+def test_history_window_never_claims_more_weeks_than_are_available() -> None:
+    script = JS_PATH.read_text(encoding="utf-8")
+    assert _browser_history_window_cases() == ["all", 52, "all", 104, "all", "all"]
+    assert "function syncHistoryWindowControl()" in script
+    assert "preferredHistoryWindow: 52" in script
+    assert "const requested = state.preferredHistoryWindow" in script
+    assert 'option.textContent = available ? `전체 · ${available}주` : "전체"' in script
+    assert "option.disabled = weeks > available" in script
+    assert "`${range} · ${history.length}주 관측" in script
 
 
 def test_three_state_and_health_contracts_are_explicit() -> None:
