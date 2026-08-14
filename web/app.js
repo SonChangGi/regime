@@ -865,6 +865,20 @@
     for (const id of ids) dom[id] = document.getElementById(id);
   }
 
+  function revealActiveProjectLink() {
+    const links = document.querySelector(".site-nav-links");
+    const active = links && links.querySelector('[aria-current="page"]');
+    if (!links || !active || links.scrollWidth <= links.clientWidth) return;
+
+    const linksRect = links.getBoundingClientRect();
+    const activeRect = active.getBoundingClientRect();
+    if (activeRect.left < linksRect.left) {
+      links.scrollLeft -= linksRect.left - activeRect.left;
+    } else if (activeRect.right > linksRect.right) {
+      links.scrollLeft += activeRect.right - linksRect.right;
+    }
+  }
+
   function showAppState(kind, title, detail) {
     dom["app-state"].hidden = false;
     dom.dashboard.hidden = true;
@@ -2316,6 +2330,8 @@
   function init() {
     initializeDom();
     setupTheme();
+    revealActiveProjectLink();
+    window.addEventListener("resize", revealActiveProjectLink);
     bindEvents();
     loadData();
   }

@@ -82,6 +82,13 @@ def test_keyboard_focus_reduced_motion_and_mobile_rules_exist() -> None:
     assert ".transition-horizon-field select" in CSS
 
 
+def test_mobile_navigation_reveals_active_project() -> None:
+    assert "function revealActiveProjectLink()" in JS
+    assert "links.querySelector('[aria-current=\"page\"]')" in JS
+    assert "links.scrollLeft += activeRect.right - linksRect.right" in JS
+    assert 'window.addEventListener("resize", revealActiveProjectLink)' in JS
+
+
 def test_health_and_research_limitations_remain_visible_on_mobile() -> None:
     assert 'id="header-health"' in HTML
     assert 'id="header-mode"' in HTML
