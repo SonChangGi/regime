@@ -161,6 +161,7 @@ def _with_identified_issues(
         issues=issues,
         requests_made=result.requests_made,
         attempts=result.attempts,
+        diagnostics=result.diagnostics,
     )
 
 
@@ -367,6 +368,7 @@ def _fetch_alfred_series(
 
 def _alfred_request_params(
     *,
+    result: CollectionResult,
     series_id: str,
     frequency: str,
     realtime_start: date,
@@ -377,12 +379,27 @@ def _alfred_request_params(
     """Return secret-free provenance matching the provider query shape."""
 
     mode = SnapshotMode(snapshot_mode)
+    fallback_used = (
+        result.diagnostics.get("vintage_discovery_fallback_used") is True
+    )
+    raw_fallback_series_count = result.diagnostics.get(
+        "vintage_discovery_fallback_series_count",
+        0,
+    )
+    fallback_series_count = (
+        raw_fallback_series_count
+        if type(raw_fallback_series_count) is int
+        and raw_fallback_series_count >= 0
+        else 0
+    )
     params: dict[str, Any] = {
         "series_id": series_id,
         "output_type": 1 if mode is SnapshotMode.FULL else 3,
         "snapshot_mode": mode.value,
         "observation_start": observation_start.isoformat(),
         "observation_end": realtime_end.isoformat(),
+        "provider_requests_made": result.requests_made,
+        "provider_attempts": result.attempts,
     }
     if mode is SnapshotMode.FULL:
         params.update(
@@ -399,6 +416,30 @@ def _alfred_request_params(
         )
         params["vintage_dates"] = ",".join(
             item.isoformat() for item in vintage_dates
+        )
+        params.update(
+            {
+                "vintage_discovery_policy": (
+                    "narrow_then_observation_start_wide_on_5xx_v1"
+                ),
+                "vintage_discovery_fallback_realtime_start": (
+                    observation_start.isoformat()
+                ),
+                "vintage_discovery_fallback_realtime_end": (
+                    realtime_end.isoformat()
+                ),
+                "vintage_discovery_fallback_used": (
+                    fallback_used
+                ),
+                "vintage_discovery_mode": (
+                    "wide_fallback"
+                    if fallback_used
+                    else "narrow"
+                ),
+                "vintage_discovery_fallback_series_count": (
+                    fallback_series_count
+                ),
+            }
         )
     return params
 
@@ -1297,6 +1338,7 @@ def collect_live_data(
                     requested_at=requested_at,
                     license_class="user_confirmed_ml_storage_derived",
                     request_params=_alfred_request_params(
+                        result=result,
                         series_id=series_id,
                         frequency=frequency,
                         realtime_start=window.realtime_start,

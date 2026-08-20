@@ -129,11 +129,13 @@ class CollectionResult:
     issues: tuple[str, ...] = ()
     requests_made: int = 0
     attempts: int = 0
+    diagnostics: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "records", tuple(self.records))
         object.__setattr__(self, "issues", tuple(self.issues))
         object.__setattr__(self, "health", HealthStatus(self.health))
+        object.__setattr__(self, "diagnostics", dict(self.diagnostics))
         if self.requests_made < 0 or self.attempts < 0:
             raise ValueError("request counts must be non-negative")
 
@@ -208,6 +210,15 @@ def merge_collection_results(
         ),
         requests_made=sum(result.requests_made for result in results),
         attempts=sum(result.attempts for result in results),
+        diagnostics={
+            "merged_result_diagnostics": tuple(
+                dict(result.diagnostics)
+                for result in results
+                if result.diagnostics
+            )
+        }
+        if any(result.diagnostics for result in results)
+        else {},
     )
 
 
@@ -222,6 +233,7 @@ def provenance_safe_result(result: CollectionResult) -> CollectionResult:
         issues=result.issues,
         requests_made=result.requests_made,
         attempts=result.attempts,
+        diagnostics=result.diagnostics,
     )
 
 
@@ -386,6 +398,7 @@ def prepare_incremental_snapshot(
                 issues=collected.issues,
                 requests_made=collected.requests_made,
                 attempts=collected.attempts,
+                diagnostics=collected.diagnostics,
             ),
             effective_records=effective,
             snapshot_mode=SnapshotMode.FULL,
@@ -404,6 +417,7 @@ def prepare_incremental_snapshot(
                 issues=tuple(dict.fromkeys((*collected.issues, issue))),
                 requests_made=collected.requests_made,
                 attempts=collected.attempts,
+                diagnostics=collected.diagnostics,
             ),
             effective_records=normalize_revision_sequences(existing.values()),
             snapshot_mode=SnapshotMode.DELTA,
@@ -430,6 +444,7 @@ def prepare_incremental_snapshot(
                 issues=tuple(dict.fromkeys((*collected.issues, issue))),
                 requests_made=collected.requests_made,
                 attempts=collected.attempts,
+                diagnostics=collected.diagnostics,
             ),
             effective_records=normalize_revision_sequences(existing.values()),
             snapshot_mode=SnapshotMode.DELTA,
@@ -477,6 +492,7 @@ def prepare_incremental_snapshot(
             issues=collected.issues,
             requests_made=collected.requests_made,
             attempts=collected.attempts,
+            diagnostics=collected.diagnostics,
         ),
         effective_records=effective,
         snapshot_mode=SnapshotMode.DELTA,

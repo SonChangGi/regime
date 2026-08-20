@@ -66,7 +66,12 @@ For each weekly type-3 window, the adapter first queries
 observations endpoint. This is a conservative implementation rule based on a
 2026-08-12 live JSON check in which an UNRATE type-3 request containing dates
 not returned by vintage discovery received HTTP 400; it is not stated as a
-universal guarantee about every series or future provider behavior.
+universal guarantee about every series or future provider behavior. If FRED
+returns a 5xx for a narrow window, the adapter does not infer an empty delta
+from that error. It repeats discovery over the bounded observation-history
+range and accepts an empty weekly intersection only after that wider response
+passes schema and range validation. A failed or malformed wider response keeps
+the source degraded and blocks training and publication.
 
 Alpha Vantage's free weekly endpoint returns full symbol histories. After the
 first successful full snapshot, the collector stores only new or changed rows;

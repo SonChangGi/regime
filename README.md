@@ -205,7 +205,11 @@ ALFRED delta 수집은 주간 overlap의 달력일 범위를 먼저
 `output_type=3` 요청에 전달합니다. 2026-08-12 live JSON 점검에서 UNRATE
 요청에 discovery가 반환하지 않은 날짜를 함께 넣으면 HTTP 400이 발생했기
 때문에 적용한 보수적 정규화이며, 모든 series와 미래 API 동작을 일반화한
-공식 보장은 아닙니다.
+공식 보장은 아닙니다. FRED가 실제 vintage가 없는 좁은 구간에 HTTP 500을
+반환하는 경우에는 이 오류를 곧바로 빈 결과로 간주하지 않습니다. bounded
+observation history로 discovery를 한 번 넓혀 schema-valid 응답을 받은 뒤 원래
+주간 구간과의 교집합이 비어 있음이 확인될 때만 정상 empty delta로 처리하며,
+넓은 조회도 실패하면 last-good을 유지하고 분석·배포를 중단합니다.
 
 Alpha Vantage가 과거 adjusted 값을 나중에 바꾸면 변경값은 탐지 시점부터만
 유효한 새 revision으로 추가됩니다. 이전 row가 응답에서 사라진 경우에는

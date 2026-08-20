@@ -80,7 +80,9 @@
   filtering is a conservative response to a 2026-08-12 live JSON check where an
   UNRATE request containing non-discovered dates received HTTP 400, rather than
   a claim that the documentation guarantees identical rejection behavior for
-  every series or future API version.
+  every series or future API version. A narrow 5xx is recovered only through a
+  successful bounded wider discovery; it is never treated directly as proof of
+  an empty vintage window.
 - [FRED real-time periods](https://fred.stlouisfed.org/docs/api/fred/realtime_period.html).
   This defines the real-time start/end interval used for the initial history;
   the weekly delta chain retains its own vintage dates and availability times.

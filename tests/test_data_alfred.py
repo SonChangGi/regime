@@ -466,6 +466,153 @@ def test_revision_event_api_retries_and_paginates_vintage_discovery() -> None:
     }
 
 
+def test_vintage_discovery_5xx_accepts_empty_delta_only_after_bounded_wide_response() -> None:
+    class EmptyNarrowRangeTransport:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+
+        def get_json(
+            self,
+            _url: str,
+            params: Mapping[str, Any],
+            *,
+            timeout: float,
+        ) -> Mapping[str, Any]:
+            del timeout
+            call = dict(params)
+            self.calls.append(call)
+            if "output_type" in params:
+                raise AssertionError("an empty delta must not issue output_type=3")
+            if params["realtime_start"] == "2024-01-31":
+                raise HttpStatusError(500, "empty narrow range")
+            assert params["realtime_start"] == "2023-01-01"
+            return {
+                "count": 2,
+                "offset": 0,
+                "limit": 10_000,
+                "vintage_dates": ["2023-06-01", "2024-01-15"],
+            }
+
+    transport = EmptyNarrowRangeTransport()
+    client = AlfredClient(
+        AlfredConfig(api_key="secret-key", rights_acknowledged=True),
+        transport=transport,
+        retry=RetryPolicy(max_attempts=2, backoff_seconds=0),
+        sleeper=lambda _: None,
+        clock=lambda: NOW,
+    )
+
+    result = client.fetch_revision_events(
+        ["PCEPI"],
+        vintage_dates=[date(2024, 1, 31), date(2024, 2, 1)],
+        cutoff=CUTOFF,
+        observation_start=date(2023, 1, 1),
+        observation_end=date(2024, 1, 31),
+    )
+
+    assert result.health is HealthStatus.OK
+    assert result.records == ()
+    assert result.issues == ()
+    # Failed attempts are counted, but only the successful wide request is a
+    # completed provider request under the existing CollectionResult contract.
+    assert result.requests_made == 1
+    assert result.attempts == 3
+    assert result.diagnostics == {
+        "vintage_discovery_fallback_used": True,
+        "vintage_discovery_mode": "wide_fallback",
+        "vintage_discovery_fallback_series_count": 1,
+    }
+    assert [call["realtime_start"] for call in transport.calls] == [
+        "2024-01-31",
+        "2024-01-31",
+        "2023-01-01",
+    ]
+    assert {call["realtime_end"] for call in transport.calls} == {"2024-02-01"}
+
+
+def test_vintage_discovery_5xx_fails_closed_when_wide_request_also_fails() -> None:
+    class FailedWideTransport:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+
+        def get_json(
+            self,
+            _url: str,
+            params: Mapping[str, Any],
+            *,
+            timeout: float,
+        ) -> Mapping[str, Any]:
+            del timeout
+            self.calls.append(dict(params))
+            if "output_type" in params:
+                raise AssertionError("type-3 must not run after discovery failure")
+            raise HttpStatusError(500, "server failure")
+
+    transport = FailedWideTransport()
+    client = AlfredClient(
+        AlfredConfig(api_key="secret-key", rights_acknowledged=True),
+        transport=transport,
+        retry=RetryPolicy(max_attempts=1),
+        clock=lambda: NOW,
+    )
+
+    result = client.fetch_revision_events(
+        ["GDPC1"],
+        vintage_dates=[date(2024, 1, 31), date(2024, 2, 1)],
+        cutoff=CUTOFF,
+        observation_start=date(2023, 1, 1),
+    )
+
+    assert result.health is HealthStatus.DEGRADED
+    assert result.requests_made == 0
+    assert result.attempts == 2
+    assert len(transport.calls) == 2
+    assert any("fallback request failed" in issue for issue in result.issues)
+
+
+def test_vintage_discovery_5xx_fails_closed_on_wide_schema_change() -> None:
+    class MalformedWideTransport:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+
+        def get_json(
+            self,
+            _url: str,
+            params: Mapping[str, Any],
+            *,
+            timeout: float,
+        ) -> Mapping[str, Any]:
+            del timeout
+            call = dict(params)
+            self.calls.append(call)
+            if "output_type" in params:
+                raise AssertionError("type-3 must not run after schema failure")
+            if params["realtime_start"] == "2024-01-31":
+                raise HttpStatusError(500, "empty narrow range")
+            return {"count": 1, "vintage_dates": "not-a-list"}
+
+    transport = MalformedWideTransport()
+    client = AlfredClient(
+        AlfredConfig(api_key="secret-key", rights_acknowledged=True),
+        transport=transport,
+        retry=RetryPolicy(max_attempts=1),
+        clock=lambda: NOW,
+    )
+
+    result = client.fetch_revision_events(
+        ["FEDFUNDS"],
+        vintage_dates=[date(2024, 1, 31), date(2024, 2, 1)],
+        cutoff=CUTOFF,
+        observation_start=date(2023, 1, 1),
+    )
+
+    assert result.health is HealthStatus.SCHEMA_CHANGED
+    assert result.requests_made == 1
+    assert result.attempts == 2
+    assert len(transport.calls) == 2
+    assert any("schema changed" in issue for issue in result.issues)
+
+
 def test_vintage_discovery_quota_failure_is_redacted_and_stops_type_3() -> None:
     secret = "vintage-discovery-secret"
 
@@ -498,6 +645,7 @@ def test_vintage_discovery_quota_failure_is_redacted_and_stops_type_3() -> None:
         ["UNRATE"],
         vintage_dates=[date(2024, 2, 1)],
         cutoff=CUTOFF,
+        observation_start=date(2023, 1, 1),
     )
 
     rendered = " ".join(result.issues)

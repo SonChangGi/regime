@@ -9,7 +9,7 @@ actually grants a particular use.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, time, timedelta, timezone
 import hashlib
 import json
 import os
@@ -37,6 +37,7 @@ FRED_API_KEY_ENV = "FRED_API_KEY"
 ALFRED_RIGHTS_ACK_ENV = "ALFRED_ML_RIGHTS_ACK"
 _ACK_VALUES = {"1", "true", "yes", "y", "ack", "acknowledged"}
 _EASTERN = ZoneInfo("America/New_York")
+_DEFAULT_VINTAGE_FALLBACK_LOOKBACK_DAYS = 5 * 366
 
 
 def _utc_now() -> datetime:
@@ -140,6 +141,8 @@ class _VintageDateDiscovery:
     issues: tuple[str, ...] = ()
     requests_made: int = 0
     attempts: int = 0
+    failure_status_code: int | None = None
+    fallback_used: bool = False
 
 
 class AlfredClient:
@@ -172,23 +175,15 @@ class AlfredClient:
         )
         return local.astimezone(timezone.utc)
 
-    def _discover_vintage_dates(
+    def _request_vintage_date_range(
         self,
         series_id: str,
         *,
         realtime_start: date,
         realtime_end: date,
         request_index: int,
+        failure_label: str,
     ) -> tuple[_VintageDateDiscovery, int]:
-        """Resolve a calendar window to provider-recognized vintage dates.
-
-        A live UNRATE check returned HTTP 400 when an ``output_type=3`` request
-        included dates that were not actual vintages for that series.  Rather
-        than generalizing undocumented rejection behavior, use the dedicated
-        ``series/vintagedates`` endpoint as the authoritative input to type 3;
-        callers may safely provide a calendar window.
-        """
-
         dates: list[date] = []
         issues: list[str] = []
         statuses: list[HealthStatus] = []
@@ -231,9 +226,10 @@ class AlfredClient:
                     _VintageDateDiscovery(
                         dates=tuple(sorted(set(dates))),
                         health=status,
-                        issues=(f"ALFRED vintage-date request failed: {exc}",),
+                        issues=(f"ALFRED {failure_label} request failed: {exc}",),
                         requests_made=requests_made,
                         attempts=attempts,
+                        failure_status_code=exc.status_code,
                     ),
                     request_index,
                 )
@@ -288,6 +284,83 @@ class AlfredClient:
                 issues=tuple(dict.fromkeys(issues)),
                 requests_made=requests_made,
                 attempts=attempts,
+            ),
+            request_index,
+        )
+
+    def _discover_vintage_dates(
+        self,
+        series_id: str,
+        *,
+        realtime_start: date,
+        realtime_end: date,
+        fallback_realtime_start: date | None,
+        request_index: int,
+    ) -> tuple[_VintageDateDiscovery, int]:
+        """Resolve a calendar window to provider-recognized vintage dates.
+
+        A live UNRATE check returned HTTP 400 when an ``output_type=3`` request
+        included dates that were not actual vintages for that series.  Rather
+        than generalizing undocumented rejection behavior, use the dedicated
+        ``series/vintagedates`` endpoint as the authoritative input to type 3.
+
+        FRED currently returns HTTP 500 for some valid narrow ranges containing
+        no vintage at all.  Only after the configured retries for such a 5xx
+        are exhausted, repeat discovery over the caller's bounded observation
+        history.  A schema-valid wide response can prove the target interval is
+        empty; every other fallback failure remains fail-closed.
+        """
+
+        narrow, request_index = self._request_vintage_date_range(
+            series_id,
+            realtime_start=realtime_start,
+            realtime_end=realtime_end,
+            request_index=request_index,
+            failure_label="vintage-date",
+        )
+        status_code = narrow.failure_status_code
+        can_fallback = bool(
+            status_code is not None
+            and 500 <= status_code <= 599
+            and fallback_realtime_start is not None
+            and fallback_realtime_start < realtime_start
+        )
+        if not can_fallback:
+            return narrow, request_index
+
+        assert fallback_realtime_start is not None
+        wide, request_index = self._request_vintage_date_range(
+            series_id,
+            realtime_start=fallback_realtime_start,
+            realtime_end=realtime_end,
+            request_index=request_index,
+            failure_label="vintage-date fallback",
+        )
+        requests_made = narrow.requests_made + wide.requests_made
+        attempts = narrow.attempts + wide.attempts
+        if wide.health is not HealthStatus.OK:
+            return (
+                _VintageDateDiscovery(
+                    health=combine_health((narrow.health, wide.health)),
+                    issues=tuple(dict.fromkeys((*narrow.issues, *wide.issues))),
+                    requests_made=requests_made,
+                    attempts=attempts,
+                    failure_status_code=wide.failure_status_code,
+                    fallback_used=True,
+                ),
+                request_index,
+            )
+
+        return (
+            _VintageDateDiscovery(
+                dates=tuple(
+                    item
+                    for item in wide.dates
+                    if realtime_start <= item <= realtime_end
+                ),
+                requests_made=requests_made,
+                attempts=attempts,
+                fallback_used=True,
             ),
             request_index,
         )
@@ -544,17 +617,43 @@ class AlfredClient:
         attempts = 0
         schema_changed = False
         page_request_index = 0
+        fallback_series_count = 0
+
+        def request_diagnostics() -> dict[str, Any]:
+            fallback_used = fallback_series_count > 0
+            return {
+                "vintage_discovery_fallback_used": fallback_used,
+                "vintage_discovery_mode": (
+                    "wide_fallback" if fallback_used else "narrow"
+                ),
+                "vintage_discovery_fallback_series_count": (
+                    fallback_series_count
+                ),
+            }
 
         candidate_vintages = frozenset(clean_vintages)
+        # Production callers supply their explicit observation-history floor.
+        # Direct adapter callers still get a finite recovery range rather than
+        # an unbounded all-history request; failure of that range remains fatal.
+        fallback_realtime_start = observation_start or date.fromordinal(
+            max(
+                date.min.toordinal(),
+                clean_vintages[0].toordinal()
+                - _DEFAULT_VINTAGE_FALLBACK_LOOKBACK_DAYS,
+            )
+        )
         for series_id in clean_series:
             discovery, page_request_index = self._discover_vintage_dates(
                 series_id,
                 realtime_start=clean_vintages[0],
                 realtime_end=clean_vintages[-1],
+                fallback_realtime_start=fallback_realtime_start,
                 request_index=page_request_index,
             )
             requests_made += discovery.requests_made
             attempts += discovery.attempts
+            if discovery.fallback_used:
+                fallback_series_count += 1
             issues.extend(discovery.issues)
             if discovery.health is not HealthStatus.OK:
                 return CollectionResult(
@@ -563,6 +662,7 @@ class AlfredClient:
                     issues=tuple(dict.fromkeys(issues)),
                     requests_made=requests_made,
                     attempts=attempts,
+                    diagnostics=request_diagnostics(),
                 )
 
             recognized_vintages = tuple(
@@ -619,6 +719,7 @@ class AlfredClient:
                             ),
                             requests_made=requests_made,
                             attempts=attempts,
+                            diagnostics=request_diagnostics(),
                         )
 
                     requests_made += 1
@@ -734,6 +835,7 @@ class AlfredClient:
             issues=tuple(dict.fromkeys(issues)),
             requests_made=requests_made,
             attempts=attempts,
+            diagnostics=request_diagnostics(),
         )
 
     collect_revision_events = fetch_revision_events

@@ -1139,6 +1139,7 @@ def test_daily_alfred_fetch_keeps_full_observation_history_per_chunk() -> None:
     assert client.calls[0]["realtime_end"] == date(2009, 12, 31)
     assert client.calls[-1]["realtime_start"] == date(2026, 1, 1)
     request_params = _alfred_request_params(
+        result=result,
         series_id="DGS10",
         frequency="daily",
         realtime_start=date(2006, 1, 1),
@@ -1166,7 +1167,12 @@ def test_delta_alfred_fetch_uses_type3_once_with_inclusive_calendar_vintages() -
             return CollectionResult(
                 health=HealthStatus.OK,
                 requests_made=1,
-                attempts=1,
+                attempts=2,
+                diagnostics={
+                    "vintage_discovery_fallback_used": True,
+                    "vintage_discovery_mode": "wide_fallback",
+                    "vintage_discovery_fallback_series_count": 1,
+                },
             )
 
     client = FakeClient()
@@ -1195,6 +1201,7 @@ def test_delta_alfred_fetch_uses_type3_once_with_inclusive_calendar_vintages() -
     assert call["observation_end"] == date(2026, 8, 7)
 
     request_params = _alfred_request_params(
+        result=result,
         series_id="DGS10",
         frequency="daily",
         realtime_start=date(2026, 7, 31),
@@ -1207,6 +1214,20 @@ def test_delta_alfred_fetch_uses_type3_once_with_inclusive_calendar_vintages() -
         "2026-07-31,2026-08-01,2026-08-02,2026-08-03,"
         "2026-08-04,2026-08-05,2026-08-06,2026-08-07"
     )
+    assert request_params["vintage_discovery_policy"] == (
+        "narrow_then_observation_start_wide_on_5xx_v1"
+    )
+    assert request_params["vintage_discovery_fallback_realtime_start"] == (
+        "2006-01-01"
+    )
+    assert request_params["vintage_discovery_fallback_realtime_end"] == (
+        "2026-08-07"
+    )
+    assert request_params["provider_requests_made"] == 1
+    assert request_params["provider_attempts"] == 2
+    assert request_params["vintage_discovery_fallback_used"] is True
+    assert request_params["vintage_discovery_mode"] == "wide_fallback"
+    assert request_params["vintage_discovery_fallback_series_count"] == 1
     assert "realtime_start" not in request_params
     assert "realtime_end" not in request_params
 
@@ -1303,6 +1324,9 @@ def test_full_plus_delta_assembly_ignores_degraded_partial_snapshot(tmp_path) ->
             requested_at=datetime.now(timezone.utc),
             license_class="test",
             request_params=_alfred_request_params(
+                result=CollectionResult(
+                    records=(revision(date(2026, 7, 31), 4.2, "base"),)
+                ),
                 series_id="UNRATE",
                 frequency="monthly",
                 realtime_start=date(2006, 1, 1),
@@ -1320,6 +1344,9 @@ def test_full_plus_delta_assembly_ignores_degraded_partial_snapshot(tmp_path) ->
             requested_at=datetime.now(timezone.utc),
             license_class="test",
             request_params=_alfred_request_params(
+                result=CollectionResult(
+                    records=(revision(date(2026, 8, 7), 4.1, "delta"),)
+                ),
                 series_id="UNRATE",
                 frequency="monthly",
                 realtime_start=date(2026, 7, 31),
@@ -1351,6 +1378,13 @@ def test_full_plus_delta_assembly_ignores_degraded_partial_snapshot(tmp_path) ->
             requested_at=datetime.now(timezone.utc),
             license_class="test",
             request_params=_alfred_request_params(
+                result=CollectionResult(
+                    records=(revision(date(2026, 8, 7), 99.0, "partial"),),
+                    health=HealthStatus.DEGRADED,
+                    issues=("later page failed",),
+                    requests_made=1,
+                    attempts=3,
+                ),
                 series_id="UNRATE",
                 frequency="monthly",
                 realtime_start=date(2026, 8, 7),
