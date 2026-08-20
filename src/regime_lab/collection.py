@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 import math
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -44,6 +44,233 @@ class LiveCollection:
     issues: tuple[str, ...]
     model_cutoff: datetime
     database_path: Path
+
+
+class CollectionGateError(RuntimeError):
+    """The completed provider pass is not safe to use for model analysis."""
+
+
+def _aware_utc(value: datetime, *, label: str) -> datetime:
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError(f"{label} must be timezone-aware")
+    return value.astimezone(UTC)
+
+
+def alpha_market_week_is_current(
+    *,
+    available_at: datetime,
+    coverage_end: date,
+    cutoff: datetime,
+) -> bool:
+    """Accept the latest trading day in the cutoff's market week.
+
+    Alpha's weekly timestamp is normally Friday, but U.S. market holidays such
+    as Good Friday legitimately produce a Thursday period.  The cutoff remains
+    Friday 16:00 ET; a prior market week is never accepted.
+    """
+
+    available_local = _aware_utc(
+        available_at, label="Alpha Vantage available_at"
+    ).astimezone(EASTERN)
+    cutoff_local = _aware_utc(cutoff, label="cutoff").astimezone(EASTERN)
+    week_start = cutoff_local.date() - timedelta(days=cutoff_local.weekday())
+    return bool(
+        week_start <= coverage_end <= cutoff_local.date()
+        and available_local.date() == coverage_end
+        and available_local.time().replace(tzinfo=None)
+        == cutoff_local.time().replace(tzinfo=None)
+        and available_local <= cutoff_local
+    )
+
+
+def _configured_timeout(
+    config: Mapping[str, Any],
+    *,
+    provider: str,
+    default: float,
+) -> float:
+    raw = config.get("timeout_seconds", default)
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        raise ValueError(f"{provider} timeout_seconds must be numeric")
+    timeout = float(raw)
+    if not math.isfinite(timeout) or not 1 <= timeout <= 300:
+        raise ValueError(f"{provider} timeout_seconds must be in [1, 300]")
+    return timeout
+
+
+def _configured_retry(
+    config: Mapping[str, Any],
+    *,
+    provider: str,
+    default_attempts: int,
+    require_reserve: bool = False,
+) -> tuple[RetryPolicy, int]:
+    raw_retry = config.get("retry", {})
+    if not isinstance(raw_retry, Mapping):
+        raise ValueError(f"{provider} retry must be a mapping")
+
+    raw_attempts = raw_retry.get("max_attempts", default_attempts)
+    raw_backoff = raw_retry.get("backoff_seconds", 0.25)
+    raw_max_backoff = raw_retry.get("max_backoff_seconds", 4.0)
+    raw_reserve = raw_retry.get("reserve_calls", 0)
+    if isinstance(raw_attempts, bool) or type(raw_attempts) is not int:
+        raise ValueError(f"{provider} retry max_attempts must be an integer")
+    if not 1 <= raw_attempts <= 5:
+        raise ValueError(f"{provider} retry max_attempts must be in [1, 5]")
+    for name, raw_value in (
+        ("backoff_seconds", raw_backoff),
+        ("max_backoff_seconds", raw_max_backoff),
+    ):
+        if isinstance(raw_value, bool) or not isinstance(raw_value, (int, float)):
+            raise ValueError(f"{provider} retry {name} must be numeric")
+        value = float(raw_value)
+        if not math.isfinite(value) or not 0 <= value <= 300:
+            raise ValueError(f"{provider} retry {name} must be in [0, 300]")
+    if isinstance(raw_reserve, bool) or type(raw_reserve) is not int:
+        raise ValueError(f"{provider} retry reserve_calls must be an integer")
+    if not 0 <= raw_reserve <= 25:
+        raise ValueError(f"{provider} retry reserve_calls must be in [0, 25]")
+    if require_reserve and raw_attempts - 1 > raw_reserve and raw_attempts > 1:
+        raise ValueError(
+            f"{provider} retry reserve_calls must cover max_attempts - 1"
+        )
+    return (
+        RetryPolicy(
+            max_attempts=raw_attempts,
+            backoff_seconds=float(raw_backoff),
+            max_backoff_seconds=float(raw_max_backoff),
+        ),
+        raw_reserve,
+    )
+
+
+def _with_identified_issues(
+    result: CollectionResult,
+    *,
+    identifier: str,
+) -> CollectionResult:
+    issues = tuple(
+        issue if identifier in issue else f"{identifier}: {issue}"
+        for issue in result.issues
+    )
+    if issues == result.issues:
+        return result
+    return CollectionResult(
+        records=result.records,
+        health=result.health,
+        issues=issues,
+        requests_made=result.requests_made,
+        attempts=result.attempts,
+    )
+
+
+def _identify_alpha_transport_failure(
+    result: CollectionResult,
+    *,
+    requested_symbols: Sequence[str],
+) -> CollectionResult:
+    transport_markers = (
+        "Alpha Vantage request failed:",
+        "Alpha Vantage rolling 24-hour request budget exhausted",
+        "Alpha Vantage reported a quota or entitlement limit",
+    )
+    if not any(
+        marker in issue for marker in transport_markers for issue in result.issues
+    ):
+        return result
+    if not requested_symbols:
+        return result
+    index = min(result.requests_made, len(requested_symbols) - 1)
+    if any("reported a quota or entitlement limit" in issue for issue in result.issues):
+        index = max(0, min(result.requests_made - 1, len(requested_symbols) - 1))
+    return _with_identified_issues(
+        result,
+        identifier=f"Alpha Vantage {requested_symbols[index]}",
+    )
+
+
+def validate_collection_for_training(
+    collection: LiveCollection,
+    *,
+    expected_cutoff: datetime,
+) -> None:
+    """Fail before analysis unless the provider pass matches the release target."""
+
+    target = _aware_utc(expected_cutoff, label="expected cutoff")
+    if collection.model_cutoff.astimezone(UTC) != target:
+        raise CollectionGateError("collection cutoff does not match the expected cutoff")
+    if collection.overall_health is not HealthStatus.OK:
+        raise CollectionGateError(
+            f"collection health is {collection.overall_health.value}, not ok"
+        )
+    if collection.issues:
+        raise CollectionGateError("collection issues must be empty")
+    by_id = {
+        str(source.get("id")): source
+        for source in collection.sources
+        if isinstance(source, Mapping) and isinstance(source.get("id"), str)
+    }
+    if len(collection.sources) != 2 or set(by_id) != {"alpha_vantage", "alfred"}:
+        raise CollectionGateError(
+            "collection sources must be exactly alpha_vantage and alfred"
+        )
+    for source_id, source in by_id.items():
+        if source.get("status") != HealthStatus.OK.value:
+            raise CollectionGateError(f"{source_id} source health is not ok")
+        if source.get("issues"):
+            raise CollectionGateError(f"{source_id} source issues must be empty")
+
+    alpha = by_id["alpha_vantage"]
+    try:
+        alpha_available = _aware_utc(
+            datetime.fromisoformat(str(alpha.get("available_at"))),
+            label="Alpha Vantage available_at",
+        )
+    except (TypeError, ValueError) as exc:
+        raise CollectionGateError("Alpha Vantage available_at is invalid") from exc
+    coverage_start, separator, coverage_end = str(
+        alpha.get("coverage", "")
+    ).partition("–")
+    try:
+        coverage_end_date = date.fromisoformat(coverage_end)
+    except ValueError as exc:
+        raise CollectionGateError("Alpha Vantage coverage is invalid") from exc
+    if (
+        not coverage_start
+        or not separator
+        or not alpha_market_week_is_current(
+            available_at=alpha_available,
+            coverage_end=coverage_end_date,
+            cutoff=target,
+        )
+    ):
+        raise CollectionGateError(
+            "Alpha Vantage has not reached the expected cutoff market week"
+        )
+
+
+def collection_report_document(
+    collection: LiveCollection,
+    *,
+    expected_cutoff: datetime,
+    gate_error: str | None,
+) -> dict[str, Any]:
+    """Return a secret-free local receipt suitable for atomic persistence."""
+
+    return {
+        "schema_version": 1,
+        "expected_cutoff": _aware_utc(
+            expected_cutoff, label="expected cutoff"
+        ).isoformat(),
+        "model_cutoff": _aware_utc(
+            collection.model_cutoff, label="collection model cutoff"
+        ).isoformat(),
+        "ready_for_training": gate_error is None,
+        "overall_health": collection.overall_health.value,
+        "issues": list(collection.issues),
+        "sources": [dict(source) for source in collection.sources],
+        "gate_error": gate_error,
+    }
 
 
 def last_completed_week_cutoff(
@@ -556,13 +783,26 @@ def collect_live_data(
     database_path: str | Path,
     history_start: date = date(2006, 1, 1),
     now: datetime | None = None,
+    expected_cutoff: datetime | None = None,
     progress: Callable[[str], None] | None = None,
 ) -> LiveCollection:
     """Collect Alpha Vantage and ALFRED data without paid fallback."""
 
     emit = progress or (lambda _message: None)
     current = (now or datetime.now(UTC)).astimezone(UTC)
-    model_cutoff = last_completed_week_cutoff(current)
+    latest_completed = last_completed_week_cutoff(current)
+    if expected_cutoff is None:
+        model_cutoff = latest_completed
+    else:
+        model_cutoff = _aware_utc(expected_cutoff, label="expected cutoff")
+        local_cutoff = model_cutoff.astimezone(EASTERN)
+        if (
+            local_cutoff.weekday() != 4
+            or local_cutoff.time().replace(tzinfo=None) != time(16, 0)
+        ):
+            raise ValueError("expected cutoff must be Friday 16:00 America/New_York")
+        if model_cutoff > latest_completed:
+            raise ValueError("expected cutoff is after the last completed market week")
     cutoffs = weekly_cutoffs(history_start, model_cutoff)
     if not cutoffs:
         raise RuntimeError("history_start does not yield a completed weekly cutoff")
@@ -708,8 +948,22 @@ def collect_live_data(
                     f"Alpha Vantage: {len(alpha_requested_symbols)}개 ETF "
                     "주별 데이터 수집 시작"
                 )
+            alpha_timeout = _configured_timeout(
+                alpha_cfg,
+                provider="Alpha Vantage",
+                default=30.0,
+            )
+            configured_alpha_retry, configured_alpha_retry_reserve = (
+                _configured_retry(
+                    alpha_cfg,
+                    provider="Alpha Vantage",
+                    default_attempts=1,
+                    require_reserve=True,
+                )
+            )
             alpha_client_config = AlphaVantageConfig.from_env(
                 base_url=str(alpha_cfg["base_url"]),
+                timeout_seconds=alpha_timeout,
                 market_available_time_et=time(16, 0),
                 request_spacing_seconds=0.8,
             )
@@ -719,16 +973,32 @@ def collect_live_data(
             alpha_limit_valid = (
                 type(raw_alpha_limit) is int and raw_alpha_limit == 25
             )
+            requested_count = len(alpha_requested_symbols)
+            effective_retry_reserve = (
+                min(
+                    configured_alpha_retry_reserve,
+                    max(0, raw_alpha_limit - requested_count),
+                )
+                if alpha_limit_valid
+                else 0
+            )
+            alpha_reservation_units = requested_count + effective_retry_reserve
+            alpha_retry = RetryPolicy(
+                max_attempts=min(
+                    configured_alpha_retry.max_attempts,
+                    effective_retry_reserve + 1,
+                ),
+                backoff_seconds=configured_alpha_retry.backoff_seconds,
+                max_backoff_seconds=configured_alpha_retry.max_backoff_seconds,
+            )
             if alpha_client_config.api_key and alpha_limit_valid:
                 alpha_budget = DailyRequestBudget(
                     limit=raw_alpha_limit,
                     database_path=database,
                 )
-                alpha_reservation = alpha_budget.reserve(
-                    len(alpha_requested_symbols)
-                )
+                alpha_reservation = alpha_budget.reserve(alpha_reservation_units)
             alpha_reserved_requests = (
-                len(alpha_requested_symbols) if alpha_reservation is not None else 0
+                alpha_reservation_units if alpha_reservation is not None else 0
             )
             if not alpha_limit_valid:
                 alpha_result = CollectionResult(
@@ -748,13 +1018,13 @@ def collect_live_data(
                 # transport starts unless the full batch is already charged;
                 # unused credits remain charged after any failure or crash.
                 assert alpha_budget is not None
-                requested_count = len(alpha_requested_symbols)
                 retry_detail = (
-                    "requested batch exceeds the configured standard-free cap"
-                    if requested_count > alpha_budget.limit
+                    "requested batch plus retry reserve exceeds the configured "
+                    "standard-free cap"
+                    if alpha_reservation_units > alpha_budget.limit
                     else (
                         "earliest full-batch retry="
-                        f"{alpha_budget.next_available_at(requested_count).isoformat()}"
+                        f"{alpha_budget.next_available_at(alpha_reservation_units).isoformat()}"
                     )
                 )
                 alpha_result = CollectionResult(
@@ -768,16 +1038,20 @@ def collect_live_data(
                 alpha_client = AlphaVantageClient(
                     alpha_client_config,
                     budget=alpha_reservation,
-                    # A batch reserves exactly one credit per symbol. Retrying
-                    # would make planned units ambiguous and can consume the
-                    # two-call reserve of the standard-free 23-symbol plan.
-                    retry=RetryPolicy(max_attempts=1),
+                    # Every retry credit is included in the same persisted,
+                    # fail-closed batch reservation.  The bounded policy can
+                    # therefore never exceed the literal 25-call rolling cap.
+                    retry=alpha_retry,
                 )
                 alpha_result = alpha_client.fetch_weekly_adjusted(
                     alpha_requested_symbols,
                     cutoff=model_cutoff,
                     fields=alpha_fields,
                     observation_start=history_start,
+                )
+                alpha_result = _identify_alpha_transport_failure(
+                    alpha_result,
+                    requested_symbols=alpha_requested_symbols,
                 )
             alpha_unused_reserved_requests = (
                 alpha_reservation.remaining if alpha_reservation is not None else 0
@@ -899,6 +1173,9 @@ def collect_live_data(
                     "budget_unused_reserved_requests": (
                         alpha_unused_reserved_requests
                     ),
+                    "budget_retry_reserve_requests": effective_retry_reserve,
+                    "request_timeout_seconds": alpha_timeout,
+                    "retry_max_attempts": alpha_retry.max_attempts,
                     **alpha_baseline_metrics,
                 },
             )
@@ -931,11 +1208,23 @@ def collect_live_data(
         )
 
         alfred_cfg = config["alfred"]
+        alfred_timeout = _configured_timeout(
+            alfred_cfg,
+            provider="ALFRED",
+            default=30.0,
+        )
+        alfred_retry, _alfred_retry_reserve = _configured_retry(
+            alfred_cfg,
+            provider="ALFRED",
+            default_attempts=3,
+        )
         alfred_client = AlfredClient(
             AlfredConfig.from_env(
                 base_url=str(alfred_cfg["base_url"]),
+                timeout_seconds=alfred_timeout,
                 request_spacing_seconds=0.2,
-            )
+            ),
+            retry=alfred_retry,
         )
         alfred_records: list[Observation] = []
         alfred_statuses: list[HealthStatus] = []
@@ -994,6 +1283,10 @@ def collect_live_data(
                     realtime_end=window.realtime_end,
                     cutoff=current,
                     snapshot_mode=window.snapshot_mode,
+                )
+                result = _with_identified_issues(
+                    result,
+                    identifier=f"ALFRED {series_id}",
                 )
                 _write_result_snapshot(
                     store,

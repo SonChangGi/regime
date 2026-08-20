@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 import json
 from pathlib import Path
@@ -9,13 +10,18 @@ import pytest
 
 import regime_lab.collection as collection_module
 from regime_lab.collection import (
+    CollectionGateError,
+    LiveCollection,
     _alfred_request_params,
     _fetch_alfred_series,
+    _identify_alpha_transport_failure,
     _realtime_year_chunks,
     _source_row,
     _validate_initial_alpha_baseline,
+    _with_identified_issues,
     _write_result_snapshot,
     last_completed_week_cutoff,
+    validate_collection_for_training,
     weekly_cutoffs,
 )
 from regime_lab.data import (
@@ -109,6 +115,113 @@ def _seed_alpha_test_snapshot(
         )
 
 
+def _ready_collection(target: datetime) -> LiveCollection:
+    target_date = target.date().isoformat()
+    return LiveCollection(
+        records=(),
+        cutoffs=(target,),
+        sources=(
+            {
+                "id": "alpha_vantage",
+                "status": "ok",
+                "available_at": target.isoformat(),
+                "coverage": f"2024-01-01–{target_date}",
+                "issues": [],
+            },
+            {
+                "id": "alfred",
+                "status": "ok",
+                "available_at": target.isoformat(),
+                "coverage": f"2024-01-01–{target_date}",
+                "issues": [],
+            },
+        ),
+        overall_health=HealthStatus.OK,
+        issues=(),
+        model_cutoff=target,
+        database_path=Path("data/test.sqlite3"),
+    )
+
+
+def test_collection_training_gate_requires_exact_cutoff_sources_and_health() -> None:
+    target = datetime(2026, 8, 14, 20, tzinfo=timezone.utc)
+    validate_collection_for_training(
+        _ready_collection(target),
+        expected_cutoff=target,
+    )
+
+    with pytest.raises(CollectionGateError, match="cutoff does not match"):
+        validate_collection_for_training(
+            _ready_collection(target - timedelta(days=7)),
+            expected_cutoff=target,
+        )
+
+    degraded = replace(
+        _ready_collection(target),
+        overall_health=HealthStatus.DEGRADED,
+        issues=("provider failed",),
+    )
+    with pytest.raises(CollectionGateError, match="health is degraded"):
+        validate_collection_for_training(degraded, expected_cutoff=target)
+
+    missing_source = replace(
+        _ready_collection(target),
+        sources=_ready_collection(target).sources[:1],
+    )
+    with pytest.raises(CollectionGateError, match="exactly"):
+        validate_collection_for_training(missing_source, expected_cutoff=target)
+
+
+def test_collection_training_gate_accepts_good_friday_holiday_thursday() -> None:
+    target = datetime(2026, 4, 3, 20, tzinfo=timezone.utc)
+    ready = _ready_collection(target)
+    alpha = {
+        **ready.sources[0],
+        "available_at": "2026-04-02T20:00:00+00:00",
+        "coverage": "2024-01-01–2026-04-02",
+    }
+    holiday = replace(ready, sources=(alpha, ready.sources[1]))
+
+    validate_collection_for_training(holiday, expected_cutoff=target)
+
+    stale_alpha = {
+        **alpha,
+        "available_at": "2026-03-27T20:00:00+00:00",
+        "coverage": "2024-01-01–2026-03-27",
+    }
+    with pytest.raises(CollectionGateError, match="market week"):
+        validate_collection_for_training(
+            replace(ready, sources=(stale_alpha, ready.sources[1])),
+            expected_cutoff=target,
+        )
+
+
+def test_provider_transport_issues_include_failed_unit_identifier() -> None:
+    alpha = _identify_alpha_transport_failure(
+        CollectionResult(
+            health=HealthStatus.DEGRADED,
+            issues=("Alpha Vantage request failed: timeout",),
+            requests_made=1,
+            attempts=3,
+        ),
+        requested_symbols=("SPY", "IWM", "QQQ"),
+    )
+    assert alpha.issues == (
+        "Alpha Vantage IWM: Alpha Vantage request failed: timeout",
+    )
+
+    alfred = _with_identified_issues(
+        CollectionResult(
+            health=HealthStatus.DEGRADED,
+            issues=("ALFRED vintage-date request failed: HTTP 500",),
+        ),
+        identifier="ALFRED INDPRO",
+    )
+    assert alfred.issues == (
+        "ALFRED INDPRO: ALFRED vintage-date request failed: HTTP 500",
+    )
+
+
 def test_default_alpha_config_declares_unique_symbols_and_configured_series() -> None:
     config_path = Path(__file__).resolve().parents[1] / "config" / "series.json"
     config = json.loads(config_path.read_text(encoding="utf-8"))
@@ -136,6 +249,19 @@ def test_default_alpha_config_declares_unique_symbols_and_configured_series() ->
     assert alpha["history_start_by_symbol"] == {
         "XLC": "2018-06-18",
         "XLRE": "2015-10-07",
+    }
+    assert alpha["timeout_seconds"] == 120
+    assert alpha["retry"] == {
+        "max_attempts": 3,
+        "backoff_seconds": 5,
+        "max_backoff_seconds": 30,
+        "reserve_calls": 2,
+    }
+    assert config["alfred"]["timeout_seconds"] == 60
+    assert config["alfred"]["retry"] == {
+        "max_attempts": 4,
+        "backoff_seconds": 5,
+        "max_backoff_seconds": 60,
     }
 
     alfred_ids = {item["id"] for item in config["alfred"]["series"]}
@@ -236,6 +362,210 @@ def test_live_collection_passes_configured_ohlcv_fields_in_one_symbol_batch(
     assert alpha_source["requests_made"] == 2
     assert alpha_source["records"] == 2 * len(configured_fields)
     assert result.overall_health is HealthStatus.OK
+
+
+def test_alpha_timeout_and_retry_reserve_are_configured_within_hard_cap(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    cutoff = datetime(2024, 1, 5, 21, tzinfo=timezone.utc)
+    current = cutoff + timedelta(hours=15)
+
+    class FakeAlphaVantageClient:
+        observed: tuple[float, int, int] | None = None
+
+        def __init__(self, client_config, *_args, **kwargs) -> None:
+            type(self).observed = (
+                client_config.timeout_seconds,
+                kwargs["retry"].max_attempts,
+                kwargs["budget"].remaining,
+            )
+
+        def fetch_weekly_adjusted(self, symbols, **kwargs) -> CollectionResult:
+            return CollectionResult(
+                records=tuple(
+                    _alpha_test_record(
+                        symbol,
+                        field,
+                        period=cutoff.date(),
+                        cutoff=cutoff,
+                        retrieved_at=current,
+                    )
+                    for symbol in symbols
+                    for field in kwargs["fields"]
+                ),
+                requests_made=len(symbols),
+                attempts=len(symbols),
+            )
+
+    monkeypatch.setattr(
+        collection_module,
+        "AlphaVantageClient",
+        FakeAlphaVantageClient,
+    )
+    database = tmp_path / "alpha-retry.sqlite3"
+    result = collection_module.collect_live_data(
+        {
+            "alpha_vantage": {
+                "base_url": "https://example.invalid/alpha",
+                "daily_request_cap": 25,
+                "symbols": ["SPY", "IWM"],
+                "fields": ["adjusted_close"],
+                "timeout_seconds": 90,
+                "retry": {
+                    "max_attempts": 3,
+                    "backoff_seconds": 1,
+                    "max_backoff_seconds": 10,
+                    "reserve_calls": 2,
+                },
+            },
+            "alfred": {
+                "base_url": "https://example.invalid/fred",
+                "series": [],
+            },
+        },
+        database_path=database,
+        history_start=cutoff.date(),
+        now=current,
+    )
+
+    assert result.overall_health is HealthStatus.OK
+    assert FakeAlphaVantageClient.observed == (90.0, 3, 4)
+    with sqlite3.connect(database) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM request_budget_events"
+        ).fetchone()[0] == 4
+
+
+def test_same_cutoff_retries_only_failed_alfred_series_with_configured_policy(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    cutoff = datetime(2024, 1, 5, 21, tzinfo=timezone.utc)
+    current = cutoff + timedelta(hours=15)
+
+    class FakeAlphaVantageClient:
+        calls = 0
+
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        def fetch_weekly_adjusted(self, symbols, **kwargs) -> CollectionResult:
+            type(self).calls += 1
+            return CollectionResult(
+                records=(
+                    _alpha_test_record(
+                        symbols[0],
+                        kwargs["fields"][0],
+                        period=cutoff.date(),
+                        cutoff=cutoff,
+                        retrieved_at=current,
+                    ),
+                ),
+                requests_made=1,
+                attempts=1,
+            )
+
+    class FakeAlfredClient:
+        calls: list[str] = []
+        settings: list[tuple[float, int, float, float]] = []
+
+        def __init__(self, client_config, *_args, **kwargs) -> None:
+            retry = kwargs["retry"]
+            type(self).settings.append(
+                (
+                    client_config.timeout_seconds,
+                    retry.max_attempts,
+                    retry.backoff_seconds,
+                    retry.max_backoff_seconds,
+                )
+            )
+
+        def fetch_realtime_observations(
+            self,
+            series_ids,
+            **_kwargs,
+        ) -> CollectionResult:
+            series_id = series_ids[0]
+            type(self).calls.append(series_id)
+            if series_id == "SERIES_B" and self.calls.count(series_id) == 1:
+                return CollectionResult(
+                    health=HealthStatus.DEGRADED,
+                    issues=("ALFRED request failed: HTTP 500",),
+                    attempts=4,
+                )
+            return CollectionResult(
+                records=(
+                    Observation(
+                        source="alfred",
+                        series_id=series_id,
+                        observed_period_end=cutoff.date(),
+                        value=1.0,
+                        released_at=cutoff,
+                        available_at=cutoff,
+                        vintage_date=cutoff.date(),
+                        retrieved_at=current,
+                        raw_sha256=f"{series_id}-ok",
+                    ),
+                ),
+                requests_made=1,
+                attempts=1,
+            )
+
+        def fetch_revision_events(self, *_args, **_kwargs) -> CollectionResult:
+            raise AssertionError("same-cutoff retry without a base must use full mode")
+
+    monkeypatch.setattr(
+        collection_module,
+        "AlphaVantageClient",
+        FakeAlphaVantageClient,
+    )
+    monkeypatch.setattr(collection_module, "AlfredClient", FakeAlfredClient)
+    config = {
+        "alpha_vantage": {
+            "base_url": "https://example.invalid/alpha",
+            "daily_request_cap": 25,
+            "symbols": ["SPY"],
+            "fields": ["adjusted_close"],
+        },
+        "alfred": {
+            "base_url": "https://example.invalid/fred",
+            "timeout_seconds": 75,
+            "retry": {
+                "max_attempts": 4,
+                "backoff_seconds": 2,
+                "max_backoff_seconds": 20,
+            },
+            "series": [
+                {"id": "SERIES_A", "frequency": "monthly"},
+                {"id": "SERIES_B", "frequency": "monthly"},
+            ],
+        },
+    }
+    database = tmp_path / "alfred-retry.sqlite3"
+
+    first = collection_module.collect_live_data(
+        config,
+        database_path=database,
+        history_start=cutoff.date(),
+        now=current,
+    )
+    second = collection_module.collect_live_data(
+        config,
+        database_path=database,
+        history_start=cutoff.date(),
+        now=current,
+    )
+
+    assert first.overall_health is HealthStatus.DEGRADED
+    assert any("ALFRED SERIES_B" in issue for issue in first.issues)
+    assert second.overall_health is HealthStatus.OK
+    assert FakeAlphaVantageClient.calls == 1
+    assert FakeAlfredClient.calls == ["SERIES_A", "SERIES_B", "SERIES_B"]
+    assert FakeAlfredClient.settings == [
+        (75.0, 4, 2.0, 20.0),
+        (75.0, 4, 2.0, 20.0),
+    ]
 
 
 def test_missing_alpha_key_does_not_reserve_or_construct_client(

@@ -4,16 +4,24 @@ from __future__ import annotations
 
 import argparse
 from contextlib import nullcontext
+from datetime import datetime, timezone
 import hashlib
 import json
 import os
 from pathlib import Path
 import shutil
+import subprocess
 import sys
 import tempfile
 from typing import Any
 
-from regime_lab.collection import collect_live_data
+from regime_lab.collection import (
+    CollectionGateError,
+    collect_live_data,
+    collection_report_document,
+    last_completed_week_cutoff,
+    validate_collection_for_training,
+)
 from regime_lab.analysis.ablation import feature_ablation_manifest_document
 from regime_lab.analysis.models import model_manifest, model_manifest_sha256
 from regime_lab.config import default_config_path, load_config, project_root
@@ -52,6 +60,36 @@ def _mutable_path(value: str | Path, *, label: str) -> Path:
 
 def _flush_progress(message: str) -> None:
     print(message, flush=True)
+
+
+def _aware_datetime_argument(raw: str) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            "expected cutoff must be an ISO-8601 datetime"
+        ) from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise argparse.ArgumentTypeError("expected cutoff must include a timezone")
+    return parsed.astimezone(timezone.utc)
+
+
+class AnalysisPreconditionError(RuntimeError):
+    """A post-collection condition blocks expensive model analysis."""
+
+
+def _require_ac_power_before_analysis(*, enabled: bool) -> None:
+    if not enabled or sys.platform != "darwin":
+        return
+    completed = subprocess.run(
+        ["/usr/bin/pmset", "-g", "batt"],
+        check=False,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if completed.returncode != 0 or b"AC Power" not in completed.stdout:
+        raise AnalysisPreconditionError("AC power is required before analysis")
 
 
 def _write_supporting_results(
@@ -337,6 +375,16 @@ def command_build(args: argparse.Namespace) -> int:
     database = _mutable_path(args.database, label="snapshot database")
     output = _mutable_path(args.output, label="dashboard output")
     artifacts = _mutable_path(args.artifacts, label="artifact output")
+    raw_report = getattr(args, "collection_report", None)
+    collection_report = (
+        _mutable_path(raw_report, label="collection report")
+        if raw_report is not None
+        else None
+    )
+    build_started_at = datetime.now(timezone.utc)
+    expected_cutoff = getattr(args, "expected_cutoff", None) or (
+        last_completed_week_cutoff(build_started_at)
+    )
     live_build_lock = database.with_name(f"{database.name}.live-build.lock")
     try:
         with automation_lock(live_build_lock):
@@ -349,7 +397,38 @@ def command_build(args: argparse.Namespace) -> int:
                 collection = collect_live_data(
                     config,
                     database_path=database,
+                    now=build_started_at,
+                    expected_cutoff=expected_cutoff,
                     progress=_flush_progress,
+                )
+            gate_error: CollectionGateError | AnalysisPreconditionError | None = None
+            try:
+                validate_collection_for_training(
+                    collection,
+                    expected_cutoff=expected_cutoff,
+                )
+            except CollectionGateError as exc:
+                gate_error = exc
+            if gate_error is None:
+                try:
+                    _require_ac_power_before_analysis(
+                        enabled=bool(getattr(args, "require_ac_power", False))
+                    )
+                except AnalysisPreconditionError as exc:
+                    gate_error = exc
+            if collection_report is not None:
+                write_json_atomic(
+                    collection_report,
+                    collection_report_document(
+                        collection,
+                        expected_cutoff=expected_cutoff,
+                        gate_error=str(gate_error) if gate_error else None,
+                    ),
+                )
+            if gate_error is not None:
+                raise SystemExit(
+                    "live build stopped before analysis: "
+                    f"{gate_error}"
                 )
             print("Point-in-time weekly frame 조립", flush=True)
             dataset = build_weekly_dataset(
@@ -375,6 +454,21 @@ def command_build(args: argparse.Namespace) -> int:
                 artifacts=artifacts,
             )
     except AlreadyRunning as exc:
+        if collection_report is not None:
+            write_json_atomic(
+                collection_report,
+                {
+                    "schema_version": 1,
+                    "expected_cutoff": expected_cutoff.isoformat(),
+                    "model_cutoff": expected_cutoff.isoformat(),
+                    "ready_for_training": False,
+                    "overall_health": "unknown",
+                    "issues": [],
+                    "sources": [],
+                    "gate_error": "live build database lock is busy",
+                    "error_code": "database_build_lock_busy",
+                },
+            )
         raise SystemExit(
             f"live build refused because another build owns {live_build_lock}: {exc}"
         ) from exc
@@ -458,6 +552,20 @@ def build_parser() -> argparse.ArgumentParser:
     build.add_argument("--output", default="web/data/regime-results.json")
     build.add_argument("--artifacts", default="artifacts/latest")
     build.add_argument("--profile", choices=("standard", "full"), default="standard")
+    build.add_argument(
+        "--expected-cutoff",
+        type=_aware_datetime_argument,
+        help="require collection to match this exact ISO-8601 weekly cutoff",
+    )
+    build.add_argument(
+        "--collection-report",
+        help="atomically write a secret-free collection health receipt",
+    )
+    build.add_argument(
+        "--require-ac-power",
+        action="store_true",
+        help="on macOS, recheck AC power after collection and before analysis",
+    )
     build.add_argument("--from-env", action="store_true", help="use existing process environment instead of macOS Keychain")
     build.add_argument("--alfred-rights-confirmed", action="store_true")
     build.set_defaults(func=command_build)

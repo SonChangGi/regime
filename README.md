@@ -86,11 +86,12 @@ GitHub-hosted Pages workflow는 provider 호출 없이 검증된 파생 결과�
 .venv/bin/regime-lab automation status
 ```
 
-LaunchAgent는 로컬 시각 매일 21:17에 실행하고 로그인 시에도 누락분을 확인하지만,
-Python gate가 새 Friday 16:00 `America/New_York` cutoff에서 24시간이 지난 경우에만
-실제 작업을 시작합니다. 공개 snapshot이 이미 같은 cutoff이면 Keychain·provider·
-모델을 건드리지 않고 종료합니다. Mac이 꺼져 있던 동안에는 다음 로그인 또는
-일일 실행에서 최신 cutoff 하나만 catch-up합니다.
+LaunchAgent는 로컬 시각 03:17·09:17·15:17·21:17과 로그인 시에 누락분을
+확인하지만, Python gate가 새 Friday 16:00 `America/New_York` cutoff에서 24시간이
+지난 경우에만 실제 작업을 시작합니다. 실패 시에도 기록된 `next_retry_at` 전에는
+provider나 모델을 다시 실행하지 않으며, 인증·권리·schema·dirty checkout 문제는
+로컬 상태가 바뀔 때까지 차단합니다. 공개 snapshot이 이미 같은 cutoff이면
+Keychain·provider·모델을 건드리지 않고 종료합니다.
 
 실제 실행은 다음 순서를 fail-closed로 적용합니다.
 
@@ -98,15 +99,21 @@ Python gate가 새 Friday 16:00 `America/New_York` cutoff에서 24시간이 지�
    fetch/push 경계를 확인합니다. 새 수집 직전에만 180일 만료의 로컬 권리 확인 파일과 AC
    전원을 확인합니다. 설치 명령의 첫 번째 동의는 ALFRED를 로컬에 저장해 ML 학습에
    쓰는 권리, 두 번째 동의는 파생 결과를 개인·비상업 공개하는 권리를 뜻합니다.
-2. Alpha Vantage의 23회 전체 batch가 rolling-24h ledger에 들어갈 수 있는지
-   예약 없이 먼저 확인하고, 실제 collector가 다시 원자 예약합니다.
-3. 수동 build 경로와 분리된 `build/weekly-automation/generation/`에서 `standard`
+2. Alpha Vantage 23개 종목과 bounded retry 2회를 합친 25 credits 전체가
+   rolling-24h ledger에 들어갈 수 있는지 예약 없이 먼저 확인하고, 실제 collector가
+   다시 하나의 transaction으로 원자 예약합니다. Alpha는 120초 timeout·최대 3회,
+   ALFRED는 60초 timeout·최대 4회로 제한합니다.
+3. Alpha/ALFRED 전체 pass가 exact cutoff와 source health gate를 통과한 경우에만
+   분석을 시작합니다. ALFRED 정상 series는 같은 cutoff에서 재사용하고 실패 series만
+   재요청합니다. provider가 degraded이거나 수집 후 AC 전원이 분리되면 분석 전에
+   중단하고 secret-free receipt와 다음 재시도 시각을 남깁니다.
+4. 수동 build 경로와 분리된 `build/weekly-automation/generation/`에서 `standard`
    live build를 수행한 뒤 SQLite `quick_check`, payload validation,
    `audit_outputs.py --mode live`, 공개 package verifier를 통과시킵니다.
-4. 정확한 cutoff, Alpha/ALFRED `ok`, 최신 주 `ok`, Alpha coverage, forecast fallback
+5. 정확한 cutoff, Alpha/ALFRED `ok`, 최신 주 `ok`, Alpha coverage, forecast fallback
    부재를 확인합니다. `weak_generalization`만 원인인 전역 `degraded`는 경고를
    보존한 채 허용하지만 provider degradation은 자동 공개하지 않습니다.
-5. 사용자 working tree와 분리된 임시 checkout에서 preflight로 고정한 원격 SHA와
+6. 사용자 working tree와 분리된 임시 checkout에서 preflight로 고정한 원격 SHA와
    publication 경로의 regular-file 상태를 다시 확인한 뒤
    `publication/live/regime-results.json` 한 파일만 commit/push합니다. 기존 Pages
    workflow는 배포 직전 `main` SHA가 자기 커밋과 같은지 확인합니다. 완료 후 public
@@ -122,6 +129,10 @@ Python gate가 새 Friday 16:00 `America/New_York` cutoff에서 24시간이 지�
 `generation_id`가 모두 같은 cached candidate부터 재개해 provider 호출과 장시간
 재학습을 반복하지 않습니다. 수동 live build와 예약 build는 같은 DB lock을 공유하며,
 payload와 artifact는 서로 다른 경로를 사용해 예약 audit 중 교체될 수 없습니다.
+장시간 child process는 2분 heartbeat를 기록하고 `caffeinate -s`와 Standard QoS로
+AC 연결 중 system sleep을 막습니다. `automation status`는 plist drift, unload,
+failed health, stale heartbeat를 운영 정상으로 오인하지 않습니다. 최초 실패·실패
+유형 변경·복구에는 credential이나 원문 예외 없이 중복 억제된 macOS 알림을 보냅니다.
 자동화 해제는 다음과 같습니다.
 
 ```bash

@@ -7,6 +7,12 @@
   },
   "alfred": {
     "base_url": "https://api.stlouisfed.org/fred",
+    "timeout_seconds": 60,
+    "retry": {
+      "max_attempts": 4,
+      "backoff_seconds": 5,
+      "max_backoff_seconds": 60
+    },
     "rights_ack_env": "ALFRED_ML_RIGHTS_ACK",
     "api_key_env": "FRED_API_KEY",
     "series": [
@@ -49,6 +55,13 @@
   },
   "alpha_vantage": {
     "base_url": "https://www.alphavantage.co/query",
+    "timeout_seconds": 120,
+    "retry": {
+      "max_attempts": 3,
+      "backoff_seconds": 5,
+      "max_backoff_seconds": 30,
+      "reserve_calls": 2
+    },
     "api_key_env": "ALPHA_VANTAGE_API_KEY",
     "daily_request_cap": 25,
     "initial_baseline_minimum_coverage": 0.9,

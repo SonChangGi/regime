@@ -104,8 +104,16 @@ def test_project_automation_config_and_launch_agent_are_secret_free() -> None:
     assert settings.schedule_hour == 21
     assert settings.schedule_minute == 17
     assert document["RunAtLoad"] is True
-    assert document["StartCalendarInterval"] == {"Hour": 21, "Minute": 17}
+    assert document["StartCalendarInterval"] == [
+        {"Hour": 3, "Minute": 17},
+        {"Hour": 9, "Minute": 17},
+        {"Hour": 15, "Minute": 17},
+        {"Hour": 21, "Minute": 17},
+    ]
     assert document["Umask"] == 0o077
+    assert document["ProcessType"] == "Standard"
+    assert document["ExitTimeOut"] == 120
+    assert "LowPriorityIO" not in document
     assert document["ProgramArguments"][:2] == ["/usr/bin/caffeinate", "-s"]
     assert "regime_lab" in document["ProgramArguments"]
     assert "automation" in document["ProgramArguments"]
@@ -156,6 +164,17 @@ def test_current_weak_generalization_live_payload_is_publishable() -> None:
     )
     assert payload["meta"]["status"] == "degraded"
     assert payload["model"]["holdout_diagnostic"]["status"] == "weak_generalization"
+
+
+def test_candidate_gate_accepts_current_week_holiday_thursday_alpha_period() -> None:
+    payload = json.loads(LIVE_PAYLOAD)
+    payload["sources"][0]["available_at"] = "2026-08-06T20:00:00+00:00"
+    payload["sources"][0]["coverage"] = "2006-01-06–2026-08-06"
+    raw = (json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8")
+
+    validated = automation.validate_automation_candidate(raw, target=LIVE_TARGET)
+
+    assert validated["sources"][0]["coverage"].endswith("2026-08-06")
 
 
 @pytest.mark.parametrize(
@@ -260,8 +279,10 @@ def test_install_requires_tracked_runtime_and_clean_remote_preflight(
     subprocess.run(["git", "init", str(root)], check=True, capture_output=True)
     for relative in (
         "config/automation.json",
+        "config/series.json",
         "src/regime_lab/automation.py",
         "src/regime_lab/cli.py",
+        "src/regime_lab/collection.py",
         ".github/workflows/pages.yml",
     ):
         path = root / relative

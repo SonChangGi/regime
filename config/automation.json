@@ -4,6 +4,11 @@
   "schedule": {
     "hour": 21,
     "minute": 17,
+    "retry_hours": [3, 9, 15, 21],
+    "transient_retry_hours": 6,
+    "heartbeat_interval_seconds": 120,
+    "stale_heartbeat_minutes": 15,
+    "notification_dedupe_hours": 24,
     "minimum_cutoff_age_hours": 24,
     "require_ac_power": true
   },
