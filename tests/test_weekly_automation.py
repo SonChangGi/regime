@@ -763,6 +763,40 @@ def test_install_or_uninstall_lock_collision_is_not_reported_as_success(
     assert error["status"] == "failed"
 
 
+def test_force_retry_cli_is_explicit_run_only_and_forwarded(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    settings = _settings(tmp_path)
+    parser = cli.build_parser()
+    args = parser.parse_args(["automation", "run", "--force-retry"])
+    assert args.force_retry is True
+    seen: list[bool] = []
+    monkeypatch.setattr(
+        automation.AutomationSettings,
+        "load",
+        classmethod(lambda _cls, _path: settings),
+    )
+    monkeypatch.setattr(
+        automation,
+        "run_weekly_release",
+        lambda _settings, *, force_transient_retry=False: (
+            seen.append(force_transient_retry)
+            or {"ok": True, "status": "succeeded"}
+        ),
+    )
+
+    assert automation.command_automation(args) == 0
+    assert seen == [True]
+    capsys.readouterr()
+
+    invalid = parser.parse_args(["automation", "status", "--force-retry"])
+    assert automation.command_automation(invalid) == 1
+    error = json.loads(capsys.readouterr().err)
+    assert "valid only" in error["error"]
+
+
 def test_public_readback_recovery_pushes_a_credential_independent_empty_commit(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

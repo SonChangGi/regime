@@ -260,6 +260,74 @@ def test_retry_backoff_skips_external_provider_and_build_work(
     assert result["next_retry_at"] == (now + timedelta(hours=5)).isoformat()
 
 
+def test_force_retry_bypasses_only_transient_backoff(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings(tmp_path)
+    now = datetime.fromisoformat("2026-08-18T00:00:00+00:00")
+    target, ready = automation.target_cutoff(
+        now, minimum_age=settings.minimum_cutoff_age
+    )
+    assert ready is True
+    document = {
+        "schema_version": automation.HEALTH_SCHEMA_VERSION,
+        "automation_id": settings.automation_id,
+        "status": "failed",
+        "stage": "collect_sources",
+        "started_at": (now - timedelta(hours=1)).isoformat(),
+        "heartbeat_at": (now - timedelta(hours=1)).isoformat(),
+        "updated_at": (now - timedelta(hours=1)).isoformat(),
+        "target_data_as_of": target.isoformat(),
+        "consecutive_failures": 1,
+        "error_code": "provider_degraded",
+        "retry_class": "transient",
+        "next_retry_at": (now + timedelta(hours=5)).isoformat(),
+        "recovery_fingerprint": "unchanged",
+    }
+    _write_json(settings.status_path, document)
+
+    assert automation._retry_guard(
+        settings,
+        target=target,
+        now=now,
+        force_transient_retry=True,
+    ) is None
+
+    document["retry_class"] = "quota"
+    _write_json(settings.status_path, document)
+    quota = automation._retry_guard(
+        settings,
+        target=target,
+        now=now,
+        force_transient_retry=True,
+    )
+    assert quota is not None
+    assert quota["stage"] == "retry_backoff"
+
+    document.update(
+        {
+            "retry_class": "blocked",
+            "next_retry_at": None,
+            "recovery_fingerprint": "same-fingerprint",
+        }
+    )
+    _write_json(settings.status_path, document)
+    monkeypatch.setattr(
+        automation,
+        "_recovery_fingerprint",
+        lambda _settings: "same-fingerprint",
+    )
+    blocked = automation._retry_guard(
+        settings,
+        target=target,
+        now=now,
+        force_transient_retry=True,
+    )
+    assert blocked is not None
+    assert blocked["stage"] == "retry_blocked"
+
+
 def test_same_blocked_fingerprint_skips_external_provider_and_build_work(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

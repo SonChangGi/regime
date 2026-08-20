@@ -93,6 +93,12 @@ provider나 모델을 다시 실행하지 않으며, 인증·권리·schema·dir
 로컬 상태가 바뀔 때까지 차단합니다. 공개 snapshot이 이미 같은 cutoff이면
 Keychain·provider·모델을 건드리지 않고 종료합니다.
 
+확인된 transient 원인을 코드나 로컬 환경에서 수정한 뒤 예약 시각 전에 즉시
+재검증해야 할 때만 `regime-lab automation run --force-retry`를 사용합니다. 이
+operator override는 transient 시간 지연만 건너뛰며 quota와 blocked gate, provider
+예산, AC, Git 및 publication 검증은 우회하지 않습니다. LaunchAgent 자체는 이
+옵션을 사용하지 않습니다.
+
 실제 실행은 다음 순서를 fail-closed로 적용합니다.
 
 1. 단일-process lock, clean tracked working tree, `origin/main` source 일치와 Git

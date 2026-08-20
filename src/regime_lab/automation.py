@@ -673,6 +673,7 @@ def _retry_guard(
     *,
     target: datetime,
     now: datetime,
+    force_transient_retry: bool = False,
 ) -> dict[str, Any] | None:
     previous = _read_status(settings)
     if previous.get("schema_version") != HEALTH_SCHEMA_VERSION:
@@ -697,6 +698,11 @@ def _retry_guard(
             retry_class="blocked",
             recovery_fingerprint=str(fingerprint),
         )
+    if retry_class == "transient" and force_transient_retry:
+        # Explicit operator recovery may bypass only a transient delay. Quota
+        # and blocked failures retain their normal fail-closed guards, and the
+        # run still performs every provider, AC, Git, and publication preflight.
+        return None
     raw_next = previous.get("next_retry_at")
     if retry_class in {"transient", "quota"} and raw_next:
         try:
@@ -1584,6 +1590,7 @@ def run_weekly_release(
     settings: AutomationSettings,
     *,
     now: datetime | None = None,
+    force_transient_retry: bool = False,
 ) -> dict[str, Any]:
     started = (now or datetime.now(UTC)).astimezone(UTC)
     run_id = uuid.uuid4().hex
@@ -1593,7 +1600,12 @@ def run_weekly_release(
     settings.state_directory.mkdir(parents=True, exist_ok=True)
     with automation_lock(settings.lock_path):
         if old_enough:
-            guarded = _retry_guard(settings, target=target, now=started)
+            guarded = _retry_guard(
+                settings,
+                target=target,
+                now=started,
+                force_transient_retry=force_transient_retry,
+            )
             if guarded is not None:
                 return guarded
         _write_status(
@@ -2073,10 +2085,16 @@ def launch_agent_status(settings: AutomationSettings) -> dict[str, Any]:
 def command_automation(args: argparse.Namespace) -> int:
     try:
         settings = AutomationSettings.load(args.config)
+        force_retry = bool(getattr(args, "force_retry", False))
+        if force_retry and args.action != "run":
+            raise AutomationError("--force-retry is valid only with automation run")
         if args.action == "preflight":
             result = preflight_summary(settings)
         elif args.action == "run":
-            result = run_weekly_release(settings)
+            result = run_weekly_release(
+                settings,
+                force_transient_retry=force_retry,
+            )
         elif args.action == "install":
             result = install_launch_agent(
                 settings,

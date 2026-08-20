@@ -634,6 +634,14 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="confirm personal noncommercial derived-output publication for install",
     )
+    automation.add_argument(
+        "--force-retry",
+        action="store_true",
+        help=(
+            "for automation run only, bypass a transient retry delay; quota "
+            "and blocked guards remain enforced"
+        ),
+    )
     automation.set_defaults(func=command_automation)
     return parser
 
