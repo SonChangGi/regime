@@ -38,6 +38,10 @@ from regime_lab.config import project_root
 from regime_lab.io import write_json_atomic
 from regime_lab.keychain import KEYCHAIN_SERVICES
 from regime_lab.path_safety import confined_mutable_path
+from regime_lab.publication_contract import (
+    PublicContractError,
+    validate_v5_comparison_sidecar,
+)
 from regime_lab.schema import ContractError, validate_dashboard_payload
 from regime_lab.data import DailyRequestBudget, SQLiteSnapshotStore
 
@@ -314,21 +318,12 @@ def _validate_v5_comparison_bytes(
     payload = _json_object(payload_raw, label=f"{label} payload")
     comparison = _json_object(comparison_raw, label=f"{label} comparison")
     try:
-        from scripts.package_public_demo import (
-            PackagingError,
-            validate_v5_comparison_sidecar,
-        )
-    except ImportError as exc:
-        raise AutomationError(
-            f"{label} comparison validator is unavailable: {exc}"
-        ) from exc
-    try:
         validate_v5_comparison_sidecar(
             comparison,
             payload=payload,
             payload_raw=payload_raw,
         )
-    except (PackagingError, KeyError, TypeError, ValueError) as exc:
+    except (PublicContractError, KeyError, TypeError, ValueError) as exc:
         raise AutomationError(f"{label} comparison contract failed: {exc}") from exc
 
 

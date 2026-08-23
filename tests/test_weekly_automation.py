@@ -5,8 +5,10 @@ from datetime import datetime, timedelta, timezone
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
+import sys
 
 import pytest
 
@@ -377,6 +379,69 @@ def test_git_preflight_rejects_invalid_remote_v5_comparison(
         match="remote publication comparison contract failed",
     ):
         automation._git_preflight(settings)
+
+
+def test_installed_preflight_validates_v5_pair_outside_checkout(
+    tmp_path: Path,
+) -> None:
+    payload = ROOT / automation.PUBLICATION_PATH
+    comparison = ROOT / automation.PUBLICATION_COMPARISON_PATH
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_git = fake_bin / "git"
+    fake_git.write_text(
+        f"""#!{sys.executable}
+from pathlib import Path
+import sys
+
+args = sys.argv[1:]
+if args == ["branch", "--show-current"]:
+    sys.stdout.write("main\\n")
+elif args == ["status", "--porcelain", "--untracked-files=all"]:
+    pass
+elif args == ["remote", "get-url", "origin"]:
+    sys.stdout.write("https://github.com/SonChangGi/regime.git\\n")
+elif args == ["fetch", "--quiet", "origin", "main"]:
+    pass
+elif args == ["diff", "--name-only", "HEAD", "origin/main", "--"]:
+    pass
+elif args == ["rev-parse", "origin/main"]:
+    sys.stdout.write("{'a' * 40}\\n")
+elif args == ["show", "origin/main:{automation.PUBLICATION_PATH}"]:
+    sys.stdout.buffer.write(Path({str(payload)!r}).read_bytes())
+elif args == ["show", "origin/main:{automation.PUBLICATION_COMPARISON_PATH}"]:
+    sys.stdout.buffer.write(Path({str(comparison)!r}).read_bytes())
+else:
+    raise SystemExit(f"unexpected fake git command: {{args!r}}")
+""",
+        encoding="utf-8",
+    )
+    fake_git.chmod(0o755)
+    entrypoint = Path(sys.executable).with_name("regime-lab")
+    assert entrypoint.is_file()
+    env = os.environ.copy()
+    env["PATH"] = f"{fake_bin}{os.pathsep}{env.get('PATH', '')}"
+
+    completed = subprocess.run(
+        [
+            str(entrypoint),
+            "automation",
+            "preflight",
+            "--config",
+            str(ROOT / "config/automation.json"),
+        ],
+        cwd=tmp_path,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(completed.stdout)
+    assert result["ok"] is True
+    assert result["remote_head_sha"] == "a" * 40
 
 
 def test_expired_local_authorization_fails_closed(tmp_path: Path) -> None:
