@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import timedelta
 import json
+from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 import numpy as np
@@ -31,17 +32,27 @@ from regime_lab.collection import LiveCollection
 from regime_lab.dataset import WeeklyDataset, evidence_drivers, factor_scores
 from regime_lab.evidence import (
     STATE_LABEL_HISTORY_COLUMNS,
+    STATE_MEMBERSHIP_HISTORY_COLUMNS,
     WEEKLY_STATE_FORECAST_COLUMNS,
+    WEEKLY_STATE_FORECAST_V5_COLUMNS,
     evidence_csv_sha256,
     state_label_history,
+    state_membership_history,
     weekly_state_forecasts as build_weekly_state_forecasts,
+    weekly_state_forecasts_v5,
 )
 from regime_lab.feature_manifest import (
     complete_feature_group_manifest,
     feature_manifest_document,
 )
+from regime_lab.frozen_v4 import (
+    FROZEN_V4_BASELINE,
+    verify_frozen_v4_baseline,
+)
 from regime_lab.payload import STATE_DEFINITIONS, estimate_from_probabilities
 from regime_lab.schema import STATE_ORDER
+from regime_lab.v5_artifacts import build_v5_core_artifact_manifest
+from regime_lab.v5_preflight import STRUCTURAL_V5_PREREGISTRATION_SHA256
 
 
 LABEL_VERSION = "market-causal-3state-v1"
@@ -71,6 +82,7 @@ STRUCTURAL_PREREGISTRATION = {
     "path": "config/structural_v4.json",
     "sha256": "2f53ada564efca770261f16ce6eb16ec9c9782bde014de7a7d85b7b24dbe407b",
 }
+FROZEN_V5_BASELINE_V4 = FROZEN_V4_BASELINE
 STRUCTURAL_MODEL_CONTRACT = {
     "xgb_hazard_destination": {
         "hazard_model": "binary_xgboost",
@@ -455,11 +467,26 @@ def build_dashboard_result(
     warnings: Sequence[str] = (),
     selection_end: str | pd.Timestamp | None = None,
     progress: Callable[[str], None] | None = None,
+    contract_version: str = "v4",
+    fx_result: Any | None = None,
+    latest_fx_context: Mapping[str, Any] | None = None,
+    h10_source: Mapping[str, Any] | None = None,
+    checkpoint_directory: str | Path | None = None,
+    source_fingerprint_sha256: str | None = None,
 ) -> tuple[dict[str, Any], Any]:
+    if contract_version not in {"v4", "v5"}:
+        raise ValueError("contract_version must be v4 or v5")
+    if contract_version != "v5" and (
+        checkpoint_directory is not None
+        or source_fingerprint_sha256 is not None
+    ):
+        raise ValueError("walk-forward checkpoints are V5-only")
     if mode == "live" and profile_name == "quick":
         raise ValueError(
             "live mode does not permit the three-origin quick smoke profile"
         )
+    if contract_version == "v5":
+        verify_frozen_v4_baseline()
     canonical = dataset.canonical.loc[dataset.canonical["spy_close"].notna()].copy()
     features = dataset.features.reindex(canonical.index)
     if len(canonical) < 650:
@@ -522,6 +549,8 @@ def build_dashboard_result(
         minimum_selection_predictions=split_prediction_minimum,
         minimum_holdout_predictions=split_prediction_minimum,
         progress=progress,
+        checkpoint_directory=checkpoint_directory,
+        source_fingerprint_sha256=source_fingerprint_sha256,
     )
     if progress is not None:
         progress("1·4·13주 국면 이탈 위험 워크포워드 시작")
@@ -544,6 +573,7 @@ def build_dashboard_result(
     benchmark = augment_benchmark_with_structural_models(
         base_benchmark,
         transition_benchmark,
+        include_multiscale=contract_version == "v5",
         random_state=17,
     )
     if progress is not None:
@@ -650,8 +680,52 @@ def build_dashboard_result(
             "xgb_hazard_destination": binary_fallback,
         },
         current_duration_weeks=int(causal_state_durations(states).iloc[-1]),
+        include_multiscale=contract_version == "v5",
     )
-    if benchmark.champion in {"xgb_hazard_destination", "causal_dynamic_ensemble"}:
+    if contract_version == "v5":
+        oos_scale_forecasts = benchmark.multiscale_scale_forecasts
+        latest_scale_forecasts = structural_latest.multiscale_scale_predictions
+        if oos_scale_forecasts is None or latest_scale_forecasts is None:
+            raise RuntimeError("V5 multiscale ensemble evidence was not produced")
+        multiscale_scale_forecasts = pd.concat(
+            [oos_scale_forecasts, latest_scale_forecasts],
+            ignore_index=True,
+            sort=False,
+        ).sort_values(
+            ["origin_date", "target_date", "row_role", "scale_half_life_weeks"],
+            ignore_index=True,
+        )
+        latest_multiscale_weights = structural_latest.stacking_weights.loc[
+            structural_latest.stacking_weights["ensemble_model"].astype(str).eq(
+                "causal_multiscale_ensemble"
+            )
+        ]
+        if len(latest_multiscale_weights) != 9:
+            raise RuntimeError(
+                "V5 latest multiscale ensemble must emit nine expert weights"
+            )
+        benchmark = replace(
+            benchmark,
+            stacking_weights=pd.concat(
+                [benchmark.stacking_weights, latest_multiscale_weights],
+                ignore_index=True,
+                sort=False,
+            ).sort_values(
+                [
+                    "origin_date",
+                    "ensemble_model",
+                    "half_life_weeks",
+                    "expert",
+                ],
+                ignore_index=True,
+            ),
+            multiscale_scale_forecasts=multiscale_scale_forecasts,
+        )
+    if benchmark.champion in {
+        "xgb_hazard_destination",
+        "causal_dynamic_ensemble",
+        "causal_multiscale_ensemble",
+    }:
         structural_row = structural_latest.probabilities.loc[
             structural_latest.probabilities["model"].eq(benchmark.champion)
         ].iloc[0]
@@ -706,7 +780,11 @@ def build_dashboard_result(
     }
     latest_weight_map = {
         str(row["expert"]): float(row["weight"])
-        for _, row in structural_latest.stacking_weights.iterrows()
+        for _, row in structural_latest.stacking_weights.loc[
+            structural_latest.stacking_weights["ensemble_model"].astype(str).eq(
+                "causal_dynamic_ensemble"
+            )
+        ].iterrows()
     }
     structural_forecasts = structural_latest.probabilities.copy()
     structural_forecasts["target_date"] = latest_date + timedelta(days=7)
@@ -1007,4 +1085,116 @@ def build_dashboard_result(
         "joint_survival_forecasts",
         joint_survival_forecasts,
     )
+    if contract_version == "v5":
+        from regime_lab.v5 import build_v5_payload, run_v5_directional_benchmark
+
+        if progress is not None:
+            progress("v5 최초 이탈 방향 benchmark 시작")
+        directional = run_v5_directional_benchmark(
+            features,
+            states,
+            profile_name=profile_name,
+            selection_end=benchmark_selection_end,
+        )
+        bootstrap_resamples = 199 if profile_name == "quick" else 1_999
+        if progress is not None:
+            progress("v5 지속기간·조건부 자산 통계 조립")
+        fx_ablation_evidence: list[pd.DataFrame] = []
+        payload, conditional_outcomes = build_v5_payload(
+            payload,
+            canonical=canonical,
+            features=features,
+            states=states,
+            directional=directional,
+            baseline_v4=FROZEN_V5_BASELINE_V4,
+            structural_preregistration_sha256=(
+                STRUCTURAL_V5_PREREGISTRATION_SHA256
+            ),
+            fx_result=fx_result,
+            latest_fx_context=latest_fx_context,
+            h10_source=h10_source,
+            duration_bootstrap_resamples=bootstrap_resamples,
+            outcome_bootstrap_resamples=bootstrap_resamples,
+            fx_ablation_evidence_sink=fx_ablation_evidence.append,
+        )
+        membership_history = state_membership_history(label_history)
+        forecast_evidence_v5 = weekly_state_forecasts_v5(payload["weekly"])
+        payload["model"]["champion_core_feature_set_version"] = (
+            FEATURE_SET_VERSION
+        )
+        payload["model"]["evidence_artifacts"] = {
+            "state_membership_history": {
+                "path": "state-membership-history.csv",
+                "row_count": int(len(membership_history)),
+                "sha256": evidence_csv_sha256(
+                    membership_history,
+                    STATE_MEMBERSHIP_HISTORY_COLUMNS,
+                ),
+                "label_fit_weeks": label_fit_weeks,
+                "label_fit_end": pd.Timestamp(labeler.train_end_).isoformat(),
+                "initial_state": "transition",
+                "method": "risk_score_anchor_membership",
+            },
+            "weekly_state_forecasts": {
+                "path": "weekly-state-forecasts-v5.csv",
+                "row_count": int(len(forecast_evidence_v5)),
+                "sha256": evidence_csv_sha256(
+                    forecast_evidence_v5,
+                    WEEKLY_STATE_FORECAST_V5_COLUMNS,
+                ),
+            },
+        }
+        core_artifacts = build_v5_core_artifact_manifest(
+            {
+                "oos_predictions": benchmark.predictions,
+                "model_leaderboard": benchmark.leaderboard,
+                "walk_forward_splits": benchmark.split_audit,
+                "selection_diagnostics": benchmark.selection_diagnostics,
+                "stacking_weights": benchmark.stacking_weights,
+                "multiscale_ensemble_scales": (
+                    benchmark.multiscale_scale_forecasts
+                ),
+            }
+        )
+        payload["model"]["core_artifacts"] = core_artifacts
+        multiscale_contract = payload["model"].get(
+            "structural_models",
+            {},
+        ).get("causal_multiscale_ensemble")
+        if not isinstance(multiscale_contract, dict):
+            raise RuntimeError("V5 multiscale structural metadata is missing")
+        multiscale_contract["sidecar"] = dict(
+            core_artifacts["multiscale_ensemble_scales"]
+        )
+        object.__setattr__(benchmark, "directional_benchmark", directional)
+        object.__setattr__(
+            benchmark,
+            "conditional_asset_outcomes",
+            conditional_outcomes.outcomes,
+        )
+        object.__setattr__(
+            benchmark,
+            "conditional_asset_statistics",
+            conditional_outcomes.statistics,
+        )
+        object.__setattr__(
+            benchmark,
+            "state_membership_history",
+            membership_history,
+        )
+        object.__setattr__(
+            benchmark,
+            "weekly_state_forecasts_v5",
+            forecast_evidence_v5,
+        )
+        if fx_result is not None:
+            object.__setattr__(benchmark, "fx_features", fx_result.features)
+            object.__setattr__(benchmark, "fx_coverage", fx_result.coverage)
+            if len(fx_ablation_evidence) != 1:
+                raise RuntimeError("V5 FX ablation evidence was not captured exactly once")
+            object.__setattr__(
+                benchmark,
+                "fx_ablation_oos",
+                fx_ablation_evidence[0],
+            )
     return payload, benchmark

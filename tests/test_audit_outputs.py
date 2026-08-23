@@ -4,6 +4,7 @@ import importlib.util
 import hashlib
 import json
 import os
+from copy import deepcopy
 from datetime import timedelta
 from pathlib import Path
 
@@ -18,6 +19,1251 @@ SPEC = importlib.util.spec_from_file_location("audit_outputs", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
 audit_outputs = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(audit_outputs)
+
+
+def test_v5_serialized_probability_tolerance_matches_eight_decimal_contract() -> None:
+    values = pd.DataFrame(
+        [
+            [0.33333333, 0.33333333, 0.33333333],
+            [0.33333334, 0.33333334, 0.33333333],
+        ]
+    )
+
+    assert audit_outputs._v5_serialized_probability_rows_are_valid(values)
+
+
+def test_v5_serialized_probability_tolerance_rejects_material_tampering() -> None:
+    tampered = pd.DataFrame([[0.33333332, 0.33333333, 0.33333333]])
+
+    assert not audit_outputs._v5_serialized_probability_rows_are_valid(tampered)
+
+
+def _frozen_v4_core_fixture() -> tuple[dict, Path]:
+    artifacts = ROOT / "artifacts" / "baselines" / "v4-20260821"
+    payload = json.loads(
+        (artifacts / "regime-results.json").read_text(encoding="utf-8")
+    )
+    return payload, artifacts
+
+
+def _v5_execution_parameters(
+    *,
+    profile: str = "quick",
+    duration_resamples: int = 7,
+    outcome_resamples: int = 7,
+) -> dict[str, object]:
+    minimum = 3 if profile == "quick" else 12
+    maximum = {"quick": 3, "standard": 60, "full": None}[profile]
+    overrides: list[str] = []
+    if duration_resamples != 1_999:
+        overrides.append("duration.bootstrap_resamples")
+    if outcome_resamples != 1_999:
+        overrides.append("conditional_asset_statistics.bootstrap_resamples")
+    parameters: dict[str, object] = {
+        "profile": profile,
+        "directional_minimum_selection_predictions": minimum,
+        "directional_minimum_diagnostic_predictions": minimum,
+        "directional_maximum_selection_origins": maximum,
+        "directional_maximum_diagnostic_origins": maximum,
+        "duration_bootstrap_resamples": duration_resamples,
+        "conditional_outcome_bootstrap_resamples": outcome_resamples,
+        "preregistered_bootstrap_resamples": 1_999,
+        "preregistration_overrides": overrides,
+    }
+    return {
+        **parameters,
+        "sha256": audit_outputs.canonical_json_sha256(parameters),
+    }
+
+
+def _v5_frame_records(frame: pd.DataFrame) -> list[dict[str, object]]:
+    return [
+        {
+            str(key): None if bool(pd.isna(value)) else value
+            for key, value in row.items()
+        }
+        for row in frame.to_dict(orient="records")
+    ]
+
+
+def _write_v5_contract_frames(
+    directory: Path,
+    frames: dict[str, pd.DataFrame],
+) -> tuple[dict[str, dict[str, object]], dict[str, pd.DataFrame]]:
+    keys_by_path = {
+        path: key for key, path in audit_outputs.V5_RESEARCH_ARTIFACTS
+    }
+    contracts: dict[str, dict[str, object]] = {}
+    for path_name, frame in frames.items():
+        path = directory / path_name
+        frame.to_csv(path, index=False)
+        contracts[keys_by_path[path_name]] = {
+            "path": path_name,
+            "row_count": len(frame),
+            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        }
+    loaded = audit_outputs._audit_v5_file_contracts(
+        contracts,
+        directory,
+        context="mutated fixture manifest",
+    )
+    return contracts, loaded
+
+
+def _v5_directional_audit_fixture() -> tuple[dict, dict[str, pd.DataFrame]]:
+    probability_rows: list[dict[str, object]] = []
+    split_rows: list[dict[str, object]] = []
+    leaderboard_rows: list[dict[str, object]] = []
+    diagnostic_rows: list[dict[str, object]] = []
+    forecast_rows: list[dict[str, object]] = []
+    model = "empirical_first_passage"
+    support_reason = (
+        "insufficient_departure_events;"
+        "insufficient_destination_classes;"
+        "insufficient_event_blocks"
+    )
+    for horizon in (1, 4, 13):
+        for split, start in (
+            ("selection", "2022-10-07T20:00:00Z"),
+            ("retrospective_diagnostic", "2024-01-05T21:00:00Z"),
+        ):
+            origins = pd.date_range(start, periods=3, freq="7D")
+            for origin in origins:
+                target = origin + timedelta(weeks=horizon)
+                probability_rows.append(
+                    {
+                        "horizon_weeks": horizon,
+                        "origin_date": origin,
+                        "target_end": target,
+                        "evaluation_split": split,
+                        "model": model,
+                        "current_state": "risk_on",
+                        "actual_outcome": "no_departure",
+                        "actual_change": False,
+                        "p_no_departure": 0.7,
+                        "p_risk_on": 0.0,
+                        "p_transition": 0.2,
+                        "p_risk_off": 0.1,
+                        "fallback": False,
+                    }
+                )
+                split_rows.append(
+                    {
+                        "horizon_weeks": horizon,
+                        "origin_date": origin,
+                        "target_end": target,
+                        "evaluation_split": split,
+                        "last_train_target_end": origin - timedelta(weeks=1),
+                        "purged_origin_count": horizon,
+                    }
+                )
+            leaderboard_rows.append(
+                {
+                    "horizon_weeks": horizon,
+                    "evaluation_split": split,
+                    "model": model,
+                    "selected": True,
+                    "score_target": "first_destination_given_departure",
+                    "log_loss": None,
+                    "brier": None,
+                    "n_predictions": 3,
+                    "event_count": 0,
+                    "destination_class_count": 0,
+                    "effective_event_blocks": 0,
+                    "fallback_count": 0,
+                }
+            )
+        forecast_origin = pd.Timestamp("2026-07-03T20:00:00Z")
+        forecast_rows.append(
+            {
+                "horizon_weeks": horizon,
+                "origin_date": forecast_origin,
+                "target_end": forecast_origin + timedelta(weeks=horizon),
+                "model": model,
+                "current_state": "risk_on",
+                "p_no_departure": 0.7,
+                "p_risk_on": 0.0,
+                "p_transition": 0.2,
+                "p_risk_off": 0.1,
+                "fallback": False,
+            }
+        )
+        diagnostic_rows.append(
+            {
+                "horizon_weeks": horizon,
+                "model": model,
+                "reference_model": model,
+                "selected": True,
+                "gate_passed": False,
+                "gate_reason": support_reason,
+                "score_target": "first_destination_given_departure",
+                "selection_event_count": 0,
+                "selection_destination_class_count": 0,
+                "selection_effective_event_blocks": 0,
+                "minimum_selection_events": 8,
+                "minimum_destination_classes": 2,
+                "minimum_event_blocks": 3,
+                "log_loss": None,
+                "brier": None,
+                "absolute_log_loss_improvement": None,
+                "holm_adjusted_p_value": None,
+                "fallback_count": 0,
+            }
+        )
+    predictions = pd.DataFrame(probability_rows)
+    forecasts = pd.DataFrame(forecast_rows)
+    payload = {
+        "model": {
+            "profile": "quick",
+            "execution_parameters": _v5_execution_parameters(),
+            "directional_transition": {
+                "target": "first_departure_state_within_h_or_no_departure",
+                "deployed_direction_role": "first_destination_given_departure",
+                "selection_metric": "conditional_destination_log_loss",
+                "minimum_selection_departure_events": 8,
+                "minimum_selection_destination_classes": 2,
+                "minimum_selection_event_blocks": 3,
+                "champions": {
+                    "1w": model,
+                    "4w": model,
+                    "13w": model,
+                },
+                "leaderboard": leaderboard_rows,
+                "selection_diagnostics": diagnostic_rows,
+            }
+        }
+    }
+    frames = {
+        "directional-oos-predictions.csv": predictions,
+        "directional-forecasts.csv": forecasts,
+        "directional-walk-forward-splits.csv": pd.DataFrame(split_rows),
+        "directional-selection-diagnostics.csv": pd.DataFrame(diagnostic_rows),
+        "directional-model-leaderboard.csv": pd.DataFrame(leaderboard_rows),
+    }
+    return payload, frames
+
+
+def _v5_supported_directional_audit_fixture() -> tuple[
+    dict,
+    dict[str, pd.DataFrame],
+]:
+    prediction_rows: list[dict[str, object]] = []
+    split_rows: list[dict[str, object]] = []
+    forecast_rows: list[dict[str, object]] = []
+    models = {
+        "empirical_first_passage": 0.60,
+        "markov_first_passage": 0.55,
+        "regularized_multinomial": 0.95,
+        "weak_regularized_multinomial": 0.65,
+    }
+    event_positions = {0, 1, 2, 3, 13, 14, 26, 27}
+    for horizon in (1, 4, 13):
+        for split, start, periods in (
+            ("selection", "2022-01-07T21:00:00Z", 39),
+            ("retrospective_diagnostic", "2024-01-05T21:00:00Z", 12),
+        ):
+            origins = pd.date_range(start, periods=periods, freq="7D")
+            for position, origin in enumerate(origins):
+                target = origin + timedelta(weeks=horizon)
+                is_event = split == "selection" and position in event_positions
+                actual = (
+                    ("transition" if position % 2 == 0 else "risk_off")
+                    if is_event
+                    else "no_departure"
+                )
+                split_rows.append(
+                    {
+                        "horizon_weeks": horizon,
+                        "origin_date": origin,
+                        "target_end": target,
+                        "evaluation_split": split,
+                        "last_train_target_end": origin - timedelta(weeks=1),
+                        "purged_origin_count": horizon,
+                    }
+                )
+                for model, correct_destination_probability in models.items():
+                    if actual == "transition":
+                        transition = correct_destination_probability
+                        risk_off = 1.0 - correct_destination_probability
+                    elif actual == "risk_off":
+                        transition = 1.0 - correct_destination_probability
+                        risk_off = correct_destination_probability
+                    else:
+                        transition = 0.5
+                        risk_off = 0.5
+                    departure_mass = 0.30
+                    prediction_rows.append(
+                        {
+                            "horizon_weeks": horizon,
+                            "origin_date": origin,
+                            "target_end": target,
+                            "evaluation_split": split,
+                            "model": model,
+                            "current_state": "risk_on",
+                            "actual_outcome": actual,
+                            "actual_change": is_event,
+                            "p_no_departure": 1.0 - departure_mass,
+                            "p_risk_on": 0.0,
+                            "p_transition": departure_mass * transition,
+                            "p_risk_off": departure_mass * risk_off,
+                            "fallback": False,
+                        }
+                    )
+    predictions = pd.DataFrame(prediction_rows)
+    leaderboard, diagnostics, champions = audit_outputs._recompute_v5_directional(
+        predictions
+    )
+    for horizon in (1, 4, 13):
+        forecast_origin = pd.Timestamp("2026-07-03T20:00:00Z")
+        forecast_rows.append(
+            {
+                "horizon_weeks": horizon,
+                "origin_date": forecast_origin,
+                "target_end": forecast_origin + timedelta(weeks=horizon),
+                "model": champions[horizon],
+                "current_state": "risk_on",
+                "p_no_departure": 0.7,
+                "p_risk_on": 0.0,
+                "p_transition": 0.2,
+                "p_risk_off": 0.1,
+                "fallback": False,
+            }
+        )
+    payload = {
+        "model": {
+            "profile": "full",
+            "execution_parameters": _v5_execution_parameters(profile="full"),
+            "directional_transition": {
+                "target": "first_departure_state_within_h_or_no_departure",
+                "deployed_direction_role": "first_destination_given_departure",
+                "selection_metric": "conditional_destination_log_loss",
+                "minimum_selection_departure_events": 8,
+                "minimum_selection_destination_classes": 2,
+                "minimum_selection_event_blocks": 3,
+                "champions": {
+                    f"{horizon}w": champion
+                    for horizon, champion in champions.items()
+                },
+                "leaderboard": _v5_frame_records(leaderboard),
+                "selection_diagnostics": _v5_frame_records(diagnostics),
+            },
+        }
+    }
+    frames = {
+        "directional-oos-predictions.csv": predictions,
+        "directional-model-leaderboard.csv": leaderboard,
+        "directional-walk-forward-splits.csv": pd.DataFrame(split_rows),
+        "directional-selection-diagnostics.csv": diagnostics,
+        "directional-forecasts.csv": pd.DataFrame(forecast_rows),
+    }
+    return payload, frames
+
+
+def _v5_conditional_audit_fixture() -> tuple[dict, dict[str, pd.DataFrame]]:
+    rows: list[dict[str, object]] = []
+    origins = pd.date_range("2020-01-03T21:00:00Z", periods=20, freq="7D")
+    for horizon in (1, 4, 13):
+        for position, origin in enumerate(origins):
+            entry = origin + timedelta(weeks=1)
+            rows.append(
+                {
+                    "origin_position": position,
+                    "origin_date": origin,
+                    "entry_date": entry,
+                    "exit_date": entry + timedelta(weeks=horizon),
+                    "state": "risk_on",
+                    "episode_id": position // 4,
+                    "asset": "SPY",
+                    "horizon_weeks": horizon,
+                    "execution_lag_weeks": 1,
+                    "return_currency": "USD",
+                    "forward_return": (position - 8) / 100.0 + horizon / 1000.0,
+                    "max_drawdown": -(position % 5 + horizon) / 100.0,
+                }
+            )
+    outcomes = pd.DataFrame(rows)
+    keys = pd.DataFrame(
+        [
+            {"state": "risk_on", "asset": "SPY", "horizon_weeks": horizon}
+            for horizon in (1, 4, 13)
+        ]
+    )
+    statistics = audit_outputs._recompute_v5_conditional_statistics(
+        outcomes,
+        keys,
+        expected_resamples=7,
+    )
+    payload = {
+        "model": {
+            "profile": "quick",
+            "execution_parameters": _v5_execution_parameters(),
+        },
+        "research": {
+            "conditional_asset_stats": {
+                "rows": _v5_frame_records(statistics),
+            }
+        },
+    }
+    frames = {
+        "conditional-asset-outcomes.csv": outcomes,
+        "conditional-asset-statistics.csv": statistics,
+    }
+    return payload, frames
+
+
+def _v5_duration_audit_fixture() -> tuple[dict, pd.DataFrame, dict[str, object]]:
+    states: list[str] = []
+    for duration in (2, 3, 4, 5, 6):
+        states.extend(["risk_on"] * duration)
+        states.append("transition")
+    states.extend(["risk_on"] * 3)
+    dates = pd.date_range("2023-01-06T21:00:00Z", periods=len(states), freq="7D")
+    membership = pd.DataFrame({"date": dates, "state": states})
+    as_of = dates[-1].tz_convert("America/New_York").date().isoformat()
+    duration = audit_outputs._recompute_v5_duration(states, as_of=as_of)
+    duration.update(
+        {
+            "bootstrap": {
+                "unit": "episode",
+                "resamples": 7,
+                "valid_resamples": 0,
+                "seed": 17,
+                "interval": 0.95,
+            },
+            "ci95": {
+                "conditional_survival": {"4w": None, "13w": None},
+                "departure_probability": {"4w": None, "13w": None},
+                "median_remaining_weeks": None,
+                "restricted_mean_remaining_weeks": None,
+            },
+        }
+    )
+    execution = _v5_execution_parameters()
+    payload = {
+        "weekly": [
+            {
+                "date": as_of,
+                "data_as_of": dates[-1].isoformat(),
+                "current": {"state": states[-1]},
+                "duration_context": duration,
+            }
+        ]
+    }
+    return payload, membership, execution
+
+
+def test_v5_directional_audit_recomputes_purge_and_simplex() -> None:
+    payload, frames = _v5_directional_audit_fixture()
+
+    summary = audit_outputs._audit_v5_directional(payload, frames)
+
+    assert summary["oos_rows"] == 18
+    assert summary["champions"]["13w"] == "empirical_first_passage"
+
+
+def test_v5_directional_audit_rejects_origin_state_mass() -> None:
+    payload, frames = _v5_directional_audit_fixture()
+    frames["directional-oos-predictions.csv"].loc[0, "p_risk_on"] = 0.01
+    frames["directional-oos-predictions.csv"].loc[0, "p_no_departure"] = 0.69
+
+    with pytest.raises(audit_outputs.AuditFailure, match="origin state"):
+        audit_outputs._audit_v5_directional(payload, frames)
+
+
+def test_v5_directional_audit_links_predictions_to_split_origins() -> None:
+    payload, frames = _v5_directional_audit_fixture()
+    splits = frames["directional-walk-forward-splits.csv"]
+    splits.loc[0, "origin_date"] += timedelta(days=1)
+    splits.loc[0, "target_end"] += timedelta(days=1)
+
+    with pytest.raises(audit_outputs.AuditFailure, match="predictions/splits"):
+        audit_outputs._audit_v5_directional(payload, frames)
+
+
+def test_v5_directional_audit_recomputes_supported_gate_and_holm() -> None:
+    payload, frames = _v5_supported_directional_audit_fixture()
+
+    summary = audit_outputs._audit_v5_directional(payload, frames)
+
+    assert summary["champions"] == {
+        "1w": "regularized_multinomial",
+        "4w": "regularized_multinomial",
+        "13w": "regularized_multinomial",
+    }
+    diagnostics = frames["directional-selection-diagnostics.csv"]
+    candidate = diagnostics.loc[
+        diagnostics["model"].eq("regularized_multinomial")
+    ]
+    assert candidate["gate_passed"].all()
+    assert candidate["holm_adjusted_p_value"].notna().all()
+    assert set(candidate["selection_event_count"]) == {8}
+    assert set(candidate["selection_destination_class_count"]) == {2}
+    assert set(candidate["selection_effective_event_blocks"]) == {3}
+
+
+@pytest.mark.parametrize(("field", "delta"), [("event_count", 1), ("log_loss", 0.1)])
+def test_v5_directional_audit_rejects_rehashed_leaderboard_tamper(
+    tmp_path: Path,
+    field: str,
+    delta: float,
+) -> None:
+    payload, frames = _v5_supported_directional_audit_fixture()
+    leaderboard = frames["directional-model-leaderboard.csv"]
+    mask = (
+        leaderboard["horizon_weeks"].eq(1)
+        & leaderboard["evaluation_split"].eq("selection")
+        & leaderboard["model"].eq("empirical_first_passage")
+    )
+    leaderboard.loc[mask, field] += delta
+    for row in payload["model"]["directional_transition"]["leaderboard"]:
+        if (
+            row["horizon_weeks"] == 1
+            and row["evaluation_split"] == "selection"
+            and row["model"] == "empirical_first_passage"
+        ):
+            row[field] += delta
+
+    _, loaded = _write_v5_contract_frames(tmp_path, frames)
+
+    audit_outputs._audit_v5_embedded_records(
+        payload["model"]["directional_transition"]["leaderboard"],
+        loaded["directional-model-leaderboard.csv"],
+        keys=("horizon_weeks", "evaluation_split", "model"),
+        context="mutated leaderboard parity",
+    )
+    with pytest.raises(audit_outputs.AuditFailure, match=field):
+        audit_outputs._audit_v5_directional(payload, loaded)
+
+
+def test_v5_directional_audit_rejects_rehashed_champion_and_forecast_tamper(
+    tmp_path: Path,
+) -> None:
+    payload, frames = _v5_supported_directional_audit_fixture()
+    forged = "weak_regularized_multinomial"
+    payload["model"]["directional_transition"]["champions"]["1w"] = forged
+    forecasts = frames["directional-forecasts.csv"]
+    forecasts.loc[forecasts["horizon_weeks"].eq(1), "model"] = forged
+
+    _, loaded = _write_v5_contract_frames(tmp_path, frames)
+
+    with pytest.raises(audit_outputs.AuditFailure, match="champion disagrees"):
+        audit_outputs._audit_v5_directional(payload, loaded)
+
+
+def test_v5_directional_audit_rejects_rehashed_embedded_and_sidecar_holm_tamper(
+    tmp_path: Path,
+) -> None:
+    payload, frames = _v5_supported_directional_audit_fixture()
+    diagnostics = frames["directional-selection-diagnostics.csv"]
+    mask = diagnostics["model"].eq("regularized_multinomial")
+    diagnostics.loc[mask, "holm_adjusted_p_value"] += 0.10
+    for row in payload["model"]["directional_transition"][
+        "selection_diagnostics"
+    ]:
+        if row["model"] == "regularized_multinomial":
+            row["holm_adjusted_p_value"] += 0.10
+
+    contracts, loaded = _write_v5_contract_frames(tmp_path, frames)
+
+    assert contracts["directional_selection_diagnostics"]["sha256"] == hashlib.sha256(
+        (tmp_path / "directional-selection-diagnostics.csv").read_bytes()
+    ).hexdigest()
+    audit_outputs._audit_v5_embedded_records(
+        payload["model"]["directional_transition"]["selection_diagnostics"],
+        loaded["directional-selection-diagnostics.csv"],
+        keys=("horizon_weeks", "model"),
+        context="mutated directional parity",
+    )
+    with pytest.raises(audit_outputs.AuditFailure, match="holm_adjusted_p_value"):
+        audit_outputs._audit_v5_directional(payload, loaded)
+
+
+def _v5_weekly_directional_binding_fixture() -> tuple[
+    dict,
+    dict[str, pd.DataFrame],
+    pd.DataFrame,
+]:
+    payload, frames = _v5_directional_audit_fixture()
+    origin = pd.Timestamp("2026-07-03T20:00:00Z")
+    payload["weekly"] = [
+        {
+            "date": origin.date().isoformat(),
+            "data_as_of": origin.isoformat(),
+            "current": {"state": "risk_on"},
+            "directional_risk": {
+                f"{horizon}w": {
+                    "probability": 0.3,
+                    "no_departure": 0.7,
+                    "first_destination": {
+                        "risk_on": 0.0,
+                        "transition": 0.2,
+                        "risk_off": 0.1,
+                    },
+                    "target_end": (
+                        origin + timedelta(weeks=horizon)
+                    ).date().isoformat(),
+                    "model": "empirical_first_passage",
+                    "method": "first_departure_state_within_h_or_no_departure",
+                }
+                for horizon in (1, 4, 13)
+            },
+        }
+    ]
+    membership = pd.DataFrame(
+        {
+            "date": pd.date_range(
+                "2026-06-19T20:00:00Z", periods=3, freq="7D"
+            ),
+            "state": ["transition", "risk_on", "risk_on"],
+        }
+    )
+    return payload, frames, membership
+
+
+def test_v5_weekly_directional_audit_binds_sidecar_and_champion() -> None:
+    payload, frames, membership = _v5_weekly_directional_binding_fixture()
+
+    summary = audit_outputs._audit_v5_weekly_directional(
+        payload,
+        frames,
+        membership,
+    )
+
+    assert summary == {"matched_rows": 3, "fallback_rows": 0}
+
+
+@pytest.mark.parametrize("field", ["model", "first_destination"])
+def test_v5_weekly_directional_audit_rejects_published_tamper(field: str) -> None:
+    payload, frames, membership = _v5_weekly_directional_binding_fixture()
+    row = payload["weekly"][0]["directional_risk"]["4w"]
+    if field == "model":
+        row["model"] = "forged_model"
+    else:
+        row["first_destination"]["transition"] = 0.15
+        row["first_destination"]["risk_off"] = 0.15
+
+    with pytest.raises(audit_outputs.AuditFailure, match="source mismatch"):
+        audit_outputs._audit_v5_weekly_directional(payload, frames, membership)
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    [
+        ("n", 21),
+        ("unique_episodes", 6),
+        ("status", "insufficient_support"),
+        ("mean_return", 0.987654321),
+        ("mean_return_ci95_lower", 0.87654321),
+        ("bootstrap_seed", 999),
+        ("bootstrap_resamples", 8),
+    ],
+)
+def test_v5_conditional_audit_rejects_rehashed_embedded_and_sidecar_tamper(
+    tmp_path: Path,
+    field: str,
+    replacement: object,
+) -> None:
+    payload, frames = _v5_conditional_audit_fixture()
+    statistics = frames["conditional-asset-statistics.csv"]
+    statistics.loc[0, field] = replacement
+    payload["research"]["conditional_asset_stats"]["rows"][0][field] = replacement
+
+    contracts, loaded = _write_v5_contract_frames(tmp_path, frames)
+
+    assert contracts["conditional_asset_statistics"]["sha256"] == hashlib.sha256(
+        (tmp_path / "conditional-asset-statistics.csv").read_bytes()
+    ).hexdigest()
+    audit_outputs._audit_v5_embedded_records(
+        payload["research"]["conditional_asset_stats"]["rows"],
+        loaded["conditional-asset-statistics.csv"],
+        keys=("state", "asset", "horizon_weeks"),
+        context="mutated conditional parity",
+    )
+    with pytest.raises(audit_outputs.AuditFailure, match=field):
+        audit_outputs._audit_v5_conditional(payload, loaded)
+
+
+def test_v5_conditional_audit_recomputes_all_point_and_interval_fields() -> None:
+    payload, frames = _v5_conditional_audit_fixture()
+
+    summary = audit_outputs._audit_v5_conditional(payload, frames)
+
+    assert summary == {
+        "outcome_rows": 60,
+        "statistics_rows": 3,
+        "bootstrap_resamples": 7,
+    }
+
+
+def test_v5_duration_audit_recomputes_corrected_d_minus_one_km() -> None:
+    payload, membership, execution = _v5_duration_audit_fixture()
+
+    summary = audit_outputs._audit_v5_duration(payload, membership, execution)
+
+    duration = payload["weekly"][0]["duration_context"]
+    assert summary == {"weeks": 1, "latest_bootstrap_resamples": 7}
+    assert duration["status"] == "ok"
+    assert duration["completed_spells"] == 5
+    assert duration["elapsed_weeks"] == 3
+
+
+def test_v5_duration_audit_rejects_tampered_point_estimate() -> None:
+    payload, membership, execution = _v5_duration_audit_fixture()
+    duration = payload["weekly"][0]["duration_context"]
+    duration["conditional_survival"]["4w"] = 0.75
+    duration["departure_probability"]["4w"] = 0.25
+
+    with pytest.raises(audit_outputs.AuditFailure, match="conditional_survival.4w"):
+        audit_outputs._audit_v5_duration(payload, membership, execution)
+
+
+def test_v5_duration_audit_links_latest_resamples_to_execution_parameters() -> None:
+    payload, membership, execution = _v5_duration_audit_fixture()
+    duration = payload["weekly"][0]["duration_context"]
+    duration["bootstrap"]["resamples"] = 8
+
+    with pytest.raises(audit_outputs.AuditFailure, match="resamples/execution"):
+        audit_outputs._audit_v5_duration(payload, membership, execution)
+
+
+def test_v5_duration_audit_rejects_ci_without_enough_valid_resamples() -> None:
+    payload, membership, execution = _v5_duration_audit_fixture()
+    duration = payload["weekly"][0]["duration_context"]
+    duration["bootstrap"]["valid_resamples"] = 7
+
+    with pytest.raises(audit_outputs.AuditFailure, match="valid-resample linkage"):
+        audit_outputs._audit_v5_duration(payload, membership, execution)
+
+
+def test_v5_duration_audit_honors_exact_weekly_as_of_timestamp() -> None:
+    payload, membership, execution = _v5_duration_audit_fixture()
+    latest = pd.to_datetime(membership.iloc[-1]["date"], utc=True)
+    payload["weekly"][0]["data_as_of"] = (latest - timedelta(hours=1)).isoformat()
+
+    with pytest.raises(audit_outputs.AuditFailure, match="as-of evidence"):
+        audit_outputs._audit_v5_duration(payload, membership, execution)
+
+
+def _v5_fx_audit_fixture(
+    rows: int,
+) -> tuple[dict, dict[str, pd.DataFrame], pd.DataFrame]:
+    from regime_lab.analysis.fx import FXFeatureResult
+    from regime_lab.analysis.fx_ablation import (
+        FX_ABLATION_OOS_COLUMNS,
+        run_fx_shadow_ablation,
+    )
+
+    observation_weeks = pd.date_range(
+        "2020-01-03", periods=rows, freq="W-FRI"
+    )
+    cutoffs = (
+        (observation_weeks + pd.offsets.Hour(16))
+        .tz_localize("America/New_York")
+        .tz_convert("UTC")
+    )
+    position = np.arange(rows, dtype=float)
+    latent = np.sin(position / 5.0) + 0.35 * np.cos(position / 11.0)
+    states = pd.Series(
+        np.select(
+            [latent > 0.35, latent < -0.35],
+            ["risk_on", "risk_off"],
+            default="transition",
+        ),
+        index=cutoffs,
+        dtype="object",
+    )
+    core = pd.DataFrame(
+        {
+            "core__trend": np.roll(latent, 2),
+            "core__stress": np.cos(position / 7.0),
+        },
+        index=cutoffs,
+    )
+    features = pd.DataFrame(
+        {
+            "fx__brd__usd_log_return_1w": latent,
+            "fx__afe__usd_log_return_1w": np.sin(position / 6.0),
+            "fx__eme__usd_log_return_1w": np.cos(position / 9.0),
+            **{
+                f"fx__{code}__usd_log_return_1w": (
+                    latent * (1.0 + offset / 20.0)
+                    + 0.01 * np.sin(position / (offset + 2.0))
+                )
+                for offset, code in enumerate(
+                    ("eur", "jpy", "gbp", "chf", "cad", "aud", "cny", "mxn", "brl")
+                )
+            },
+        },
+        index=observation_weeks,
+        dtype=float,
+    )
+    availability = (
+        observation_weeks
+        + pd.offsets.Day(3)
+        + pd.offsets.Hour(16)
+        + pd.offsets.Minute(15)
+    ).tz_localize("America/New_York").tz_convert("UTC")
+    coverage = pd.DataFrame(
+        {
+            "feature_available_at": availability,
+            "bilateral_level_count": 9,
+            "core_level_count": 3,
+            "archive_correction_quarantined": False,
+            "archive_correction_available_at": pd.NaT,
+            "archive_correction_quarantine_until_week": pd.NaT,
+        },
+        index=observation_weeks,
+    )
+    empty = pd.DataFrame(index=observation_weeks)
+    result = FXFeatureResult(
+        features=features,
+        weekly_usd_log_levels=empty,
+        weekly_availability=empty,
+        coverage=coverage,
+        status=empty,
+    )
+    evidence: list[pd.DataFrame] = []
+    ablation = run_fx_shadow_ablation(
+        core,
+        states,
+        result,
+        cutoffs,
+        bootstrap_resamples=19,
+        evidence_sink=evidence.append,
+    )
+    ablation_oos = (
+        evidence[0]
+        if evidence
+        else pd.DataFrame(columns=FX_ABLATION_OOS_COLUMNS)
+    )
+    feature_sidecar = features.reset_index(names="observation_week")
+    coverage_sidecar = coverage.reset_index(names="observation_week")
+    membership = pd.DataFrame({"date": cutoffs, "state": states.to_numpy()})
+    return (
+        {"model": {"fx_ablation": ablation}},
+        {
+            "fx-features.csv": feature_sidecar,
+            "fx-coverage.csv": coverage_sidecar,
+            "fx-ablation-oos.csv": ablation_oos,
+        },
+        membership,
+    )
+
+
+@pytest.mark.parametrize(
+    ("rows", "expected_status"),
+    [(156, "insufficient_history"), (157, "evaluated")],
+)
+def test_v5_fx_audit_accepts_complete_readiness_contract(
+    rows: int,
+    expected_status: str,
+) -> None:
+    payload, frames, membership = _v5_fx_audit_fixture(rows)
+
+    summary = audit_outputs._audit_v5_fx(payload, frames, membership)
+
+    assert summary["status"] == expected_status
+    assert summary["eligible_common_weeks"] == rows - 1
+
+
+def test_v5_fx_audit_binds_model_and_gate_to_preregistration() -> None:
+    payload, _, _ = _v5_fx_audit_fixture(156)
+    payload["meta"] = {"mode": "demo"}
+    payload["model"]["fx_ablation"]["gate"]["bootstrap_resamples"] = 1_999
+    preregistration = json.loads(
+        (ROOT / "config" / "structural_v5.json").read_text(encoding="utf-8")
+    )
+
+    audit_outputs._audit_v5_fx_provenance(payload, preregistration)
+
+    payload["model"]["fx_ablation"]["gate"]["alpha"] = 0.10
+    with pytest.raises(audit_outputs.AuditFailure, match="preregistration"):
+        audit_outputs._audit_v5_fx_provenance(payload, preregistration)
+
+
+def test_v5_fx_audit_rejects_self_consistent_forged_common_origin() -> None:
+    payload, frames, membership = _v5_fx_audit_fixture(157)
+    origins = payload["model"]["fx_ablation"]["common_evaluation_origins"]
+    origins["rows"][0]["train_size"] += 1
+
+    with pytest.raises(
+        audit_outputs.AuditFailure,
+        match="common evaluation origins",
+    ):
+        audit_outputs._audit_v5_fx(payload, frames, membership)
+
+
+def test_v5_fx_audit_rejects_forged_holm_adjustment() -> None:
+    payload, frames, membership = _v5_fx_audit_fixture(157)
+    comparison = payload["model"]["fx_ablation"]["gate"]["comparisons"][0]
+    comparison["holm_adjusted_p_value"] += 0.001
+
+    with pytest.raises(audit_outputs.AuditFailure, match="Holm adjustment"):
+        audit_outputs._audit_v5_fx(payload, frames, membership)
+
+
+def test_v5_fx_audit_rejects_oos_probability_forgery() -> None:
+    payload, frames, membership = _v5_fx_audit_fixture(157)
+    evidence = frames["fx-ablation-oos.csv"]
+    evidence.loc[0, "p_risk_on"] += 0.01
+    evidence.loc[0, "p_transition"] -= 0.01
+
+    with pytest.raises(audit_outputs.AuditFailure, match="metrics disagree"):
+        audit_outputs._audit_v5_fx(payload, frames, membership)
+
+
+def test_v5_fx_audit_rejects_oos_actual_forgery() -> None:
+    payload, frames, membership = _v5_fx_audit_fixture(157)
+    evidence = frames["fx-ablation-oos.csv"]
+    evidence.loc[0, "actual"] = (
+        "risk_off" if evidence.loc[0, "actual"] != "risk_off" else "risk_on"
+    )
+
+    with pytest.raises(audit_outputs.AuditFailure, match="membership evidence"):
+        audit_outputs._audit_v5_fx(payload, frames, membership)
+
+
+def test_v5_fx_audit_rejects_oos_purge_or_common_hash_forgery() -> None:
+    payload, frames, membership = _v5_fx_audit_fixture(157)
+    evidence = frames["fx-ablation-oos.csv"]
+    evidence.loc[0, "last_train_target"] = evidence.loc[0, "origin_date"]
+
+    with pytest.raises(audit_outputs.AuditFailure, match="training target"):
+        audit_outputs._audit_v5_fx(payload, frames, membership)
+
+    payload, frames, membership = _v5_fx_audit_fixture(157)
+    frames["fx-ablation-oos.csv"]["common_origins_sha256"] = "0" * 64
+    with pytest.raises(audit_outputs.AuditFailure, match="common-origin hash"):
+        audit_outputs._audit_v5_fx(payload, frames, membership)
+
+
+def test_v5_fx_audit_rejects_forged_raw_bootstrap_p_value() -> None:
+    payload, frames, membership = _v5_fx_audit_fixture(157)
+    comparison = payload["model"]["fx_ablation"]["gate"]["comparisons"][0]
+    comparison["raw_p_value"] += 0.001
+
+    with pytest.raises(audit_outputs.AuditFailure, match="raw bootstrap"):
+        audit_outputs._audit_v5_fx(payload, frames, membership)
+
+
+def test_v5_fx_audit_binds_variant_counts_to_core_feature_manifest() -> None:
+    payload, frames, membership = _v5_fx_audit_fixture(157)
+
+    with pytest.raises(audit_outputs.AuditFailure, match="feature manifest"):
+        audit_outputs._audit_v5_fx(
+            payload,
+            frames,
+            membership,
+            core_feature_count=3,
+        )
+
+
+def _v5_fx_quarantine_fixture() -> tuple[pd.DataFrame, pd.Timestamp]:
+    weeks = pd.date_range("2023-01-06", periods=35, freq="W-FRI")
+    correction = pd.Timestamp("2023-01-09T05:00:00Z")
+    quarantined = pd.Series(False, index=weeks)
+    quarantined.iloc[:27] = True
+    available = pd.Series(
+        pd.NaT,
+        index=weeks,
+        dtype="datetime64[ns, UTC]",
+    )
+    available.loc[quarantined] = correction
+    until = pd.Series(pd.NaT, index=weeks, dtype="datetime64[ns]")
+    until.loc[quarantined] = pd.Timestamp("2023-07-14")
+    coverage = pd.DataFrame(
+        {
+            "archive_correction_quarantined": quarantined,
+            "archive_correction_available_at": available,
+            "archive_correction_quarantine_until_week": until,
+            "feature_status": np.where(
+                quarantined,
+                "correction_quarantine",
+                "ok",
+            ),
+        },
+        index=weeks,
+    )
+    return coverage, correction
+
+
+def test_v5_fx_audit_rebuilds_exact_27_origin_correction_quarantine() -> None:
+    coverage, correction = _v5_fx_quarantine_fixture()
+
+    summary = audit_outputs._audit_v5_fx_correction_quarantine(
+        coverage,
+        correction_events=[correction],
+    )
+
+    assert summary == {
+        "correction_events": 1,
+        "visible_correction_events": 1,
+        "quarantined_weeks": 27,
+        "first_quarantined_cutoff": "2023-01-13",
+        "last_quarantined_cutoff": "2023-07-14",
+    }
+
+
+def test_v5_fx_audit_rejects_gap_in_correction_quarantine_union() -> None:
+    coverage, correction = _v5_fx_quarantine_fixture()
+    week = coverage.index[10]
+    coverage.loc[week, "archive_correction_quarantined"] = False
+    coverage.loc[week, "archive_correction_available_at"] = pd.NaT
+    coverage.loc[week, "archive_correction_quarantine_until_week"] = pd.NaT
+    coverage.loc[week, "feature_status"] = "ok"
+
+    with pytest.raises(audit_outputs.AuditFailure, match="mask disagrees"):
+        audit_outputs._audit_v5_fx_correction_quarantine(
+            coverage,
+            correction_events=[correction],
+        )
+
+
+def test_v5_fx_audit_rejects_non_27_week_correction_end() -> None:
+    coverage, correction = _v5_fx_quarantine_fixture()
+    coverage.loc[
+        coverage.index[0],
+        "archive_correction_quarantine_until_week",
+    ] = pd.Timestamp("2023-07-21")
+
+    with pytest.raises(audit_outputs.AuditFailure, match="exactly 27 origins"):
+        audit_outputs._audit_v5_fx_correction_quarantine(
+            coverage,
+            correction_events=[correction],
+        )
+
+
+def test_v5_execution_parameters_reject_rehashed_override_tamper() -> None:
+    parameters = _v5_execution_parameters()
+    parameters["duration_bootstrap_resamples"] = 1_999
+    unhashed = {key: value for key, value in parameters.items() if key != "sha256"}
+    parameters["sha256"] = audit_outputs.canonical_json_sha256(unhashed)
+    payload = {"model": {"profile": "quick", "execution_parameters": parameters}}
+
+    with pytest.raises(audit_outputs.AuditFailure, match="override linkage"):
+        audit_outputs._audit_v5_execution_parameters(payload)
+
+
+def test_v5_execution_parameters_reject_sha_tamper() -> None:
+    parameters = _v5_execution_parameters()
+    parameters["sha256"] = "0" * 64
+    payload = {"model": {"profile": "quick", "execution_parameters": parameters}}
+
+    with pytest.raises(audit_outputs.AuditFailure, match="SHA-256"):
+        audit_outputs._audit_v5_execution_parameters(payload)
+
+
+def test_v5_file_contract_recomputes_hash_and_rows(tmp_path: Path) -> None:
+    path = tmp_path / "directional-oos-predictions.csv"
+    pd.DataFrame({"value": [1, 2]}).to_csv(path, index=False)
+    contract = {
+        "directional_oos_predictions": {
+            "path": path.name,
+            "row_count": 2,
+            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        }
+    }
+
+    frames = audit_outputs._audit_v5_file_contracts(
+        contract,
+        tmp_path,
+        context="fixture",
+    )
+
+    assert list(frames) == [path.name]
+    path.write_text("value\n3\n", encoding="utf-8")
+    with pytest.raises(audit_outputs.AuditFailure, match="SHA-256"):
+        audit_outputs._audit_v5_file_contracts(
+            contract,
+            tmp_path,
+            context="fixture",
+        )
+
+
+def test_v5_core_audit_recomputes_frozen_champion_and_metrics() -> None:
+    payload, artifacts = _frozen_v4_core_fixture()
+
+    summary = audit_outputs._audit_v5_core_model(payload, artifacts)
+
+    assert summary == {
+        "profile": "standard",
+        "champion": "markov",
+        "models": 16,
+        "selection_origins": 365,
+        "holdout_origins": 187,
+        "fallback_rows": 20,
+        "stacking": {
+            "origins": 552,
+            "experts": ["markov", "xgboost", "xgb_hazard_destination"],
+            "rows": 1_656,
+        },
+        "multiscale": None,
+        "core_artifacts": None,
+    }
+
+
+def test_v5_core_audit_rejects_forged_embedded_leaderboard() -> None:
+    source, artifacts = _frozen_v4_core_fixture()
+    payload = deepcopy(source)
+    payload["model"]["leaderboard"][0]["log_loss"] += 0.1
+
+    with pytest.raises(audit_outputs.AuditFailure, match="embedded leaderboard"):
+        audit_outputs._audit_v5_core_model(payload, artifacts)
+
+
+def test_v5_core_audit_rejects_forged_stacking_weight(
+    tmp_path: Path,
+) -> None:
+    payload, artifacts = _frozen_v4_core_fixture()
+    for name in (
+        "candidate-manifest.json",
+        "oos-predictions.csv",
+        "walk-forward-splits.csv",
+        "model-leaderboard.csv",
+        "selection-diagnostics.csv",
+        "stacking-weights.csv",
+    ):
+        (tmp_path / name).write_bytes((artifacts / name).read_bytes())
+    stacking = pd.read_csv(tmp_path / "stacking-weights.csv")
+    stacking.loc[0, "weight"] = float(stacking.loc[0, "weight"]) + 0.1
+    stacking.to_csv(tmp_path / "stacking-weights.csv", index=False)
+
+    with pytest.raises(audit_outputs.AuditFailure, match="weight mismatch"):
+        audit_outputs._audit_v5_core_model(payload, tmp_path)
+
+
+def _v5_multiscale_audit_fixture(
+    tmp_path: Path,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    from regime_lab.analysis.structural_models import (
+        DEFAULT_ENSEMBLE_EXPERTS,
+        PROBABILITY_COLUMNS,
+        causal_multiscale_ensemble,
+        forecast_structural_probabilities,
+    )
+
+    origins = pd.date_range("2021-01-01", periods=36, freq="W-FRI", tz="UTC")
+    pattern = np.asarray(
+        ["risk_on", "transition", "risk_off", "transition"], dtype=object
+    )
+    current = np.resize(pattern, len(origins))
+    actual = np.roll(current, -1)
+    confidence = {
+        "markov": 0.58,
+        "xgboost": 0.67,
+        "xgb_hazard_destination": 0.72,
+    }
+    expert_rows: list[dict[str, object]] = []
+    for position, origin in enumerate(origins):
+        for name in DEFAULT_ENSEMBLE_EXPERTS:
+            probability = np.full(3, (1.0 - confidence[name]) / 2.0)
+            probability[audit_outputs.STATE_ORDER.index(str(actual[position]))] = (
+                confidence[name]
+            )
+            expert_rows.append(
+                {
+                    "origin_date": origin,
+                    "target_date": origin + pd.offsets.Week(1),
+                    "model": name,
+                    "evaluation_split": (
+                        "selection" if position < 30 else "holdout"
+                    ),
+                    "current_state": str(current[position]),
+                    "actual": str(actual[position]),
+                    "predicted": str(actual[position]),
+                    **{
+                        column: float(probability[index])
+                        for index, column in enumerate(PROBABILITY_COLUMNS)
+                    },
+                    "fallback": False,
+                    "fallback_reason": "",
+                }
+            )
+    experts = pd.DataFrame(expert_rows)
+    multiscale = causal_multiscale_ensemble(experts)
+    latest_origin = origins[-1] + pd.offsets.Week(1)
+    latest = forecast_structural_probabilities(
+        origin_date=latest_origin,
+        current_state="transition",
+        markov_probability=(0.3, 0.5, 0.2),
+        xgboost_probability=(0.25, 0.55, 0.2),
+        binary_xgboost_p_change=0.2,
+        historical_oos_predictions=experts,
+        current_duration_weeks=3,
+        include_multiscale=True,
+    )
+    structural = latest.probabilities.copy()
+    structural["target_date"] = latest_origin + pd.offsets.Week(1)
+    structural.to_csv(tmp_path / "structural-forecasts.csv", index=False)
+    assert latest.multiscale_scale_predictions is not None
+    scale_predictions = pd.concat(
+        [multiscale.scale_predictions, latest.multiscale_scale_predictions],
+        ignore_index=True,
+    )
+    latest_weights = latest.stacking_weights.loc[
+        latest.stacking_weights["ensemble_model"].astype(str).eq(
+            "causal_multiscale_ensemble"
+        )
+    ]
+    stacking = pd.concat(
+        [multiscale.weights, latest_weights], ignore_index=True, sort=False
+    )
+    predictions = pd.concat(
+        [experts, multiscale.predictions], ignore_index=True, sort=False
+    )
+    return predictions, stacking, scale_predictions
+
+
+def test_v5_multiscale_audit_rebuilds_all_scales_and_equal_average(
+    tmp_path: Path,
+) -> None:
+    predictions, stacking, scales = _v5_multiscale_audit_fixture(tmp_path)
+
+    summary = audit_outputs.audit_v5_multiscale_ensemble(
+        predictions,
+        stacking,
+        scales,
+        tmp_path,
+    )
+
+    assert summary == {
+        "oos_origins": 36,
+        "latest_origins": 1,
+        "scale_rows": 111,
+        "stacking_rows": 333,
+        "scales": [26, 52, 104],
+        "outer_scale_weights": [1.0 / 3.0] * 3,
+    }
+
+
+def test_v5_multiscale_audit_rejects_forged_scale_probability(
+    tmp_path: Path,
+) -> None:
+    predictions, stacking, scales = _v5_multiscale_audit_fixture(tmp_path)
+    scales.loc[0, "p_risk_on"] += 0.01
+    scales.loc[0, "p_risk_off"] -= 0.01
+
+    with pytest.raises(audit_outputs.AuditFailure, match="scale probability"):
+        audit_outputs.audit_v5_multiscale_ensemble(
+            predictions,
+            stacking,
+            scales,
+            tmp_path,
+        )
+
+
+def test_audit_dispatches_v5_before_loading_v4_sidecars(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload_path = tmp_path / "regime-results.json"
+    payload_path.write_text(
+        json.dumps({"meta": {"result_version": "weekly-regime-result-v5"}}),
+        encoding="utf-8",
+    )
+    expected = {"ok": True, "contract": "v5"}
+    monkeypatch.setattr(audit_outputs, "audit_v5", lambda *args: expected)
+
+    assert audit_outputs.audit(payload_path, tmp_path / "missing", "auto") == expected
 
 
 def test_selection_audit_rebuilds_every_published_diagnostic_field() -> None:

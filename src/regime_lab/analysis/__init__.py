@@ -22,14 +22,39 @@ from .validation import evaluate_predictions, evaluate_transition_predictions
 from .validation import forecast_next_regime, run_benchmark, run_transition_benchmark
 from .validation import select_champion
 from .validation import select_champion_with_diagnostics
-from .structural_models import DynamicEnsembleResult, StructuralForecastResult
+from .structural_models import (
+    MULTISCALE_ENSEMBLE_AGGREGATION,
+    MULTISCALE_ENSEMBLE_HALF_LIVES_WEEKS,
+    MULTISCALE_ENSEMBLE_MODEL_NAME,
+    MULTISCALE_INNER_POOL_METHOD,
+    MULTISCALE_SCALE_FORECAST_COLUMNS,
+    DynamicEnsembleResult,
+    MultiscaleEnsembleResult,
+    StructuralForecastResult,
+)
 from .structural_models import augment_benchmark_with_structural_models
 from .structural_models import build_causal_dynamic_ensemble_oos
 from .structural_models import build_xgb_hazard_destination_oos
 from .structural_models import causal_dynamic_ensemble
+from .structural_models import causal_multiscale_ensemble
 from .structural_models import forecast_structural_probabilities
 from .structural_models import project_joint_survival_hazard
 from .structural_models import xgb_hazard_destination_probability
+from .directional import (
+    DirectionalBenchmarkResult,
+    first_departure_targets,
+    reconcile_directional_risk,
+    run_directional_transition_benchmark,
+)
+from .duration import duration_context
+from .fx import FXFeatureConfig, FXFeatureResult, build_fx_features, fx_context_at
+from .fx_ablation import (
+    FX_VARIANT_ORDER,
+    align_fx_features_to_cutoffs,
+    fx_ablation_readiness,
+    fx_ablation_variants,
+)
+from .outcomes import ConditionalOutcomeResult, build_conditional_asset_statistics
 
 __all__ = [
     "STATE_ORDER",
@@ -49,10 +74,16 @@ __all__ = [
     "ShadowNowcastResult",
     "DurationAwareTVTPHurdleClassifier",
     "DynamicEnsembleResult",
+    "MultiscaleEnsembleResult",
     "FeatureAblationResult",
     "FEATURE_ABLATION_CONTRACT",
     "MarkovDiscriminativeBlendClassifier",
     "StructuralForecastResult",
+    "MULTISCALE_ENSEMBLE_AGGREGATION",
+    "MULTISCALE_ENSEMBLE_HALF_LIVES_WEEKS",
+    "MULTISCALE_ENSEMBLE_MODEL_NAME",
+    "MULTISCALE_INNER_POOL_METHOD",
+    "MULTISCALE_SCALE_FORECAST_COLUMNS",
     "align_probabilities",
     "augment_with_current_state",
     "augment_benchmark_with_structural_models",
@@ -61,6 +92,7 @@ __all__ = [
     "build_weekly_features",
     "causal_state_durations",
     "causal_dynamic_ensemble",
+    "causal_multiscale_ensemble",
     "derive_causal_transition_features",
     "evaluate_predictions",
     "evaluate_transition_predictions",
@@ -79,4 +111,19 @@ __all__ = [
     "select_champion",
     "select_champion_with_diagnostics",
     "xgb_hazard_destination_probability",
+    "ConditionalOutcomeResult",
+    "DirectionalBenchmarkResult",
+    "FXFeatureConfig",
+    "FXFeatureResult",
+    "FX_VARIANT_ORDER",
+    "align_fx_features_to_cutoffs",
+    "build_conditional_asset_statistics",
+    "build_fx_features",
+    "duration_context",
+    "first_departure_targets",
+    "fx_context_at",
+    "fx_ablation_readiness",
+    "fx_ablation_variants",
+    "reconcile_directional_risk",
+    "run_directional_transition_benchmark",
 ]

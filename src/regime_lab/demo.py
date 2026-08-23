@@ -166,6 +166,7 @@ def generate_demo_payload(
     *,
     profile_name: str = "quick",
     progress: Callable[[str], None] | None = None,
+    contract_version: str = "v4",
 ) -> tuple[dict[str, Any], Any]:
     cutoffs, observations = _simulate_inputs(config)
     dataset = build_weekly_dataset(config, cutoffs, observations)
@@ -197,4 +198,5 @@ def generate_demo_payload(
         sources=sources,
         warnings=("고정 seed 모의자료이며 실제 미국 시장 판단이 아닙니다.",),
         progress=progress,
+        contract_version=contract_version,
     )

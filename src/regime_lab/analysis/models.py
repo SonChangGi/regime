@@ -856,6 +856,37 @@ _MODEL_SPECS: tuple[ModelSpec, ...] = (
         ),
     ),
     ModelSpec(
+        "causal_multiscale_ensemble",
+        "synthetic",
+        16,
+        ("quick", "standard", "full"),
+        default=False,
+        feature_design=(
+            "fixed_equal_probability_average_of_causal_discounted_completed_"
+            "oos_log_score_pools"
+        ),
+        task="synthetic_multiclass_next_state",
+        search_space=MappingProxyType(
+            {
+                "experts": ((
+                    "markov",
+                    "xgboost",
+                    "xgb_hazard_destination",
+                ),),
+                "scale_half_lives_weeks": ((26, 52, 104),),
+                "outer_scale_weights": ((1.0 / 3.0,) * 3,),
+                "aggregation": ("fixed_equal_probability_average",),
+                "inner_pool_method": (
+                    "causal_discounted_completed_oos_log_score",
+                ),
+                "minimum_history_rows": (26,),
+                "eligible_loss_rule": (
+                    "target_date_strictly_before_origin",
+                ),
+            }
+        ),
+    ),
+    ModelSpec(
         "joint_survival_hazard",
         "synthetic",
         8,

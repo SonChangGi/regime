@@ -8,6 +8,7 @@ It does not open the snapshot database, refit a model, or modify artifacts.
 from __future__ import annotations
 
 import argparse
+from datetime import timedelta
 import hashlib
 import json
 from pathlib import Path
@@ -24,6 +25,8 @@ from sklearn.linear_model import LogisticRegression
 
 STATE_ORDER = ("risk_on", "transition", "risk_off")
 PROBABILITY_COLUMNS = tuple(f"p_{state}" for state in STATE_ORDER)
+V5_SERIALIZED_PROBABILITY_DECIMALS = 8
+V5_SERIALIZED_SIMPLEX_ATOL = 1.1 * 10 ** (-V5_SERIALIZED_PROBABILITY_DECIMALS)
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 BASELINES = ("majority", "persistence", "markov")
 COMPLEXITY = {
@@ -44,6 +47,7 @@ COMPLEXITY = {
     "xgboost": 13,
     "xgb_hazard_destination": 14,
     "causal_dynamic_ensemble": 15,
+    "causal_multiscale_ensemble": 16,
 }
 V2_RESULT_VERSION = "weekly-regime-result-v2"
 V3_RESULT_VERSION = "weekly-regime-result-v3"
@@ -52,6 +56,67 @@ V3_FEATURE_SET_VERSION = "weekly-pit-market-internals-v3"
 V4_RESULT_VERSION = "weekly-regime-result-v4"
 V4_MODEL_VERSION = "weekly-nondl-structural-v4"
 V4_FEATURE_SET_VERSION = "weekly-pit-structural-v4"
+V5_RESULT_VERSION = "weekly-regime-result-v5"
+V5_SCHEMA_VERSION = "2.0.0"
+V5_RESEARCH_ARTIFACTS = (
+    ("directional_oos_predictions", "directional-oos-predictions.csv"),
+    ("directional_model_leaderboard", "directional-model-leaderboard.csv"),
+    ("directional_walk_forward_splits", "directional-walk-forward-splits.csv"),
+    ("directional_selection_diagnostics", "directional-selection-diagnostics.csv"),
+    ("directional_forecasts", "directional-forecasts.csv"),
+    ("conditional_asset_outcomes", "conditional-asset-outcomes.csv"),
+    ("conditional_asset_statistics", "conditional-asset-statistics.csv"),
+)
+V5_FX_ARTIFACTS = (
+    ("fx_features", "fx-features.csv"),
+    ("fx_coverage", "fx-coverage.csv"),
+    ("fx_ablation_oos", "fx-ablation-oos.csv"),
+)
+V5_FX_VARIANTS = (
+    "v4_control",
+    "v4_plus_broad_index",
+    "v4_plus_bilateral_panel",
+    "v4_plus_all_fx",
+)
+V5_FX_ABLATION_OOS_COLUMNS = (
+    "origin_date",
+    "target_date",
+    "variant",
+    "evaluation_split",
+    "current_state",
+    "actual",
+    "p_risk_on",
+    "p_transition",
+    "p_risk_off",
+    "train_size",
+    "gap",
+    "last_train_target",
+    "purged_origin_count",
+    "fallback",
+    "fallback_reason",
+    "common_origins_sha256",
+)
+V5_DIRECTIONAL_OUTCOMES = ("no_departure", *STATE_ORDER)
+V5_DIRECTIONAL_BASELINES = (
+    "empirical_first_passage",
+    "markov_first_passage",
+)
+V5_DIRECTIONAL_SCORE_TARGET = "first_destination_given_departure"
+V5_DIRECTIONAL_MINIMUM_EVENTS = 8
+V5_DIRECTIONAL_MINIMUM_DESTINATION_CLASSES = 2
+V5_DIRECTIONAL_MINIMUM_EVENT_BLOCKS = 3
+V5_DIRECTIONAL_BOOTSTRAP_RESAMPLES = 999
+V5_OUTCOME_ASSETS = ("SPY", "QQQ", "IWM", "TLT", "HYG", "UUP")
+V5_OUTCOME_HORIZONS = (1, 4, 13)
+V5_OUTCOME_POINT_METRICS = (
+    "mean_return",
+    "median_return",
+    "positive_rate",
+    "annualized_volatility",
+    "downside_volatility",
+    "cvar_5",
+    "mean_max_drawdown",
+)
 V4_PREREGISTRATION_SHA256 = (
     "2f53ada564efca770261f16ce6eb16ec9c9782bde014de7a7d85b7b24dbe407b"
 )
@@ -77,6 +142,9 @@ V4_BASE_MODELS = {
 }
 V4_STANDARD_MODELS = V4_BASE_MODELS | V4_STRUCTURAL_MODELS
 V4_FULL_MODELS = V4_STANDARD_MODELS | {"gaussian_hmm"}
+V5_MULTISCALE_MODEL = "causal_multiscale_ensemble"
+V5_STANDARD_MODELS = V4_STANDARD_MODELS | {V5_MULTISCALE_MODEL}
+V5_FULL_MODELS = V4_FULL_MODELS | {V5_MULTISCALE_MODEL}
 V4_STRUCTURAL_EXPERTS = (
     "markov",
     "xgboost",
@@ -1176,6 +1244,8 @@ def audit_joint_predictions(
 def audit_stacking_weights(
     predictions: pd.DataFrame,
     artifacts: Path,
+    *,
+    allow_v5_multiscale_rows: bool = False,
 ) -> dict[str, Any]:
     path = artifacts / "stacking-weights.csv"
     weights = read_csv(
@@ -1195,6 +1265,16 @@ def audit_stacking_weights(
     )
     for field in ("eligible", "current_fallback", "warmup"):
         weights[field] = boolean_series(weights[field], f"stacking {field}")
+    if allow_v5_multiscale_rows:
+        weights = weights.loc[
+            weights["ensemble_model"].astype(str).eq(
+                "causal_dynamic_ensemble"
+            )
+        ].copy()
+        require(
+            not weights.empty,
+            "v5 stacking sidecar omits causal_dynamic_ensemble",
+        )
     require(set(weights["ensemble_model"].astype(str)) == {"causal_dynamic_ensemble"},
             "stacking ensemble model mismatch")
     require(set(weights["expert"].astype(str)) == set(V4_STRUCTURAL_EXPERTS),
@@ -1330,6 +1410,401 @@ def audit_stacking_weights(
         "origins": len(reference_keys),
         "experts": list(V4_STRUCTURAL_EXPERTS),
         "rows": len(weights),
+    }
+
+
+def audit_v5_multiscale_ensemble(
+    predictions: pd.DataFrame,
+    stacking_weights: pd.DataFrame,
+    scale_predictions: pd.DataFrame,
+    artifacts: Path,
+) -> dict[str, Any]:
+    """Rebuild every V5 multiscale pool and its fixed outer average."""
+
+    from regime_lab.analysis.structural_models import (
+        MULTISCALE_SCALE_FORECAST_COLUMNS,
+    )
+
+    experts = tuple(V4_STRUCTURAL_EXPERTS)
+    scales = (26, 52, 104)
+    outer_weight = 1.0 / 3.0
+    require(
+        tuple(scale_predictions.columns) == MULTISCALE_SCALE_FORECAST_COLUMNS,
+        "v5 multiscale scale sidecar columns mismatch",
+    )
+    scales_frame = scale_predictions.copy()
+    for column in ("origin_date", "target_date"):
+        scales_frame[column] = pd.to_datetime(
+            scales_frame[column], utc=True, errors="raise"
+        )
+    scales_frame["fallback"] = boolean_series(
+        scales_frame["fallback"],
+        "v5 multiscale scale fallback",
+    )
+    require(
+        not scales_frame.duplicated(
+            ["row_role", "origin_date", "target_date", "scale_half_life_weeks"]
+        ).any(),
+        "v5 multiscale scale sidecar keys duplicate",
+    )
+    scale_probability = scales_frame.loc[:, PROBABILITY_COLUMNS].apply(
+        pd.to_numeric, errors="raise"
+    )
+    require(
+        np.isfinite(scale_probability.to_numpy(dtype=float)).all()
+        and ((scale_probability >= 0.0) & (scale_probability <= 1.0)).all().all()
+        and np.allclose(
+            scale_probability.sum(axis=1),
+            1.0,
+            atol=1e-12,
+            rtol=0.0,
+        ),
+        "v5 multiscale scale probabilities are invalid",
+    )
+    require(
+        set(scales_frame["row_role"].astype(str)) == {"oos", "latest_forecast"}
+        and set(scales_frame["ensemble_model"].astype(str))
+        == {V5_MULTISCALE_MODEL}
+        and set(scales_frame["scale_half_life_weeks"].astype(int)) == set(scales),
+        "v5 multiscale scale identity mismatch",
+    )
+    exact_columns = {
+        "minimum_history_rows": 26,
+        "eligible_loss_rule": "target_date_strictly_before_origin",
+        "inner_pool_method": "causal_discounted_completed_oos_log_score",
+        "expert_models": ";".join(experts),
+    }
+    for column, expected in exact_columns.items():
+        require(
+            scales_frame[column].eq(expected).all(),
+            f"v5 multiscale scale {column} mismatch",
+        )
+    require(
+        np.allclose(
+            pd.to_numeric(
+                scales_frame["outer_scale_weight"], errors="raise"
+            ),
+            outer_weight,
+            atol=1e-15,
+            rtol=0.0,
+        ),
+        "v5 multiscale outer scale weights are not exact thirds",
+    )
+
+    expert_oos = predictions.loc[
+        predictions["model"].astype(str).isin(experts)
+    ].copy()
+    multiscale_oos = predictions.loc[
+        predictions["model"].astype(str).eq(V5_MULTISCALE_MODEL)
+    ].copy()
+    require(
+        not expert_oos.empty and not multiscale_oos.empty,
+        "v5 multiscale OOS candidate or experts are missing",
+    )
+    oos_scales = scales_frame.loc[
+        scales_frame["row_role"].astype(str).eq("oos")
+    ].copy()
+    latest_scales = scales_frame.loc[
+        scales_frame["row_role"].astype(str).eq("latest_forecast")
+    ].copy()
+    oos_keys = multiscale_oos.loc[:, ["origin_date", "target_date"]].sort_values(
+        ["origin_date", "target_date"], ignore_index=True
+    )
+    scale_oos_keys = oos_scales.loc[
+        :, ["origin_date", "target_date"]
+    ].drop_duplicates().sort_values(
+        ["origin_date", "target_date"], ignore_index=True
+    )
+    require(
+        oos_keys.equals(scale_oos_keys)
+        and len(oos_scales) == len(oos_keys) * len(scales),
+        "v5 multiscale scale sidecar does not cover every OOS origin",
+    )
+    require(
+        len(latest_scales) == len(scales)
+        and latest_scales[["origin_date", "target_date"]].drop_duplicates().shape[0]
+        == 1,
+        "v5 multiscale latest scale sidecar must contain exactly three rows",
+    )
+
+    weights = stacking_weights.copy()
+    require_columns(
+        weights,
+        {
+            "origin_date",
+            "target_date",
+            "evaluation_split",
+            "ensemble_model",
+            "expert",
+            "weight",
+            "eligible",
+            "current_fallback",
+            "history_rows",
+            "common_history_rows",
+            "latest_eligible_target_date",
+            "discounted_log_loss",
+            "warmup",
+            "half_life_weeks",
+            "outer_scale_weight",
+            "minimum_history_rows",
+            "eligible_loss_rule",
+            "inner_pool_method",
+        },
+        "v5 multiscale stacking weights",
+    )
+    for column in ("origin_date", "target_date", "latest_eligible_target_date"):
+        weights[column] = pd.to_datetime(weights[column], utc=True, errors="coerce")
+    for column in ("eligible", "current_fallback", "warmup"):
+        weights[column] = boolean_series(
+            weights[column], f"v5 multiscale stacking {column}"
+        )
+    weights = weights.loc[
+        weights["ensemble_model"].astype(str).eq(V5_MULTISCALE_MODEL)
+    ].copy()
+    require(
+        not weights.empty
+        and set(weights["expert"].astype(str)) == set(experts)
+        and set(weights["half_life_weeks"].astype(int)) == set(scales),
+        "v5 multiscale stacking model/expert/scale identity mismatch",
+    )
+    require(
+        not weights.duplicated(
+            ["origin_date", "target_date", "half_life_weeks", "expert"]
+        ).any(),
+        "v5 multiscale stacking keys duplicate",
+    )
+    scale_keys = scales_frame.loc[
+        :, ["origin_date", "target_date", "scale_half_life_weeks"]
+    ].rename(columns={"scale_half_life_weeks": "half_life_weeks"})
+    weight_keys = weights.loc[
+        :, ["origin_date", "target_date", "half_life_weeks"]
+    ].drop_duplicates()
+    require(
+        len(weights) == len(scale_keys) * len(experts)
+        and set(map(tuple, weight_keys.to_numpy()))
+        == set(map(tuple, scale_keys.to_numpy())),
+        "v5 multiscale stacking/scale sidecar keys mismatch",
+    )
+
+    structural = read_csv(
+        artifacts / "structural-forecasts.csv",
+        ("origin_date", "target_date"),
+    )
+    structural["fallback"] = boolean_series(
+        structural["fallback"], "v5 structural forecast fallback"
+    )
+    latest_origin = pd.Timestamp(latest_scales["origin_date"].iloc[0])
+    latest_target = pd.Timestamp(latest_scales["target_date"].iloc[0])
+    latest_experts = structural.loc[
+        structural["origin_date"].eq(latest_origin)
+        & structural["target_date"].eq(latest_target)
+        & structural["model"].astype(str).isin(experts)
+    ].copy()
+    require(
+        set(latest_experts["model"].astype(str)) == set(experts),
+        "v5 multiscale latest structural experts are missing",
+    )
+
+    scale_vectors: dict[tuple[pd.Timestamp, pd.Timestamp, int], np.ndarray] = {}
+    for row in scales_frame.itertuples(index=False):
+        origin = pd.Timestamp(row.origin_date)
+        target = pd.Timestamp(row.target_date)
+        scale = int(row.scale_half_life_weeks)
+        role = str(row.row_role)
+        if role == "oos":
+            current = expert_oos.loc[
+                expert_oos["origin_date"].eq(origin)
+                & expert_oos["target_date"].eq(target)
+            ].copy()
+            expected_artifact = "oos-predictions.csv"
+            expected_split = str(
+                multiscale_oos.loc[
+                    multiscale_oos["origin_date"].eq(origin)
+                    & multiscale_oos["target_date"].eq(target),
+                    "evaluation_split",
+                ].iloc[0]
+            )
+        else:
+            current = latest_experts.copy()
+            expected_artifact = "structural-forecasts.csv"
+            expected_split = "prospective"
+        current = current.set_index(current["model"].astype(str))
+        require(
+            set(current.index) == set(experts),
+            "v5 multiscale scale is missing an expert forecast",
+        )
+        require(
+            str(row.evaluation_split) == expected_split
+            and str(row.expert_forecast_artifact) == expected_artifact,
+            "v5 multiscale scale source role/split mismatch",
+        )
+        expected_key = (
+            f"{expected_artifact}|origin={origin.date().isoformat()}"
+            f"|target={target.date().isoformat()}"
+            f"|models={';'.join(experts)}"
+        )
+        require(
+            str(row.expert_forecast_key) == expected_key,
+            "v5 multiscale expert forecast key mismatch",
+        )
+        fallbacks = {
+            name: bool(current.loc[name, "fallback"]) for name in experts
+        }
+        expected = _discounted_weight_evidence(
+            expert_oos,
+            origin_date=origin,
+            current_fallbacks=fallbacks,
+            expert_names=experts,
+            half_life_weeks=float(scale),
+            minimum_history_rows=26,
+        )
+        current_weights = weights.loc[
+            weights["origin_date"].eq(origin)
+            & weights["target_date"].eq(target)
+            & weights["half_life_weeks"].astype(int).eq(scale)
+        ].set_index(weights.loc[
+            weights["origin_date"].eq(origin)
+            & weights["target_date"].eq(target)
+            & weights["half_life_weeks"].astype(int).eq(scale),
+            "expert",
+        ].astype(str))
+        require(
+            set(current_weights.index) == set(experts),
+            "v5 multiscale scale stacking expert set mismatch",
+        )
+        for name, evidence in expected.items():
+            actual = current_weights.loc[name]
+            _require_v5_recomputed_value(
+                evidence["weight"],
+                actual["weight"],
+                context=f"v5 multiscale {origin}/{scale}/{name} weight",
+                tolerance=1e-12,
+            )
+            for field in (
+                "eligible",
+                "current_fallback",
+                "history_rows",
+                "common_history_rows",
+                "warmup",
+                "latest_eligible_target_date",
+                "discounted_log_loss",
+            ):
+                _require_v5_recomputed_value(
+                    evidence[field],
+                    actual[field],
+                    context=f"v5 multiscale {origin}/{scale}/{name} {field}",
+                    tolerance=1e-10,
+                )
+            require(
+                np.isclose(
+                    float(actual["outer_scale_weight"]),
+                    outer_weight,
+                    atol=1e-15,
+                    rtol=0.0,
+                )
+                and int(actual["minimum_history_rows"]) == 26
+                and str(actual["eligible_loss_rule"])
+                == "target_date_strictly_before_origin"
+                and str(actual["inner_pool_method"])
+                == "causal_discounted_completed_oos_log_score",
+                "v5 multiscale stacking frozen contract mismatch",
+            )
+        weight_sum = sum(float(expected[name]["weight"]) for name in experts)
+        expected_fallback = np.isclose(weight_sum, 0.0, atol=1e-12, rtol=0.0)
+        probability = (
+            np.full(len(STATE_ORDER), 1.0 / len(STATE_ORDER))
+            if expected_fallback
+            else sum(
+                float(expected[name]["weight"])
+                * current.loc[name, list(PROBABILITY_COLUMNS)].to_numpy(dtype=float)
+                for name in experts
+            )
+        )
+        probability = np.asarray(probability, dtype=float)
+        probability /= probability.sum()
+        actual_probability = np.asarray(
+            [getattr(row, column) for column in PROBABILITY_COLUMNS], dtype=float
+        )
+        actual_fallback_reason = (
+            "" if pd.isna(row.fallback_reason) else str(row.fallback_reason)
+        )
+        require(
+            np.allclose(
+                actual_probability,
+                probability,
+                atol=1e-12,
+                rtol=0.0,
+            )
+            and bool(row.fallback) == bool(expected_fallback)
+            and actual_fallback_reason
+            == ("all_structural_experts_fallback" if expected_fallback else ""),
+            "v5 multiscale scale probability/fallback mismatch",
+        )
+        scale_vectors[(origin, target, scale)] = probability
+
+    for row in multiscale_oos.itertuples(index=False):
+        origin = pd.Timestamp(row.origin_date)
+        target = pd.Timestamp(row.target_date)
+        expected = np.mean(
+            np.stack([scale_vectors[(origin, target, scale)] for scale in scales]),
+            axis=0,
+        )
+        actual = np.asarray(
+            [getattr(row, column) for column in PROBABILITY_COLUMNS], dtype=float
+        )
+        require(
+            np.allclose(actual, expected, atol=1e-12, rtol=0.0)
+            and str(row.multiscale_half_lives_weeks) == "26;52;104"
+            and all(
+                np.isclose(float(value), outer_weight, atol=1e-15, rtol=0.0)
+                for value in str(row.multiscale_outer_weights).split(";")
+            )
+            and str(row.multiscale_aggregation)
+            == "fixed_equal_probability_average"
+            and str(row.inner_pool_method)
+            == "causal_discounted_completed_oos_log_score"
+            and str(row.eligible_loss_rule)
+            == "target_date_strictly_before_origin"
+            and int(row.ensemble_minimum_history_rows) == 26,
+            "v5 multiscale aggregate OOS probability/metadata mismatch",
+        )
+
+    latest_aggregate = structural.loc[
+        structural["origin_date"].eq(latest_origin)
+        & structural["target_date"].eq(latest_target)
+        & structural["model"].astype(str).eq(V5_MULTISCALE_MODEL)
+    ]
+    require(
+        len(latest_aggregate) == 1,
+        "v5 multiscale latest aggregate forecast is missing",
+    )
+    expected_latest = np.mean(
+        np.stack(
+            [
+                scale_vectors[(latest_origin, latest_target, scale)]
+                for scale in scales
+            ]
+        ),
+        axis=0,
+    )
+    require(
+        np.allclose(
+            latest_aggregate.iloc[0][list(PROBABILITY_COLUMNS)].to_numpy(
+                dtype=float
+            ),
+            expected_latest,
+            atol=1e-12,
+            rtol=0.0,
+        ),
+        "v5 multiscale latest aggregate probability mismatch",
+    )
+    return {
+        "oos_origins": len(oos_keys),
+        "latest_origins": 1,
+        "scale_rows": len(scales_frame),
+        "stacking_rows": len(weights),
+        "scales": list(scales),
+        "outer_scale_weights": [outer_weight] * 3,
     }
 
 
@@ -3087,10 +3562,3659 @@ def audit_transition_outputs(
     }
 
 
+def _v5_artifact_path(
+    artifacts: Path,
+    relative_name: object,
+    *,
+    context: str,
+) -> Path:
+    name = str(relative_name)
+    relative = Path(name)
+    require(
+        bool(name)
+        and not relative.is_absolute()
+        and len(relative.parts) == 1
+        and relative.name == name
+        and name not in {".", ".."},
+        f"{context} path is unsafe",
+    )
+    path = artifacts / relative
+    require(
+        path.is_file() and not path.is_symlink() and path.stat().st_size > 0,
+        f"missing/empty/non-regular {context}: {path}",
+    )
+    return path
+
+
+def _audit_v5_file_contracts(
+    contracts: object,
+    artifacts: Path,
+    *,
+    context: str,
+) -> dict[str, pd.DataFrame]:
+    require(isinstance(contracts, dict), f"{context} must be an object")
+    frames: dict[str, pd.DataFrame] = {}
+    for key, raw in contracts.items():
+        row_context = f"{context}.{key}"
+        require(isinstance(raw, dict), f"{row_context} must be an object")
+        require(
+            set(raw) == {"path", "row_count", "sha256"},
+            f"{row_context} fields mismatch",
+        )
+        name = str(raw["path"])
+        require(name not in frames, f"{context} duplicates {name}")
+        path = _v5_artifact_path(artifacts, name, context=row_context)
+        require(
+            file_sha256(path) == str(raw["sha256"]),
+            f"{row_context} SHA-256 mismatch",
+        )
+        frame = pd.read_csv(path)
+        require(
+            not frame.empty or int(raw["row_count"]) == 0,
+            f"{row_context} CSV is empty",
+        )
+        require(
+            len(frame) == int(raw["row_count"]),
+            f"{row_context} row_count mismatch",
+        )
+        frames[name] = frame
+    return frames
+
+
+def _calendar_days(series: pd.Series, *, context: str) -> pd.Series:
+    parsed = pd.to_datetime(series, utc=True, errors="raise")
+    require(parsed.notna().all(), f"{context} contains a missing date")
+    return parsed.dt.tz_convert("America/New_York").dt.tz_localize(None).dt.normalize()
+
+
+def _market_date(value: object) -> str:
+    text = str(value)
+    if len(text) == 10 and text[4] == "-" and text[7] == "-":
+        return text
+    parsed = pd.Timestamp(value)
+    if parsed.tzinfo is None:
+        return parsed.date().isoformat()
+    return parsed.tz_convert("America/New_York").date().isoformat()
+
+
+def _audit_v5_probability_rows(
+    frame: pd.DataFrame,
+    *,
+    context: str,
+    include_actual: bool,
+) -> None:
+    probability_columns = (
+        "p_no_departure",
+        "p_risk_on",
+        "p_transition",
+        "p_risk_off",
+    )
+    required = {
+        "horizon_weeks",
+        "origin_date",
+        "target_end",
+        "model",
+        "current_state",
+        *probability_columns,
+    }
+    if include_actual:
+        required.update({"actual_outcome", "actual_change"})
+    require_columns(frame, required, context)
+    numeric = frame.loc[:, probability_columns].apply(
+        pd.to_numeric, errors="raise"
+    )
+    require(
+        np.isfinite(numeric.to_numpy(dtype=float)).all(),
+        f"{context} contains non-finite probabilities",
+    )
+    require(
+        ((numeric >= 0.0) & (numeric <= 1.0)).all().all(),
+        f"{context} probabilities are outside [0, 1]",
+    )
+    require(
+        np.allclose(numeric.sum(axis=1), 1.0, atol=1e-10, rtol=0.0),
+        f"{context} probabilities do not sum to one",
+    )
+    require(
+        frame["current_state"].astype(str).isin(STATE_ORDER).all(),
+        f"{context} current state is invalid",
+    )
+    for state in STATE_ORDER:
+        mask = frame["current_state"].astype(str).eq(state)
+        require(
+            np.allclose(
+                numeric.loc[mask, f"p_{state}"], 0.0, atol=1e-12, rtol=0.0
+            ),
+            f"{context} assigns first-departure mass to the origin state",
+        )
+    horizons = pd.to_numeric(frame["horizon_weeks"], errors="raise").astype(int)
+    require(
+        set(horizons) == {1, 4, 13},
+        f"{context} horizons must be exactly 1/4/13",
+    )
+    origin = _calendar_days(frame["origin_date"], context=f"{context}.origin_date")
+    target = _calendar_days(frame["target_end"], context=f"{context}.target_end")
+    require(
+        ((target - origin).dt.days == 7 * horizons).all(),
+        f"{context} target_end is not exactly 7*h calendar days after origin",
+    )
+    if include_actual:
+        outcomes = frame["actual_outcome"].astype(str)
+        require(
+            outcomes.isin(("no_departure", *STATE_ORDER)).all(),
+            f"{context} actual outcome is invalid",
+        )
+        require(
+            (
+                outcomes.eq("no_departure")
+                | ~outcomes.eq(frame["current_state"].astype(str))
+            ).all(),
+            f"{context} actual first departure equals the origin state",
+        )
+        actual_change = boolean_series(
+            frame["actual_change"], f"{context}.actual_change"
+        )
+        require(
+            actual_change.eq(~outcomes.eq("no_departure")).all(),
+            f"{context} actual_change disagrees with actual_outcome",
+        )
+
+
+def _audit_v5_embedded_records(
+    records: object,
+    frame: pd.DataFrame,
+    *,
+    keys: tuple[str, ...],
+    context: str,
+) -> None:
+    require(isinstance(records, list), f"{context} payload rows must be an array")
+    require(len(records) == len(frame), f"{context} row count mismatch")
+    require_columns(frame, set(keys), context)
+    require(not frame.duplicated(list(keys)).any(), f"{context} CSV keys duplicate")
+    lookup = {
+        tuple(str(row[key]) for key in keys): row
+        for _, row in frame.iterrows()
+    }
+    for position, expected in enumerate(records):
+        require(
+            isinstance(expected, dict),
+            f"{context} payload row {position} must be an object",
+        )
+        require_columns(
+            frame,
+            set(expected),
+            f"{context} payload row {position}",
+        )
+        identity = tuple(str(expected[key]) for key in keys)
+        require(identity in lookup, f"{context} payload/CSV keys differ")
+        actual = lookup[identity]
+        for field, expected_value in expected.items():
+            actual_value = actual[field]
+            actual_missing = bool(pd.isna(actual_value))
+            if expected_value is None:
+                require(
+                    actual_missing,
+                    f"{context} {identity} {field} nullability mismatch",
+                )
+            elif isinstance(expected_value, bool):
+                require(
+                    not actual_missing
+                    and str(actual_value).strip().lower()
+                    == str(expected_value).lower(),
+                    f"{context} {identity} {field} mismatch",
+                )
+            elif isinstance(expected_value, (int, float)):
+                require(
+                    not actual_missing
+                    and np.isclose(
+                        float(actual_value),
+                        float(expected_value),
+                        atol=5e-8,
+                        rtol=0.0,
+                    ),
+                    f"{context} {identity} {field} mismatch",
+                )
+            else:
+                require(
+                    not actual_missing and str(actual_value) == str(expected_value),
+                    f"{context} {identity} {field} mismatch",
+                )
+
+
+def _v5_missing(value: object) -> bool:
+    if value is None:
+        return True
+    try:
+        return bool(pd.isna(value))
+    except (TypeError, ValueError):
+        return False
+
+
+def _v5_boolean(value: object, *, context: str) -> bool:
+    if isinstance(value, (bool, np.bool_)):
+        return bool(value)
+    normalized = str(value).strip().lower()
+    require(normalized in {"true", "false"}, f"{context} is not boolean")
+    return normalized == "true"
+
+
+def _require_v5_recomputed_value(
+    expected: object,
+    actual: object,
+    *,
+    context: str,
+    tolerance: float = 5e-8,
+) -> None:
+    expected_missing = _v5_missing(expected)
+    actual_missing = _v5_missing(actual)
+    if expected_missing:
+        require(actual_missing, f"{context} nullability mismatch")
+        return
+    require(not actual_missing, f"{context} nullability mismatch")
+    if isinstance(expected, (bool, np.bool_)):
+        require(
+            _v5_boolean(actual, context=context) == bool(expected),
+            f"{context} mismatch",
+        )
+    elif isinstance(expected, (int, np.integer)) and not isinstance(expected, bool):
+        try:
+            resolved = int(actual)
+        except (TypeError, ValueError) as exc:
+            raise AuditFailure(f"{context} is not an integer") from exc
+        require(float(actual) == float(resolved), f"{context} is not an integer")
+        require(resolved == int(expected), f"{context} mismatch")
+    elif isinstance(expected, (float, np.floating)):
+        try:
+            resolved = float(actual)
+        except (TypeError, ValueError) as exc:
+            raise AuditFailure(f"{context} is not numeric") from exc
+        require(
+            np.isclose(resolved, float(expected), atol=tolerance, rtol=0.0),
+            f"{context} mismatch",
+        )
+    else:
+        require(str(actual) == str(expected), f"{context} mismatch")
+
+
+def _audit_v5_recomputed_records(
+    expected: pd.DataFrame,
+    actual: pd.DataFrame,
+    *,
+    keys: tuple[str, ...],
+    fields: tuple[str, ...],
+    context: str,
+) -> None:
+    require_columns(expected, {*keys, *fields}, f"recomputed {context}")
+    require_columns(actual, {*keys, *fields}, context)
+    require(
+        not expected.duplicated(list(keys)).any(),
+        f"recomputed {context} keys duplicate",
+    )
+    require(not actual.duplicated(list(keys)).any(), f"{context} keys duplicate")
+    expected_lookup = {
+        tuple(str(row[key]) for key in keys): row
+        for _, row in expected.iterrows()
+    }
+    actual_lookup = {
+        tuple(str(row[key]) for key in keys): row
+        for _, row in actual.iterrows()
+    }
+    require(
+        set(expected_lookup) == set(actual_lookup),
+        f"{context} keys differ from independent recomputation",
+    )
+    for identity, expected_row in expected_lookup.items():
+        actual_row = actual_lookup[identity]
+        for field in fields:
+            _require_v5_recomputed_value(
+                expected_row[field],
+                actual_row[field],
+                context=f"{context} {identity} {field}",
+            )
+
+
+def _audit_v5_core_model(
+    payload: Mapping[str, Any],
+    artifacts: Path,
+) -> dict[str, Any]:
+    model = payload["model"]
+    profile = str(model["profile"])
+    champion = str(model["champion"])
+    is_v5 = (
+        str(payload.get("meta", {}).get("result_version"))
+        == V5_RESULT_VERSION
+    )
+    core_frames: dict[str, pd.DataFrame] | None = None
+    if is_v5:
+        from regime_lab.v5_artifacts import V5_CORE_ARTIFACT_PATHS
+
+        core_frames = _audit_v5_file_contracts(
+            model.get("core_artifacts"),
+            artifacts,
+            context="payload.model.core_artifacts",
+        )
+        expected_core_paths = [path for _, path in V5_CORE_ARTIFACT_PATHS]
+        require(
+            list(core_frames) == expected_core_paths,
+            "v5 core artifact manifest path/order mismatch",
+        )
+        predictions = core_frames["oos-predictions.csv"].copy()
+        splits = core_frames["walk-forward-splits.csv"].copy()
+        leaderboard = core_frames["model-leaderboard.csv"].copy()
+        diagnostics = core_frames["selection-diagnostics.csv"].copy()
+        for frame, columns in (
+            (predictions, ("origin_date", "target_date")),
+            (
+                splits,
+                (
+                    "origin_date",
+                    "target_date",
+                    "train_start",
+                    "last_train_origin",
+                    "last_train_target",
+                    "first_purged_origin",
+                ),
+            ),
+        ):
+            for column in columns:
+                require_columns(frame, {column}, "v5 core artifact")
+                frame[column] = pd.to_datetime(
+                    frame[column],
+                    utc=True,
+                    errors="raise",
+                )
+    else:
+        predictions = read_csv(
+            artifacts / "oos-predictions.csv",
+            ("origin_date", "target_date"),
+        )
+        splits = read_csv(
+            artifacts / "walk-forward-splits.csv",
+            (
+                "origin_date",
+                "target_date",
+                "train_start",
+                "last_train_origin",
+                "last_train_target",
+                "first_purged_origin",
+            ),
+        )
+        leaderboard = read_csv(artifacts / "model-leaderboard.csv")
+        diagnostics = read_csv(artifacts / "selection-diagnostics.csv")
+
+    manifest_path = artifacts / "candidate-manifest.json"
+    require(
+        manifest_path.is_file()
+        and not manifest_path.is_symlink()
+        and manifest_path.stat().st_size > 0,
+        "v5 core candidate manifest is missing/non-regular",
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    require(isinstance(manifest, dict), "v5 core candidate manifest must be an object")
+    manifest_hash = str(manifest.get("sha256", ""))
+    manifest_body = dict(manifest)
+    manifest_body.pop("sha256", None)
+    require(
+        manifest_hash == canonical_json_sha256(manifest_body),
+        "v5 core candidate manifest SHA-256 mismatch",
+    )
+    require(
+        model.get("candidate_manifest_sha256") == manifest_hash
+        and model.get("candidate_manifest") == manifest_body,
+        "v5 core payload/candidate manifest mismatch",
+    )
+    require(
+        str(manifest_body.get("profile")) == profile,
+        "v5 core candidate manifest profile mismatch",
+    )
+    manifest_models = [
+        str(row.get("name"))
+        for row in manifest_body.get("models", [])
+        if isinstance(row, Mapping)
+    ]
+    require(
+        manifest_models and len(manifest_models) == len(set(manifest_models)),
+        "v5 core candidate manifest model names are invalid",
+    )
+    expected_models = (
+        V5_FULL_MODELS if profile == "full" else V5_STANDARD_MODELS
+    ) if is_v5 else (
+        V4_FULL_MODELS if profile == "full" else V4_STANDARD_MODELS
+    )
+    require(
+        set(manifest_models) == expected_models,
+        "v5 core candidate manifest differs from the permitted V5 suite",
+    )
+
+    required_prediction_columns = {
+        "origin_date",
+        "target_date",
+        "model",
+        "evaluation_split",
+        "current_state",
+        "actual",
+        "predicted",
+        "train_size",
+        "gap",
+        "fallback",
+        "fallback_reason",
+        *PROBABILITY_COLUMNS,
+    }
+    require_columns(
+        predictions,
+        required_prediction_columns,
+        "v5 core oos-predictions.csv",
+    )
+    require_columns(
+        splits,
+        {
+            "origin_date",
+            "target_date",
+            "evaluation_split",
+            "train_size",
+            "last_train_target",
+            "first_purged_origin",
+            "purged_origin_count",
+            "gap",
+        },
+        "v5 core walk-forward-splits.csv",
+    )
+    predictions["fallback"] = boolean_series(
+        predictions["fallback"], "v5 core fallback"
+    )
+    leaderboard["selected"] = boolean_series(
+        leaderboard["selected"], "v5 core leaderboard selected"
+    )
+    probability = predictions.loc[:, PROBABILITY_COLUMNS].to_numpy(dtype=float)
+    require(
+        np.isfinite(probability).all()
+        and ((probability >= 0.0) & (probability <= 1.0)).all()
+        and np.allclose(probability.sum(axis=1), 1.0, atol=1e-10, rtol=0.0),
+        "v5 core OOS probabilities are invalid",
+    )
+    expected_prediction = np.asarray(STATE_ORDER, dtype=object)[
+        probability.argmax(axis=1)
+    ]
+    require(
+        predictions["predicted"].astype(str).to_numpy().tolist()
+        == expected_prediction.tolist(),
+        "v5 core predicted state disagrees with ordered argmax",
+    )
+    require(
+        not predictions.duplicated(["model", "origin_date"]).any(),
+        "v5 core OOS model/origin keys duplicate",
+    )
+    require(
+        set(predictions["model"].astype(str)) == set(manifest_models),
+        "v5 core candidate manifest/prediction model sets differ",
+    )
+    require(
+        set(predictions["evaluation_split"].astype(str))
+        == {"selection", "holdout"},
+        "v5 core OOS split values are invalid",
+    )
+    require_calendar_horizon(
+        predictions.assign(_horizon=1),
+        "origin_date",
+        "target_date",
+        "_horizon",
+        "v5 core OOS",
+    )
+    require(
+        predictions["gap"].astype(int).eq(1).all(),
+        "v5 core OOS gap must be one week",
+    )
+
+    origin_fields = (
+        "origin_date",
+        "target_date",
+        "evaluation_split",
+        "current_state",
+        "actual",
+        "train_size",
+        "gap",
+    )
+    origins = predictions.loc[:, origin_fields].drop_duplicates()
+    require(
+        not origins.duplicated("origin_date").any(),
+        "v5 core models disagree on an OOS origin contract",
+    )
+    reference_keys = origins.loc[:, ["origin_date", "target_date"]].sort_values(
+        ["origin_date", "target_date"], ignore_index=True
+    )
+    for name, rows in predictions.groupby("model", sort=False):
+        keys = rows.loc[:, ["origin_date", "target_date"]].sort_values(
+            ["origin_date", "target_date"], ignore_index=True
+        )
+        require(
+            keys.equals(reference_keys),
+            f"v5 core model {name} lacks strict common OOS origins",
+        )
+    require(not splits.duplicated("origin_date").any(), "v5 core split origins duplicate")
+    merged = origins.merge(
+        splits.loc[
+            :,
+            [
+                "origin_date",
+                "target_date",
+                "evaluation_split",
+                "train_size",
+                "gap",
+            ],
+        ],
+        on="origin_date",
+        suffixes=("_prediction", "_split"),
+        validate="one_to_one",
+    )
+    require(
+        len(merged) == len(origins) == len(splits),
+        "v5 core prediction/split origin sets differ",
+    )
+    for field in ("target_date", "evaluation_split", "train_size", "gap"):
+        require(
+            merged[f"{field}_prediction"].astype(str).equals(
+                merged[f"{field}_split"].astype(str)
+            ),
+            f"v5 core prediction/split {field} mismatch",
+        )
+    require(
+        splits["gap"].astype(int).eq(1).all()
+        and splits["purged_origin_count"].astype(int).eq(1).all()
+        and (splits["last_train_target"] < splits["origin_date"]).all()
+        and (splits["first_purged_origin"] < splits["origin_date"]).all(),
+        "v5 core split purge contract is invalid",
+    )
+
+    selection_end = pd.to_datetime(str(model["selection_end"]), utc=True)
+    selection = predictions.loc[
+        predictions["evaluation_split"].astype(str).eq("selection")
+    ]
+    holdout = predictions.loc[
+        predictions["evaluation_split"].astype(str).eq("holdout")
+    ]
+    minimum_origins = 3 if profile == "quick" else 12
+    require(
+        selection["origin_date"].nunique() >= minimum_origins
+        and holdout["origin_date"].nunique() >= minimum_origins,
+        "v5 core OOS split has insufficient origins",
+    )
+    require(
+        (selection["target_date"] < selection_end).all()
+        and (holdout["target_date"] >= selection_end).all(),
+        "v5 core selection boundary is invalid",
+    )
+    if profile in {"standard", "full"}:
+        require(
+            selection["origin_date"].nunique() >= 300,
+            "v5 core standard/full omits the full pre-2023 selection era",
+        )
+
+    selection_metrics = probability_metrics(selection)
+    holdout_metrics = probability_metrics(holdout)
+    expected_champion, expected_diagnostics = choose_selection_champion(
+        selection_metrics,
+        selection,
+    )
+    require(
+        expected_champion == champion,
+        "v5 core payload champion disagrees with independent selection",
+    )
+    require(
+        set(leaderboard["model"].astype(str)) == set(manifest_models)
+        and int(leaderboard["selected"].sum()) == 1
+        and str(leaderboard.loc[leaderboard["selected"], "model"].iloc[0])
+        == champion,
+        "v5 core leaderboard champion mismatch",
+    )
+    leaderboard_index = leaderboard.set_index(leaderboard["model"].astype(str))
+    metric_fields = (
+        "log_loss",
+        "brier",
+        "accuracy",
+        "balanced_accuracy",
+        "macro_f1",
+        "transition_recall",
+        "calibration_error",
+        "n_predictions",
+        "fallback_count",
+    )
+    for name in manifest_models:
+        csv_row = leaderboard_index.loc[name]
+        for field in metric_fields:
+            _require_v5_recomputed_value(
+                holdout_metrics.loc[name, field],
+                csv_row[field],
+                context=f"v5 core leaderboard {name} {field}",
+                tolerance=1e-10,
+            )
+            _require_v5_recomputed_value(
+                selection_metrics.loc[name, field],
+                csv_row[f"selection_{field}"],
+                context=f"v5 core leaderboard {name} selection_{field}",
+                tolerance=1e-10,
+            )
+    payload_leaderboard = model["leaderboard"]
+    payload_frame = leaderboard.rename(columns={"model": "name"})
+    require(
+        [int(row.get("rank", -1)) for row in payload_leaderboard]
+        == list(range(1, len(payload_leaderboard) + 1)),
+        "v5 core embedded leaderboard ranks are invalid",
+    )
+    require(
+        all(
+            bool(row.get("is_champion"))
+            == (str(row.get("name")) == champion)
+            for row in payload_leaderboard
+        ),
+        "v5 core embedded leaderboard champion flags are invalid",
+    )
+    common_payload_leaderboard = [
+        {
+            key: value
+            for key, value in row.items()
+            if key in payload_frame.columns
+        }
+        for row in payload_leaderboard
+    ]
+    _audit_v5_embedded_records(
+        common_payload_leaderboard,
+        payload_frame,
+        keys=("name",),
+        context="v5 core embedded leaderboard",
+    )
+
+    diagnostic_fields = tuple(
+        field
+        for field in expected_diagnostics.columns
+        if field != "model"
+    )
+    _audit_v5_recomputed_records(
+        expected_diagnostics,
+        diagnostics,
+        keys=("model",),
+        fields=diagnostic_fields,
+        context="v5 core selection diagnostics",
+    )
+    _audit_v5_embedded_records(
+        model["selection_diagnostics"],
+        diagnostics,
+        keys=("model",),
+        context="v5 core embedded selection diagnostics",
+    )
+
+    if str(payload["meta"]["mode"]) == "live":
+        diagnostic = model["holdout_diagnostic"]
+        ranked = holdout_metrics.reset_index().sort_values(
+            ["log_loss", "model"], ignore_index=True
+        )
+        champion_row = ranked.loc[ranked["model"].astype(str).eq(champion)].iloc[0]
+        best_row = ranked.iloc[0]
+        regret = max(
+            0.0,
+            float(champion_row["log_loss"]) - float(best_row["log_loss"]),
+        )
+        expected_status = "weak_generalization" if regret > 0.05 else "ok"
+        require(
+            diagnostic.get("status") == expected_status
+            and diagnostic.get("applicable") is True
+            and diagnostic.get("selection_locked") is True
+            and diagnostic.get("champion_model") == champion
+            and diagnostic.get("best_model") == str(best_row["model"]),
+            "v5 core holdout diagnostic identity mismatch",
+        )
+        for field, expected in (
+            ("champion_log_loss", float(champion_row["log_loss"])),
+            ("best_log_loss", float(best_row["log_loss"])),
+            ("absolute_regret", regret),
+        ):
+            _require_v5_recomputed_value(
+                expected,
+                diagnostic[field],
+                context=f"v5 core holdout diagnostic {field}",
+            )
+    stacking = audit_stacking_weights(
+        predictions,
+        artifacts,
+        allow_v5_multiscale_rows=True,
+    )
+    multiscale = None
+    if is_v5:
+        assert core_frames is not None
+        structural_contract = model.get("structural_models", {}).get(
+            V5_MULTISCALE_MODEL
+        )
+        require(
+            isinstance(structural_contract, Mapping)
+            and dict(structural_contract.get("sidecar", {}))
+            == dict(model["core_artifacts"]["multiscale_ensemble_scales"]),
+            "v5 multiscale structural/core sidecar contract mismatch",
+        )
+        multiscale = audit_v5_multiscale_ensemble(
+            predictions,
+            core_frames["stacking-weights.csv"],
+            core_frames["multiscale-ensemble-scales.csv"],
+            artifacts,
+        )
+    return {
+        "profile": profile,
+        "champion": champion,
+        "models": len(manifest_models),
+        "selection_origins": int(selection["origin_date"].nunique()),
+        "holdout_origins": int(holdout["origin_date"].nunique()),
+        "fallback_rows": int(predictions["fallback"].sum()),
+        "stacking": stacking,
+        "multiscale": multiscale,
+        "core_artifacts": (
+            list(core_frames) if core_frames is not None else None
+        ),
+    }
+
+
+def _audit_v5_execution_parameters(payload: Mapping[str, Any]) -> dict[str, Any]:
+    context = "v5 execution parameters"
+    raw = payload.get("model", {}).get("execution_parameters")
+    require(isinstance(raw, Mapping), f"{context} must be an object")
+    parameters = dict(raw)
+    expected_fields = {
+        "profile",
+        "directional_minimum_selection_predictions",
+        "directional_minimum_diagnostic_predictions",
+        "directional_maximum_selection_origins",
+        "directional_maximum_diagnostic_origins",
+        "duration_bootstrap_resamples",
+        "conditional_outcome_bootstrap_resamples",
+        "preregistered_bootstrap_resamples",
+        "preregistration_overrides",
+        "sha256",
+    }
+    require(set(parameters) == expected_fields, f"{context} fields mismatch")
+    profile = str(parameters["profile"])
+    require(profile in {"quick", "standard", "full"}, f"{context} profile invalid")
+    model_profile = payload.get("model", {}).get("profile")
+    require(model_profile is not None, f"{context} model profile missing")
+    require(str(model_profile) == profile, f"{context} profile/model mismatch")
+    expected_minimum = 3 if profile == "quick" else 12
+    for field in (
+        "directional_minimum_selection_predictions",
+        "directional_minimum_diagnostic_predictions",
+    ):
+        require(
+            int(parameters[field]) == expected_minimum,
+            f"{context} {field} mismatch",
+        )
+    expected_maximum = {"quick": 3, "standard": 60, "full": None}[profile]
+    for field in (
+        "directional_maximum_selection_origins",
+        "directional_maximum_diagnostic_origins",
+    ):
+        value = parameters[field]
+        require(
+            (value is None and expected_maximum is None)
+            or (value is not None and int(value) == expected_maximum),
+            f"{context} {field} mismatch",
+        )
+    preregistered = int(parameters["preregistered_bootstrap_resamples"])
+    duration_resamples = int(parameters["duration_bootstrap_resamples"])
+    outcome_resamples = int(parameters["conditional_outcome_bootstrap_resamples"])
+    require(preregistered == 1_999, f"{context} preregistered resamples mismatch")
+    require(duration_resamples >= 1, f"{context} duration resamples invalid")
+    require(outcome_resamples >= 1, f"{context} outcome resamples invalid")
+    expected_overrides: list[str] = []
+    if duration_resamples != preregistered:
+        expected_overrides.append("duration.bootstrap_resamples")
+    if outcome_resamples != preregistered:
+        expected_overrides.append(
+            "conditional_asset_statistics.bootstrap_resamples"
+        )
+    require(
+        list(parameters["preregistration_overrides"]) == expected_overrides,
+        f"{context} override linkage mismatch",
+    )
+    unhashed = {key: parameters[key] for key in parameters if key != "sha256"}
+    require(
+        str(parameters["sha256"]) == canonical_json_sha256(unhashed),
+        f"{context} SHA-256 mismatch",
+    )
+    return parameters
+
+
+def _v5_directional_conditional_matrix(rows: pd.DataFrame) -> np.ndarray:
+    matrix = rows[[f"p_{state}" for state in STATE_ORDER]].to_numpy(dtype=float)
+    current_states = rows["current_state"].astype(str).to_numpy()
+    positions = {state: index for index, state in enumerate(STATE_ORDER)}
+    result = np.zeros_like(matrix)
+    for row_index, current_state in enumerate(current_states):
+        vector = np.maximum(matrix[row_index], 0.0)
+        vector[positions[current_state]] = 0.0
+        total = float(vector.sum())
+        if not np.isfinite(total) or total <= 0.0:
+            alternatives = [state for state in STATE_ORDER if state != current_state]
+            vector = np.asarray(
+                [
+                    1.0 / len(alternatives) if state in alternatives else 0.0
+                    for state in STATE_ORDER
+                ],
+                dtype=float,
+            )
+        else:
+            vector = vector / total
+        result[row_index] = vector
+    return result
+
+
+def _v5_directional_event_support(rows: pd.DataFrame) -> dict[str, int]:
+    ordered = rows.sort_values("origin_date", kind="mergesort").reset_index(drop=True)
+    events = boolean_series(
+        ordered["actual_change"], "v5 directional actual_change"
+    ).to_numpy(dtype=bool)
+    destinations = ordered.loc[events, "actual_outcome"].astype(str)
+    event_blocks = {
+        int(position) // BOOTSTRAP_BLOCK_WEEKS for position in np.flatnonzero(events)
+    }
+    return {
+        "event_count": int(events.sum()),
+        "destination_class_count": int(destinations.nunique()),
+        "effective_event_blocks": int(len(event_blocks)),
+    }
+
+
+def _v5_directional_conditional_losses(rows: pd.DataFrame) -> np.ndarray:
+    ordered = rows.sort_values("origin_date", kind="mergesort").reset_index(drop=True)
+    events = boolean_series(
+        ordered["actual_change"], "v5 directional actual_change"
+    ).to_numpy(dtype=bool)
+    losses = np.full(len(ordered), np.nan, dtype=float)
+    if not events.any():
+        return losses
+    matrix = _v5_directional_conditional_matrix(ordered)
+    positions = {state: index for index, state in enumerate(STATE_ORDER)}
+    actual = ordered["actual_outcome"].astype(str).to_numpy()
+    event_positions = np.flatnonzero(events)
+    actual_probability = np.asarray(
+        [matrix[row, positions[actual[row]]] for row in event_positions],
+        dtype=float,
+    )
+    losses[event_positions] = -np.log(
+        np.clip(actual_probability, 1e-8, 1.0)
+    )
+    return losses
+
+
+def _v5_directional_metrics(predictions: pd.DataFrame) -> pd.DataFrame:
+    rows: list[dict[str, Any]] = []
+    for (horizon, split, model), group in predictions.groupby(
+        ["horizon_weeks", "evaluation_split", "model"], sort=False
+    ):
+        support = _v5_directional_event_support(group)
+        events = boolean_series(
+            group["actual_change"], "v5 directional actual_change"
+        )
+        scored = group.loc[events].copy()
+        if scored.empty:
+            log_loss = float("nan")
+            brier = float("nan")
+        else:
+            matrix = _v5_directional_conditional_matrix(scored)
+            actual = scored["actual_outcome"].astype(str).to_numpy()
+            positions = {state: index for index, state in enumerate(STATE_ORDER)}
+            actual_probability = np.asarray(
+                [matrix[row, positions[state]] for row, state in enumerate(actual)]
+            )
+            one_hot = np.zeros_like(matrix)
+            one_hot[
+                np.arange(len(scored)),
+                [positions[state] for state in actual],
+            ] = 1.0
+            log_loss = float(
+                -np.log(np.clip(actual_probability, 1e-8, 1.0)).mean()
+            )
+            brier = float(np.square(matrix - one_hot).sum(axis=1).mean())
+        rows.append(
+            {
+                "horizon_weeks": int(horizon),
+                "evaluation_split": str(split),
+                "model": str(model),
+                "score_target": V5_DIRECTIONAL_SCORE_TARGET,
+                "log_loss": log_loss,
+                "brier": brier,
+                "n_predictions": int(len(group)),
+                **support,
+                "fallback_count": int(
+                    boolean_series(
+                        group["fallback"], "v5 directional fallback"
+                    ).sum()
+                ),
+            }
+        )
+    return pd.DataFrame(rows).sort_values(
+        ["horizon_weeks", "evaluation_split", "log_loss", "brier", "model"],
+        ignore_index=True,
+        na_position="last",
+    )
+
+
+def _v5_directional_bootstrap_pvalue(values: np.ndarray) -> float | None:
+    values = np.asarray(values, dtype=float)
+    finite = np.isfinite(values)
+    if not finite.any():
+        return None
+    observed = float(values[finite].mean())
+    centered = values.copy()
+    centered[finite] -= observed
+    block = min(BOOTSTRAP_BLOCK_WEEKS, max(1, len(values) // 2))
+    blocks = int(np.ceil(len(values) / block))
+    generator = np.random.default_rng(BOOTSTRAP_SEED)
+    starts = generator.integers(
+        0,
+        len(values),
+        size=(V5_DIRECTIONAL_BOOTSTRAP_RESAMPLES, blocks),
+    )
+    offsets = np.arange(block)
+    indexes = (starts[..., None] + offsets) % len(values)
+    indexes = indexes.reshape(V5_DIRECTIONAL_BOOTSTRAP_RESAMPLES, -1)[
+        :, : len(values)
+    ]
+    sampled = centered[indexes]
+    counts = np.isfinite(sampled).sum(axis=1)
+    valid = counts > 0
+    if int(valid.sum()) < int(
+        np.ceil(V5_DIRECTIONAL_BOOTSTRAP_RESAMPLES * 0.8)
+    ):
+        return None
+    null = np.nansum(sampled[valid], axis=1) / counts[valid]
+    return float(
+        (1 + np.count_nonzero(null >= observed)) / (len(null) + 1)
+    )
+
+
+def _v5_validate_directional_model_origins(
+    predictions: pd.DataFrame,
+    *,
+    horizon: int,
+    split: str,
+) -> None:
+    frame = predictions.loc[
+        predictions["horizon_weeks"].astype(int).eq(horizon)
+        & predictions["evaluation_split"].astype(str).eq(split)
+    ].copy()
+    require(not frame.empty, f"v5 directional horizon-{horizon} {split} is empty")
+    reference: pd.DataFrame | None = None
+    for model, rows in frame.groupby("model", sort=True):
+        ordered = rows.sort_values("origin_date", kind="mergesort").reset_index(drop=True)
+        require(
+            not ordered["origin_date"].duplicated().any(),
+            f"v5 directional {model} duplicates an origin",
+        )
+        identity = ordered[
+            [
+                "origin_date",
+                "target_end",
+                "current_state",
+                "actual_outcome",
+                "actual_change",
+            ]
+        ].copy()
+        identity["actual_change"] = boolean_series(
+            identity["actual_change"], "v5 directional actual_change"
+        ).to_numpy(dtype=bool)
+        if reference is None:
+            reference = identity
+        else:
+            try:
+                pd.testing.assert_frame_equal(
+                    reference,
+                    identity,
+                    check_dtype=False,
+                    check_exact=True,
+                    obj=f"v5 directional horizon-{horizon} {split} common origins",
+                )
+            except AssertionError as exc:
+                raise AuditFailure(
+                    f"v5 directional horizon-{horizon} {split} model origins differ"
+                ) from exc
+
+
+def _v5_select_directional_horizon(
+    predictions: pd.DataFrame,
+    metrics: pd.DataFrame,
+    *,
+    horizon: int,
+) -> tuple[str, list[dict[str, Any]]]:
+    frame = predictions.loc[
+        predictions["horizon_weeks"].astype(int).eq(horizon)
+        & predictions["evaluation_split"].astype(str).eq("selection")
+    ].copy()
+    table = metrics.loc[
+        metrics["horizon_weeks"].astype(int).eq(horizon)
+        & metrics["evaluation_split"].astype(str).eq("selection")
+    ].set_index("model", drop=False)
+    baseline_names = [
+        model for model in V5_DIRECTIONAL_BASELINES if model in table.index
+    ]
+    require(baseline_names, f"v5 directional horizon-{horizon} has no baseline")
+    baseline_rows = table.loc[baseline_names].reset_index(drop=True)
+    reference_name = (
+        "empirical_first_passage"
+        if "empirical_first_passage" in table.index
+        else str(baseline_rows.sort_values("model").iloc[0]["model"])
+    )
+    support = _v5_directional_event_support(
+        frame.loc[frame["model"].astype(str).eq(reference_name)]
+    )
+    support_failures: list[str] = []
+    if support["event_count"] < V5_DIRECTIONAL_MINIMUM_EVENTS:
+        support_failures.append("insufficient_departure_events")
+    if (
+        support["destination_class_count"]
+        < V5_DIRECTIONAL_MINIMUM_DESTINATION_CLASSES
+    ):
+        support_failures.append("insufficient_destination_classes")
+    if support["effective_event_blocks"] < V5_DIRECTIONAL_MINIMUM_EVENT_BLOCKS:
+        support_failures.append("insufficient_event_blocks")
+    if support_failures:
+        reason = ";".join(support_failures)
+        diagnostics: list[dict[str, Any]] = []
+        for model, row in table.iterrows():
+            log_loss = float(row["log_loss"])
+            brier = float(row["brier"])
+            diagnostics.append(
+                {
+                    "horizon_weeks": horizon,
+                    "model": str(model),
+                    "reference_model": reference_name,
+                    "selected": str(model) == reference_name,
+                    "gate_passed": False,
+                    "gate_reason": reason,
+                    "score_target": V5_DIRECTIONAL_SCORE_TARGET,
+                    "selection_event_count": support["event_count"],
+                    "selection_destination_class_count": support[
+                        "destination_class_count"
+                    ],
+                    "selection_effective_event_blocks": support[
+                        "effective_event_blocks"
+                    ],
+                    "minimum_selection_events": V5_DIRECTIONAL_MINIMUM_EVENTS,
+                    "minimum_destination_classes": (
+                        V5_DIRECTIONAL_MINIMUM_DESTINATION_CLASSES
+                    ),
+                    "minimum_event_blocks": V5_DIRECTIONAL_MINIMUM_EVENT_BLOCKS,
+                    "log_loss": log_loss if np.isfinite(log_loss) else None,
+                    "brier": brier if np.isfinite(brier) else None,
+                    "absolute_log_loss_improvement": None,
+                    "holm_adjusted_p_value": None,
+                    "fallback_count": int(row["fallback_count"]),
+                }
+            )
+        return reference_name, diagnostics
+
+    baseline = baseline_rows.sort_values(
+        ["log_loss", "brier", "model"], na_position="last"
+    ).iloc[0]
+    reference = str(baseline["model"])
+    reference_rows = frame.loc[
+        frame["model"].astype(str).eq(reference)
+    ].sort_values("origin_date", kind="mergesort")
+    reference_loss = _v5_directional_conditional_losses(reference_rows)
+    raw_pvalues: dict[str, float] = {}
+    improvements: dict[str, float] = {}
+    for model in table.index:
+        if model in V5_DIRECTIONAL_BASELINES:
+            continue
+        candidate_rows = frame.loc[
+            frame["model"].astype(str).eq(str(model))
+        ].sort_values("origin_date", kind="mergesort")
+        candidate_loss = _v5_directional_conditional_losses(candidate_rows)
+        differential = reference_loss - candidate_loss
+        improvements[str(model)] = float(np.nanmean(differential))
+        pvalue = _v5_directional_bootstrap_pvalue(differential)
+        if pvalue is not None:
+            raw_pvalues[str(model)] = pvalue
+    ordered_pvalues = sorted(
+        raw_pvalues.items(), key=lambda item: (item[1], item[0])
+    )
+    adjusted: dict[str, float] = {}
+    running = 0.0
+    for rank, (model, value) in enumerate(ordered_pvalues):
+        running = max(
+            running,
+            min(1.0, value * (len(ordered_pvalues) - rank)),
+        )
+        adjusted[model] = running
+
+    diagnostics = []
+    passing: list[str] = []
+    for model, row in table.iterrows():
+        model_name = str(model)
+        failures: list[str] = []
+        if model_name not in V5_DIRECTIONAL_BASELINES:
+            if int(row["fallback_count"]) != 0:
+                failures.append("fallback_present")
+            if improvements[model_name] < MINIMUM_LOG_LOSS_IMPROVEMENT:
+                failures.append("insufficient_log_loss_improvement")
+            if float(row["brier"]) > float(baseline["brier"]) + BRIER_TOLERANCE:
+                failures.append("brier_degradation")
+            if model_name not in adjusted:
+                failures.append("bootstrap_insufficient")
+            elif adjusted[model_name] > SELECTION_ALPHA:
+                failures.append("holm_not_significant")
+            if not failures:
+                passing.append(model_name)
+        elif model_name != reference:
+            failures.append("non_reference_baseline")
+        diagnostics.append(
+            {
+                "horizon_weeks": horizon,
+                "model": model_name,
+                "reference_model": reference,
+                "selected": False,
+                "gate_passed": not failures,
+                "gate_reason": "passed" if not failures else ";".join(failures),
+                "score_target": V5_DIRECTIONAL_SCORE_TARGET,
+                "selection_event_count": support["event_count"],
+                "selection_destination_class_count": support[
+                    "destination_class_count"
+                ],
+                "selection_effective_event_blocks": support[
+                    "effective_event_blocks"
+                ],
+                "minimum_selection_events": V5_DIRECTIONAL_MINIMUM_EVENTS,
+                "minimum_destination_classes": (
+                    V5_DIRECTIONAL_MINIMUM_DESTINATION_CLASSES
+                ),
+                "minimum_event_blocks": V5_DIRECTIONAL_MINIMUM_EVENT_BLOCKS,
+                "log_loss": float(row["log_loss"]),
+                "brier": float(row["brier"]),
+                "absolute_log_loss_improvement": float(
+                    float(baseline["log_loss"]) - float(row["log_loss"])
+                ),
+                "holm_adjusted_p_value": adjusted.get(model_name),
+                "fallback_count": int(row["fallback_count"]),
+            }
+        )
+    champion = reference
+    if passing:
+        champion = str(
+            table.loc[passing]
+            .reset_index(drop=True)
+            .sort_values(["log_loss", "brier", "model"])
+            .iloc[0]["model"]
+        )
+    for row in diagnostics:
+        row["selected"] = row["model"] == champion
+    return champion, diagnostics
+
+
+def _recompute_v5_directional(
+    predictions: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.DataFrame, dict[int, str]]:
+    for horizon in V5_OUTCOME_HORIZONS:
+        for split in ("selection", "retrospective_diagnostic"):
+            _v5_validate_directional_model_origins(
+                predictions,
+                horizon=horizon,
+                split=split,
+            )
+    leaderboard = _v5_directional_metrics(predictions)
+    champions: dict[int, str] = {}
+    diagnostic_rows: list[dict[str, Any]] = []
+    for horizon in V5_OUTCOME_HORIZONS:
+        champion, rows = _v5_select_directional_horizon(
+            predictions,
+            leaderboard,
+            horizon=horizon,
+        )
+        champions[horizon] = champion
+        diagnostic_rows.extend(rows)
+    leaderboard = leaderboard.copy()
+    leaderboard.insert(
+        3,
+        "selected",
+        [
+            str(model) == champions[int(horizon)]
+            for horizon, model in zip(
+                leaderboard["horizon_weeks"],
+                leaderboard["model"],
+                strict=True,
+            )
+        ],
+    )
+    diagnostics = pd.DataFrame(diagnostic_rows).sort_values(
+        ["horizon_weeks", "model"], ignore_index=True
+    )
+    return leaderboard, diagnostics, champions
+
+
+def _audit_v5_directional(
+    payload: Mapping[str, Any],
+    frames: Mapping[str, pd.DataFrame],
+) -> dict[str, Any]:
+    predictions = frames["directional-oos-predictions.csv"].copy()
+    forecasts = frames["directional-forecasts.csv"].copy()
+    splits = frames["directional-walk-forward-splits.csv"].copy()
+    diagnostics = frames["directional-selection-diagnostics.csv"].copy()
+    _audit_v5_probability_rows(
+        predictions,
+        context="v5 directional OOS predictions",
+        include_actual=True,
+    )
+    _audit_v5_probability_rows(
+        forecasts,
+        context="v5 directional prospective forecasts",
+        include_actual=False,
+    )
+    require_columns(
+        splits,
+        {
+            "horizon_weeks",
+            "origin_date",
+            "target_end",
+            "last_train_target_end",
+            "purged_origin_count",
+        },
+        "v5 directional splits",
+    )
+    horizon = pd.to_numeric(splits["horizon_weeks"], errors="raise").astype(int)
+    purged = pd.to_numeric(
+        splits["purged_origin_count"], errors="raise"
+    ).astype(int)
+    require(
+        set(horizon) == {1, 4, 13} and purged.eq(horizon).all(),
+        "v5 directional split purge does not equal the forecast horizon",
+    )
+    origin = pd.to_datetime(splits["origin_date"], utc=True, errors="raise")
+    last_target = pd.to_datetime(
+        splits["last_train_target_end"], utc=True, errors="raise"
+    )
+    require(
+        (last_target < origin).all(),
+        "v5 directional split training target reaches the prediction origin",
+    )
+    origin_day = _calendar_days(
+        splits["origin_date"], context="v5 directional splits.origin_date"
+    )
+    target_day = _calendar_days(
+        splits["target_end"], context="v5 directional splits.target_end"
+    )
+    require(
+        ((target_day - origin_day).dt.days == 7 * horizon).all(),
+        "v5 directional split target_end is not exactly 7*h calendar days later",
+    )
+    require(
+        not splits.duplicated(["horizon_weeks", "origin_date"]).any(),
+        "v5 directional splits duplicate an origin/horizon",
+    )
+    require_columns(
+        splits,
+        {"evaluation_split"},
+        "v5 directional splits",
+    )
+    prediction_origins = predictions.loc[
+        :,
+        ["horizon_weeks", "origin_date", "target_end", "evaluation_split"],
+    ].copy()
+    prediction_origins["horizon_weeks"] = pd.to_numeric(
+        prediction_origins["horizon_weeks"], errors="raise"
+    ).astype(int)
+    prediction_origins["origin_date"] = pd.to_datetime(
+        prediction_origins["origin_date"], utc=True, errors="raise"
+    )
+    prediction_origins["target_end"] = pd.to_datetime(
+        prediction_origins["target_end"], utc=True, errors="raise"
+    )
+    prediction_origins["evaluation_split"] = prediction_origins[
+        "evaluation_split"
+    ].astype(str)
+    prediction_origins = prediction_origins.drop_duplicates(ignore_index=True)
+    split_origins = splits.loc[
+        :,
+        ["horizon_weeks", "origin_date", "target_end", "evaluation_split"],
+    ].copy()
+    split_origins["horizon_weeks"] = pd.to_numeric(
+        split_origins["horizon_weeks"], errors="raise"
+    ).astype(int)
+    split_origins["origin_date"] = pd.to_datetime(
+        split_origins["origin_date"], utc=True, errors="raise"
+    )
+    split_origins["target_end"] = pd.to_datetime(
+        split_origins["target_end"], utc=True, errors="raise"
+    )
+    split_origins["evaluation_split"] = split_origins[
+        "evaluation_split"
+    ].astype(str)
+    require(
+        {
+            tuple(row)
+            for row in prediction_origins.itertuples(index=False, name=None)
+        }
+        == {tuple(row) for row in split_origins.itertuples(index=False, name=None)},
+        "v5 directional predictions/splits origin contract mismatch",
+    )
+    execution = _audit_v5_execution_parameters(payload)
+    split_limits = {
+        "selection": (
+            int(execution["directional_minimum_selection_predictions"]),
+            execution["directional_maximum_selection_origins"],
+        ),
+        "retrospective_diagnostic": (
+            int(execution["directional_minimum_diagnostic_predictions"]),
+            execution["directional_maximum_diagnostic_origins"],
+        ),
+    }
+    for horizon_value in V5_OUTCOME_HORIZONS:
+        for split_name, (minimum, maximum) in split_limits.items():
+            count = int(
+                len(
+                    splits.loc[
+                        splits["horizon_weeks"].astype(int).eq(horizon_value)
+                        & splits["evaluation_split"].astype(str).eq(split_name)
+                    ]
+                )
+            )
+            require(
+                count >= minimum,
+                f"v5 directional horizon-{horizon_value} {split_name} "
+                "origin count is below execution parameters",
+            )
+            if maximum is not None:
+                require(
+                    count <= int(maximum),
+                    f"v5 directional horizon-{horizon_value} {split_name} "
+                    "origin count exceeds execution parameters",
+                )
+
+    require_columns(
+        diagnostics,
+        {"horizon_weeks", "model", "selected"},
+        "v5 directional selection diagnostics",
+    )
+    selected = diagnostics.loc[
+        boolean_series(
+            diagnostics["selected"],
+            "v5 directional selection diagnostics.selected",
+        )
+    ].copy()
+    require(
+        selected["horizon_weeks"].astype(int).value_counts().to_dict()
+        == {1: 1, 4: 1, 13: 1},
+        "v5 directional selection must choose one model per horizon",
+    )
+    champions = payload["model"]["directional_transition"]["champions"]
+    directional_contract = payload["model"]["directional_transition"]
+    require(
+        directional_contract.get("target")
+        == "first_departure_state_within_h_or_no_departure",
+        "v5 directional target mismatch",
+    )
+    require(
+        directional_contract.get("deployed_direction_role")
+        == V5_DIRECTIONAL_SCORE_TARGET,
+        "v5 directional deployed role mismatch",
+    )
+    require(
+        directional_contract.get("selection_metric")
+        == "conditional_destination_log_loss",
+        "v5 directional selection metric mismatch",
+    )
+    require(
+        int(directional_contract.get("minimum_selection_departure_events", -1))
+        == V5_DIRECTIONAL_MINIMUM_EVENTS,
+        "v5 directional minimum event gate mismatch",
+    )
+    require(
+        int(directional_contract.get("minimum_selection_destination_classes", -1))
+        == V5_DIRECTIONAL_MINIMUM_DESTINATION_CLASSES,
+        "v5 directional minimum destination-class gate mismatch",
+    )
+    require(
+        int(directional_contract.get("minimum_selection_event_blocks", -1))
+        == V5_DIRECTIONAL_MINIMUM_EVENT_BLOCKS,
+        "v5 directional minimum event-block gate mismatch",
+    )
+    _audit_v5_embedded_records(
+        directional_contract["leaderboard"],
+        frames["directional-model-leaderboard.csv"],
+        keys=("horizon_weeks", "evaluation_split", "model"),
+        context="v5 directional leaderboard",
+    )
+    _audit_v5_embedded_records(
+        directional_contract["selection_diagnostics"],
+        diagnostics,
+        keys=("horizon_weeks", "model"),
+        context="v5 directional selection diagnostics",
+    )
+    recomputed_leaderboard, recomputed_diagnostics, recomputed_champions = (
+        _recompute_v5_directional(predictions)
+    )
+    leaderboard_fields = (
+        "selected",
+        "score_target",
+        "log_loss",
+        "brier",
+        "n_predictions",
+        "event_count",
+        "destination_class_count",
+        "effective_event_blocks",
+        "fallback_count",
+    )
+    _audit_v5_recomputed_records(
+        recomputed_leaderboard,
+        frames["directional-model-leaderboard.csv"],
+        keys=("horizon_weeks", "evaluation_split", "model"),
+        fields=leaderboard_fields,
+        context="v5 directional leaderboard",
+    )
+    diagnostic_fields = (
+        "reference_model",
+        "selected",
+        "gate_passed",
+        "gate_reason",
+        "score_target",
+        "selection_event_count",
+        "selection_destination_class_count",
+        "selection_effective_event_blocks",
+        "minimum_selection_events",
+        "minimum_destination_classes",
+        "minimum_event_blocks",
+        "log_loss",
+        "brier",
+        "absolute_log_loss_improvement",
+        "holm_adjusted_p_value",
+        "fallback_count",
+    )
+    _audit_v5_recomputed_records(
+        recomputed_diagnostics,
+        diagnostics,
+        keys=("horizon_weeks", "model"),
+        fields=diagnostic_fields,
+        context="v5 directional selection diagnostics",
+    )
+    for horizon_value in (1, 4, 13):
+        require(
+            str(champions[f"{horizon_value}w"])
+            == recomputed_champions[horizon_value],
+            f"v5 directional horizon-{horizon_value} champion disagrees with "
+            "independent recomputation",
+        )
+        selected_model = str(
+            selected.loc[
+                selected["horizon_weeks"].astype(int).eq(horizon_value), "model"
+            ].iloc[0]
+        )
+        require(
+            selected_model == str(champions[f"{horizon_value}w"]),
+            f"v5 directional horizon-{horizon_value} champion mismatch",
+        )
+        require(
+            forecasts.loc[
+                forecasts["horizon_weeks"].astype(int).eq(horizon_value), "model"
+            ].astype(str).eq(selected_model).all(),
+            f"v5 directional horizon-{horizon_value} forecast model mismatch",
+        )
+    return {
+        "oos_rows": len(predictions),
+        "forecast_rows": len(forecasts),
+        "split_rows": len(splits),
+        "champions": dict(champions),
+    }
+
+
+def _v5_reconciled_destinations(
+    *,
+    probability: float,
+    current_state: str,
+    source: Mapping[str, object],
+) -> dict[str, float]:
+    destination = {
+        state: (
+            0.0
+            if state == current_state
+            else max(0.0, float(source.get(f"p_{state}", 0.0)))
+        )
+        for state in STATE_ORDER
+    }
+    total = float(sum(destination.values()))
+    if not np.isfinite(total) or total <= 0.0:
+        alternatives = [state for state in STATE_ORDER if state != current_state]
+        destination = {
+            state: (1.0 / len(alternatives) if state in alternatives else 0.0)
+            for state in STATE_ORDER
+        }
+    else:
+        destination = {
+            state: value / total for state, value in destination.items()
+        }
+    scaled = {
+        state: round(float(probability) * value, 8)
+        for state, value in destination.items()
+    }
+    residual = round(float(probability) - sum(scaled.values()), 8)
+    if residual:
+        chosen = max(
+            (state for state in STATE_ORDER if state != current_state),
+            key=scaled.get,
+        )
+        scaled[chosen] = round(scaled[chosen] + residual, 8)
+    return scaled
+
+
+def _v5_markov_direction_source(
+    membership: pd.DataFrame,
+    *,
+    cutoff: object,
+    current_state: str,
+) -> dict[str, float]:
+    dates = pd.to_datetime(membership["date"], utc=True, errors="raise")
+    at = pd.Timestamp(cutoff)
+    at = at.tz_localize("UTC") if at.tzinfo is None else at.tz_convert("UTC")
+    states = membership.loc[dates.le(at), "state"].astype(str).reset_index(drop=True)
+    require(len(states) >= 2, "v5 weekly directional fallback history is too short")
+    current = states.iloc[:-1]
+    following = states.iloc[1:].to_numpy(dtype=object)
+    mask = current.eq(current_state).to_numpy(dtype=bool)
+    counts = {
+        state: float(np.count_nonzero(following[mask] == state)) + 1.0
+        for state in STATE_ORDER
+    }
+    return {f"p_{state}": value for state, value in counts.items()}
+
+
+def _audit_v5_weekly_directional(
+    payload: Mapping[str, Any],
+    frames: Mapping[str, pd.DataFrame],
+    membership: pd.DataFrame,
+) -> dict[str, int]:
+    """Bind published weekly directions to the selected sidecar or PIT fallback."""
+
+    require_columns(membership, {"date", "state"}, "v5 directional membership")
+    champions = payload["model"]["directional_transition"]["champions"]
+    lookup: dict[tuple[str, int], Mapping[str, object]] = {}
+    for path in (
+        "directional-oos-predictions.csv",
+        "directional-forecasts.csv",
+    ):
+        frame = frames[path]
+        for row in frame.to_dict(orient="records"):
+            horizon = int(row["horizon_weeks"])
+            if str(row["model"]) != str(champions[f"{horizon}w"]):
+                continue
+            key = (_market_date(row["origin_date"]), horizon)
+            previous = lookup.get(key)
+            if previous is not None:
+                fields = (
+                    "model",
+                    "current_state",
+                    "p_no_departure",
+                    *PROBABILITY_COLUMNS,
+                )
+                require(
+                    all(str(previous[field]) == str(row[field]) for field in fields),
+                    f"v5 directional sidecars conflict at {key}",
+                )
+            lookup[key] = row
+
+    matched = 0
+    fallback = 0
+    for week_index, week in enumerate(payload["weekly"]):
+        origin = str(week["date"])
+        current_state = str(week["current"]["state"])
+        cutoff = week.get("data_as_of", origin)
+        for horizon in V5_OUTCOME_HORIZONS:
+            context = f"v5 weekly[{week_index}].directional_risk.{horizon}w"
+            published = week["directional_risk"][f"{horizon}w"]
+            source = lookup.get((origin, horizon))
+            if source is None:
+                expected_model = "markov_first_passage"
+                source = _v5_markov_direction_source(
+                    membership,
+                    cutoff=cutoff,
+                    current_state=current_state,
+                )
+                fallback += 1
+            else:
+                expected_model = str(champions[f"{horizon}w"])
+                require(
+                    str(source["current_state"]) == current_state,
+                    f"{context} source current state mismatch",
+                )
+                matched += 1
+            require(
+                str(published["model"]) == expected_model,
+                f"{context} model/source mismatch",
+            )
+            probability = float(published["probability"])
+            expected_destinations = _v5_reconciled_destinations(
+                probability=probability,
+                current_state=current_state,
+                source=source,
+            )
+            for state in STATE_ORDER:
+                require(
+                    np.isclose(
+                        float(published["first_destination"][state]),
+                        expected_destinations[state],
+                        atol=5e-8,
+                        rtol=0.0,
+                    ),
+                    f"{context} {state} destination/source mismatch",
+                )
+    return {"matched_rows": matched, "fallback_rows": fallback}
+
+
+def _v5_conditional_point_metrics(
+    returns: np.ndarray,
+    drawdowns: np.ndarray,
+    *,
+    horizon_weeks: int,
+) -> dict[str, float]:
+    returns = np.asarray(returns, dtype=float)
+    drawdowns = np.asarray(drawdowns, dtype=float)
+    tail_count = max(1, int(np.ceil(0.05 * len(returns))))
+    annualization = np.sqrt(52.0 / horizon_weeks)
+    return {
+        "mean_return": float(np.mean(returns)),
+        "median_return": float(np.median(returns)),
+        "positive_rate": float(np.mean(returns > 0.0)),
+        "annualized_volatility": (
+            float(np.std(returns, ddof=1) * annualization)
+            if len(returns) > 1
+            else float("nan")
+        ),
+        "downside_volatility": float(
+            np.sqrt(np.mean(np.minimum(returns, 0.0) ** 2)) * annualization
+        ),
+        "cvar_5": float(np.mean(np.sort(returns)[:tail_count])),
+        "mean_max_drawdown": float(np.mean(drawdowns)),
+    }
+
+
+def _v5_conditional_block_indexes(
+    frame: pd.DataFrame,
+    *,
+    block_length: int,
+) -> np.ndarray:
+    ordered = frame.sort_values("origin_position", kind="mergesort").reset_index(
+        drop=True
+    )
+    blocks: list[np.ndarray] = []
+    for _, episode in ordered.groupby("episode_id", sort=False):
+        episode = episode.sort_values(
+            "origin_position", kind="mergesort"
+        ).reset_index()
+        gap_group = episode["origin_position"].diff().ne(1).cumsum()
+        for _, contiguous in episode.groupby(gap_group, sort=False):
+            base_positions = contiguous["index"].to_numpy(dtype=int)
+            offsets = np.arange(block_length)
+            for start in range(len(base_positions)):
+                blocks.append(base_positions[(start + offsets) % len(base_positions)])
+    require(bool(blocks), "v5 conditional bootstrap has no episode-bounded blocks")
+    return np.asarray(blocks, dtype=int)
+
+
+def _v5_conditional_bootstrap_intervals(
+    frame: pd.DataFrame,
+    *,
+    horizon_weeks: int,
+    block_length: int,
+    resamples: int,
+    seed: int,
+) -> dict[str, tuple[float, float]]:
+    if resamples == 0:
+        return {
+            metric: (float("nan"), float("nan"))
+            for metric in V5_OUTCOME_POINT_METRICS
+        }
+    ordered = frame.sort_values("origin_position", kind="mergesort").reset_index(
+        drop=True
+    )
+    block_indexes = _v5_conditional_block_indexes(
+        ordered,
+        block_length=block_length,
+    )
+    returns = ordered["forward_return"].to_numpy(dtype=float)
+    drawdowns = ordered["max_drawdown"].to_numpy(dtype=float)
+    target_rows = len(ordered)
+    blocks_per_replicate = int(np.ceil(target_rows / block_length))
+    generator = np.random.default_rng(seed)
+    draws: dict[str, list[float]] = {
+        metric: [] for metric in V5_OUTCOME_POINT_METRICS
+    }
+    for _ in range(resamples):
+        chosen = generator.integers(
+            0,
+            len(block_indexes),
+            size=blocks_per_replicate,
+        )
+        positions = block_indexes[chosen].reshape(-1)[:target_rows]
+        metrics = _v5_conditional_point_metrics(
+            returns[positions],
+            drawdowns[positions],
+            horizon_weeks=horizon_weeks,
+        )
+        for metric, value in metrics.items():
+            draws[metric].append(value)
+    intervals: dict[str, tuple[float, float]] = {}
+    for metric, values in draws.items():
+        finite = np.asarray(values, dtype=float)
+        finite = finite[np.isfinite(finite)]
+        require(len(finite) > 0, f"v5 conditional {metric} bootstrap is empty")
+        lower, upper = np.quantile(finite, [0.025, 0.975])
+        intervals[metric] = (float(lower), float(upper))
+    return intervals
+
+
+def _recompute_v5_conditional_statistics(
+    outcomes: pd.DataFrame,
+    statistics: pd.DataFrame,
+    *,
+    expected_resamples: int,
+) -> pd.DataFrame:
+    keys = ("state", "asset", "horizon_weeks")
+    require_columns(statistics, set(keys), "v5 conditional statistics")
+    require(
+        not statistics.duplicated(list(keys)).any(),
+        "v5 conditional statistics keys duplicate",
+    )
+    statistic_keys = {
+        (str(row.state), str(row.asset), int(row.horizon_weeks))
+        for row in statistics.itertuples(index=False)
+    }
+    outcome_keys = {
+        (str(row.state), str(row.asset), int(row.horizon_weeks))
+        for row in outcomes.loc[:, list(keys)].drop_duplicates().itertuples(index=False)
+    }
+    require(
+        statistic_keys == outcome_keys,
+        "v5 conditional statistics/outcome group keys differ",
+    )
+    state_positions = {state: index for index, state in enumerate(STATE_ORDER)}
+    asset_positions = {
+        asset: index for index, asset in enumerate(V5_OUTCOME_ASSETS)
+    }
+    rows: list[dict[str, Any]] = []
+    for statistic in statistics.itertuples(index=False):
+        state = str(statistic.state)
+        asset = str(statistic.asset)
+        horizon = int(statistic.horizon_weeks)
+        require(state in state_positions, f"v5 conditional state {state} is invalid")
+        require(asset in asset_positions, f"v5 conditional asset {asset} is invalid")
+        require(
+            horizon in V5_OUTCOME_HORIZONS,
+            f"v5 conditional horizon {horizon} is invalid",
+        )
+        group = outcomes.loc[
+            outcomes["state"].astype(str).eq(state)
+            & outcomes["asset"].astype(str).eq(asset)
+            & outcomes["horizon_weeks"].astype(int).eq(horizon)
+        ].sort_values("origin_position", kind="mergesort")
+        count = int(len(group))
+        unique_episodes = int(group["episode_id"].nunique())
+        minimum_observations = 20
+        minimum_episodes = 5
+        supported = (
+            count >= minimum_observations and unique_episodes >= minimum_episodes
+        )
+        metrics = _v5_conditional_point_metrics(
+            group["forward_return"].to_numpy(dtype=float),
+            group["max_drawdown"].to_numpy(dtype=float),
+            horizon_weeks=horizon,
+        )
+        seed = 17 + state_positions[state] * 10_000 + asset_positions[asset] * 100 + horizon
+        intervals = (
+            _v5_conditional_bootstrap_intervals(
+                group,
+                horizon_weeks=horizon,
+                block_length=13,
+                resamples=expected_resamples,
+                seed=seed,
+            )
+            if supported
+            else {
+                metric: (float("nan"), float("nan"))
+                for metric in V5_OUTCOME_POINT_METRICS
+            }
+        )
+        row: dict[str, Any] = {
+            "state": state,
+            "asset": asset,
+            "horizon_weeks": horizon,
+            "execution_lag_weeks": int(group["execution_lag_weeks"].iloc[0]),
+            "return_currency": str(group["return_currency"].iloc[0]),
+            "sample_start": pd.Timestamp(group["origin_date"].min()).date().isoformat(),
+            "sample_end": pd.Timestamp(group["origin_date"].max()).date().isoformat(),
+            "n": count,
+            "unique_episodes": unique_episodes,
+            "status": "ok" if supported else "insufficient_support",
+            "minimum_observations": minimum_observations,
+            "minimum_unique_episodes": minimum_episodes,
+            "bootstrap_method": "episode_bounded_circular_block",
+            "bootstrap_block_weeks": 13,
+            "bootstrap_resamples": expected_resamples,
+            "bootstrap_seed": seed,
+            **metrics,
+        }
+        for metric, (lower, upper) in intervals.items():
+            row[f"{metric}_ci95_lower"] = lower
+            row[f"{metric}_ci95_upper"] = upper
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def _audit_v5_conditional(
+    payload: Mapping[str, Any], frames: Mapping[str, pd.DataFrame]
+) -> dict[str, Any]:
+    statistics = frames["conditional-asset-statistics.csv"]
+    embedded = payload["research"]["conditional_asset_stats"]["rows"]
+    _audit_v5_embedded_records(
+        embedded,
+        statistics,
+        keys=("state", "asset", "horizon_weeks"),
+        context="v5 conditional asset statistics",
+    )
+    outcomes = frames["conditional-asset-outcomes.csv"]
+    require_columns(
+        outcomes,
+        {
+            "origin_position",
+            "origin_date",
+            "entry_date",
+            "exit_date",
+            "state",
+            "episode_id",
+            "asset",
+            "horizon_weeks",
+            "execution_lag_weeks",
+            "return_currency",
+            "forward_return",
+            "max_drawdown",
+        },
+        "v5 conditional asset outcomes",
+    )
+    origin = _calendar_days(
+        outcomes["origin_date"], context="v5 conditional outcomes.origin_date"
+    )
+    entry = _calendar_days(
+        outcomes["entry_date"], context="v5 conditional outcomes.entry_date"
+    )
+    exit_date = _calendar_days(
+        outcomes["exit_date"], context="v5 conditional outcomes.exit_date"
+    )
+    horizon = pd.to_numeric(outcomes["horizon_weeks"], errors="raise").astype(int)
+    require(
+        ((entry - origin).dt.days == 7).all(),
+        "v5 conditional outcomes entry is not t+1 week",
+    )
+    require(
+        ((exit_date - entry).dt.days == 7 * horizon).all(),
+        "v5 conditional outcomes exit horizon is invalid",
+    )
+    require(
+        outcomes["execution_lag_weeks"].astype(int).eq(1).all()
+        and outcomes["return_currency"].astype(str).eq("USD").all(),
+        "v5 conditional outcomes execution/currency contract mismatch",
+    )
+    require(
+        outcomes["state"].astype(str).isin(STATE_ORDER).all()
+        and outcomes["asset"].astype(str).isin(V5_OUTCOME_ASSETS).all()
+        and set(horizon) == {1, 4, 13},
+        "v5 conditional outcomes state/asset/horizon is invalid",
+    )
+    require(
+        not outcomes.duplicated(
+            ["origin_position", "horizon_weeks", "asset"]
+        ).any(),
+        "v5 conditional outcomes duplicate an origin/horizon/asset",
+    )
+    numeric_outcomes = outcomes.loc[:, ["forward_return", "max_drawdown"]].apply(
+        pd.to_numeric, errors="raise"
+    )
+    require(
+        np.isfinite(numeric_outcomes.to_numpy(dtype=float)).all(),
+        "v5 conditional outcomes contain non-finite values",
+    )
+    execution = _audit_v5_execution_parameters(payload)
+    expected_resamples = int(
+        execution["conditional_outcome_bootstrap_resamples"]
+    )
+    recomputed = _recompute_v5_conditional_statistics(
+        outcomes,
+        statistics,
+        expected_resamples=expected_resamples,
+    )
+    statistic_fields = (
+        "execution_lag_weeks",
+        "return_currency",
+        "sample_start",
+        "sample_end",
+        "n",
+        "unique_episodes",
+        "status",
+        "minimum_observations",
+        "minimum_unique_episodes",
+        "bootstrap_method",
+        "bootstrap_block_weeks",
+        "bootstrap_resamples",
+        "bootstrap_seed",
+        *V5_OUTCOME_POINT_METRICS,
+        *tuple(
+            field
+            for metric in V5_OUTCOME_POINT_METRICS
+            for field in (
+                f"{metric}_ci95_lower",
+                f"{metric}_ci95_upper",
+            )
+        ),
+    )
+    _audit_v5_recomputed_records(
+        recomputed,
+        statistics,
+        keys=("state", "asset", "horizon_weeks"),
+        fields=statistic_fields,
+        context="v5 conditional asset statistics",
+    )
+    return {
+        "outcome_rows": len(outcomes),
+        "statistics_rows": len(statistics),
+        "bootstrap_resamples": expected_resamples,
+    }
+
+
+def _v5_serialized_probability_rows_are_valid(values: pd.DataFrame) -> bool:
+    matrix = values.to_numpy(dtype=float)
+    return bool(
+        np.isfinite(matrix).all()
+        and ((values >= 0.0) & (values <= 1.0)).all().all()
+        and np.allclose(
+            values.sum(axis=1),
+            1.0,
+            atol=V5_SERIALIZED_SIMPLEX_ATOL,
+            rtol=0.0,
+        )
+    )
+
+
+def _audit_v5_evidence(
+    payload: Mapping[str, Any], artifacts: Path
+) -> tuple[dict[str, Any], pd.DataFrame]:
+    contracts = payload["model"]["evidence_artifacts"]
+    rows: dict[str, Any] = {}
+    membership_frame: pd.DataFrame | None = None
+    forecast_frame: pd.DataFrame | None = None
+    for key in ("state_membership_history", "weekly_state_forecasts"):
+        metadata = contracts[key]
+        context = f"payload.model.evidence_artifacts.{key}"
+        path = _v5_artifact_path(artifacts, metadata["path"], context=context)
+        require(
+            file_sha256(path) == str(metadata["sha256"]),
+            f"{context} SHA-256 mismatch",
+        )
+        frame = pd.read_csv(path)
+        require(
+            len(frame) == int(metadata["row_count"]),
+            f"{context} row_count mismatch",
+        )
+        rows[key] = {"rows": len(frame), "sha256": str(metadata["sha256"])}
+        if key == "state_membership_history":
+            membership_frame = frame
+        else:
+            forecast_frame = frame
+    require(membership_frame is not None, "v5 membership evidence is missing")
+    require_columns(
+        membership_frame,
+        {"date", "state", "m_risk_on", "m_transition", "m_risk_off"},
+        "v5 membership evidence",
+    )
+    membership_dates = pd.to_datetime(
+        membership_frame["date"], utc=True, errors="raise"
+    )
+    require(
+        membership_dates.is_monotonic_increasing
+        and not membership_dates.duplicated().any(),
+        "v5 membership evidence dates are not unique/increasing",
+    )
+    memberships = membership_frame.loc[
+        :, ["m_risk_on", "m_transition", "m_risk_off"]
+    ].apply(pd.to_numeric, errors="raise")
+    require(
+        np.isfinite(memberships.to_numpy(dtype=float)).all()
+        and ((memberships >= 0.0) & (memberships <= 1.0)).all().all()
+        and np.allclose(memberships.sum(axis=1), 1.0, atol=1e-8, rtol=0.0),
+        "v5 membership evidence is not a probability simplex",
+    )
+    require(forecast_frame is not None, "v5 weekly forecast evidence is missing")
+    require_columns(
+        forecast_frame,
+        {
+            "origin_date",
+            "current_state",
+            "current_m_risk_on",
+            "current_m_transition",
+            "current_m_risk_off",
+            "target_date",
+            "model",
+            "next_p_risk_on",
+            "next_p_transition",
+            "next_p_risk_off",
+            "fallback",
+            "fallback_reason",
+        },
+        "v5 weekly forecast evidence",
+    )
+    weekly = payload["weekly"]
+    require(
+        len(forecast_frame) == len(weekly),
+        "v5 weekly forecast evidence/payload row count mismatch",
+    )
+    require(
+        not forecast_frame["origin_date"].duplicated().any(),
+        "v5 weekly forecast evidence duplicates an origin",
+    )
+    current_columns = [f"current_m_{state}" for state in STATE_ORDER]
+    next_columns = [f"next_p_{state}" for state in STATE_ORDER]
+    current_values = forecast_frame.loc[:, current_columns].apply(
+        pd.to_numeric, errors="raise"
+    )
+    next_values = forecast_frame.loc[:, next_columns].apply(
+        pd.to_numeric, errors="raise"
+    )
+    for label, values in (("current", current_values), ("next", next_values)):
+        require(
+            _v5_serialized_probability_rows_are_valid(values),
+            f"v5 weekly forecast evidence {label} probabilities are invalid",
+        )
+    fallback = boolean_series(
+        forecast_frame["fallback"], "v5 weekly forecast evidence.fallback"
+    )
+    for index, week in enumerate(weekly):
+        row = forecast_frame.iloc[index]
+        require(
+            _market_date(row["origin_date"]) == str(week["date"]),
+            f"v5 weekly[{index}] origin/evidence mismatch",
+        )
+        require(
+            _market_date(row["target_date"]) == str(week["next_week"]["date"]),
+            f"v5 weekly[{index}] target/evidence mismatch",
+        )
+        require(
+            str(row["current_state"]) == str(week["current"]["state"]),
+            f"v5 weekly[{index}] current state/evidence mismatch",
+        )
+        require(
+            str(row["model"]) == str(week["next_week"]["model"]),
+            f"v5 weekly[{index}] model/evidence mismatch",
+        )
+        require(
+            bool(fallback.iloc[index]) == bool(week["next_week"]["fallback"]),
+            f"v5 weekly[{index}] fallback/evidence mismatch",
+        )
+        for state in STATE_ORDER:
+            require(
+                np.isclose(
+                    float(row[f"current_m_{state}"]),
+                    float(week["current"]["memberships"][state]),
+                    atol=1e-8,
+                    rtol=0.0,
+                ),
+                f"v5 weekly[{index}] current {state} evidence mismatch",
+            )
+            require(
+                np.isclose(
+                    float(row[f"next_p_{state}"]),
+                    float(week["next_week"]["probabilities"][state]),
+                    atol=1e-8,
+                    rtol=0.0,
+                ),
+                f"v5 weekly[{index}] next {state} evidence mismatch",
+            )
+    return rows, membership_frame
+
+
+def _v5_duration_spells(states: Sequence[str]) -> list[dict[str, Any]]:
+    require(bool(states), "v5 duration state history is empty")
+    spells: list[dict[str, Any]] = []
+    start = 0
+    for position in range(1, len(states) + 1):
+        departed = position < len(states) and states[position] != states[start]
+        final = position == len(states)
+        if not departed and not final:
+            continue
+        spells.append(
+            {
+                "state": str(states[start]),
+                "duration_weeks": int(position - start),
+                "event_observed": bool(departed),
+            }
+        )
+        start = position
+    return spells
+
+
+def _v5_duration_km(
+    spells: Sequence[Mapping[str, Any]],
+    *,
+    state: str,
+) -> list[dict[str, Any]]:
+    selected = [spell for spell in spells if str(spell["state"]) == state]
+    require(selected, f"v5 duration has no spells for {state}")
+    durations = np.asarray(
+        [int(spell["duration_weeks"]) for spell in selected], dtype=int
+    )
+    observed = np.asarray(
+        [bool(spell["event_observed"]) for spell in selected], dtype=bool
+    )
+    survival = 1.0
+    rows: list[dict[str, Any]] = []
+    for duration in sorted(set(durations.tolist())):
+        at_risk = int(np.count_nonzero(durations >= duration))
+        at_time = durations == duration
+        events = int(np.count_nonzero(at_time & observed))
+        if events:
+            survival *= 1.0 - events / at_risk
+        rows.append(
+            {
+                "duration_weeks": int(duration),
+                "survival": float(survival),
+                "events": events,
+            }
+        )
+    return rows
+
+
+def _v5_duration_survival_at(
+    km: Sequence[Mapping[str, Any]], elapsed_weeks: int
+) -> float:
+    eligible = [
+        row for row in km if int(row["duration_weeks"]) <= elapsed_weeks
+    ]
+    return 1.0 if not eligible else float(eligible[-1]["survival"])
+
+
+def _recompute_v5_duration(
+    states: Sequence[str],
+    *,
+    as_of: str,
+) -> dict[str, Any]:
+    spells = _v5_duration_spells(states)
+    current = spells[-1]
+    state = str(current["state"])
+    elapsed = int(current["duration_weeks"])
+    selected = [spell for spell in spells if str(spell["state"]) == state]
+    completed = int(sum(bool(spell["event_observed"]) for spell in selected))
+    censored = int(sum(not bool(spell["event_observed"]) for spell in selected))
+    base: dict[str, Any] = {
+        "as_of": as_of,
+        "method": "state_specific_kaplan_meier",
+        "state": state,
+        "elapsed_weeks": elapsed,
+        "episodes": int(len(selected)),
+        "completed_spells": completed,
+        "censored_spells": censored,
+        "minimum_completed_spells": 5,
+        "restriction_weeks": 52,
+    }
+    if completed < 5:
+        return {
+            **base,
+            "status": "insufficient_history",
+            "conditional_survival": {"4w": None, "13w": None},
+            "departure_probability": {"4w": None, "13w": None},
+            "median_remaining_weeks": None,
+            "restricted_mean_remaining_weeks": None,
+        }
+    km = _v5_duration_km(spells, state=state)
+    conditioning_time = elapsed - 1
+    denominator = _v5_duration_survival_at(km, conditioning_time)
+    if not np.isfinite(denominator) or denominator <= 0.0:
+        return {
+            **base,
+            "status": "unavailable",
+            "conditional_survival": {"4w": None, "13w": None},
+            "departure_probability": {"4w": None, "13w": None},
+            "median_remaining_weeks": None,
+            "restricted_mean_remaining_weeks": None,
+        }
+    conditional_survival = {
+        f"{horizon}w": float(
+            np.clip(
+                _v5_duration_survival_at(km, conditioning_time + horizon)
+                / denominator,
+                0.0,
+                1.0,
+            )
+        )
+        for horizon in (4, 13)
+    }
+    event_times = [
+        int(row["duration_weeks"]) for row in km if int(row["events"]) > 0
+    ]
+    maximum_search = max(0, max(event_times) - conditioning_time) if event_times else 0
+    median_remaining: int | None = None
+    for remaining in range(1, maximum_search + 1):
+        ratio = (
+            _v5_duration_survival_at(km, conditioning_time + remaining)
+            / denominator
+        )
+        if ratio <= 0.5 + 1e-12:
+            median_remaining = remaining
+            break
+    rmst = sum(
+        float(
+            np.clip(
+                _v5_duration_survival_at(km, conditioning_time + remaining)
+                / denominator,
+                0.0,
+                1.0,
+            )
+        )
+        for remaining in range(52)
+    )
+    return {
+        **base,
+        "status": "ok",
+        "conditional_survival": conditional_survival,
+        "departure_probability": {
+            key: float(1.0 - value)
+            for key, value in conditional_survival.items()
+        },
+        "median_remaining_weeks": median_remaining,
+        "restricted_mean_remaining_weeks": float(rmst),
+    }
+
+
+def _audit_v5_duration_interval(
+    value: object,
+    *,
+    context: str,
+    minimum: float | None = None,
+    maximum: float | None = None,
+) -> tuple[float, float] | None:
+    if value is None:
+        return None
+    require(isinstance(value, Mapping), f"{context} must be an interval or null")
+    require(set(value) == {"lower", "upper"}, f"{context} fields mismatch")
+    try:
+        lower = float(value["lower"])
+        upper = float(value["upper"])
+    except (TypeError, ValueError) as exc:
+        raise AuditFailure(f"{context} is not numeric") from exc
+    require(
+        np.isfinite(lower) and np.isfinite(upper) and lower <= upper,
+        f"{context} bounds are invalid",
+    )
+    if minimum is not None:
+        require(lower >= minimum, f"{context} lower bound is invalid")
+    if maximum is not None:
+        require(upper <= maximum, f"{context} upper bound is invalid")
+    return lower, upper
+
+
+def _audit_v5_duration_ci(
+    duration: Mapping[str, Any],
+    *,
+    expected_resamples: int,
+    context: str,
+) -> None:
+    bootstrap = duration.get("bootstrap")
+    require(isinstance(bootstrap, Mapping), f"{context}.bootstrap must be an object")
+    require(
+        set(bootstrap) == {"unit", "resamples", "valid_resamples", "seed", "interval"},
+        f"{context}.bootstrap fields mismatch",
+    )
+    require(bootstrap["unit"] == "episode", f"{context}.bootstrap unit mismatch")
+    require(
+        int(bootstrap["resamples"]) == expected_resamples,
+        f"{context}.bootstrap resamples/execution mismatch",
+    )
+    valid_resamples = int(bootstrap["valid_resamples"])
+    require(
+        0 <= valid_resamples <= expected_resamples,
+        f"{context}.bootstrap valid_resamples invalid",
+    )
+    require(int(bootstrap["seed"]) == 17, f"{context}.bootstrap seed mismatch")
+    require(
+        np.isclose(float(bootstrap["interval"]), 0.95, atol=1e-12, rtol=0.0),
+        f"{context}.bootstrap interval mismatch",
+    )
+    if expected_resamples == 0:
+        require(valid_resamples == 0, f"{context}.bootstrap valid_resamples must be zero")
+    ci95 = duration.get("ci95")
+    if duration.get("status") != "ok":
+        require(ci95 is None, f"{context}.ci95 must be null without an estimate")
+        return
+    require(isinstance(ci95, Mapping), f"{context}.ci95 must be an object")
+    require(
+        set(ci95)
+        == {
+            "conditional_survival",
+            "departure_probability",
+            "median_remaining_weeks",
+            "restricted_mean_remaining_weeks",
+        },
+        f"{context}.ci95 fields mismatch",
+    )
+    stay = ci95["conditional_survival"]
+    depart = ci95["departure_probability"]
+    require(isinstance(stay, Mapping), f"{context}.ci95 survival must be an object")
+    require(isinstance(depart, Mapping), f"{context}.ci95 departure must be an object")
+    require(set(stay) == {"4w", "13w"}, f"{context}.ci95 survival keys mismatch")
+    require(set(depart) == {"4w", "13w"}, f"{context}.ci95 departure keys mismatch")
+    for horizon in ("4w", "13w"):
+        stay_interval = _audit_v5_duration_interval(
+            stay[horizon],
+            context=f"{context}.ci95.conditional_survival.{horizon}",
+            minimum=0.0,
+            maximum=1.0,
+        )
+        depart_interval = _audit_v5_duration_interval(
+            depart[horizon],
+            context=f"{context}.ci95.departure_probability.{horizon}",
+            minimum=0.0,
+            maximum=1.0,
+        )
+        require(
+            (stay_interval is None) == (depart_interval is None),
+            f"{context}.ci95 {horizon} complement nullability mismatch",
+        )
+        if stay_interval is not None and depart_interval is not None:
+            require(
+                np.isclose(
+                    depart_interval[0],
+                    1.0 - stay_interval[1],
+                    atol=5e-8,
+                    rtol=0.0,
+                )
+                and np.isclose(
+                    depart_interval[1],
+                    1.0 - stay_interval[0],
+                    atol=5e-8,
+                    rtol=0.0,
+                ),
+                f"{context}.ci95 {horizon} complement mismatch",
+            )
+    median_interval = _audit_v5_duration_interval(
+        ci95["median_remaining_weeks"],
+        context=f"{context}.ci95.median_remaining_weeks",
+        minimum=0.0,
+    )
+    rmst_interval = _audit_v5_duration_interval(
+        ci95["restricted_mean_remaining_weeks"],
+        context=f"{context}.ci95.restricted_mean_remaining_weeks",
+        minimum=0.0,
+        maximum=52.0,
+    )
+    if expected_resamples == 0:
+        require(
+            all(stay[horizon] is None and depart[horizon] is None for horizon in ("4w", "13w"))
+            and ci95["median_remaining_weeks"] is None
+            and ci95["restricted_mean_remaining_weeks"] is None,
+            f"{context}.ci95 must be null-valued when bootstrap is disabled",
+        )
+        return
+    minimum_valid = max(1, int(np.ceil(expected_resamples * 0.8)))
+    enough_valid = valid_resamples >= minimum_valid
+    require(
+        all(
+            (stay[horizon] is not None) == enough_valid
+            and (depart[horizon] is not None) == enough_valid
+            for horizon in ("4w", "13w")
+        )
+        and (rmst_interval is not None) == enough_valid,
+        f"{context}.ci95 valid-resample linkage mismatch",
+    )
+    if median_interval is not None:
+        require(
+            enough_valid,
+            f"{context}.ci95 median interval lacks valid resamples",
+        )
+
+
+def _audit_v5_duration(
+    payload: Mapping[str, Any],
+    membership: pd.DataFrame,
+    execution: Mapping[str, Any],
+) -> dict[str, Any]:
+    require_columns(membership, {"date", "state"}, "v5 duration membership evidence")
+    dates = pd.to_datetime(membership["date"], utc=True, errors="raise")
+    local_dates = dates.dt.tz_convert("America/New_York").dt.date
+    require(
+        local_dates.is_monotonic_increasing and not local_dates.duplicated().any(),
+        "v5 duration membership dates are not unique/increasing",
+    )
+    require(
+        all(
+            (current - previous).days == 7
+            for previous, current in zip(
+                local_dates.iloc[:-1], local_dates.iloc[1:], strict=True
+            )
+        ),
+        "v5 duration membership history is not weekly",
+    )
+    states = membership["state"].astype(str).tolist()
+    require(
+        set(states).issubset(STATE_ORDER),
+        "v5 duration membership states are invalid",
+    )
+    duration_resamples = int(execution["duration_bootstrap_resamples"])
+    weekly = payload["weekly"]
+    latest_date = str(weekly[-1]["date"])
+    for index, week in enumerate(weekly):
+        context = f"v5 weekly[{index}].duration_context"
+        duration = week.get("duration_context")
+        require(isinstance(duration, Mapping), f"{context} must be an object")
+        cutoff_value = week.get("data_as_of", week.get("date"))
+        cutoff = pd.Timestamp(cutoff_value)
+        cutoff_date = cutoff.date()
+        if cutoff.tzinfo is not None:
+            cutoff_date = cutoff.tz_convert(
+                "America/New_York"
+            ).date()
+            cutoff_utc = cutoff.tz_convert("UTC")
+        else:
+            cutoff_utc = cutoff.tz_localize("UTC")
+        require(
+            str(week["date"]) == cutoff_date.isoformat(),
+            f"v5 weekly[{index}] date/data_as_of mismatch",
+        )
+        eligible_positions = [
+            position
+            for position, observed_at in enumerate(dates)
+            if observed_at <= cutoff_utc
+        ]
+        require(eligible_positions, f"{context} cutoff precedes membership history")
+        last_position = eligible_positions[-1]
+        as_of = local_dates.iloc[last_position].isoformat()
+        require(as_of == str(week["date"]), f"{context} as-of evidence mismatch")
+        expected = _recompute_v5_duration(states[: last_position + 1], as_of=as_of)
+        for field in (
+            "as_of",
+            "method",
+            "state",
+            "elapsed_weeks",
+            "episodes",
+            "completed_spells",
+            "censored_spells",
+            "minimum_completed_spells",
+            "status",
+            "median_remaining_weeks",
+            "restricted_mean_remaining_weeks",
+            "restriction_weeks",
+        ):
+            _require_v5_recomputed_value(
+                expected[field],
+                duration.get(field),
+                context=f"{context}.{field}",
+            )
+        require(
+            str(week["current"]["state"]) == expected["state"],
+            f"{context} current state/evidence mismatch",
+        )
+        for block_name in ("conditional_survival", "departure_probability"):
+            actual_block = duration.get(block_name)
+            require(
+                isinstance(actual_block, Mapping),
+                f"{context}.{block_name} must be an object",
+            )
+            require(
+                set(actual_block) == {"4w", "13w"},
+                f"{context}.{block_name} keys mismatch",
+            )
+            for horizon in ("4w", "13w"):
+                _require_v5_recomputed_value(
+                    expected[block_name][horizon],
+                    actual_block[horizon],
+                    context=f"{context}.{block_name}.{horizon}",
+                )
+        expected_resamples = (
+            duration_resamples if str(week["date"]) == latest_date else 0
+        )
+        _audit_v5_duration_ci(
+            duration,
+            expected_resamples=expected_resamples,
+            context=context,
+        )
+    return {"weeks": len(weekly), "latest_bootstrap_resamples": duration_resamples}
+
+
+def _v5_fx_correction_start(available_at: pd.Timestamp) -> pd.Timestamp:
+    """Return the first Friday 16:00 ET cutoff at/after a correction."""
+
+    local = pd.Timestamp(available_at).tz_convert("America/New_York")
+    candidate_date = local.date() + timedelta(
+        days=(4 - local.weekday()) % 7
+    )
+    candidate = (
+        pd.Timestamp(candidate_date)
+        .tz_localize("America/New_York")
+        + timedelta(hours=16)
+    )
+    if candidate < local:
+        candidate = (
+            pd.Timestamp(candidate_date + timedelta(weeks=1))
+            .tz_localize("America/New_York")
+            + timedelta(hours=16)
+        )
+    return candidate
+
+
+def _audit_v5_fx_correction_quarantine(
+    coverage: pd.DataFrame,
+    *,
+    correction_events: Sequence[pd.Timestamp] | None = None,
+) -> dict[str, Any]:
+    """Independently rebuild the 27-origin H.10 correction quarantine."""
+
+    required = {
+        "archive_correction_quarantined",
+        "archive_correction_available_at",
+        "archive_correction_quarantine_until_week",
+    }
+    require_columns(coverage, required, "v5 FX correction quarantine")
+    quarantined = boolean_series(
+        coverage["archive_correction_quarantined"],
+        "v5 FX correction quarantine flag",
+    )
+    available_raw = coverage["archive_correction_available_at"]
+    until_raw = coverage["archive_correction_quarantine_until_week"]
+    available = pd.to_datetime(available_raw, utc=True, errors="coerce")
+    until = pd.to_datetime(until_raw, errors="coerce")
+    require(
+        available.notna().equals(available_raw.notna()),
+        "v5 FX correction availability timestamp is invalid",
+    )
+    require(
+        until.notna().equals(until_raw.notna()),
+        "v5 FX correction quarantine end is invalid",
+    )
+    require(
+        (available.notna() == quarantined).all()
+        and (until.notna() == quarantined).all(),
+        "v5 FX correction quarantine evidence/flag parity mismatch",
+    )
+    require(
+        bool((until.dropna() == until.dropna().dt.normalize()).all()),
+        "v5 FX correction quarantine end must be a calendar date",
+    )
+    if "feature_status" in coverage:
+        require(
+            coverage["feature_status"].astype(str).eq(
+                "correction_quarantine"
+            ).equals(quarantined),
+            "v5 FX correction quarantine feature status mismatch",
+        )
+
+    evidence = pd.DataFrame(
+        {"available_at": available, "until_week": until}
+    ).loc[quarantined]
+    evidence_events: list[tuple[pd.Timestamp, pd.Timestamp, pd.Timestamp]] = []
+    for row in evidence.drop_duplicates().itertuples(index=False):
+        correction = pd.Timestamp(row.available_at)
+        start = _v5_fx_correction_start(correction)
+        expected_end = start + timedelta(weeks=26)
+        stored_end = pd.Timestamp(row.until_week)
+        require(
+            stored_end.date() == expected_end.date(),
+            "v5 FX correction quarantine is not exactly 27 origins",
+        )
+        evidence_events.append((correction, start, expected_end))
+
+    if correction_events is None:
+        events = evidence_events
+    else:
+        resolved_events = [pd.Timestamp(value) for value in correction_events]
+        require(
+            all(value.tzinfo is not None for value in resolved_events),
+            "v5 FX source correction availability must include a timezone",
+        )
+        normalized = [value.tz_convert("UTC") for value in resolved_events]
+        require(
+            normalized == sorted(set(normalized)),
+            "v5 FX source correction availability is not unique/increasing",
+        )
+        events = [
+            (
+                correction,
+                _v5_fx_correction_start(correction),
+                _v5_fx_correction_start(correction) + timedelta(weeks=26),
+            )
+            for correction in normalized
+        ]
+        source_pairs = {
+            (correction, end.date()) for correction, _, end in events
+        }
+        require(
+            {
+                (correction.tz_convert("UTC"), end.date())
+                for correction, _, end in evidence_events
+            }.issubset(source_pairs),
+            "v5 FX coverage correction evidence is absent from source provenance",
+        )
+
+    intended_cutoffs = pd.DatetimeIndex(
+        [
+            (
+                pd.Timestamp(week + timedelta(weeks=1))
+                .tz_localize("America/New_York")
+                + timedelta(hours=16)
+            )
+            for week in coverage.index
+        ]
+    )
+    expected_quarantine = pd.Series(False, index=coverage.index)
+    for _, start, end in events:
+        expected_quarantine |= pd.Series(
+            (intended_cutoffs >= start) & (intended_cutoffs <= end),
+            index=coverage.index,
+        )
+    require(
+        expected_quarantine.equals(quarantined),
+        "v5 FX correction quarantine mask disagrees with 27-origin evidence",
+    )
+
+    for position in np.flatnonzero(quarantined.to_numpy()):
+        cutoff = intended_cutoffs[int(position)]
+        correction = pd.Timestamp(available.iloc[int(position)])
+        start = _v5_fx_correction_start(correction)
+        end = start + timedelta(weeks=26)
+        require(
+            start <= cutoff <= end,
+            "v5 FX correction evidence does not cover its model cutoff",
+        )
+        active = [
+            (candidate_correction, candidate_start, candidate_end)
+            for candidate_correction, candidate_start, candidate_end in events
+            if candidate_start <= cutoff <= candidate_end
+        ]
+        require(active, "v5 FX correction quarantine lacks an active window")
+        selected = max(active, key=lambda item: (item[2], item[0]))
+        require(
+            correction.tz_convert("UTC") == selected[0].tz_convert("UTC")
+            and end == selected[2],
+            "v5 FX overlapping correction evidence is not bound to latest end",
+        )
+
+    return {
+        "correction_events": len(events),
+        "visible_correction_events": len(evidence_events),
+        "quarantined_weeks": int(quarantined.sum()),
+        "first_quarantined_cutoff": (
+            intended_cutoffs[np.flatnonzero(quarantined.to_numpy())[0]]
+            .date()
+            .isoformat()
+            if bool(quarantined.any())
+            else None
+        ),
+        "last_quarantined_cutoff": (
+            intended_cutoffs[np.flatnonzero(quarantined.to_numpy())[-1]]
+            .date()
+            .isoformat()
+            if bool(quarantined.any())
+            else None
+        ),
+    }
+
+
+def _v5_fx_evaluation_origins(
+    result: Any,
+    cutoffs: pd.DatetimeIndex,
+) -> tuple[dict[str, Any], Mapping[str, Sequence[str]]]:
+    from regime_lab.analysis.fx_ablation import (
+        align_fx_features_to_cutoffs,
+        fx_ablation_variants,
+    )
+
+    variants = fx_ablation_variants(result.features)
+    aligned = align_fx_features_to_cutoffs(result, cutoffs)
+    required = list(variants["v4_plus_all_fx"])
+    numeric = aligned.loc[:, required].apply(pd.to_numeric, errors="coerce")
+    finite = pd.Series(
+        np.isfinite(numeric.to_numpy(dtype=float)).all(axis=1),
+        index=aligned.index,
+    )
+    eligible = (
+        finite
+        & aligned["fx_observation_age_days"].eq(7)
+        & ~aligned["fx_archive_correction_quarantined"].eq(True)
+    )
+    common_cutoffs = pd.DatetimeIndex(aligned.index[eligible])
+    positions = cutoffs.get_indexer(common_cutoffs)
+
+    supervised: list[dict[str, Any]] = []
+    for cutoff, position in zip(common_cutoffs, positions, strict=True):
+        require(position >= 0, "v5 FX eligible cutoff is absent from state evidence")
+        target_position = int(position) + 1
+        if target_position >= len(cutoffs):
+            continue
+        origin = pd.Timestamp(cutoffs[int(position)])
+        target = pd.Timestamp(cutoffs[target_position])
+        if (target.date() - origin.date()).days != 7:
+            continue
+        supervised.append(
+            {
+                "cutoff": pd.Timestamp(cutoff),
+                "origin_date": origin,
+                "target_date": target,
+            }
+        )
+
+    rows: list[dict[str, Any]] = []
+    for test in supervised:
+        origin = pd.Timestamp(test["origin_date"])
+        train = [
+            row
+            for row in supervised
+            if pd.Timestamp(row["target_date"]) < origin
+        ]
+        purged = [
+            row
+            for row in supervised
+            if pd.Timestamp(row["target_date"]) == origin
+        ]
+        if len(train) < 104 or len(purged) != 1:
+            continue
+        rows.append(
+            {
+                "origin_date": origin.date().isoformat(),
+                "target_date": pd.Timestamp(test["target_date"]).date().isoformat(),
+                "train_size": len(train),
+                "train_start_origin": pd.Timestamp(
+                    train[0]["origin_date"]
+                ).date().isoformat(),
+                "last_train_origin": pd.Timestamp(
+                    train[-1]["origin_date"]
+                ).date().isoformat(),
+                "last_train_target": pd.Timestamp(
+                    train[-1]["target_date"]
+                ).date().isoformat(),
+                "purged_origin_count": len(purged),
+            }
+        )
+
+    pairs = [[row["origin_date"], row["target_date"]] for row in rows]
+    contract = {
+        "count": len(rows),
+        "first_origin": rows[0]["origin_date"] if rows else None,
+        "last_origin": rows[-1]["origin_date"] if rows else None,
+        "sha256": canonical_json_sha256(pairs) if rows else None,
+        "rows": rows,
+    }
+    return contract, variants
+
+
+def _v5_fx_bootstrap_pvalues(
+    improvements: Mapping[str, np.ndarray],
+    *,
+    block_length: int,
+    resamples: int,
+    seed: int,
+) -> tuple[dict[str, float], int]:
+    """Independently reproduce the preregistered common circular block draws."""
+
+    require(bool(improvements), "v5 FX paired improvements are empty")
+    lengths = {len(np.asarray(values)) for values in improvements.values()}
+    require(len(lengths) == 1, "v5 FX paired improvement lengths differ")
+    observation_count = lengths.pop()
+    require(observation_count > 0, "v5 FX paired improvements are empty")
+    effective_block = min(block_length, max(1, observation_count // 2))
+    blocks_per_sample = int(np.ceil(observation_count / effective_block))
+    generator = np.random.default_rng(seed)
+    starts = generator.integers(
+        0,
+        observation_count,
+        size=(resamples, blocks_per_sample),
+    )
+    offsets = np.arange(effective_block)
+    indices = (starts[..., np.newaxis] + offsets) % observation_count
+    indices = indices.reshape(resamples, -1)[:, :observation_count]
+    pvalues: dict[str, float] = {}
+    for variant, raw in improvements.items():
+        differential = np.asarray(raw, dtype=float)
+        require(
+            np.isfinite(differential).all(),
+            f"v5 FX {variant} paired improvements are non-finite",
+        )
+        observed = float(differential.mean())
+        null_means = (differential - observed)[indices].mean(axis=1)
+        pvalues[variant] = float(
+            (1 + np.count_nonzero(null_means >= observed)) / (resamples + 1)
+        )
+    return pvalues, effective_block
+
+
+def _audit_v5_fx_metrics(
+    ablation: Mapping[str, Any],
+    evidence: pd.DataFrame,
+    membership: pd.DataFrame,
+    *,
+    variants: Mapping[str, Sequence[str]],
+    core_feature_count: int | None,
+) -> dict[str, Any]:
+    require_exact_columns(
+        evidence,
+        V5_FX_ABLATION_OOS_COLUMNS,
+        "v5 FX ablation OOS evidence",
+    )
+    status = str(ablation["status"])
+    if status != "evaluated":
+        require(evidence.empty, "v5 FX non-evaluated OOS evidence must be empty")
+        return {"variant_rows": 0, "comparison_rows": 0, "oos_rows": 0}
+
+    origins = ablation["common_evaluation_origins"]
+    origin_count = int(origins["count"])
+    require(
+        len(evidence) == origin_count * len(V5_FX_VARIANTS),
+        "v5 FX OOS evidence row count disagrees with common origins",
+    )
+    frame = evidence.copy()
+    for column in ("origin_date", "target_date", "last_train_target"):
+        frame[column] = pd.to_datetime(frame[column], utc=True, errors="raise")
+    canonical_keys = list(
+        zip(
+            frame["origin_date"],
+            frame["target_date"],
+            frame["variant"].astype(str),
+            strict=True,
+        )
+    )
+    require(
+        canonical_keys == sorted(canonical_keys),
+        "v5 FX OOS evidence is not in canonical origin/target/variant order",
+    )
+    require(
+        not frame.duplicated(["origin_date", "target_date", "variant"]).any(),
+        "v5 FX OOS evidence duplicates a variant/common origin",
+    )
+    require(
+        set(frame["variant"].astype(str)) == set(V5_FX_VARIANTS),
+        "v5 FX OOS evidence variant set mismatch",
+    )
+    require(
+        frame["evaluation_split"].astype(str).eq("prospective_shadow").all(),
+        "v5 FX OOS evidence split mismatch",
+    )
+    require(
+        frame["current_state"].astype(str).isin(STATE_ORDER).all()
+        and frame["actual"].astype(str).isin(STATE_ORDER).all(),
+        "v5 FX OOS evidence contains an invalid state",
+    )
+    require(
+        ((frame["target_date"] - frame["origin_date"]).dt.days == 7).all(),
+        "v5 FX OOS target is not exactly one week after origin",
+    )
+    require(
+        (frame["last_train_target"] < frame["origin_date"]).all(),
+        "v5 FX OOS training target reaches its evaluation origin",
+    )
+    train_size_raw = pd.to_numeric(frame["train_size"], errors="raise")
+    gap_raw = pd.to_numeric(frame["gap"], errors="raise")
+    purged_raw = pd.to_numeric(frame["purged_origin_count"], errors="raise")
+    require(
+        np.isfinite(train_size_raw).all()
+        and np.isfinite(gap_raw).all()
+        and np.isfinite(purged_raw).all()
+        and np.equal(train_size_raw, np.floor(train_size_raw)).all()
+        and np.equal(gap_raw, np.floor(gap_raw)).all()
+        and np.equal(purged_raw, np.floor(purged_raw)).all(),
+        "v5 FX OOS train/purge counts must be integers",
+    )
+    train_size = train_size_raw.astype(int)
+    gap = gap_raw.astype(int)
+    purged = purged_raw.astype(int)
+    require(
+        train_size.ge(int(ablation["minimum_train_weeks"])).all()
+        and gap.eq(int(ablation["purge_weeks"])).all()
+        and purged.eq(1).all(),
+        "v5 FX OOS train/purge evidence mismatch",
+    )
+
+    probability = frame[list(PROBABILITY_COLUMNS)].apply(
+        pd.to_numeric, errors="raise"
+    ).to_numpy(dtype=float)
+    require(
+        np.isfinite(probability).all()
+        and ((probability >= 0.0) & (probability <= 1.0)).all()
+        and np.allclose(probability.sum(axis=1), 1.0, atol=1e-8, rtol=0.0),
+        "v5 FX OOS probabilities are invalid",
+    )
+    fallback = boolean_series(frame["fallback"], "v5 FX OOS fallback")
+    fallback_reason = frame["fallback_reason"].fillna("").astype(str)
+    allowed_fallback_reasons = {
+        "training_class_coverage",
+        "model_fit_or_prediction_error",
+    }
+    require(
+        fallback_reason.loc[~fallback].eq("").all()
+        and fallback_reason.loc[fallback].isin(allowed_fallback_reasons).all(),
+        "v5 FX OOS fallback reason mismatch",
+    )
+    frame["fallback"] = fallback.to_numpy()
+    frame["fallback_reason"] = fallback_reason.to_numpy()
+
+    membership_frame = membership.copy()
+    membership_frame["market_date"] = pd.to_datetime(
+        membership_frame["date"], utc=True, errors="raise"
+    ).dt.date.astype(str)
+    require(
+        not membership_frame["market_date"].duplicated().any(),
+        "v5 FX membership dates are duplicated",
+    )
+    state_by_date = dict(
+        zip(
+            membership_frame["market_date"],
+            membership_frame["state"].astype(str),
+            strict=True,
+        )
+    )
+    origin_states = frame["origin_date"].dt.date.astype(str).map(state_by_date)
+    target_states = frame["target_date"].dt.date.astype(str).map(state_by_date)
+    require(
+        origin_states.notna().all()
+        and target_states.notna().all()
+        and origin_states.equals(frame["current_state"].astype(str))
+        and target_states.equals(frame["actual"].astype(str)),
+        "v5 FX OOS actual/current states disagree with membership evidence",
+    )
+
+    identity_columns = [
+        "origin_date",
+        "target_date",
+        "evaluation_split",
+        "current_state",
+        "actual",
+        "train_size",
+        "gap",
+        "last_train_target",
+        "purged_origin_count",
+        "common_origins_sha256",
+    ]
+    ordered_by_variant: dict[str, pd.DataFrame] = {}
+    reference_identity: pd.DataFrame | None = None
+    for variant in V5_FX_VARIANTS:
+        ordered = frame.loc[frame["variant"].astype(str).eq(variant)].sort_values(
+            ["origin_date", "target_date"], kind="mergesort", ignore_index=True
+        )
+        require(
+            len(ordered) == origin_count,
+            f"v5 FX {variant} OOS origin count mismatch",
+        )
+        identity = ordered.loc[:, identity_columns].reset_index(drop=True)
+        if reference_identity is None:
+            reference_identity = identity
+        else:
+            require(
+                identity.equals(reference_identity),
+                f"v5 FX {variant} does not use exact common-origin evidence",
+            )
+        ordered_by_variant[variant] = ordered
+
+    if reference_identity is None:
+        raise AuditFailure("v5 FX OOS control identity is missing")
+    expected_rows = list(origins["rows"])
+    evidence_pairs = [
+        [row.origin_date.date().isoformat(), row.target_date.date().isoformat()]
+        for row in reference_identity.itertuples(index=False)
+    ]
+    expected_pairs = [
+        [str(row["origin_date"]), str(row["target_date"])]
+        for row in expected_rows
+    ]
+    common_hash = canonical_json_sha256(evidence_pairs)
+    require(
+        evidence_pairs == expected_pairs
+        and origins["sha256"] == common_hash
+        and reference_identity["common_origins_sha256"]
+        .astype(str)
+        .eq(common_hash)
+        .all(),
+        "v5 FX OOS common-origin hash/pairs mismatch",
+    )
+    for position, expected in enumerate(expected_rows):
+        actual_row = reference_identity.iloc[position]
+        require(
+            int(actual_row["train_size"]) == int(expected["train_size"])
+            and actual_row["last_train_target"].date().isoformat()
+            == str(expected["last_train_target"])
+            and int(actual_row["purged_origin_count"])
+            == int(expected["purged_origin_count"]),
+            "v5 FX OOS purge evidence disagrees with common-origin payload",
+        )
+
+    metrics = list(ablation["variant_metrics"])
+    require(
+        [str(row.get("variant")) for row in metrics] == list(V5_FX_VARIANTS),
+        "v5 FX metric variant order mismatch",
+    )
+    inferred_core_counts: set[int] = set()
+    metric_index: dict[str, Mapping[str, Any]] = {}
+    loss_by_variant: dict[str, np.ndarray] = {}
+    brier_by_variant: dict[str, np.ndarray] = {}
+    state_positions = {state: index for index, state in enumerate(STATE_ORDER)}
+    for row in metrics:
+        variant = str(row["variant"])
+        expected_fx_count = len(variants[variant])
+        fx_count = int(row["fx_feature_count"])
+        feature_count = int(row["feature_count"])
+        require(
+            fx_count == expected_fx_count,
+            f"v5 FX {variant} feature count disagrees with sidecar columns",
+        )
+        inferred_core_counts.add(feature_count - fx_count)
+        if core_feature_count is not None:
+            require(
+                feature_count == core_feature_count + expected_fx_count,
+                f"v5 FX {variant} feature count disagrees with feature manifest",
+            )
+        ordered = ordered_by_variant[variant]
+        variant_probability = ordered[list(PROBABILITY_COLUMNS)].to_numpy(
+            dtype=float
+        )
+        actual_positions = np.asarray(
+            [state_positions[value] for value in ordered["actual"].astype(str)]
+        )
+        actual_probability = variant_probability[
+            np.arange(origin_count), actual_positions
+        ]
+        losses = -np.log(np.clip(actual_probability, 1e-9, 1.0))
+        one_hot = np.zeros_like(variant_probability)
+        one_hot[np.arange(origin_count), actual_positions] = 1.0
+        brier = np.sum((variant_probability - one_hot) ** 2, axis=1)
+        correct = (
+            np.argmax(variant_probability, axis=1) == actual_positions
+        ).astype(float)
+        recalls = [
+            float(correct[actual_positions == position].mean())
+            for position in range(len(STATE_ORDER))
+            if np.any(actual_positions == position)
+        ]
+        variant_fallback = ordered["fallback"].astype(bool)
+        reasons = dict(
+            sorted(
+                ordered.loc[variant_fallback, "fallback_reason"]
+                .astype(str)
+                .value_counts()
+                .astype(int)
+                .to_dict()
+                .items()
+            )
+        )
+        fallback_count = int(variant_fallback.sum())
+        require(
+            np.isclose(
+                float(row["log_loss"]),
+                float(losses.mean()),
+                atol=1e-12,
+                rtol=0.0,
+            )
+            and np.isclose(
+                float(row["brier"]),
+                float(brier.mean()),
+                atol=1e-12,
+                rtol=0.0,
+            )
+            and np.isclose(
+                float(row["accuracy"]),
+                float(correct.mean()),
+                atol=1e-12,
+                rtol=0.0,
+            )
+            and np.isclose(
+                float(row["balanced_accuracy"]),
+                float(np.mean(recalls)),
+                atol=1e-12,
+                rtol=0.0,
+            ),
+            f"v5 FX {variant} metrics disagree with OOS evidence",
+        )
+        require(
+            int(row["n"]) == origin_count
+            and int(row["n_predictions"]) == origin_count
+            and int(row["fallback_count"]) == fallback_count
+            and bool(row["fallback"]) == (fallback_count > 0)
+            and dict(row["fallback_reasons"]) == reasons
+            and row["first_origin"] == origins["first_origin"]
+            and row["last_origin"] == origins["last_origin"]
+            and row["origin_sha256"] == common_hash,
+            f"v5 FX {variant} metrics are not bound to OOS/common origins",
+        )
+        loss_by_variant[variant] = losses
+        brier_by_variant[variant] = brier
+        metric_index[variant] = row
+    require(
+        len(inferred_core_counts) == 1,
+        "v5 FX variants disagree on the core feature count",
+    )
+
+    gate = ablation["gate"]
+    comparisons = list(gate["comparisons"])
+    require(
+        [str(row.get("variant")) for row in comparisons]
+        == list(V5_FX_VARIANTS[1:]),
+        "v5 FX gate comparison order mismatch",
+    )
+    improvements = {
+        variant: loss_by_variant["v4_control"] - loss_by_variant[variant]
+        for variant in V5_FX_VARIANTS[1:]
+    }
+    raw_pvalues, effective_block = _v5_fx_bootstrap_pvalues(
+        improvements,
+        block_length=int(gate["bootstrap_block_weeks"]),
+        resamples=int(gate["bootstrap_resamples"]),
+        seed=int(gate["bootstrap_seed"]),
+    )
+    adjusted = holm_adjusted_pvalues(raw_pvalues)
+    require(
+        int(gate["bootstrap_effective_block_weeks"]) == effective_block,
+        "v5 FX bootstrap effective block mismatch",
+    )
+    expected_passed: list[str] = []
+    control = metric_index["v4_control"]
+    for row in comparisons:
+        variant = str(row["variant"])
+        challenger = metric_index[variant]
+        improvement = float(improvements[variant].mean())
+        brier_difference = float(
+            (brier_by_variant[variant] - brier_by_variant["v4_control"]).mean()
+        )
+        require(
+            np.isclose(
+                float(row["mean_log_loss_improvement"]),
+                improvement,
+                atol=1e-12,
+                rtol=0.0,
+            )
+            and np.isclose(
+                float(row["brier_difference"]),
+                brier_difference,
+                atol=1e-12,
+                rtol=0.0,
+            ),
+            f"v5 FX {variant} paired metric mismatch",
+        )
+        require(
+            np.isclose(
+                float(row["raw_p_value"]),
+                raw_pvalues[variant],
+                atol=1e-12,
+                rtol=0.0,
+            ),
+            f"v5 FX {variant} raw bootstrap p-value mismatch",
+        )
+        require(
+            np.isclose(
+                float(row["holm_adjusted_p_value"]),
+                adjusted[variant],
+                atol=1e-12,
+                rtol=0.0,
+            ),
+            f"v5 FX {variant} Holm adjustment mismatch",
+        )
+        require(
+            int(row["control_fallback_count"]) == int(control["fallback_count"])
+            and int(row["fallback_count"]) == int(challenger["fallback_count"]),
+            f"v5 FX {variant} gate fallback count mismatch",
+        )
+        failures: list[str] = []
+        if int(control["fallback_count"]):
+            failures.append("control_fallback_present")
+        if int(challenger["fallback_count"]):
+            failures.append("fallback_present")
+        if improvement + 1e-12 < float(gate["minimum_log_loss_improvement"]):
+            failures.append("insufficient_log_loss_improvement")
+        if adjusted[variant] > float(gate["alpha"]):
+            failures.append("holm_not_significant")
+        if brier_difference > float(gate["brier_tolerance"]) + 1e-12:
+            failures.append("brier_degradation")
+        passed = not failures
+        require(
+            bool(row["gate_passed"]) == passed
+            and list(row["gate_reasons"]) == (["passed"] if passed else failures),
+            f"v5 FX {variant} gate decision mismatch",
+        )
+        if passed:
+            expected_passed.append(variant)
+    require(
+        list(gate["passed_variants"]) == expected_passed,
+        "v5 FX passed-variant summary mismatch",
+    )
+    return {
+        "variant_rows": len(metrics),
+        "comparison_rows": len(comparisons),
+        "oos_rows": len(frame),
+    }
+
+
+def _audit_v5_fx_provenance(
+    payload: Mapping[str, Any],
+    preregistration: Mapping[str, Any],
+) -> dict[str, Any]:
+    fx_config = preregistration.get("fx")
+    require(isinstance(fx_config, Mapping), "v5 FX preregistration is missing")
+    expected_archive_contract = {
+        "historical_availability_backfill": False,
+        "official_release_archive_ingest": True,
+        "availability_basis": "official_archive_release_schedule",
+        "archive_revision_policy": (
+            "later_official_release_preserved_as_new_vintage"
+        ),
+        "archive_correction_availability_basis": (
+            "date_only_conservative_next_day"
+        ),
+    }
+    for field, expected in expected_archive_contract.items():
+        require(
+            fx_config.get(field) == expected,
+            f"v5 FX preregistration {field} mismatch",
+        )
+
+    ablation = payload["model"]["fx_ablation"]
+    shadow = fx_config.get("shadow_evaluation")
+    require(
+        isinstance(shadow, Mapping),
+        "v5 FX shadow-evaluation preregistration is missing",
+    )
+    require(
+        list(fx_config.get("ablations", ())) == list(V5_FX_VARIANTS),
+        "v5 FX ablation variants disagree with preregistration",
+    )
+    preregistered_payload_fields = {
+        "minimum_common_weeks": fx_config.get("common_origin_minimum_weeks"),
+        "common_origin_required_pairs": shadow.get("required_bilateral_pairs"),
+        "minimum_train_weeks": shadow.get("minimum_train_weeks"),
+        "target_horizon_weeks": shadow.get("target_horizon_weeks"),
+        "purge_weeks": shadow.get("purge_weeks"),
+        "target_availability_rule": shadow.get("target_availability_rule"),
+    }
+    for field, expected in preregistered_payload_fields.items():
+        require(
+            ablation.get(field) == expected,
+            f"v5 FX payload {field} disagrees with preregistration",
+        )
+    model = ablation.get("model")
+    require(isinstance(model, Mapping), "v5 FX model payload is missing")
+    preregistered_model_fields = {
+        "name": shadow.get("model"),
+        "regularization_c": shadow.get("regularization_c"),
+        "imputation": shadow.get("imputation"),
+        "scaling": shadow.get("scaling"),
+        "fit_window": shadow.get("fit_window"),
+    }
+    for field, expected in preregistered_model_fields.items():
+        require(
+            model.get(field) == expected,
+            f"v5 FX model {field} disagrees with preregistration",
+        )
+    gate = ablation.get("gate")
+    require(isinstance(gate, Mapping), "v5 FX gate payload is missing")
+    preregistered_gate_fields = {
+        "method": shadow.get("bootstrap_method"),
+        "bootstrap_block_weeks": shadow.get("bootstrap_block_weeks"),
+        "bootstrap_resamples": shadow.get("bootstrap_resamples"),
+        "bootstrap_seed": shadow.get("bootstrap_seed"),
+        "alpha": shadow.get("holm_alpha"),
+        "minimum_log_loss_improvement": shadow.get(
+            "minimum_log_loss_improvement"
+        ),
+        "brier_tolerance": shadow.get("maximum_brier_degradation"),
+    }
+    for field, expected in preregistered_gate_fields.items():
+        require(
+            gate.get(field) == expected,
+            f"v5 FX gate {field} disagrees with preregistration",
+        )
+    actual = {
+        field: ablation[field]
+        for field in (
+            "official_release_archive_ingest",
+            "availability_basis",
+            "archive_revision_policy",
+            "archive_correction_availability_basis",
+        )
+    }
+    require(
+        actual["availability_basis"]
+        in {"official_archive_release_schedule", "collection_first_seen_at"},
+        "v5 FX availability basis is invalid",
+    )
+    require(
+        bool(actual["official_release_archive_ingest"])
+        == (
+            actual["availability_basis"]
+            == "official_archive_release_schedule"
+        ),
+        "v5 FX archive ingest/basis mismatch",
+    )
+    require(
+        actual["archive_revision_policy"]
+        == expected_archive_contract["archive_revision_policy"],
+        "v5 FX archive revision policy mismatch",
+    )
+    require(
+        actual["archive_correction_availability_basis"]
+        == expected_archive_contract["archive_correction_availability_basis"],
+        "v5 FX archive correction availability basis mismatch",
+    )
+
+    if str(payload["meta"]["mode"]) == "live":
+        sources = {
+            str(row.get("id")): row
+            for row in payload.get("sources", [])
+            if isinstance(row, Mapping)
+        }
+        h10 = sources.get("frb_h10")
+        require(isinstance(h10, Mapping), "v5 live H.10 source is missing")
+        for field, value in actual.items():
+            require(
+                h10.get(field) == value,
+                f"v5 H.10 source/model {field} mismatch",
+            )
+
+    ready = int(ablation["eligible_common_weeks"]) >= 156
+    if ready:
+        for field, expected in expected_archive_contract.items():
+            require(
+                ablation[field] == expected,
+                f"v5 FX ready/evaluated {field} lacks archive provenance",
+            )
+    return {**actual, "archive_required_for_readiness": ready}
+
+
+def _audit_v5_fx(
+    payload: Mapping[str, Any],
+    frames: Mapping[str, pd.DataFrame],
+    membership: pd.DataFrame,
+    *,
+    core_feature_count: int | None = None,
+) -> dict[str, Any]:
+    fx_paths = {path for _, path in V5_FX_ARTIFACTS}
+    present = set(frames).intersection(fx_paths)
+    status = str(payload["model"]["fx_ablation"]["status"])
+    if not present:
+        require(status == "unavailable", "v5 FX artifacts are missing")
+        require(
+            payload["model"]["fx_ablation"].get("status_reason")
+            == "fx_feature_result_unavailable",
+            "v5 FX missing-artifact reason mismatch",
+        )
+        return {"status": status, "eligible_common_weeks": 0}
+    require(
+        present == fx_paths,
+        "v5 FX research sidecars must be present as a complete set",
+    )
+    features = frames["fx-features.csv"].copy()
+    coverage = frames["fx-coverage.csv"].copy()
+    ablation_oos = frames["fx-ablation-oos.csv"].copy()
+    for name, frame in (("features", features), ("coverage", coverage)):
+        require_columns(frame, {"observation_week"}, f"v5 FX {name}")
+        dates = pd.to_datetime(
+            frame.pop("observation_week"), utc=True, errors="raise"
+        )
+        require(
+            dates.is_monotonic_increasing and not dates.duplicated().any(),
+            f"v5 FX {name} observation_week is not unique/increasing",
+        )
+        frame.index = pd.DatetimeIndex(dates).tz_localize(None).normalize()
+    require(features.index.equals(coverage.index), "v5 FX artifact indexes differ")
+
+    ablation = payload["model"]["fx_ablation"]
+    sources = {
+        str(row.get("id")): row
+        for row in payload.get("sources", [])
+        if isinstance(row, Mapping)
+    }
+    h10 = sources.get("frb_h10")
+    correction_events: Sequence[pd.Timestamp] | None = None
+    if isinstance(h10, Mapping):
+        raw_events = h10.get("archive_correction_available_at")
+        require(
+            isinstance(raw_events, list),
+            "v5 H.10 correction availability must be a list",
+        )
+        parsed_events = pd.to_datetime(raw_events, utc=True, errors="coerce")
+        require(
+            not bool(pd.isna(parsed_events).any()),
+            "v5 H.10 correction availability contains an invalid timestamp",
+        )
+        correction_events = list(pd.DatetimeIndex(parsed_events))
+        release_count = int(h10.get("archive_release_count", -1))
+        correction_count = int(h10.get("archive_correction_count", -1))
+        require(
+            release_count >= correction_count == len(correction_events) >= 0,
+            "v5 H.10 archive release/correction counts mismatch",
+        )
+        require(
+            h10.get("archive_correction_quarantine_weeks") == 27,
+            "v5 H.10 correction quarantine length mismatch",
+        )
+        require(
+            h10.get("archive_evaluation_start") == "2022-01-01",
+            "v5 H.10 archive evaluation start mismatch",
+        )
+        require(
+            h10.get("archive_evaluation_start_rationale")
+            == "post_2019_06_24_jan06_index_rebase_common_scale",
+            "v5 H.10 archive evaluation-start rationale mismatch",
+        )
+        if bool(ablation["official_release_archive_ingest"]):
+            require(
+                release_count > 0,
+                "v5 H.10 official archive provenance has no releases",
+            )
+        else:
+            require(
+                release_count == 0
+                and correction_count == 0
+                and not correction_events,
+                "v5 H.10 first-seen fallback contains archive events",
+            )
+    correction_quarantine = _audit_v5_fx_correction_quarantine(
+        coverage,
+        correction_events=correction_events,
+    )
+
+    from regime_lab.analysis.fx import FXFeatureResult
+    from regime_lab.analysis.fx_ablation import fx_ablation_readiness
+
+    empty = pd.DataFrame(index=features.index)
+    result = FXFeatureResult(
+        features=features,
+        weekly_usd_log_levels=empty,
+        weekly_availability=empty,
+        coverage=coverage,
+        status=coverage.loc[
+            :, [column for column in ("source_status", "feature_status") if column in coverage]
+        ].copy(),
+    )
+    cutoffs = pd.DatetimeIndex(
+        pd.to_datetime(membership["date"], utc=True, errors="raise")
+    )
+    recomputed = fx_ablation_readiness(result, cutoffs)
+    for field in (
+        "role",
+        "variants",
+        "minimum_common_weeks",
+        "historical_availability_backfill",
+        "eligible_common_weeks",
+        "first_eligible_cutoff",
+        "last_eligible_cutoff",
+        "manifest",
+    ):
+        require(
+            recomputed[field] == ablation[field],
+            f"v5 FX prospective readiness {field} mismatch",
+        )
+    readiness_status = str(recomputed["status"])
+    reason = ablation.get("status_reason")
+    expected_readiness_status = (
+        "ready_for_evaluation"
+        if status == "evaluated"
+        or reason == "no_origin_has_104_strictly_available_training_targets"
+        or reason == "fx_model_features_non_numeric"
+        else "insufficient_history"
+    )
+    require(
+        readiness_status == expected_readiness_status,
+        "v5 FX prospective readiness status mismatch",
+    )
+    expected_origins, variants = _v5_fx_evaluation_origins(result, cutoffs)
+    published_origins = ablation["common_evaluation_origins"]
+    require(
+        published_origins == (
+            expected_origins
+            if status == "evaluated"
+            else {
+                "count": 0,
+                "first_origin": None,
+                "last_origin": None,
+                "sha256": None,
+                "rows": [],
+            }
+        ),
+        "v5 FX common evaluation origins disagree with sidecar evidence",
+    )
+    metric_summary = _audit_v5_fx_metrics(
+        ablation,
+        ablation_oos,
+        membership,
+        variants=variants,
+        core_feature_count=core_feature_count,
+    )
+    return {
+        "status": status,
+        "eligible_common_weeks": int(recomputed["eligible_common_weeks"]),
+        "observation_weeks": len(features),
+        "evaluation_origins": int(expected_origins["count"]),
+        "correction_quarantine": correction_quarantine,
+        **metric_summary,
+    }
+
+
+def audit_v5(
+    payload: Mapping[str, Any],
+    payload_path: Path,
+    artifacts: Path,
+    expected_mode: str,
+) -> dict[str, Any]:
+    """Independently verify the opt-in v5 payload and its research sidecars."""
+
+    from regime_lab.schema import validate_dashboard_payload
+
+    validate_dashboard_payload(payload)
+    meta = payload["meta"]
+    mode = str(meta["mode"])
+    if expected_mode != "auto":
+        require(mode == expected_mode, f"expected mode={expected_mode}, got {mode}")
+    require(meta["schema_version"] == V5_SCHEMA_VERSION, "unexpected v5 schema")
+
+    generation_path = _v5_artifact_path(
+        artifacts, "build-generation.json", context="v5 generation contract"
+    )
+    generation = json.loads(generation_path.read_text(encoding="utf-8"))
+    require(
+        generation == {"generation_id": meta["generation_id"]},
+        "v5 payload/artifact generation IDs differ",
+    )
+
+    preregistration = payload["model"]["structural_preregistration"]
+    preregistration_path = PROJECT_ROOT / str(preregistration["path"])
+    require(
+        preregistration_path.is_file() and not preregistration_path.is_symlink(),
+        "v5 structural preregistration file is missing/non-regular",
+    )
+    require(
+        file_sha256(preregistration_path) == str(preregistration["sha256"]),
+        "v5 structural preregistration SHA-256 mismatch",
+    )
+    preregistration_document = json.loads(
+        preregistration_path.read_text(encoding="utf-8")
+    )
+    require(
+        isinstance(preregistration_document, dict),
+        "v5 structural preregistration must be an object",
+    )
+    fx_provenance = _audit_v5_fx_provenance(
+        payload,
+        preregistration_document,
+    )
+
+    research_contract = payload["model"].get("research_artifacts")
+    frames = _audit_v5_file_contracts(
+        research_contract,
+        artifacts,
+        context="payload.model.research_artifacts",
+    )
+    expected_contracts = list(V5_RESEARCH_ARTIFACTS)
+    if any(key in research_contract for key, _ in V5_FX_ARTIFACTS):
+        expected_contracts.extend(V5_FX_ARTIFACTS)
+    require(
+        list(research_contract) == [key for key, _ in expected_contracts],
+        "v5 research artifact key/order contract mismatch",
+    )
+    require(
+        [str(research_contract[key]["path"]) for key, _ in expected_contracts]
+        == [path for _, path in expected_contracts],
+        "v5 research artifact path contract mismatch",
+    )
+    expected_paths = [path for _, path in expected_contracts]
+    require(
+        list(frames) == expected_paths,
+        "v5 research artifact path/order contract mismatch",
+    )
+    execution = _audit_v5_execution_parameters(payload)
+    core = _audit_v5_core_model(payload, artifacts)
+    feature_summary = audit_feature_manifest(payload, artifacts)
+    evidence, membership = _audit_v5_evidence(payload, artifacts)
+    directional = _audit_v5_directional(payload, frames)
+    directional["weekly_binding"] = _audit_v5_weekly_directional(
+        payload,
+        frames,
+        membership,
+    )
+    conditional = _audit_v5_conditional(payload, frames)
+    duration = _audit_v5_duration(payload, membership, execution)
+    fx = _audit_v5_fx(
+        payload,
+        frames,
+        membership,
+        core_feature_count=int(feature_summary["feature_count"]),
+    )
+
+    from regime_lab.frozen_v4 import verify_frozen_v4_baseline
+
+    baseline = verify_frozen_v4_baseline(project_directory=PROJECT_ROOT)
+    require(
+        dict(payload["model"]["baseline_v4"]) == baseline,
+        "v5 payload frozen-v4 baseline metadata mismatch",
+    )
+    return {
+        "ok": True,
+        "mode": mode,
+        "contract": "v5",
+        "champion": payload["model"]["champion"],
+        "weeks": len(payload["weekly"]),
+        "directional": directional,
+        "conditional": conditional,
+        "duration": duration,
+        "execution_parameters_sha256": execution["sha256"],
+        "core": core,
+        "core_feature_manifest": {
+            key: value
+            for key, value in feature_summary.items()
+            if key != "group_features"
+        },
+        "evidence": evidence,
+        "fx": fx,
+        "fx_provenance": fx_provenance,
+        "research_artifacts": list(frames),
+        "payload": str(payload_path),
+        "artifacts": str(artifacts),
+    }
+
+
 def audit(payload_path: Path, artifacts: Path, expected_mode: str) -> dict[str, Any]:
     require(payload_path.is_file() and payload_path.stat().st_size > 0,
             f"missing/empty payload: {payload_path}")
     payload = json.loads(payload_path.read_text(encoding="utf-8"))
+    require(isinstance(payload, dict), "payload root must be an object")
+    if payload.get("meta", {}).get("result_version") == V5_RESULT_VERSION:
+        return audit_v5(payload, payload_path, artifacts, expected_mode)
     leaderboard = read_csv(artifacts / "model-leaderboard.csv")
     predictions = read_csv(
         artifacts / "oos-predictions.csv", ("origin_date", "target_date")
@@ -3111,7 +7235,6 @@ def audit(payload_path: Path, artifacts: Path, expected_mode: str) -> dict[str, 
             f"missing/empty file: {manifest_path}")
     artifact_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 
-    require(isinstance(payload, dict), "payload root must be an object")
     meta = payload.get("meta", {})
     model_contract = payload.get("model", {})
     mode = str(meta.get("mode"))

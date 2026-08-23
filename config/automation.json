@@ -13,10 +13,11 @@
     "require_ac_power": true
   },
   "build": {
+    "contract": "v5",
     "profile": "standard",
     "database": "data/regime.sqlite3",
-    "payload": "build/weekly-automation/generation/regime-results.json",
-    "artifacts": "build/weekly-automation/generation/artifacts",
+    "payload": "build/weekly-automation/generation-v5/regime-results.json",
+    "artifacts": "build/weekly-automation/generation-v5/artifacts",
     "state_directory": "build/weekly-automation",
     "authorization": "data/automation/authorization.json"
   },

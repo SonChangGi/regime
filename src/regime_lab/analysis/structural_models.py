@@ -31,9 +31,32 @@ DEFAULT_ENSEMBLE_EXPERTS: tuple[str, ...] = (
 )
 JOINT_MODEL_NAME = "xgb_hazard_destination"
 ENSEMBLE_MODEL_NAME = "causal_dynamic_ensemble"
+MULTISCALE_ENSEMBLE_MODEL_NAME = "causal_multiscale_ensemble"
 DIRECT_JUMP_FLOOR = 1e-6
 ENSEMBLE_HALF_LIFE_WEEKS = 52.0
 ENSEMBLE_MINIMUM_HISTORY_ROWS = 26
+MULTISCALE_ENSEMBLE_HALF_LIVES_WEEKS: tuple[int, ...] = (26, 52, 104)
+MULTISCALE_ENSEMBLE_AGGREGATION = "fixed_equal_probability_average"
+MULTISCALE_INNER_POOL_METHOD = "causal_discounted_completed_oos_log_score"
+ELIGIBLE_LOSS_RULE = "target_date_strictly_before_origin"
+MULTISCALE_SCALE_FORECAST_COLUMNS: tuple[str, ...] = (
+    "row_role",
+    "origin_date",
+    "target_date",
+    "evaluation_split",
+    "ensemble_model",
+    "scale_half_life_weeks",
+    "outer_scale_weight",
+    "minimum_history_rows",
+    "eligible_loss_rule",
+    "inner_pool_method",
+    "expert_models",
+    "expert_forecast_artifact",
+    "expert_forecast_key",
+    *PROBABILITY_COLUMNS,
+    "fallback",
+    "fallback_reason",
+)
 _PROBABILITY_EPSILON = 1e-12
 
 
@@ -46,12 +69,22 @@ class DynamicEnsembleResult:
 
 
 @dataclass(frozen=True)
+class MultiscaleEnsembleResult:
+    """Fixed average of causal discounted-score pools at frozen time scales."""
+
+    predictions: pd.DataFrame
+    weights: pd.DataFrame
+    scale_predictions: pd.DataFrame
+
+
+@dataclass(frozen=True)
 class StructuralForecastResult:
     """Latest joint/ensemble probabilities plus causal weighting evidence."""
 
     probabilities: pd.DataFrame
     stacking_weights: pd.DataFrame
     survival_probabilities: pd.DataFrame
+    multiscale_scale_predictions: pd.DataFrame | None = None
 
 
 def _validate_state(value: object, *, field: str = "current_state") -> str:
@@ -688,6 +721,187 @@ def build_causal_dynamic_ensemble_oos(
     )
 
 
+def _validate_multiscale_contract(
+    expert_names: Sequence[str],
+    scale_half_lives_weeks: Sequence[int],
+    minimum_history_rows: int,
+) -> tuple[tuple[str, ...], tuple[int, ...]]:
+    names = tuple(str(name) for name in expert_names)
+    if names != DEFAULT_ENSEMBLE_EXPERTS:
+        raise ValueError(
+            "causal_multiscale_ensemble experts must match the frozen V5 order"
+        )
+    scales = tuple(scale_half_lives_weeks)
+    if scales != MULTISCALE_ENSEMBLE_HALF_LIVES_WEEKS or any(
+        isinstance(value, (bool, np.bool_)) or int(value) != value
+        for value in scales
+    ):
+        raise ValueError(
+            "causal_multiscale_ensemble half-lives must be exactly (26, 52, 104)"
+        )
+    if (
+        isinstance(minimum_history_rows, (bool, np.bool_))
+        or int(minimum_history_rows) != ENSEMBLE_MINIMUM_HISTORY_ROWS
+    ):
+        raise ValueError(
+            "causal_multiscale_ensemble minimum_history_rows must be exactly 26"
+        )
+    return names, tuple(int(value) for value in scales)
+
+
+def _expert_forecast_key(
+    *,
+    artifact: str,
+    origin_date: pd.Timestamp,
+    target_date: pd.Timestamp,
+    expert_names: Sequence[str],
+) -> str:
+    return (
+        f"{artifact}|origin={pd.Timestamp(origin_date).date().isoformat()}"
+        f"|target={pd.Timestamp(target_date).date().isoformat()}"
+        f"|models={';'.join(expert_names)}"
+    )
+
+
+def causal_multiscale_ensemble(
+    expert_predictions: pd.DataFrame,
+    *,
+    expert_names: Sequence[str] = DEFAULT_ENSEMBLE_EXPERTS,
+    scale_half_lives_weeks: Sequence[int] = (
+        MULTISCALE_ENSEMBLE_HALF_LIVES_WEEKS
+    ),
+    minimum_history_rows: int = ENSEMBLE_MINIMUM_HISTORY_ROWS,
+) -> MultiscaleEnsembleResult:
+    """Compose the frozen V5 multiscale causal discounted-score candidate."""
+
+    names, scales = _validate_multiscale_contract(
+        expert_names,
+        scale_half_lives_weeks,
+        minimum_history_rows,
+    )
+    outer_weight = 1.0 / float(len(scales))
+    scale_results = [
+        (
+            scale,
+            causal_dynamic_ensemble(
+                expert_predictions,
+                expert_names=names,
+                half_life_weeks=float(scale),
+                minimum_history_rows=int(minimum_history_rows),
+            ),
+        )
+        for scale in scales
+    ]
+    reference = scale_results[0][1].predictions.sort_values(
+        ["origin_date", "target_date"], ignore_index=True
+    )
+    reference_keys = _prediction_keys(reference)
+    scale_probability_arrays: list[np.ndarray] = []
+    scale_rows: list[dict[str, object]] = []
+    multiscale_weight_frames: list[pd.DataFrame] = []
+    expert_models = ";".join(names)
+    for scale, result in scale_results:
+        predictions = result.predictions.sort_values(
+            ["origin_date", "target_date"], ignore_index=True
+        )
+        if not _prediction_keys(predictions).equals(reference_keys):
+            raise RuntimeError("multiscale inner pools do not share common origins")
+        comparison_columns = [
+            "evaluation_split",
+            "current_state",
+            "actual",
+            "fallback",
+            "fallback_reason",
+        ]
+        if not predictions[comparison_columns].equals(reference[comparison_columns]):
+            raise RuntimeError("multiscale inner pools disagree on forecast metadata")
+        probability_array = predictions[list(PROBABILITY_COLUMNS)].to_numpy(
+            dtype=float
+        )
+        scale_probability_arrays.append(probability_array)
+        for row_index, row in predictions.iterrows():
+            origin = pd.Timestamp(row["origin_date"])
+            target = pd.Timestamp(row["target_date"])
+            scale_rows.append(
+                {
+                    "row_role": "oos",
+                    "origin_date": origin,
+                    "target_date": target,
+                    "evaluation_split": str(row["evaluation_split"]),
+                    "ensemble_model": MULTISCALE_ENSEMBLE_MODEL_NAME,
+                    "scale_half_life_weeks": int(scale),
+                    "outer_scale_weight": outer_weight,
+                    "minimum_history_rows": int(minimum_history_rows),
+                    "eligible_loss_rule": ELIGIBLE_LOSS_RULE,
+                    "inner_pool_method": MULTISCALE_INNER_POOL_METHOD,
+                    "expert_models": expert_models,
+                    "expert_forecast_artifact": "oos-predictions.csv",
+                    "expert_forecast_key": _expert_forecast_key(
+                        artifact="oos-predictions.csv",
+                        origin_date=origin,
+                        target_date=target,
+                        expert_names=names,
+                    ),
+                    **{
+                        column: float(probability_array[row_index, position])
+                        for position, column in enumerate(PROBABILITY_COLUMNS)
+                    },
+                    "fallback": bool(row["fallback"]),
+                    "fallback_reason": str(row["fallback_reason"]),
+                }
+            )
+        scale_weights = result.weights.copy()
+        scale_weights["ensemble_model"] = MULTISCALE_ENSEMBLE_MODEL_NAME
+        scale_weights["half_life_weeks"] = int(scale)
+        scale_weights["outer_scale_weight"] = outer_weight
+        scale_weights["inner_pool_method"] = MULTISCALE_INNER_POOL_METHOD
+        multiscale_weight_frames.append(scale_weights)
+
+    # This is the preregistered arithmetic mean; no fitted outer weights or
+    # post-pooling repair is applied.
+    aggregate_probability = np.mean(np.stack(scale_probability_arrays), axis=0)
+    predictions = reference.copy()
+    predictions["model"] = MULTISCALE_ENSEMBLE_MODEL_NAME
+    predictions[list(PROBABILITY_COLUMNS)] = aggregate_probability
+    predictions["predicted"] = [
+        STATE_ORDER[int(position)] for position in aggregate_probability.argmax(axis=1)
+    ]
+    predictions["multiscale_half_lives_weeks"] = ";".join(
+        str(value) for value in scales
+    )
+    predictions["multiscale_outer_weights"] = ";".join(
+        format(outer_weight, ".17g") for _ in scales
+    )
+    predictions["multiscale_aggregation"] = MULTISCALE_ENSEMBLE_AGGREGATION
+    predictions["inner_pool_method"] = MULTISCALE_INNER_POOL_METHOD
+    predictions["eligible_loss_rule"] = ELIGIBLE_LOSS_RULE
+    predictions["ensemble_minimum_history_rows"] = int(minimum_history_rows)
+    predictions = predictions.drop(columns=["ensemble_half_life_weeks"], errors="ignore")
+    _validate_probability_frame(
+        predictions, context=MULTISCALE_ENSEMBLE_MODEL_NAME
+    )
+    scale_predictions = pd.DataFrame(
+        scale_rows, columns=MULTISCALE_SCALE_FORECAST_COLUMNS
+    ).sort_values(
+        ["origin_date", "target_date", "scale_half_life_weeks"],
+        ignore_index=True,
+    )
+    _validate_probability_frame(
+        scale_predictions, context="multiscale ensemble scale forecasts"
+    )
+    weights = pd.concat(
+        multiscale_weight_frames, ignore_index=True, sort=False
+    ).sort_values(
+        ["origin_date", "target_date", "half_life_weeks", "expert"],
+        ignore_index=True,
+    )
+    return MultiscaleEnsembleResult(
+        predictions=predictions,
+        weights=weights,
+        scale_predictions=scale_predictions,
+    )
+
+
 def _common_key_frame(frame: pd.DataFrame) -> pd.DataFrame:
     return frame[["origin_date", "target_date"]].drop_duplicates().reset_index(
         drop=True
@@ -701,6 +915,7 @@ def augment_benchmark_with_structural_models(
     direct_jump_floor: float = DIRECT_JUMP_FLOOR,
     half_life_weeks: float = ENSEMBLE_HALF_LIFE_WEEKS,
     minimum_history_rows: int = ENSEMBLE_MINIMUM_HISTORY_ROWS,
+    include_multiscale: bool = False,
     random_state: int = 17,
 ) -> BenchmarkResult:
     """Return a common-origin BenchmarkResult with v4 candidates recomputed.
@@ -760,8 +975,25 @@ def augment_benchmark_with_structural_models(
         half_life_weeks=half_life_weeks,
         minimum_history_rows=minimum_history_rows,
     )
+    multiscale = (
+        causal_multiscale_ensemble(expert_frame)
+        if include_multiscale
+        else None
+    )
+    structural_predictions = [joint, ensemble.predictions]
+    stacking_weights = ensemble.weights
+    multiscale_scale_forecasts = None
+    if multiscale is not None:
+        structural_predictions.append(multiscale.predictions)
+        stacking_weights = pd.concat(
+            [stacking_weights, multiscale.weights], ignore_index=True, sort=False
+        ).sort_values(
+            ["origin_date", "target_date", "ensemble_model", "half_life_weeks", "expert"],
+            ignore_index=True,
+        )
+        multiscale_scale_forecasts = multiscale.scale_predictions
     predictions = pd.concat(
-        [base_common, joint, ensemble.predictions],
+        [base_common, *structural_predictions],
         ignore_index=True,
         sort=False,
     ).sort_values(["origin_date", "target_date", "model"], ignore_index=True)
@@ -839,7 +1071,8 @@ def augment_benchmark_with_structural_models(
         selection_leaderboard=selection_leaderboard,
         holdout_leaderboard=holdout_leaderboard,
         selection_diagnostics=selection_diagnostics,
-        stacking_weights=ensemble.weights,
+        stacking_weights=stacking_weights,
+        multiscale_scale_forecasts=multiscale_scale_forecasts,
     )
 
 
@@ -920,6 +1153,7 @@ def forecast_structural_probabilities(
     direct_jump_floor: float = DIRECT_JUMP_FLOOR,
     half_life_weeks: float = ENSEMBLE_HALF_LIFE_WEEKS,
     minimum_history_rows: int = ENSEMBLE_MINIMUM_HISTORY_ROWS,
+    include_multiscale: bool = False,
 ) -> StructuralForecastResult:
     """Compose latest joint and ensemble forecasts without an unknown target."""
 
@@ -970,16 +1204,114 @@ def forecast_structural_probabilities(
         ensemble = sum(weights[name] * current_probabilities[name] for name in eligible)
         ensemble = np.asarray(ensemble, dtype=float)
         ensemble /= ensemble.sum()
-    rows = []
-    for name, probability in (
+    multiscale_probability: np.ndarray | None = None
+    multiscale_fallback = False
+    multiscale_weight_frames: list[pd.DataFrame] = []
+    multiscale_scale_rows: list[dict[str, object]] = []
+    if include_multiscale:
+        names, scales = _validate_multiscale_contract(
+            names,
+            MULTISCALE_ENSEMBLE_HALF_LIVES_WEEKS,
+            minimum_history_rows,
+        )
+        outer_weight = 1.0 / float(len(scales))
+        target = origin + pd.offsets.Week(1)
+        scale_probabilities: list[np.ndarray] = []
+        scale_fallbacks: list[bool] = []
+        for scale in scales:
+            scale_weights, scale_evidence = _discounted_expert_weights(
+                history,
+                origin_date=origin,
+                expert_names=names,
+                current_fallbacks=fallbacks,
+                half_life_weeks=float(scale),
+                minimum_history_rows=int(minimum_history_rows),
+            )
+            scale_eligible = [
+                name for name in names if scale_weights[name] > 0.0
+            ]
+            scale_fallback = not scale_eligible
+            if scale_fallback:
+                scale_probability = np.full(
+                    len(STATE_ORDER), 1.0 / len(STATE_ORDER)
+                )
+                scale_fallback_reason = "all_structural_experts_fallback"
+            else:
+                scale_probability = sum(
+                    scale_weights[name] * current_probabilities[name]
+                    for name in scale_eligible
+                )
+                scale_probability = np.asarray(scale_probability, dtype=float)
+                scale_probability /= scale_probability.sum()
+                scale_fallback_reason = ""
+            scale_probabilities.append(scale_probability)
+            scale_fallbacks.append(scale_fallback)
+            multiscale_scale_rows.append(
+                {
+                    "row_role": "latest_forecast",
+                    "origin_date": origin,
+                    "target_date": target,
+                    "evaluation_split": "prospective",
+                    "ensemble_model": MULTISCALE_ENSEMBLE_MODEL_NAME,
+                    "scale_half_life_weeks": int(scale),
+                    "outer_scale_weight": outer_weight,
+                    "minimum_history_rows": int(minimum_history_rows),
+                    "eligible_loss_rule": ELIGIBLE_LOSS_RULE,
+                    "inner_pool_method": MULTISCALE_INNER_POOL_METHOD,
+                    "expert_models": ";".join(names),
+                    "expert_forecast_artifact": "structural-forecasts.csv",
+                    "expert_forecast_key": _expert_forecast_key(
+                        artifact="structural-forecasts.csv",
+                        origin_date=origin,
+                        target_date=target,
+                        expert_names=names,
+                    ),
+                    **{
+                        column: float(scale_probability[position])
+                        for position, column in enumerate(PROBABILITY_COLUMNS)
+                    },
+                    "fallback": scale_fallback,
+                    "fallback_reason": scale_fallback_reason,
+                }
+            )
+            scale_weight_frame = pd.DataFrame(scale_evidence)
+            scale_weight_frame.insert(0, "origin_date", origin)
+            scale_weight_frame["target_date"] = target
+            scale_weight_frame["evaluation_split"] = "prospective"
+            scale_weight_frame["ensemble_model"] = (
+                MULTISCALE_ENSEMBLE_MODEL_NAME
+            )
+            scale_weight_frame["half_life_weeks"] = int(scale)
+            scale_weight_frame["outer_scale_weight"] = outer_weight
+            scale_weight_frame["minimum_history_rows"] = int(
+                minimum_history_rows
+            )
+            scale_weight_frame["eligible_loss_rule"] = ELIGIBLE_LOSS_RULE
+            scale_weight_frame["inner_pool_method"] = MULTISCALE_INNER_POOL_METHOD
+            multiscale_weight_frames.append(scale_weight_frame)
+        if len(set(scale_fallbacks)) != 1:
+            raise RuntimeError("multiscale latest pools disagree on fallback status")
+        multiscale_fallback = scale_fallbacks[0]
+        multiscale_probability = np.mean(
+            np.stack(scale_probabilities), axis=0
+        )
+    forecast_entries: list[tuple[str, np.ndarray]] = [
         ("markov", markov),
         ("xgboost", xgboost),
         (JOINT_MODEL_NAME, joint),
         (ENSEMBLE_MODEL_NAME, ensemble),
-    ):
+    ]
+    if multiscale_probability is not None:
+        forecast_entries.append(
+            (MULTISCALE_ENSEMBLE_MODEL_NAME, multiscale_probability)
+        )
+    rows = []
+    for name, probability in forecast_entries:
         source_fallback = (
             ensemble_fallback
             if name == ENSEMBLE_MODEL_NAME
+            else multiscale_fallback
+            if name == MULTISCALE_ENSEMBLE_MODEL_NAME
             else bool(fallbacks.get(name, False))
         )
         rows.append(
@@ -995,18 +1327,25 @@ def forecast_structural_probabilities(
                 "fallback": source_fallback,
                 "fallback_reason": (
                     "all_structural_experts_fallback"
-                    if name == ENSEMBLE_MODEL_NAME and ensemble_fallback
+                    if name
+                    in (ENSEMBLE_MODEL_NAME, MULTISCALE_ENSEMBLE_MODEL_NAME)
+                    and source_fallback
                     else ""
                 ),
                 "source_role": (
                     "causal_ensemble"
                     if name == ENSEMBLE_MODEL_NAME
+                    else "causal_discounted_log_score_multiscale_pool"
+                    if name == MULTISCALE_ENSEMBLE_MODEL_NAME
                     else "hazard_destination_joint"
                     if name == JOINT_MODEL_NAME
                     else "base_expert"
                 ),
                 "ensemble_weight": (
-                    1.0 if name == ENSEMBLE_MODEL_NAME else float(weights[name])
+                    1.0
+                    if name
+                    in (ENSEMBLE_MODEL_NAME, MULTISCALE_ENSEMBLE_MODEL_NAME)
+                    else float(weights[name])
                 ),
                 "binary_xgboost_p_change": float(binary_xgboost_p_change),
             }
@@ -1016,33 +1355,64 @@ def forecast_structural_probabilities(
     weights_frame["ensemble_model"] = ENSEMBLE_MODEL_NAME
     weights_frame["half_life_weeks"] = float(half_life_weeks)
     weights_frame["minimum_history_rows"] = int(minimum_history_rows)
-    weights_frame["eligible_loss_rule"] = "target_date_strictly_before_origin"
+    weights_frame["eligible_loss_rule"] = ELIGIBLE_LOSS_RULE
+    if multiscale_weight_frames:
+        weights_frame = pd.concat(
+            [weights_frame, *multiscale_weight_frames],
+            ignore_index=True,
+            sort=False,
+        ).sort_values(
+            ["origin_date", "ensemble_model", "half_life_weeks", "expert"],
+            ignore_index=True,
+        )
     survival = project_joint_survival_hazard(
         float(binary_xgboost_p_change),
         current_duration_weeks=current_duration_weeks,
     )
     probabilities = pd.DataFrame(rows)
     _validate_probability_frame(probabilities, context="latest structural forecast")
+    multiscale_scale_predictions = (
+        pd.DataFrame(
+            multiscale_scale_rows,
+            columns=MULTISCALE_SCALE_FORECAST_COLUMNS,
+        ).sort_values("scale_half_life_weeks", ignore_index=True)
+        if multiscale_scale_rows
+        else None
+    )
+    if multiscale_scale_predictions is not None:
+        _validate_probability_frame(
+            multiscale_scale_predictions,
+            context="latest multiscale ensemble scale forecasts",
+        )
     return StructuralForecastResult(
         probabilities=probabilities,
         stacking_weights=weights_frame,
         survival_probabilities=survival,
+        multiscale_scale_predictions=multiscale_scale_predictions,
     )
 
 
 __all__ = [
     "DEFAULT_ENSEMBLE_EXPERTS",
     "DIRECT_JUMP_FLOOR",
+    "ELIGIBLE_LOSS_RULE",
     "ENSEMBLE_HALF_LIFE_WEEKS",
     "ENSEMBLE_MINIMUM_HISTORY_ROWS",
     "ENSEMBLE_MODEL_NAME",
     "JOINT_MODEL_NAME",
+    "MULTISCALE_ENSEMBLE_AGGREGATION",
+    "MULTISCALE_ENSEMBLE_HALF_LIVES_WEEKS",
+    "MULTISCALE_ENSEMBLE_MODEL_NAME",
+    "MULTISCALE_INNER_POOL_METHOD",
+    "MULTISCALE_SCALE_FORECAST_COLUMNS",
     "DynamicEnsembleResult",
+    "MultiscaleEnsembleResult",
     "StructuralForecastResult",
     "augment_benchmark_with_structural_models",
     "build_causal_dynamic_ensemble_oos",
     "build_xgb_hazard_destination_oos",
     "causal_dynamic_ensemble",
+    "causal_multiscale_ensemble",
     "forecast_structural_probabilities",
     "project_joint_survival_hazard",
     "xgb_hazard_destination_probability",

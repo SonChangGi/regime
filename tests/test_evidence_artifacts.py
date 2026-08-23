@@ -12,10 +12,14 @@ from regime_lab import cli
 from regime_lab.analysis import BenchmarkProfile, BenchmarkResult
 from regime_lab.evidence import (
     STATE_LABEL_HISTORY_COLUMNS,
+    STATE_MEMBERSHIP_HISTORY_COLUMNS,
     WEEKLY_STATE_FORECAST_COLUMNS,
+    WEEKLY_STATE_FORECAST_V5_COLUMNS,
     canonical_evidence_csv_bytes,
     state_label_history,
+    state_membership_history,
     weekly_state_forecasts,
+    weekly_state_forecasts_v5,
 )
 
 
@@ -131,6 +135,33 @@ def test_state_label_history_preserves_full_precision_and_prior_chain() -> None:
     assert frame.iloc[2]["previous_state"] == frame.iloc[1]["state"]
     assert frame.iloc[1]["p_risk_on"] == 0.8000000000000123
     assert frame["hysteresis_margin"].unique().tolist() == [0.3]
+
+
+def test_v5_evidence_renames_anchor_values_without_changing_them() -> None:
+    labels = _label_frame()
+    memberships = state_membership_history(labels)
+
+    assert tuple(memberships.columns) == STATE_MEMBERSHIP_HISTORY_COLUMNS
+    assert memberships["m_risk_on"].tolist() == labels["p_risk_on"].tolist()
+    assert memberships["m_transition"].tolist() == labels["p_transition"].tolist()
+    assert memberships["m_risk_off"].tolist() == labels["p_risk_off"].tolist()
+    assert "probability_temperature" not in memberships
+    assert memberships["membership_temperature"].tolist() == labels[
+        "probability_temperature"
+    ].tolist()
+
+
+def test_v5_forecast_evidence_separates_membership_from_forecast_probability() -> None:
+    weekly = _weekly_rows()
+    for row in weekly:
+        current = row["current"]
+        current["memberships"] = current.pop("probabilities")
+    frame = weekly_state_forecasts_v5(weekly)
+
+    assert tuple(frame.columns) == WEEKLY_STATE_FORECAST_V5_COLUMNS
+    assert frame.iloc[0]["current_m_risk_on"] == 0.72
+    assert frame.iloc[0]["next_p_risk_on"] == 0.51
+    assert not any(column.startswith("current_p_") for column in frame.columns)
 
 
 def test_cli_writes_the_same_canonical_bytes_used_for_payload_hash(tmp_path: Path) -> None:

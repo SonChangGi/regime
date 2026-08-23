@@ -44,11 +44,15 @@ from regime_lab.data import DailyRequestBudget, SQLiteSnapshotStore
 
 UTC = timezone.utc
 PUBLICATION_PATH = "publication/live/regime-results.json"
+PUBLICATION_COMPARISON_PATH = "publication/live/v5-vs-v4-comparison.json"
 PUBLIC_PAYLOAD_PATH = "data/regime-results.json"
+PUBLIC_COMPARISON_PATH = "data/v5-vs-v4-comparison.json"
 PUBLIC_MANIFEST_PATH = "publication-manifest.json"
 AUTOMATION_LABEL = "com.sonchanggi.regime.weekly-release"
 AUTOMATION_TRAILER = "Regime-Automation: weekly-release-v1"
-ALLOWED_REMOTE_DRIFT = frozenset({PUBLICATION_PATH})
+ALLOWED_REMOTE_DRIFT = frozenset(
+    {PUBLICATION_PATH, PUBLICATION_COMPARISON_PATH}
+)
 DEFAULT_RETRY_HOURS = (3, 9, 15, 21)
 HEALTH_SCHEMA_VERSION = 2
 GIT_NETWORK_TIMEOUT_SECONDS = 300.0
@@ -107,6 +111,7 @@ class AutomationSettings:
     public_root: str
     workflow_timeout: timedelta
     public_readback_timeout: timedelta
+    contract: str = "v5"
     retry_hours: tuple[int, ...] = ()
     transient_retry_delay: timedelta = timedelta(hours=6)
     heartbeat_interval: timedelta = timedelta(minutes=2)
@@ -175,6 +180,9 @@ class AutomationSettings:
         profile = str(build.get("profile", ""))
         if profile != "standard":
             raise AutomationError("weekly live automation must use the standard profile")
+        contract = str(build.get("contract", ""))
+        if contract != "v5":
+            raise AutomationError("weekly live automation must use the v5 contract")
         automation_id = str(document.get("automation_id", ""))
         if automation_id != "weekly-regime-release-v1":
             raise AutomationError("automation_id is unsupported")
@@ -204,6 +212,7 @@ class AutomationSettings:
             public_root=public_root,
             workflow_timeout=timedelta(minutes=workflow_minutes),
             public_readback_timeout=timedelta(minutes=readback_minutes),
+            contract=contract,
             retry_hours=retry_hours,
             transient_retry_delay=timedelta(hours=transient_retry_hours),
             heartbeat_interval=timedelta(seconds=heartbeat_seconds),
@@ -232,6 +241,18 @@ class AutomationSettings:
         return self.state_directory / "candidate" / "metadata.json"
 
     @property
+    def candidate_comparison_path(self) -> Path:
+        return self.state_directory / "candidate" / "v5-vs-v4-comparison.json"
+
+    @property
+    def reviewed_payload_path(self) -> Path:
+        return self.payload.with_name("reviewed-regime-results.json")
+
+    @property
+    def comparison_path(self) -> Path:
+        return self.payload.with_name("v5-vs-v4-comparison.json")
+
+    @property
     def collection_report_path(self) -> Path:
         return self.state_directory / "collection-report.json"
 
@@ -245,6 +266,7 @@ class RemotePublication:
     head_sha: str
     payload_bytes: bytes
     data_as_of: datetime
+    comparison_bytes: bytes | None = None
 
     @property
     def sha256(self) -> str:
@@ -279,6 +301,35 @@ def _json_object(raw: bytes, *, label: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise AutomationError(f"{label} root must be an object")
     return value
+
+
+def _validate_v5_comparison_bytes(
+    payload_raw: bytes,
+    comparison_raw: bytes,
+    *,
+    label: str,
+) -> None:
+    """Validate a derived V5 comparison and its exact payload-byte binding."""
+
+    payload = _json_object(payload_raw, label=f"{label} payload")
+    comparison = _json_object(comparison_raw, label=f"{label} comparison")
+    try:
+        from scripts.package_public_demo import (
+            PackagingError,
+            validate_v5_comparison_sidecar,
+        )
+    except ImportError as exc:
+        raise AutomationError(
+            f"{label} comparison validator is unavailable: {exc}"
+        ) from exc
+    try:
+        validate_v5_comparison_sidecar(
+            comparison,
+            payload=payload,
+            payload_raw=payload_raw,
+        )
+    except (PackagingError, KeyError, TypeError, ValueError) as exc:
+        raise AutomationError(f"{label} comparison contract failed: {exc}") from exc
 
 
 def _run(
@@ -976,19 +1027,62 @@ def _git_preflight(settings: AutomationSettings) -> RemotePublication:
     data_as_of = _parse_aware_datetime(
         payload.get("meta", {}).get("data_as_of"), label="remote data_as_of"
     )
-    validate_automation_candidate(payload_bytes, target=data_as_of)
-    return RemotePublication(head_sha, payload_bytes, data_as_of)
+    validated = validate_automation_candidate(
+        payload_bytes,
+        target=data_as_of,
+        expected_contract=settings.contract,
+    )
+    comparison_bytes = None
+    if validated.get("meta", {}).get("result_version") == "weekly-regime-result-v5":
+        comparison_bytes = _run(
+            [
+                "git",
+                "show",
+                f"{remote_ref}:{PUBLICATION_COMPARISON_PATH}",
+            ],
+            cwd=settings.root,
+            capture=True,
+        )
+        _validate_v5_comparison_bytes(
+            payload_bytes,
+            comparison_bytes,
+            label="remote publication",
+        )
+    return RemotePublication(
+        head_sha,
+        payload_bytes,
+        data_as_of,
+        comparison_bytes,
+    )
 
 
-def validate_automation_candidate(raw: bytes, *, target: datetime) -> dict[str, Any]:
+def validate_automation_candidate(
+    raw: bytes,
+    *,
+    target: datetime,
+    expected_contract: str | None = None,
+) -> dict[str, Any]:
     payload = _json_object(raw, label="automation candidate")
     try:
         validate_dashboard_payload(payload)
     except (ContractError, KeyError, TypeError, ValueError) as exc:
         raise AutomationError(f"candidate dashboard contract failed: {exc}") from exc
     meta = payload.get("meta", {})
-    if meta.get("mode") != "live" or meta.get("result_version") != "weekly-regime-result-v4":
-        raise AutomationError("candidate must be a live v4 result")
+    result_version = meta.get("result_version")
+    contract_by_result = {
+        "weekly-regime-result-v4": "v4",
+        "weekly-regime-result-v5": "v5",
+    }
+    actual_contract = contract_by_result.get(result_version)
+    if meta.get("mode") != "live" or actual_contract is None:
+        raise AutomationError("candidate must be a supported live result")
+    if expected_contract is not None and actual_contract != expected_contract:
+        raise AutomationError(
+            f"candidate must be a live {expected_contract} result"
+        )
+    is_v5 = actual_contract == "v5"
+    if is_v5 and meta.get("publication_status") != "reviewed_publication":
+        raise AutomationError("live v5 candidate must have reviewed publication status")
     candidate_cutoff = _parse_aware_datetime(
         meta.get("data_as_of"), label="candidate data_as_of"
     )
@@ -1002,8 +1096,13 @@ def validate_automation_candidate(raw: bytes, *, target: datetime) -> dict[str, 
         for source in sources
         if isinstance(source, dict) and isinstance(source.get("id"), str)
     }
-    if set(by_id) != {"alpha_vantage", "alfred"}:
-        raise AutomationError("candidate sources must be exactly alpha_vantage and alfred")
+    expected_sources = (
+        {"alpha_vantage", "alfred", "frb_h10"}
+        if is_v5
+        else {"alpha_vantage", "alfred"}
+    )
+    if set(by_id) != expected_sources:
+        raise AutomationError("candidate source identities do not match its contract")
     if any(source.get("status") != "ok" for source in by_id.values()):
         raise AutomationError("provider-degraded candidate may not be promoted")
     if any(source.get("issues") for source in by_id.values()):
@@ -1040,32 +1139,68 @@ def validate_automation_candidate(raw: bytes, *, target: datetime) -> dict[str, 
         raise AutomationError("candidate latest forecast fallback may not be promoted")
     meta_status = meta.get("status")
     if meta_status == "degraded":
-        diagnostic = payload.get("model", {}).get("holdout_diagnostic", {})
-        if diagnostic.get("status") != "weak_generalization":
-            raise AutomationError("candidate degradation is not the allowed diagnostic warning")
+        if is_v5:
+            health = payload.get("model", {}).get("model_health", {})
+            reasons = health.get("reasons") if isinstance(health, dict) else None
+            allowed_reasons = {"weak_generalization", "calibration_drift"}
+            if (
+                health.get("status") != "review_due"
+                or not isinstance(reasons, list)
+                or not reasons
+                or not set(reasons).issubset(allowed_reasons)
+            ):
+                raise AutomationError(
+                    "candidate degradation is not an allowed V5 model review warning"
+                )
+        else:
+            diagnostic = payload.get("model", {}).get("holdout_diagnostic", {})
+            if diagnostic.get("status") != "weak_generalization":
+                raise AutomationError(
+                    "candidate degradation is not the allowed diagnostic warning"
+                )
     elif meta_status != "ok":
         raise AutomationError("candidate meta.status is not publishable")
+    if is_v5:
+        model = payload.get("model", {})
+        fx = model.get("fx_ablation", {}) if isinstance(model, dict) else {}
+        fx_gate = fx.get("gate", {}) if isinstance(fx, dict) else {}
+        if (
+            model.get("champion") != "markov"
+            or fx.get("promotion_allowed") is not False
+            or fx.get("core_champion_promoted") is not False
+            or fx_gate.get("passed_variants") != []
+        ):
+            raise AutomationError(
+                "V5 publication must preserve the Markov champion and FX non-promotion"
+            )
     return payload
 
 
-def _verify_candidate_package(settings: AutomationSettings, candidate_path: Path) -> None:
+def _verify_candidate_package(
+    settings: AutomationSettings,
+    candidate_path: Path,
+    comparison_path: Path | None,
+) -> None:
     settings.state_directory.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(
         prefix=".package-check-", dir=settings.state_directory
     ) as temporary:
         output = Path(temporary) / "public-dashboard"
+        command = [
+            sys.executable,
+            "scripts/package_public_demo.py",
+            "--payload",
+            str(candidate_path),
+            "--publication-mode",
+            "live-derived",
+            "--acknowledge-personal-noncommercial-publication",
+            "--output",
+            str(output),
+        ]
+        if comparison_path is not None:
+            command.extend(["--comparison", str(comparison_path)])
         _run(
-            [
-                sys.executable,
-                "scripts/package_public_demo.py",
-                "--payload",
-                str(candidate_path),
-                "--publication-mode",
-                "live-derived",
-                "--acknowledge-personal-noncommercial-publication",
-                "--output",
-                str(output),
-            ],
+            command,
             cwd=settings.root,
         )
         _run(
@@ -1074,6 +1209,12 @@ def _verify_candidate_package(settings: AutomationSettings, candidate_path: Path
         )
         if (output / PUBLIC_PAYLOAD_PATH).read_bytes() != candidate_path.read_bytes():
             raise AutomationError("verified package payload bytes differ from the candidate")
+        if comparison_path is not None and (
+            output / PUBLIC_COMPARISON_PATH
+        ).read_bytes() != comparison_path.read_bytes():
+            raise AutomationError(
+                "verified package comparison bytes differ from the candidate"
+            )
 
 
 def _candidate_context(settings: AutomationSettings) -> dict[str, str]:
@@ -1094,7 +1235,7 @@ def _candidate_context(settings: AutomationSettings) -> dict[str, str]:
     retained = [
         line
         for line in tree.splitlines()
-        if not line.endswith(f"\t{PUBLICATION_PATH}")
+        if not any(line.endswith(f"\t{path}") for path in ALLOWED_REMOTE_DRIFT)
     ]
     workspace = hashlib.sha256()
     for line in retained:
@@ -1140,11 +1281,16 @@ def _candidate_context(settings: AutomationSettings) -> dict[str, str]:
 def _cache_candidate(
     settings: AutomationSettings,
     raw: bytes,
+    comparison_raw: bytes | None = None,
     *,
     target: datetime,
     context: Mapping[str, str],
 ) -> None:
-    payload = validate_automation_candidate(raw, target=target)
+    payload = validate_automation_candidate(
+        raw,
+        target=target,
+        expected_contract=settings.contract,
+    )
     generation_id = str(payload.get("meta", {}).get("generation_id", ""))
     if not generation_id:
         raise AutomationError("candidate generation_id is missing")
@@ -1153,6 +1299,15 @@ def _cache_candidate(
     temporary.write_bytes(raw)
     os.chmod(temporary, 0o600)
     os.replace(temporary, settings.candidate_path)
+    if settings.contract == "v5" and comparison_raw is None:
+        raise AutomationError("V5 candidate comparison is missing")
+    if comparison_raw is not None:
+        comparison_temporary = settings.candidate_comparison_path.with_name(
+            ".v5-vs-v4-comparison.json.tmp"
+        )
+        comparison_temporary.write_bytes(comparison_raw)
+        os.chmod(comparison_temporary, 0o600)
+        os.replace(comparison_temporary, settings.candidate_comparison_path)
     write_json_atomic(
         settings.candidate_metadata_path,
         {
@@ -1160,6 +1315,11 @@ def _cache_candidate(
             "automation_id": settings.automation_id,
             "data_as_of": target.astimezone(UTC).isoformat(),
             "sha256": hashlib.sha256(raw).hexdigest(),
+            "comparison_sha256": (
+                hashlib.sha256(comparison_raw).hexdigest()
+                if comparison_raw is not None
+                else None
+            ),
             "generation_id": generation_id,
             **context,
             "cached_at": datetime.now(UTC).isoformat(),
@@ -1178,6 +1338,11 @@ def _load_cached_candidate(
             settings.candidate_metadata_path.read_text(encoding="utf-8")
         )
         raw = settings.candidate_path.read_bytes()
+        comparison_raw = (
+            settings.candidate_comparison_path.read_bytes()
+            if metadata.get("comparison_sha256") is not None
+            else None
+        )
     except (OSError, json.JSONDecodeError):
         return None
     if not isinstance(metadata, dict) or metadata.get("schema_version") != 2:
@@ -1188,12 +1353,26 @@ def _load_cached_candidate(
         return None
     if metadata.get("sha256") != hashlib.sha256(raw).hexdigest():
         return None
+    if comparison_raw is not None and metadata.get(
+        "comparison_sha256"
+    ) != hashlib.sha256(comparison_raw).hexdigest():
+        return None
+    if settings.contract == "v5" and comparison_raw is None:
+        return None
     if any(metadata.get(key) != value for key, value in context.items()):
         return None
-    payload = validate_automation_candidate(raw, target=target)
+    payload = validate_automation_candidate(
+        raw,
+        target=target,
+        expected_contract=settings.contract,
+    )
     if metadata.get("generation_id") != payload.get("meta", {}).get("generation_id"):
         return None
-    _verify_candidate_package(settings, settings.candidate_path)
+    _verify_candidate_package(
+        settings,
+        settings.candidate_path,
+        settings.candidate_comparison_path if comparison_raw is not None else None,
+    )
     return raw
 
 
@@ -1284,6 +1463,8 @@ def _build_candidate(
     run_id: str | None = None,
 ) -> bytes:
     settings.collection_report_path.unlink(missing_ok=True)
+    settings.reviewed_payload_path.unlink(missing_ok=True)
+    settings.comparison_path.unlink(missing_ok=True)
 
     def heartbeat() -> None:
         report = _load_collection_report(settings, target=target)
@@ -1295,6 +1476,8 @@ def _build_candidate(
         "-m",
         "regime_lab",
         "build",
+        "--contract",
+        settings.contract,
         "--config",
         "config/series.json",
         "--database",
@@ -1353,12 +1536,86 @@ def _build_candidate(
         ],
         cwd=settings.root,
     )
-    raw = settings.payload.read_bytes()
-    validate_automation_candidate(raw, target=target)
-    _verify_candidate_package(settings, settings.payload)
+    if settings.contract == "v5":
+        _run(
+            [
+                sys.executable,
+                "scripts/compare_v5_to_frozen_v4.py",
+                "--v5-artifacts",
+                str(settings.artifacts),
+                "--v5-payload",
+                str(settings.payload),
+                "--output",
+                str(settings.comparison_path),
+            ],
+            cwd=settings.root,
+        )
+        _run(
+            [
+                sys.executable,
+                "scripts/promote_v5_publication.py",
+                "--candidate",
+                str(settings.payload),
+                "--comparison",
+                str(settings.comparison_path),
+                "--output",
+                str(settings.reviewed_payload_path),
+            ],
+            cwd=settings.root,
+        )
+        settings.comparison_path.unlink(missing_ok=True)
+        _run(
+            [
+                sys.executable,
+                "scripts/compare_v5_to_frozen_v4.py",
+                "--v5-artifacts",
+                str(settings.artifacts),
+                "--v5-payload",
+                str(settings.reviewed_payload_path),
+                "--output",
+                str(settings.comparison_path),
+            ],
+            cwd=settings.root,
+        )
+        candidate_path = settings.reviewed_payload_path
+        comparison_path: Path | None = settings.comparison_path
+        _run(
+            [sys.executable, "-m", "regime_lab", "validate", str(candidate_path)],
+            cwd=settings.root,
+        )
+        _run(
+            [
+                sys.executable,
+                "scripts/audit_outputs.py",
+                "--payload",
+                str(candidate_path),
+                "--artifacts",
+                str(settings.artifacts),
+                "--mode",
+                "live",
+            ],
+            cwd=settings.root,
+        )
+    else:
+        candidate_path = settings.payload
+        comparison_path = None
+    raw = candidate_path.read_bytes()
+    validate_automation_candidate(
+        raw,
+        target=target,
+        expected_contract=settings.contract,
+    )
+    _verify_candidate_package(settings, candidate_path, comparison_path)
     if _candidate_context(settings) != dict(context):
         raise AutomationError("tracked source or config changed during live audit")
-    _cache_candidate(settings, raw, target=target, context=context)
+    comparison_raw = comparison_path.read_bytes() if comparison_path is not None else None
+    _cache_candidate(
+        settings,
+        raw,
+        comparison_raw,
+        target=target,
+        context=context,
+    )
     return raw
 
 
@@ -1366,6 +1623,7 @@ def _publish_candidate(
     settings: AutomationSettings,
     *,
     candidate: bytes,
+    comparison: bytes | None = None,
     target: datetime,
     expected_head_sha: str,
     force_pages_rebuild: bool = False,
@@ -1413,6 +1671,14 @@ def _publish_candidate(
             raise AutomationError("publication target must be an existing regular file")
         target_path.write_bytes(candidate)
         os.chmod(target_path, 0o644)
+        comparison_target = checkout / PUBLICATION_COMPARISON_PATH
+        if comparison is not None:
+            if comparison_target.is_symlink() or not comparison_target.is_file():
+                raise AutomationError(
+                    "publication comparison target must be an existing regular file"
+                )
+            comparison_target.write_bytes(comparison)
+            os.chmod(comparison_target, 0o644)
         changed = set(
             _run(
                 ["git", "status", "--porcelain", "--untracked-files=no"],
@@ -1421,8 +1687,17 @@ def _publish_candidate(
             ).decode().splitlines()
         )
         expected = {f" M {PUBLICATION_PATH}"}
+        if comparison is not None:
+            expected.add(f" M {PUBLICATION_COMPARISON_PATH}")
         if changed != expected:
-            if not changed and target_path.read_bytes() == candidate:
+            if (
+                not changed
+                and target_path.read_bytes() == candidate
+                and (
+                    comparison is None
+                    or comparison_target.read_bytes() == comparison
+                )
+            ):
                 if not force_pages_rebuild:
                     return cloned_head
                 cutoff_date = target.astimezone(EASTERN).date().isoformat()
@@ -1454,7 +1729,10 @@ def _publish_candidate(
                 )
                 return commit_sha
             raise AutomationError("release checkout changed outside the publication snapshot")
-        _run(["git", "add", "--", PUBLICATION_PATH], cwd=checkout)
+        staged_paths = [PUBLICATION_PATH]
+        if comparison is not None:
+            staged_paths.append(PUBLICATION_COMPARISON_PATH)
+        _run(["git", "add", "--", *staged_paths], cwd=checkout)
         staged = set(
             _run(
                 ["git", "diff", "--cached", "--name-only"],
@@ -1462,7 +1740,7 @@ def _publish_candidate(
                 capture=True,
             ).decode().splitlines()
         )
-        if staged != {PUBLICATION_PATH}:
+        if staged != set(staged_paths):
             raise AutomationError("release commit contains a non-publication path")
         cutoff_date = target.astimezone(EASTERN).date().isoformat()
         _run(
@@ -1517,8 +1795,22 @@ def verify_public_readback(
     settings: AutomationSettings,
     *,
     expected_payload: bytes,
+    expected_comparison: bytes | None = None,
     fetch: Callable[[str], bytes] = _fetch_url,
 ) -> None:
+    expected = _json_object(expected_payload, label="expected public payload")
+    if (
+        expected.get("meta", {}).get("result_version")
+        == "weekly-regime-result-v5"
+        and expected_comparison is None
+    ):
+        raise AutomationError("V5 public readback requires an expected comparison")
+    if expected_comparison is not None:
+        _validate_v5_comparison_bytes(
+            expected_payload,
+            expected_comparison,
+            label="expected publication",
+        )
     public_payload = fetch(urljoin(settings.public_root, PUBLIC_PAYLOAD_PATH))
     expected_hash = hashlib.sha256(expected_payload).hexdigest()
     if hashlib.sha256(public_payload).hexdigest() != expected_hash:
@@ -1530,7 +1822,28 @@ def verify_public_readback(
     record = manifest.get("files", {}).get(PUBLIC_PAYLOAD_PATH, {})
     if record.get("sha256") != expected_hash:
         raise AutomationError("public manifest does not identify the promoted payload")
-    expected = _json_object(expected_payload, label="expected public payload")
+    if expected_comparison is not None:
+        public_comparison = fetch(
+            urljoin(settings.public_root, PUBLIC_COMPARISON_PATH)
+        )
+        comparison_hash = hashlib.sha256(expected_comparison).hexdigest()
+        if hashlib.sha256(public_comparison).hexdigest() != comparison_hash:
+            raise AutomationError(
+                "public comparison SHA-256 does not match the promoted result"
+            )
+        comparison_record = manifest.get("files", {}).get(
+            PUBLIC_COMPARISON_PATH,
+            {},
+        )
+        if comparison_record.get("sha256") != comparison_hash:
+            raise AutomationError(
+                "public manifest does not identify the promoted comparison"
+            )
+        _validate_v5_comparison_bytes(
+            public_payload,
+            public_comparison,
+            label="public publication",
+        )
     if manifest.get("payload_data_as_of") != expected.get("meta", {}).get("data_as_of"):
         raise AutomationError("public manifest data_as_of does not match the payload")
     html = fetch(settings.public_root)
@@ -1542,6 +1855,7 @@ def _wait_for_public_readback(
     settings: AutomationSettings,
     *,
     expected_payload: bytes,
+    expected_comparison: bytes | None = None,
     sleep: Callable[[float], None] = time.sleep,
     heartbeat: Callable[[], None] | None = None,
 ) -> None:
@@ -1553,7 +1867,11 @@ def _wait_for_public_readback(
         if heartbeat is not None:
             heartbeat()
         try:
-            verify_public_readback(settings, expected_payload=expected_payload)
+            verify_public_readback(
+                settings,
+                expected_payload=expected_payload,
+                expected_comparison=expected_comparison,
+            )
             return
         except (AutomationError, OSError) as exc:
             last_error = exc if isinstance(exc, AutomationError) else AutomationError(str(exc))
@@ -1642,13 +1960,16 @@ def run_weekly_release(
                 )
                 try:
                     verify_public_readback(
-                        settings, expected_payload=remote.payload_bytes
+                        settings,
+                        expected_payload=remote.payload_bytes,
+                        expected_comparison=remote.comparison_bytes,
                     )
                     workflow_url = None
                 except (AutomationError, OSError):
                     recovery_sha = _publish_candidate(
                         settings,
                         candidate=remote.payload_bytes,
+                        comparison=remote.comparison_bytes,
                         target=target,
                         expected_head_sha=remote.head_sha,
                         force_pages_rebuild=True,
@@ -1657,6 +1978,7 @@ def run_weekly_release(
                     _wait_for_public_readback(
                         settings,
                         expected_payload=remote.payload_bytes,
+                        expected_comparison=remote.comparison_bytes,
                         heartbeat=lambda: _heartbeat_status(
                             settings, stage="deployment_recovery"
                         ),
@@ -1665,6 +1987,7 @@ def run_weekly_release(
                         recovery_sha,
                         remote.payload_bytes,
                         remote.data_as_of,
+                        remote.comparison_bytes,
                     )
                 result = _write_status(
                     settings,
@@ -1716,12 +2039,19 @@ def run_weekly_release(
                     run_id=run_id,
                 )
 
+            candidate_comparison = (
+                settings.candidate_comparison_path.read_bytes()
+                if settings.contract == "v5"
+                else None
+            )
+
             remote = _git_preflight(settings)
             if remote.data_as_of > target:
                 raise AutomationError("remote publication is ahead of the due cutoff")
             if remote.data_as_of == target:
                 if remote.payload_bytes != candidate:
                     candidate = remote.payload_bytes
+                candidate_comparison = remote.comparison_bytes
                 commit_sha = remote.head_sha
             else:
                 _write_status(
@@ -1735,6 +2065,7 @@ def run_weekly_release(
                 commit_sha = _publish_candidate(
                     settings,
                     candidate=candidate,
+                    comparison=candidate_comparison,
                     target=target,
                     expected_head_sha=remote.head_sha,
                 )
@@ -1752,6 +2083,7 @@ def run_weekly_release(
             _wait_for_public_readback(
                 settings,
                 expected_payload=candidate,
+                expected_comparison=candidate_comparison,
                 heartbeat=lambda: _heartbeat_status(
                     settings, stage="wait_for_pages"
                 ),

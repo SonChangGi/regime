@@ -3,7 +3,7 @@
 미국 증시의 **현재 주간 국면**과 **다음 주 국면 확률**을 point-in-time
 정보로 산출하고, 날짜를 선택해 결과를 탐색하는 로컬 연구 프로젝트입니다.
 실제 투자 주문·자산배분 백테스트는 범위에 포함하지 않습니다. 공개 페이지는
-로컬 live v4 분석에서 생성한 개인·비상업 파생 결과 스냅샷을 제공합니다.
+검토를 마친 live v5 개인·비상업 파생 결과 스냅샷을 제공합니다.
 
 ## 무엇을 보여주나
 
@@ -18,9 +18,86 @@
 대시보드는 Python 결과를 다시 계산하지 않습니다. Python 파이프라인이
 `web/data/regime-results.json`을 만들고, dependency-free 정적 웹 앱이 그
 계약을 읽습니다. GitHub Pages는 원자료나 DB가 아니라 별도로 검증된
-`publication/live/regime-results.json`과 정적 자산 allowlist만 배포합니다.
+`publication/live/regime-results.json`, hash-bound V5/V4 비교 sidecar와 정적 자산
+allowlist만 배포합니다.
 
 공개 live 파생 결과: [sonchanggi.github.io/regime](https://sonchanggi.github.io/regime/)
+
+## v5 운영·연구 계약
+
+주간 자동화와 공개 계약은 v5다. 수동 `build`·`demo` CLI 기본값은 V4 재현을 위해
+유지하며, raw V5 후보 생성은 `--contract v5`를 명시해야 한다. 첫 실제 표준 실행의
+matched OOS 검토에서 Markov는
+frozen v4 Markov와 정확히 일치해 champion을 유지했다. 다중 기억 앙상블과 FX
+ablation은 사전등록 gate를 통과하지 못해 core 예측에 승격하지 않았다. 공개
+payload에는 검토 결정을 기록하고, 비교 결과는 파생값 전용 sidecar로 함께 배포한다.
+
+```bash
+.venv/bin/regime-lab demo --contract v5 \
+  --output build/v5-demo/regime-results.json \
+  --artifacts build/v5-demo/artifacts
+# 권리 확인과 Keychain 설정을 마친 live build에도 --contract v5를 명시
+.venv/bin/regime-lab build --contract v5 --alfred-rights-confirmed \
+  --output build/v5-live/regime-results.json \
+  --artifacts build/v5-live/artifacts
+```
+
+H.10 prospective history는 모델 학습과 분리해 가볍게 축적할 수 있다. 이 명령은
+`--contract v5`를 반드시 요구하고 live build와 같은 DB lock을 사용한다. H.10
+private snapshot DB와 파생 상태 receipt만 갱신하며 공개 payload·artifacts·자동화
+health와 V5 모델 결과는 변경하지 않는다.
+
+```bash
+.venv/bin/regime-lab collect-h10 --contract v5
+# 기본 receipt: build/v5-h10/collection-receipt.json
+# 필요할 때만 명시적인 model cutoff와 격리된 receipt 경로를 지정
+.venv/bin/regime-lab collect-h10 --contract v5 \
+  --as-of 2026-08-21T20:00:00+00:00 \
+  --receipt build/v5-h10/collection-receipt.json
+
+# 공식 release archive 민감도 bootstrap/증분 갱신
+.venv/bin/regime-lab collect-h10 --contract v5 \
+  --official-release-archive-ingest \
+  --archive-start 2022-01-01 \
+  --archive-through 2026-08-21 \
+  --as-of 2026-08-21T20:00:00+00:00
+# 기본 receipt: build/v5-h10/archive-collection-receipt.json
+```
+
+월요일 H.10 공개 이후 매주 한 번 실행하면 실제 first-seen 기준 표본이 누적된다.
+Receipt에는 원자료 없이 snapshot 증감, source/FX 상태, last-good 사용 여부,
+156주 공통표본 readiness와 archive의 파생 lineage 개수·정책·인덱스 SHA-256만
+기록한다. Archive 명령은 공식 JSON 인덱스를 매회 검증하고 새 release event만
+가져오며, 중단된 page는 비공개 DB cache에서 재개한다. 기존 DB도 zero-delta
+refresh에서 관측값을 다시 쓰지 않고 cache 기반 lineage provenance를 승격한다.
+스케줄 설치는 별도 opt-in 작업이다.
+
+실제 profile·표본 상한·bootstrap 횟수와 사전등록 override는
+`model.execution_parameters`에 SHA-256으로 결속한다. quick 데모의 199회와
+standard/full의 1,999회를 같은 실행으로 오인하지 않는다.
+
+v5는 현재 hard state에 대한 `membership`과 다음 주 `forecast probability`를
+분리한다. 1·4·13주 방향성 위험은 horizon 끝 상태가 아니라 **처음 현재 상태를
+떠날 때 도착하는 상태**를 예측하며, 기존 any-departure 확률과 합계가 일치한다.
+현재 spell은 우측 검열해 상태별 Kaplan–Meier 조건부 생존율과 52주 제한
+평균 잔여기간(RMST)을 산출한다.
+
+Federal Reserve H.10의 Broad·AFE·EME 달러 지수와 고정 9개 통화쌍을
+`양수 = USD 강세`로 정규화한다. 최초 수집 이전의 공개시점을 소급 복원하지 않고,
+관측·수정값은 실제 `first_seen` 이후 origin에만 투입한다. FX는 v4 control,
+Broad 추가, bilateral 추가, 전체 FX 추가의 네 shadow ablation은 공통 156주가
+쌓인 뒤 9/9 pair, 104주 expanding 학습, 1주 target purge, 고정 L2 multinomial
+logistic으로 동일 origin에서 평가한다. 화면용 context의 6/9 기준과 모델 평가의
+9/9 기준은 다르다. gate 통과도 자동 승격하지 않고 별도 승격 심사를 거친다.
+평가 행은 원 FX 값 없이 `fx-ablation-oos.csv`에 남겨 metric과 gate를 재검산한다.
+국면별 자산 통계는 state `t`를
+관측한 뒤 `t+1`부터 측정하는 설명 통계이며 매매·배분 신호가 아니다.
+
+세부 계약은 [v5 사전등록](docs/structural-v5-preregistration.md),
+[V5 공개 결정](docs/v5-release-decision.md), [방법론](docs/methodology.md),
+[피처 카탈로그](docs/feature-catalog.md),
+[연구 참고문헌](docs/references.md)에 고정한다. 공개물에는 파생 결과와 상태만
+포함하며 H.10 원자료·로컬 DB·provider payload는 포함하지 않는다.
 
 ## 빠른 실행: 격리된 연구용 데모
 
@@ -48,21 +125,52 @@ brew install libomp
 ## 공개 live 파생 결과 갱신
 
 `web/data/regime-results.json`, `artifacts/latest/`, SQLite와 provider raw/cache는
-계속 로컬 전용입니다. 공개 갱신 시 검증이 끝난 live JSON만
-`publication/live/regime-results.json`으로 복사하고 다음 패키징 계약을 확인합니다.
+계속 로컬 전용입니다. 공개 갱신 시 검토 완료 payload와 그 bytes에 결속된 비교
+sidecar를 `publication/live/`에 함께 반영하고 다음 패키징 계약을 확인합니다.
+
+수동 검토는 raw V5의 validate·독립 audit, frozen V4 matched comparison,
+`promote_v5_publication.py`, 검토 완료 bytes에 대한 comparison 재생성, 재검증 순서로
+수행합니다. 원본 candidate·artifact를 공개 디렉터리에 직접 복사하지 않습니다.
+
+```bash
+.venv/bin/regime-lab validate build/v5-live/regime-results.json
+.venv/bin/python scripts/audit_outputs.py \
+  --payload build/v5-live/regime-results.json \
+  --artifacts build/v5-live/artifacts --mode live
+.venv/bin/python scripts/compare_v5_to_frozen_v4.py \
+  --v5-artifacts build/v5-live/artifacts \
+  --v5-payload build/v5-live/regime-results.json \
+  --v4-artifacts artifacts/baselines/v4-20260821 \
+  --output build/v5-live/v5-vs-v4-comparison.json
+.venv/bin/python scripts/promote_v5_publication.py \
+  --candidate build/v5-live/regime-results.json \
+  --comparison build/v5-live/v5-vs-v4-comparison.json \
+  --output build/v5-release/regime-results.json
+.venv/bin/python scripts/compare_v5_to_frozen_v4.py \
+  --v5-artifacts build/v5-live/artifacts \
+  --v5-payload build/v5-release/regime-results.json \
+  --v4-artifacts artifacts/baselines/v4-20260821 \
+  --output build/v5-release/v5-vs-v4-comparison.json
+.venv/bin/regime-lab validate build/v5-release/regime-results.json
+.venv/bin/python scripts/audit_outputs.py \
+  --payload build/v5-release/regime-results.json \
+  --artifacts build/v5-live/artifacts --mode live
+```
 
 ```bash
 .venv/bin/python scripts/package_public_demo.py \
   --payload publication/live/regime-results.json \
+  --comparison publication/live/v5-vs-v4-comparison.json \
   --publication-mode live-derived \
   --acknowledge-personal-noncommercial-publication \
   --output dist/public-dashboard
 .venv/bin/python scripts/verify_public_package.py dist/public-dashboard
 ```
 
-패키지는 `index.html`, `styles.css`, `app.js`, 파생 결과 JSON, manifest만 포함합니다.
-live v4·최소 52주·정확한 source 이용범위·금지된 원자료 필드·credential 패턴·파일
-inventory·해시를 모두 검사하며, DB·원관측치·모델 artifact는 복사하지 않습니다.
+패키지는 `index.html`, `styles.css`, `app.js`, 파생 결과 JSON, V5/V4 비교 sidecar,
+manifest만 포함합니다. 검토 완료 V5 표식·최소 52주·정확한 source 이용범위·V4
+Markov exact parity·금지된 원자료 필드·credential 패턴·파일 inventory·해시를 모두
+검사하며, DB·원관측치·모델 artifact는 복사하지 않습니다.
 `main`의 Pages workflow도 API를 호출하지 않고 이 공개 스냅샷만 재검증해
 `https://sonchanggi.github.io/regime/`에 배포합니다.
 
@@ -109,21 +217,22 @@ operator override는 transient 시간 지연만 건너뛰며 quota와 blocked ga
    rolling-24h ledger에 들어갈 수 있는지 예약 없이 먼저 확인하고, 실제 collector가
    다시 하나의 transaction으로 원자 예약합니다. Alpha는 120초 timeout·최대 3회,
    ALFRED는 60초 timeout·최대 4회로 제한합니다.
-3. Alpha/ALFRED 전체 pass가 exact cutoff와 source health gate를 통과한 경우에만
-   분석을 시작합니다. ALFRED 정상 series는 같은 cutoff에서 재사용하고 실패 series만
-   재요청합니다. provider가 degraded이거나 수집 후 AC 전원이 분리되면 분석 전에
-   중단하고 secret-free receipt와 다음 재시도 시각을 남깁니다.
-4. 수동 build 경로와 분리된 `build/weekly-automation/generation/`에서 `standard`
+3. V5 build가 같은 DB lock 아래 H.10 prospective snapshot을 한 번 갱신합니다.
+   Alpha/ALFRED/H.10 전체 pass가 exact cutoff와 source health gate를 통과한 경우에만
+   분석을 시작합니다. provider가 degraded이거나 수집 후 AC 전원이 분리되면 분석
+   전에 중단하고 secret-free receipt와 다음 재시도 시각을 남깁니다.
+4. 수동 build 경로와 분리된 `build/weekly-automation/generation-v5/`에서 `standard`
    live build를 수행한 뒤 SQLite `quick_check`, payload validation,
-   `audit_outputs.py --mode live`, 공개 package verifier를 통과시킵니다.
-5. 정확한 cutoff, Alpha/ALFRED `ok`, 최신 주 `ok`, Alpha coverage, forecast fallback
-   부재를 확인합니다. `weak_generalization`만 원인인 전역 `degraded`는 경고를
-   보존한 채 허용하지만 provider degradation은 자동 공개하지 않습니다.
+   `audit_outputs.py --mode live`, frozen V4 matched comparison을 통과시킵니다. 검토
+   gate가 유지될 때만 별도 promotion 단계가 공개 표식을 추가합니다.
+5. 정확한 cutoff, 세 source `ok`, 최신 주 `ok`, Alpha coverage, forecast fallback
+   부재를 확인합니다. 허용된 모델 진단 경고는 그대로 공개하되 provider degradation은
+   자동 공개하지 않습니다.
 6. 사용자 working tree와 분리된 임시 checkout에서 preflight로 고정한 원격 SHA와
    publication 경로의 regular-file 상태를 다시 확인한 뒤
-   `publication/live/regime-results.json` 한 파일만 commit/push합니다. 기존 Pages
+   `publication/live/regime-results.json`과 검증된 비교 sidecar를 함께 commit/push합니다. Pages
    workflow는 배포 직전 `main` SHA가 자기 커밋과 같은지 확인합니다. 완료 후 public
-   JSON·manifest SHA-256·`dataAsOf`·HTML을 다시 읽습니다. 불일치하면 같은 검증
+   payload·comparison bytes, manifest SHA-256·`dataAsOf`·HTML을 다시 읽습니다. 불일치하면 같은 검증
    snapshot을 유지하는 빈 복구 commit을 원격 HEAD 고정 하에 push하여 Pages를 다시
    시작하고, 공개 파일이 정확히 일치할 때까지 기다립니다. GitHub CLI token에는
    의존하지 않습니다.
@@ -168,13 +277,15 @@ failed health, stale heartbeat를 운영 정상으로 오인하지 않습니다.
 `license_blocked`로 종료합니다. 공식 약관은 실행 직전에 다시 확인하세요:
 [FRED Terms](https://fred.stlouisfed.org/legal/terms/),
 [FRED API Terms](https://fred.stlouisfed.org/docs/api/terms_of_use.html),
-[Alpha Vantage Terms](https://www.alphavantage.co/terms_of_service/).
+[Alpha Vantage Terms](https://www.alphavantage.co/terms_of_service/),
+[Federal Reserve H.10](https://www.federalreserve.gov/releases/h10/).
 
 현재 공개 범위는 사용자가 확인한 개인·비상업 목적의 대시보드 파생 결과입니다.
 Alpha Vantage 원시 시계열은 공개하지 않으며, ALFRED는 사용자가 확인한 저장·ML·
 파생결과 범위와 각 series의 표시 조건을 전제로 합니다. 이 확인은 상업 이용이나
-원자료 재배포 권리로 확대되지 않습니다. 공개 앱에는 다음 FRED 고지와 공식 약관
-링크를 유지합니다.
+원자료 재배포 권리로 확대되지 않습니다. Federal Reserve H.10은 공식 공개 자료로
+출처 링크를 유지하되 XML·관측행은 공개하지 않습니다. 공개 앱에는 다음 FRED 고지와
+공식 약관 링크를 유지합니다.
 
 > This product uses the FRED® API but is not endorsed or certified by the Federal Reserve Bank of St. Louis.
 
@@ -281,7 +392,9 @@ extra trees, histogram gradient boosting, shallow regularized XGBoost를 같은
 feature와 expanding walk-forward split으로 비교합니다. Gaussian HMM은 `full`
 프로필에서만 추가합니다. v4는 사전등록한 `xgb_hazard_destination`과
 `causal_dynamic_ensemble`을 더해 standard 16개, full 17개를 같은
-walk-forward gate에서 비교합니다. Deep learning은 현재 범위에서 제외하며,
+walk-forward gate에서 비교합니다. V5 standard는
+`causal_multiscale_ensemble`을 추가한 17개이며, 실제 검토에서는 Markov가
+champion을 유지했습니다. V5 full은 Gaussian HMM을 더한 18개입니다. Deep learning은 현재 범위에서 제외하며,
 HMM의 full-sample smoothed path는 label이나 실시간 판정에 쓰지 않습니다.
 
 2023년 이전의 이용 가능한 OOS origin 전체만으로 provisional champion을
@@ -323,7 +436,7 @@ next-state 기간 역할은 `retrospective_external_period_diagnostic`으로 유
 filter를 **shadow nowcast**로 병기하지만, 이는 민감도 점검일 뿐 canonical 3국면
 label이나 다음 주 정답을 바꾸지 않습니다.
 
-v4 build는 payload와 모든 supporting artifact를 비공개 sibling transaction
+각 build는 payload와 모든 supporting artifact를 비공개 sibling transaction
 directory에 먼저 완성합니다. 기존 payload와 artifact를 함께 recovery 위치로
 옮긴 뒤 새 generation을 승격하며, 실패하면 둘 다 이전 generation으로
 rollback합니다. 핵심 추가 artifact는 다음과 같습니다.
@@ -344,6 +457,17 @@ rollback합니다. 핵심 추가 artifact는 다음과 같습니다.
 - `joint-survival-forecasts.csv`
 - `state-label-history.csv`
 - `weekly-state-forecasts.csv`
+- `multiscale-ensemble-scales.csv`
+- `directional-oos-predictions.csv`
+- `directional-model-leaderboard.csv`
+- `directional-walk-forward-splits.csv`
+- `directional-selection-diagnostics.csv`
+- `directional-forecasts.csv`
+- `conditional-asset-outcomes.csv`
+- `conditional-asset-statistics.csv`
+- `fx-features.csv`
+- `fx-coverage.csv`
+- `fx-ablation-oos.csv`
 
 v2 비교 기준은 로컬 ignored snapshot으로 고정했습니다. payload SHA-256은
 `50ab693b15f5100b1e39d98356c88455b76a4a2c4a4c335e5882509568c5fe98`,

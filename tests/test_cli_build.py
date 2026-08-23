@@ -5,12 +5,14 @@ from datetime import datetime, timezone
 import json
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
 from regime_lab import cli
 from regime_lab.automation import automation_lock
 from regime_lab.collection import LiveCollection
 from regime_lab.data import HealthStatus
+from regime_lab.v5_preflight import V5PreflightError
 
 
 TARGET = datetime(2026, 8, 14, 20, tzinfo=timezone.utc)
@@ -251,3 +253,308 @@ def test_database_lock_collision_writes_transient_collection_receipt(
     assert receipt["ready_for_training"] is False
     assert receipt["error_code"] == "database_build_lock_busy"
     assert receipt["expected_cutoff"] == TARGET.isoformat()
+
+
+def test_v5_preflight_stops_before_provider_access(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "regime.sqlite3"
+    monkeypatch.setattr(cli, "load_config", lambda _path: {})
+    monkeypatch.setattr(cli, "_mutable_path", lambda value, **_kwargs: Path(value))
+    monkeypatch.setattr(
+        cli,
+        "verify_v5_preflight",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            V5PreflightError("frozen baseline mismatch")
+        ),
+    )
+    monkeypatch.setattr(
+        cli,
+        "collect_live_data",
+        lambda *_args, **_kwargs: pytest.fail(
+            "v5 preflight must fail before provider collection"
+        ),
+    )
+    args = argparse.Namespace(
+        alfred_rights_confirmed=True,
+        profile="standard",
+        contract="v5",
+        config=tmp_path / "series.json",
+        database=database,
+        output=tmp_path / "result.json",
+        artifacts=tmp_path / "artifacts",
+        from_env=True,
+        expected_cutoff=TARGET,
+        collection_report=None,
+        require_ac_power=False,
+    )
+
+    with pytest.raises(V5PreflightError, match="frozen baseline mismatch"):
+        cli.command_build(args)
+
+
+def test_v5_live_build_forwards_preflight_fingerprint_and_private_checkpoint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import regime_lab.data as data_module
+    import regime_lab.h10_store as h10_store_module
+
+    class BuildIntercept(RuntimeError):
+        pass
+
+    class DummyStore:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args) -> None:
+            return None
+
+    database = tmp_path / "regime.sqlite3"
+    output = tmp_path / "v5-live" / "regime-results.json"
+    artifacts = tmp_path / "v5-live" / "artifacts"
+    report = tmp_path / "collection-report.json"
+    captured: dict[str, object] = {}
+    source_fingerprint = "c" * 64
+    monkeypatch.setattr(
+        cli,
+        "load_config",
+        lambda _path: {"model": {"final_holdout_start": "2023-01-01"}},
+    )
+    monkeypatch.setattr(cli, "_mutable_path", lambda value, **_kwargs: Path(value))
+    monkeypatch.setattr(
+        cli,
+        "verify_v5_preflight",
+        lambda **_kwargs: {"source_fingerprint_sha256": source_fingerprint},
+    )
+    monkeypatch.setattr(
+        cli,
+        "collect_live_data",
+        lambda *_args, **_kwargs: _ready_collection(database),
+    )
+    monkeypatch.setattr(
+        cli,
+        "build_weekly_dataset",
+        lambda *_args, **_kwargs: argparse.Namespace(
+            features=pd.DataFrame(
+                [[0.0, 1.0]] * 700,
+                columns=["one", "two"],
+            )
+        ),
+    )
+    monkeypatch.setattr(data_module, "SQLiteSnapshotStore", DummyStore)
+
+    def refresh_h10(*_args, **_kwargs):
+        pending = json.loads(report.read_text(encoding="utf-8"))
+        assert pending["ready_for_training"] is False
+        assert pending["overall_health"] == "pending"
+        assert pending["sources"][-1] == {
+            "id": "frb_h10",
+            "name": "Federal Reserve H.10 foreign exchange rates",
+            "status": "pending",
+            "issues": [],
+        }
+        return argparse.Namespace(
+            fx_features=None,
+            fx_context=None,
+            source_row={"id": "frb_h10", "status": "ok", "issues": []},
+        )
+
+    monkeypatch.setattr(
+        h10_store_module,
+        "refresh_h10_store",
+        refresh_h10,
+    )
+
+    def intercept(*_args, **kwargs):
+        captured.update(kwargs)
+        raise BuildIntercept
+
+    monkeypatch.setattr(cli, "build_dashboard_result", intercept)
+    args = argparse.Namespace(
+        alfred_rights_confirmed=True,
+        profile="standard",
+        contract="v5",
+        config=tmp_path / "series.json",
+        database=database,
+        output=output,
+        artifacts=artifacts,
+        checkpoint_directory=None,
+        from_env=True,
+        expected_cutoff=TARGET,
+        collection_report=report,
+        require_ac_power=False,
+    )
+
+    with pytest.raises(BuildIntercept):
+        cli.command_build(args)
+
+    assert captured["checkpoint_directory"] == (
+        output.parent / ".private-checkpoints" / "base-walk-forward"
+    )
+    assert captured["source_fingerprint_sha256"] == source_fingerprint
+    receipt = json.loads(report.read_text(encoding="utf-8"))
+    assert receipt["ready_for_training"] is True
+    assert receipt["gate_error"] is None
+    assert [source["id"] for source in receipt["sources"]] == [
+        "alpha_vantage",
+        "alfred",
+        "frb_h10",
+    ]
+    assert receipt["sources"][-1]["status"] == "ok"
+    assert receipt["sources"][-1]["issues"] == []
+
+
+def test_v5_h10_degradation_updates_report_and_stops_before_analysis(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import regime_lab.data as data_module
+    import regime_lab.h10_store as h10_store_module
+
+    class DummyStore:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args) -> None:
+            return None
+
+    database = tmp_path / "regime.sqlite3"
+    report = tmp_path / "collection-report.json"
+    monkeypatch.setattr(cli, "load_config", lambda _path: {})
+    monkeypatch.setattr(cli, "_mutable_path", lambda value, **_kwargs: Path(value))
+    monkeypatch.setattr(
+        cli,
+        "verify_v5_preflight",
+        lambda **_kwargs: {"source_fingerprint_sha256": "d" * 64},
+    )
+    monkeypatch.setattr(
+        cli,
+        "collect_live_data",
+        lambda *_args, **_kwargs: _ready_collection(database),
+    )
+    monkeypatch.setattr(data_module, "SQLiteSnapshotStore", DummyStore)
+    monkeypatch.setattr(
+        h10_store_module,
+        "refresh_h10_store",
+        lambda *_args, **_kwargs: argparse.Namespace(
+            fx_features=None,
+            fx_context=None,
+            source_row={
+                "id": "frb_h10",
+                "status": "degraded",
+                "issues": ["h10_collection_failed_last_good_retained"],
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        cli,
+        "build_weekly_dataset",
+        lambda *_args, **_kwargs: pytest.fail("analysis must not start"),
+    )
+    monkeypatch.setattr(
+        cli,
+        "build_dashboard_result",
+        lambda *_args, **_kwargs: pytest.fail("model training must not start"),
+    )
+    args = argparse.Namespace(
+        alfred_rights_confirmed=True,
+        profile="standard",
+        contract="v5",
+        config=tmp_path / "series.json",
+        database=database,
+        output=tmp_path / "result.json",
+        artifacts=tmp_path / "artifacts",
+        checkpoint_directory=None,
+        from_env=True,
+        expected_cutoff=TARGET,
+        collection_report=report,
+        require_ac_power=False,
+    )
+
+    with pytest.raises(SystemExit, match="frb_h10 source health is not ok"):
+        cli.command_build(args)
+
+    receipt = json.loads(report.read_text(encoding="utf-8"))
+    assert receipt["ready_for_training"] is False
+    assert receipt["overall_health"] == "degraded"
+    assert receipt["gate_error"] == "frb_h10 source health is not ok"
+    assert receipt["sources"][-1]["status"] == "degraded"
+    assert receipt["issues"] == ["h10_collection_failed_last_good_retained"]
+
+
+def test_v5_h10_exception_records_unavailable_before_propagating(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import regime_lab.data as data_module
+    import regime_lab.h10_store as h10_store_module
+
+    class DummyStore:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args) -> None:
+            return None
+
+    database = tmp_path / "regime.sqlite3"
+    report = tmp_path / "collection-report.json"
+    monkeypatch.setattr(cli, "load_config", lambda _path: {})
+    monkeypatch.setattr(cli, "_mutable_path", lambda value, **_kwargs: Path(value))
+    monkeypatch.setattr(
+        cli,
+        "verify_v5_preflight",
+        lambda **_kwargs: {"source_fingerprint_sha256": "e" * 64},
+    )
+    monkeypatch.setattr(
+        cli,
+        "collect_live_data",
+        lambda *_args, **_kwargs: _ready_collection(database),
+    )
+    monkeypatch.setattr(data_module, "SQLiteSnapshotStore", DummyStore)
+
+    def fail_refresh(*_args, **_kwargs):
+        raise RuntimeError("H.10 endpoint unavailable")
+
+    monkeypatch.setattr(h10_store_module, "refresh_h10_store", fail_refresh)
+    monkeypatch.setattr(
+        cli,
+        "build_weekly_dataset",
+        lambda *_args, **_kwargs: pytest.fail("analysis must not start"),
+    )
+    args = argparse.Namespace(
+        alfred_rights_confirmed=True,
+        profile="standard",
+        contract="v5",
+        config=tmp_path / "series.json",
+        database=database,
+        output=tmp_path / "result.json",
+        artifacts=tmp_path / "artifacts",
+        checkpoint_directory=None,
+        from_env=True,
+        expected_cutoff=TARGET,
+        collection_report=report,
+        require_ac_power=False,
+    )
+
+    with pytest.raises(RuntimeError, match="H.10 endpoint unavailable"):
+        cli.command_build(args)
+
+    receipt = json.loads(report.read_text(encoding="utf-8"))
+    assert receipt["ready_for_training"] is False
+    assert receipt["overall_health"] == "degraded"
+    assert receipt["gate_error"] == "frb_h10 refresh failed before training"
+    assert receipt["sources"][-1]["status"] == "unavailable"
+    assert receipt["sources"][-1]["issues"] == [
+        "h10_refresh_failed_before_training"
+    ]

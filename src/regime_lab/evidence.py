@@ -41,6 +41,35 @@ WEEKLY_STATE_FORECAST_COLUMNS: tuple[str, ...] = (
     "fallback_reason",
 )
 
+STATE_MEMBERSHIP_HISTORY_COLUMNS: tuple[str, ...] = (
+    "date",
+    "state",
+    "m_risk_on",
+    "m_transition",
+    "m_risk_off",
+    "risk_score",
+    "lower_threshold",
+    "upper_threshold",
+    "hysteresis_margin",
+    "previous_state",
+    "membership_temperature",
+)
+
+WEEKLY_STATE_FORECAST_V5_COLUMNS: tuple[str, ...] = (
+    "origin_date",
+    "current_state",
+    "current_m_risk_on",
+    "current_m_transition",
+    "current_m_risk_off",
+    "target_date",
+    "model",
+    "next_p_risk_on",
+    "next_p_transition",
+    "next_p_risk_off",
+    "fallback",
+    "fallback_reason",
+)
+
 
 def canonical_evidence_csv_bytes(
     frame: pd.DataFrame,
@@ -163,11 +192,68 @@ def weekly_state_forecasts(
     return pd.DataFrame(rows, columns=WEEKLY_STATE_FORECAST_COLUMNS)
 
 
+def state_membership_history(label_history: pd.DataFrame) -> pd.DataFrame:
+    """Relabel v4 anchor evidence as memberships without changing its values."""
+
+    if tuple(label_history.columns) != STATE_LABEL_HISTORY_COLUMNS:
+        raise ValueError("label_history does not match the v4 evidence contract")
+    return label_history.rename(
+        columns={
+            "p_risk_on": "m_risk_on",
+            "p_transition": "m_transition",
+            "p_risk_off": "m_risk_off",
+            "probability_temperature": "membership_temperature",
+        }
+    ).loc[:, STATE_MEMBERSHIP_HISTORY_COLUMNS]
+
+
+def weekly_state_forecasts_v5(
+    weekly: Sequence[Mapping[str, Any]],
+) -> pd.DataFrame:
+    """Serialize v5 current memberships and next-week forecast probabilities."""
+
+    rows: list[dict[str, Any]] = []
+    for position, week in enumerate(weekly):
+        current = week.get("current")
+        next_week = week.get("next_week")
+        if not isinstance(current, Mapping) or not isinstance(next_week, Mapping):
+            raise ValueError(f"weekly[{position}] lacks current/next estimates")
+        memberships = current.get("memberships")
+        probabilities = next_week.get("probabilities")
+        if not isinstance(memberships, Mapping) or not isinstance(
+            probabilities, Mapping
+        ):
+            raise ValueError(f"weekly[{position}] lacks membership/forecast mappings")
+        rows.append(
+            {
+                "origin_date": str(week["data_as_of"]),
+                "current_state": str(current["state"]),
+                **{
+                    f"current_m_{state}": float(memberships[state])
+                    for state in STATE_ORDER
+                },
+                "target_date": str(next_week["date"]),
+                "model": str(next_week["model"]),
+                **{
+                    f"next_p_{state}": float(probabilities[state])
+                    for state in STATE_ORDER
+                },
+                "fallback": bool(next_week["fallback"]),
+                "fallback_reason": str(next_week["fallback_reason"]),
+            }
+        )
+    return pd.DataFrame(rows, columns=WEEKLY_STATE_FORECAST_V5_COLUMNS)
+
+
 __all__ = [
     "STATE_LABEL_HISTORY_COLUMNS",
+    "STATE_MEMBERSHIP_HISTORY_COLUMNS",
     "WEEKLY_STATE_FORECAST_COLUMNS",
+    "WEEKLY_STATE_FORECAST_V5_COLUMNS",
     "canonical_evidence_csv_bytes",
     "evidence_csv_sha256",
     "state_label_history",
+    "state_membership_history",
     "weekly_state_forecasts",
+    "weekly_state_forecasts_v5",
 ]

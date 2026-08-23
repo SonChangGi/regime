@@ -2,6 +2,7 @@
   "use strict";
 
   const DATA_URL = "./data/regime-results.json";
+  const V5_COMPARISON_URL = "./data/v5-vs-v4-comparison.json";
   const SVG_NS = "http://www.w3.org/2000/svg";
   const THEME_STORAGE_KEY = "quant-research-theme";
   const LEGACY_THEME_STORAGE_KEYS = Object.freeze(["regime-dashboard-theme"]);
@@ -14,6 +15,96 @@
   const V4_MODEL_VERSION = "weekly-nondl-structural-v4";
   const V4_LABEL_VERSION = "market-causal-3state-v1";
   const V4_FEATURE_SET_VERSION = "weekly-pit-structural-v4";
+  const V5_RESULT_VERSION = "weekly-regime-result-v5";
+  const V5_SCHEMA_VERSION = "2.0.0";
+  const V5_MODEL_VERSION = "weekly-nondl-structural-v5";
+  const V5_LABEL_VERSION = "market-causal-3state-v1";
+  const V5_FEATURE_SET_VERSION = "weekly-pit-structural-v5";
+  const V5_PUBLICATION_STATUS = "reviewed_publication";
+  const V5_PUBLICATION_REVIEW_SCHEMA = "regime-v5-publication-review/1";
+  const OUTCOME_ASSETS = Object.freeze(["SPY", "QQQ", "IWM", "TLT", "HYG", "UUP"]);
+  const FX_BILATERAL_PANEL = Object.freeze(["EUR", "JPY", "GBP", "CHF", "CAD", "AUD", "CNY", "MXN", "BRL"]);
+  const FX_ABLATION_VARIANTS = Object.freeze([
+    "v4_control",
+    "v4_plus_broad_index",
+    "v4_plus_bilateral_panel",
+    "v4_plus_all_fx",
+  ]);
+  const V5_SOURCE_LICENSES = Object.freeze({
+    demo: Object.freeze({
+      synthetic_market: "synthetic_fixture",
+      synthetic_macro: "synthetic_fixture",
+    }),
+    live: Object.freeze({
+      alpha_vantage: "private_noncommercial",
+      alfred: "user_confirmed_ml_storage_derived",
+      frb_h10: "federal_reserve_board_public_domain_citation_requested",
+    }),
+  });
+  const V5_SOURCE_STATUSES = Object.freeze([
+    "ok",
+    "stale",
+    "degraded",
+    "quota_exhausted",
+    "schema_changed",
+    "revision_gap",
+    "rights_unconfirmed",
+    "license_blocked",
+    "unavailable",
+  ]);
+  const FX_STATUS_LABELS = Object.freeze({
+    ok: "정상",
+    partial: "부분 가용",
+    degraded: "최근 정상값",
+    stale: "지연",
+    insufficient_history: "표본 축적 중",
+    unavailable: "사용 불가",
+    evaluated: "완료",
+  });
+  const MODEL_HEALTH_REASON_LABELS = Object.freeze({
+    weak_generalization: "일반화 약화",
+    calibration_drift: "보정 드리프트",
+  });
+  const V5_RESEARCH_ARTIFACT_PATHS = Object.freeze({
+    directional_oos_predictions: "directional-oos-predictions.csv",
+    directional_model_leaderboard: "directional-model-leaderboard.csv",
+    directional_walk_forward_splits: "directional-walk-forward-splits.csv",
+    directional_selection_diagnostics: "directional-selection-diagnostics.csv",
+    directional_forecasts: "directional-forecasts.csv",
+    conditional_asset_outcomes: "conditional-asset-outcomes.csv",
+    conditional_asset_statistics: "conditional-asset-statistics.csv",
+    fx_features: "fx-features.csv",
+    fx_coverage: "fx-coverage.csv",
+    fx_ablation_oos: "fx-ablation-oos.csv",
+  });
+  const V5_REQUIRED_RESEARCH_ARTIFACTS = Object.freeze([
+    "directional_oos_predictions",
+    "directional_model_leaderboard",
+    "directional_walk_forward_splits",
+    "directional_selection_diagnostics",
+    "directional_forecasts",
+    "conditional_asset_outcomes",
+    "conditional_asset_statistics",
+  ]);
+  const V5_CORE_ARTIFACT_PATHS = Object.freeze({
+    oos_predictions: "oos-predictions.csv",
+    model_leaderboard: "model-leaderboard.csv",
+    walk_forward_splits: "walk-forward-splits.csv",
+    selection_diagnostics: "selection-diagnostics.csv",
+    stacking_weights: "stacking-weights.csv",
+    multiscale_ensemble_scales: "multiscale-ensemble-scales.csv",
+  });
+  const V5_STANDARD_CORE_MODELS = Object.freeze([
+    "majority", "persistence", "markov", "elastic_net_logistic",
+    "calibrated_linear_svm", "random_forest", "extra_trees",
+    "hist_gradient_boosting", "ridge_logistic", "transition_logistic",
+    "duration_tvtp_hurdle", "shrinkage_lda", "spline_logistic", "xgboost",
+    "xgb_hazard_destination", "causal_dynamic_ensemble",
+    "causal_multiscale_ensemble",
+  ]);
+  const V5_FX_RESEARCH_ARTIFACTS = Object.freeze([
+    "fx_features", "fx_coverage", "fx_ablation_oos",
+  ]);
   const FROZEN_V4_BASELINE_V3 = Object.freeze({
     result_version: V3_RESULT_VERSION,
     label_version: V3_LABEL_VERSION,
@@ -92,6 +183,7 @@
 
   const state = {
     raw: null,
+    comparisonSummary: null,
     weekly: [],
     selectedIndex: -1,
     historyWindow: 52,
@@ -101,6 +193,8 @@
     chartPinnedDate: null,
     chartPreviewDate: null,
     transitionHorizon: 1,
+    outcomeAsset: "SPY",
+    outcomeHorizon: 13,
   };
 
   const dom = {};
@@ -183,6 +277,144 @@
       return String(value);
     }
     return fallback;
+  }
+
+  function resultIdentity(payload) {
+    const meta = isObject(payload && payload.meta) ? payload.meta : {};
+    const model = isObject(payload && payload.model) ? payload.model : {};
+    const execution = isObject(model.execution_parameters) ? model.execution_parameters : {};
+    const mode = typeof meta.mode === "string" ? meta.mode.trim().toLowerCase() : "";
+    const rawProfile = firstValue(execution, ["profile"]) || firstValue(model, ["profile"]);
+    const normalizedProfile = typeof rawProfile === "string" ? rawProfile.trim().toLowerCase() : "";
+    const profile = ["quick", "standard", "full"].includes(normalizedProfile)
+      ? normalizedProfile.toUpperCase()
+      : null;
+
+    if (mode === "demo") {
+      return {
+        mode,
+        profile,
+        label: ["모의자료", profile, "파이프라인 검증"].filter(Boolean).join(" · "),
+      };
+    }
+    if (mode === "live") {
+      const labels = ["실데이터", profile].filter(Boolean);
+      if (meta.publication_status === V5_PUBLICATION_STATUS) {
+        labels.push("공개 검토 완료");
+      } else if (model.selection_status === "provisional_predeployment") {
+        labels.push("배포 전 잠정");
+      }
+      return {
+        mode,
+        profile,
+        label: labels.join(" · "),
+      };
+    }
+    return { mode: "unknown", profile, label: "결과 유형 확인 필요" };
+  }
+
+  function fxStatusLabel(status) {
+    return FX_STATUS_LABELS[status] || "확인 필요";
+  }
+
+  function modelHealthReasonLabels(reasons) {
+    return Array.isArray(reasons)
+      ? reasons.map((reason) => MODEL_HEALTH_REASON_LABELS[reason]).filter(Boolean)
+      : [];
+  }
+
+  function splitHasExactMarkovParity(split) {
+    if (!isObject(split) || !isObject(split.probability_parity)) return false;
+    const numeric = split.probability_parity.probability_numeric;
+    const tokens = split.probability_parity.probability_token_bytes;
+    const deltas = split.delta_left_minus_right;
+    return isObject(numeric)
+      && isObject(tokens)
+      && isObject(deltas)
+      && numeric.exact_float_parity === true
+      && numeric.maximum_absolute_difference === 0
+      && numeric.mismatch_rows === 0
+      && numeric.mismatch_values === 0
+      && tokens.exact_parity === true
+      && tokens.mismatch_rows === 0
+      && tokens.mismatch_values === 0
+      && ["log_loss", "brier", "balanced_accuracy", "fallback_rate"]
+        .every((metric) => deltas[metric] === 0);
+  }
+
+  function validateV5ComparisonSummary(report, payload, payloadSha256) {
+    if (!isObject(report) || !isObject(payload) || !isLowerSha256(payloadSha256)) return null;
+    if (
+      report.schema_version !== "regime-v5-v4-matched-comparison/1"
+      || report.report_role !== "derived_only_diagnostic_comparison"
+      || report.promotion_interpretation !== "prohibited"
+    ) return null;
+    const inputs = report.inputs;
+    const model = payload.model;
+    const baseline = isObject(model) ? model.baseline_v4 : null;
+    if (
+      !isObject(inputs)
+      || !isObject(inputs.v5)
+      || !isObject(inputs.v5.regime_results)
+      || inputs.v5.regime_results.sha256 !== payloadSha256
+      || !isObject(inputs.frozen_v4)
+      || !isObject(inputs.frozen_v4.sha256sums)
+      || !isObject(baseline)
+      || inputs.frozen_v4.sha256sums.sha256 !== baseline.artifacts_inventory_sha256
+    ) return null;
+    const comparison = report.v5_markov_vs_frozen_v4_markov;
+    if (!isObject(comparison) || !isObject(comparison.common_keys)) return null;
+    const commonKeys = strictFiniteNumber(comparison.common_keys.count);
+    const selection = comparison.primary_selection;
+    const holdout = comparison.post_selection_holdout;
+    const selectionKeys = isObject(selection) && isObject(selection.common_keys)
+      ? strictFiniteNumber(selection.common_keys.count)
+      : null;
+    const holdoutKeys = isObject(holdout) && isObject(holdout.common_keys)
+      ? strictFiniteNumber(holdout.common_keys.count)
+      : null;
+    if (
+      !Number.isInteger(commonKeys)
+      || commonKeys <= 0
+      || !Number.isInteger(selectionKeys)
+      || !Number.isInteger(holdoutKeys)
+      || selectionKeys + holdoutKeys !== commonKeys
+      || !splitHasExactMarkovParity(selection)
+      || !splitHasExactMarkovParity(holdout)
+    ) return null;
+    return Object.freeze({ commonKeys, selectionKeys, holdoutKeys, exactParity: true });
+  }
+
+  async function sha256Text(value) {
+    if (
+      typeof TextEncoder === "undefined"
+      || typeof globalThis === "undefined"
+      || !globalThis.crypto
+      || !globalThis.crypto.subtle
+    ) return null;
+    const digest = await globalThis.crypto.subtle.digest(
+      "SHA-256",
+      new TextEncoder().encode(value),
+    );
+    return [...new Uint8Array(digest)]
+      .map((byte) => byte.toString(16).padStart(2, "0"))
+      .join("");
+  }
+
+  async function loadV5ComparisonSummary(payload, payloadText) {
+    if (!isObject(payload.meta) || payload.meta.result_version !== V5_RESULT_VERSION) return null;
+    const payloadSha256 = await sha256Text(payloadText);
+    if (!payloadSha256) return null;
+    try {
+      const response = await fetch(V5_COMPARISON_URL, {
+        cache: "no-store",
+        headers: { Accept: "application/json" },
+      });
+      if (!response.ok) return null;
+      return validateV5ComparisonSummary(await response.json(), payload, payloadSha256);
+    } catch (_error) {
+      return null;
+    }
   }
 
   function createElement(tag, className, text) {
@@ -275,6 +507,21 @@
     }).format(date);
   }
 
+  function displayFreshness(dataAsOf, maximumAgeDays = 10, nowMilliseconds = Date.now()) {
+    const cutoff = Date.parse(dataAsOf);
+    const now = finiteNumber(nowMilliseconds);
+    const maximumAge = Number.isInteger(maximumAgeDays) && maximumAgeDays >= 0
+      ? maximumAgeDays
+      : 10;
+    if (!Number.isFinite(cutoff) || now === null) return null;
+    const ageDays = Math.max(0, Math.floor((now - cutoff) / 86400000));
+    return {
+      age_days: ageDays,
+      maximum_age_days: maximumAge,
+      status: ageDays <= maximumAge ? "current" : "stale",
+    };
+  }
+
   function humanizeKey(key) {
     return String(key)
       .replace(/_/g, " ")
@@ -342,6 +589,1028 @@
     element.replaceChildren(symbol, label);
   }
 
+  function validateStateVector(value, path, errors, noun) {
+    if (!isObject(value)) {
+      errors.push(`${path} ${noun} 객체가 없습니다.`);
+      return null;
+    }
+    if (!hasExactKeys(value, STATE_ORDER)) {
+      errors.push(`${path} ${noun} 키는 표준 세 상태와 정확히 일치해야 합니다.`);
+      return null;
+    }
+    let sum = 0;
+    let valid = true;
+    for (const code of STATE_ORDER) {
+      const resolved = strictProbability(value[code]);
+      if (resolved === null) {
+        errors.push(`${path}.${code} ${noun}가 0–1 범위의 숫자가 아닙니다.`);
+        valid = false;
+      } else {
+        sum += resolved;
+      }
+    }
+    if (valid && Math.abs(sum - 1) > 0.000001) errors.push(`${path} ${noun} 합계가 1이 아닙니다.`);
+    return valid ? value : null;
+  }
+
+  function validateOptionalFinite(value, path, errors, minimum = null, maximum = null) {
+    if (value === null || value === undefined) return;
+    const number = strictFiniteNumber(value);
+    if (
+      number === null
+      || (minimum !== null && number < minimum)
+      || (maximum !== null && number > maximum)
+    ) {
+      errors.push(`${path} 값이 허용 범위의 유한한 숫자 또는 null이 아닙니다.`);
+    }
+  }
+
+  function validateInteger(value, path, errors, minimum = 0) {
+    if (!Number.isInteger(value) || value < minimum) errors.push(`${path}는 ${minimum} 이상의 정수여야 합니다.`);
+  }
+
+  function isZonedIsoTimestamp(value) {
+    return typeof value === "string"
+      && /(?:Z|[+-]\d{2}:\d{2})$/.test(value)
+      && Number.isFinite(Date.parse(value));
+  }
+
+  function validateV5ModelContract(payload, errors) {
+    const { meta, model } = payload;
+    if (typeof meta.generation_id !== "string" || !meta.generation_id) errors.push("v5 meta.generation_id가 없습니다.");
+    if (!["demo", "live"].includes(meta.mode)) errors.push("v5 meta.mode는 demo 또는 live여야 합니다.");
+    if (!Array.isArray(meta.warnings) || meta.warnings.some((warning) => typeof warning !== "string" || !warning.trim())) {
+      errors.push("v5 meta.warnings는 비어 있지 않은 문자열만 포함하는 배열이어야 합니다.");
+    }
+    if (!isZonedIsoTimestamp(meta.generated_at) || !isZonedIsoTimestamp(meta.data_as_of)) {
+      errors.push("v5 meta.generated_at과 data_as_of는 timezone을 포함한 ISO-8601이어야 합니다.");
+    }
+    if (meta.publication_status !== undefined || meta.publication_review !== undefined) {
+      const review = meta.publication_review;
+      if (meta.mode !== "live" || meta.publication_status !== V5_PUBLICATION_STATUS) {
+        errors.push("v5 publication_status가 올바르지 않습니다.");
+      }
+      const reviewFields = [
+        "schema_version", "decision", "reviewed_at", "reviewed_candidate_sha256",
+        "champion", "multiscale_promoted", "fx_promoted",
+      ];
+      if (!hasExactKeys(review, reviewFields)) {
+        errors.push("v5 publication_review 필드가 계약과 일치하지 않습니다.");
+      } else {
+        if (review.schema_version !== V5_PUBLICATION_REVIEW_SCHEMA) errors.push("v5 publication_review schema가 올바르지 않습니다.");
+        if (review.decision !== "publish_v5_research_snapshot") errors.push("v5 publication_review decision이 올바르지 않습니다.");
+        if (!isZonedIsoTimestamp(review.reviewed_at)) errors.push("v5 publication_review reviewed_at이 올바르지 않습니다.");
+        if (!isLowerSha256(review.reviewed_candidate_sha256)) errors.push("v5 publication_review candidate hash가 올바르지 않습니다.");
+        if (review.champion !== model.champion) errors.push("v5 publication_review champion이 일치하지 않습니다.");
+        if (review.multiscale_promoted !== false || review.fx_promoted !== false) {
+          errors.push("v5 publication_review는 연구 후보 비승격을 보존해야 합니다.");
+        }
+      }
+    }
+    if (!isObject(meta.freshness)) {
+      errors.push("v5 meta.freshness 객체가 없습니다.");
+    } else {
+      if (!hasExactKeys(meta.freshness, ["cadence", "maximum_age_days", "age_days", "status", "data_as_of"])) {
+        errors.push("v5 freshness 필드가 계약과 일치하지 않습니다.");
+      }
+      if (meta.freshness.cadence !== "weekly") errors.push("v5 freshness.cadence는 weekly여야 합니다.");
+      validateInteger(meta.freshness.maximum_age_days, "v5 freshness.maximum_age_days", errors, 1);
+      validateInteger(meta.freshness.age_days, "v5 freshness.age_days", errors);
+      if (meta.freshness.maximum_age_days !== 10) errors.push("v5 freshness.maximum_age_days는 10이어야 합니다.");
+      const expectedAge = Math.max(0, Math.floor((Date.parse(meta.generated_at) - Date.parse(meta.data_as_of)) / 86400000));
+      if (meta.freshness.age_days !== expectedAge) errors.push("v5 freshness.age_days가 기준 시점과 일치하지 않습니다.");
+      const expectedStatus = expectedAge <= meta.freshness.maximum_age_days ? "current" : "stale";
+      if (meta.freshness.status !== expectedStatus) errors.push("v5 freshness.status가 age_days와 일치하지 않습니다.");
+      if (!isZonedIsoTimestamp(meta.freshness.data_as_of) || Date.parse(meta.freshness.data_as_of) !== Date.parse(meta.data_as_of)) {
+        errors.push("v5 freshness.data_as_of가 meta.data_as_of와 일치하지 않습니다.");
+      }
+    }
+
+    if (model.version !== V5_MODEL_VERSION) errors.push(`v5 model.version은 ${V5_MODEL_VERSION}이어야 합니다.`);
+    if (model.label_version !== V5_LABEL_VERSION) errors.push(`v5 model.label_version은 ${V5_LABEL_VERSION}이어야 합니다.`);
+    if (model.feature_set_version !== V5_FEATURE_SET_VERSION) errors.push(`v5 model.feature_set_version은 ${V5_FEATURE_SET_VERSION}이어야 합니다.`);
+    if (!Array.isArray(model.leaderboard) || !model.leaderboard.length) errors.push("v5 model.leaderboard는 비어 있지 않아야 합니다.");
+
+    const baseline = model.baseline_v4;
+    const baselineFields = [
+      "result_version", "label_version", "model_version", "feature_set_version",
+      "champion", "payload_sha256", "artifacts_inventory_sha256", "captured_at",
+    ];
+    if (!isObject(baseline) || baselineFields.some((field) => !(field in baseline))) {
+      errors.push("v5 model.baseline_v4 필드가 계약과 일치하지 않습니다.");
+    } else {
+      if (baseline.result_version !== V4_RESULT_VERSION) errors.push("v5 baseline_v4.result_version이 올바르지 않습니다.");
+      if (baseline.label_version !== V4_LABEL_VERSION) errors.push("v5 baseline_v4.label_version이 올바르지 않습니다.");
+      if (baseline.model_version !== V4_MODEL_VERSION) errors.push("v5 baseline_v4.model_version이 올바르지 않습니다.");
+      if (baseline.feature_set_version !== V4_FEATURE_SET_VERSION) errors.push("v5 baseline_v4.feature_set_version이 올바르지 않습니다.");
+      if (!isLowerSha256(baseline.payload_sha256) || !isLowerSha256(baseline.artifacts_inventory_sha256)) {
+        errors.push("v5 baseline_v4 hash는 소문자 SHA-256이어야 합니다.");
+      }
+      if (!isIsoDate(baseline.captured_at)) errors.push("v5 baseline_v4.captured_at은 ISO date여야 합니다.");
+    }
+
+    const preregistration = model.structural_preregistration;
+    if (
+      !isObject(preregistration)
+      || preregistration.path !== "config/structural_v5.json"
+      || !isLowerSha256(preregistration.sha256)
+    ) {
+      errors.push("v5 structural_preregistration 계약이 올바르지 않습니다.");
+    }
+
+    const execution = model.execution_parameters;
+    const executionFields = [
+      "profile", "directional_minimum_selection_predictions",
+      "directional_minimum_diagnostic_predictions", "directional_maximum_selection_origins",
+      "directional_maximum_diagnostic_origins", "duration_bootstrap_resamples",
+      "conditional_outcome_bootstrap_resamples", "preregistered_bootstrap_resamples",
+      "preregistration_overrides", "sha256",
+    ];
+    if (!hasExactKeys(execution, executionFields)) {
+      errors.push("v5 execution_parameters 필드가 계약과 일치하지 않습니다.");
+    } else {
+      if (!["quick", "standard", "full"].includes(execution.profile)) errors.push("v5 execution profile이 올바르지 않습니다.");
+      const minimum = execution.profile === "quick" ? 3 : 12;
+      const maximum = execution.profile === "quick" ? 3 : execution.profile === "standard" ? 60 : null;
+      if (execution.directional_minimum_selection_predictions !== minimum || execution.directional_minimum_diagnostic_predictions !== minimum) {
+        errors.push("v5 directional 실행 최소 표본이 profile과 일치하지 않습니다.");
+      }
+      if (execution.directional_maximum_selection_origins !== maximum || execution.directional_maximum_diagnostic_origins !== maximum) {
+        errors.push("v5 directional 실행 최대 표본이 profile과 일치하지 않습니다.");
+      }
+      validateInteger(execution.duration_bootstrap_resamples, "v5 duration bootstrap", errors, 1);
+      validateInteger(execution.conditional_outcome_bootstrap_resamples, "v5 outcome bootstrap", errors, 1);
+      if (execution.preregistered_bootstrap_resamples !== 1999 || !Array.isArray(execution.preregistration_overrides) || !isLowerSha256(execution.sha256)) {
+        errors.push("v5 execution_parameters 사전등록 연결이 올바르지 않습니다.");
+      }
+    }
+    const executionProfile = isObject(execution) ? execution.profile : null;
+    if (model.profile !== executionProfile || !["quick", "standard", "full"].includes(model.profile)) {
+      errors.push("v5 model.profile은 execution_parameters.profile과 일치해야 합니다.");
+    }
+    if (meta.mode === "live" && executionProfile === "quick") {
+      errors.push("v5 live 결과는 quick profile을 사용할 수 없습니다.");
+    }
+
+    const expectedSourceLicenses = V5_SOURCE_LICENSES[meta.mode];
+    if (expectedSourceLicenses) {
+      const sourcesById = new Map();
+      let invalidSource = false;
+      for (const source of payload.sources) {
+        if (!isObject(source) || typeof source.id !== "string" || sourcesById.has(source.id)) {
+          invalidSource = true;
+          continue;
+        }
+        sourcesById.set(source.id, source);
+      }
+      const expectedSourceIds = Object.keys(expectedSourceLicenses);
+      if (
+        invalidSource
+        || sourcesById.size !== expectedSourceIds.length
+        || expectedSourceIds.some((sourceId) => !sourcesById.has(sourceId))
+      ) {
+        errors.push(`v5 sources identity가 meta.mode=${meta.mode}와 일치하지 않습니다.`);
+      } else {
+        for (const [sourceId, expectedLicense] of Object.entries(expectedSourceLicenses)) {
+          const source = sourcesById.get(sourceId);
+          if (source.license_class !== expectedLicense) {
+            errors.push(`v5 sources.${sourceId}.license_class가 mode 계약과 일치하지 않습니다.`);
+          }
+          if (!V5_SOURCE_STATUSES.includes(source.status)) {
+            errors.push(`v5 sources.${sourceId}.status가 지원하는 상태가 아닙니다.`);
+          }
+        }
+        if (meta.mode === "live") {
+          const h10 = sourcesById.get("frb_h10");
+          const fxProvenanceFields = [
+            "official_release_archive_ingest", "availability_basis",
+            "archive_revision_policy", "archive_correction_availability_basis",
+          ];
+          for (const field of fxProvenanceFields) {
+            if (!(field in h10) || h10[field] !== model.fx_ablation?.[field]) {
+              errors.push(`v5 sources.frb_h10.${field}가 model FX provenance와 일치하지 않습니다.`);
+            }
+          }
+          const releaseCount = h10.archive_release_count;
+          const correctionCount = h10.archive_correction_count;
+          const correctionValues = h10.archive_correction_available_at;
+          const correctionsValid = Array.isArray(correctionValues)
+            && correctionValues.every((value, index) => (
+              isZonedIsoTimestamp(value)
+              && /(?:Z|\+00:00)$/.test(value)
+              && (index === 0 || Date.parse(correctionValues[index - 1]) < Date.parse(value))
+            ));
+          if (
+            !Number.isInteger(releaseCount) || releaseCount < 0
+            || !Number.isInteger(correctionCount) || correctionCount < 0
+            || releaseCount < correctionCount
+            || !correctionsValid
+            || correctionCount !== (Array.isArray(correctionValues) ? correctionValues.length : -1)
+          ) {
+            errors.push("v5 sources.frb_h10 archive release·correction inventory가 올바르지 않습니다.");
+          }
+          if (
+            h10.archive_correction_quarantine_weeks !== 27
+            || h10.archive_evaluation_start !== "2022-01-01"
+            || h10.archive_evaluation_start_rationale !== "post_2019_06_24_jan06_index_rebase_common_scale"
+          ) {
+            errors.push("v5 sources.frb_h10 archive 평가·정정 격리 계약이 올바르지 않습니다.");
+          }
+          const archiveIngest = model.fx_ablation?.official_release_archive_ingest;
+          if (
+            (archiveIngest === true && releaseCount < 1)
+            || (archiveIngest === false && (
+              releaseCount !== 0 || correctionCount !== 0
+              || (Array.isArray(correctionValues) && correctionValues.length !== 0)
+            ))
+          ) {
+            errors.push("v5 sources.frb_h10 archive inventory가 ingest mode와 일치하지 않습니다.");
+          }
+        }
+      }
+    }
+
+    const directional = model.directional_transition;
+    if (!isObject(directional)) {
+      errors.push("v5 model.directional_transition 객체가 없습니다.");
+    } else {
+      if (
+        directional.target !== "first_departure_state_within_h_or_no_departure"
+        || directional.deployed_direction_role !== "first_destination_given_departure"
+        || directional.selection_metric !== "conditional_destination_log_loss"
+        || directional.minimum_selection_departure_events !== 8
+        || directional.minimum_selection_destination_classes !== 2
+        || directional.minimum_selection_event_blocks !== 3
+      ) {
+        errors.push("v5 directional_transition 배포 역할·선정 gate가 올바르지 않습니다.");
+      }
+      const champions = directional.champions;
+      if (
+        !hasExactKeys(champions, ["1w", "4w", "13w"])
+        || Object.values(champions).some((value) => typeof value !== "string" || !value)
+      ) {
+        errors.push("v5 directional_transition.champions 계약이 올바르지 않습니다.");
+      }
+      if (!Array.isArray(directional.leaderboard) || !directional.leaderboard.length) {
+        errors.push("v5 directional_transition.leaderboard는 비어 있지 않아야 합니다.");
+      }
+      if (!Array.isArray(directional.selection_diagnostics) || !directional.selection_diagnostics.length) {
+        errors.push("v5 directional_transition.selection_diagnostics는 비어 있지 않아야 합니다.");
+      }
+      if (!isIsoDate(directional.selection_end)) errors.push("v5 directional_transition.selection_end가 실제 날짜가 아닙니다.");
+    }
+
+    const health = model.model_health;
+    if (!isObject(health) || !["ok", "review_due"].includes(health.status) || !Array.isArray(health.reasons)) {
+      errors.push("v5 model.model_health 계약이 올바르지 않습니다.");
+    }
+
+    if (model.champion_core_feature_set_version !== V4_FEATURE_SET_VERSION) {
+      errors.push("v5 champion은 v4 core feature 계약을 유지해야 합니다.");
+    }
+    if (model.fx_role !== "context_and_preregistered_shadow_ablation") {
+      errors.push("v5 model.fx_role이 올바르지 않습니다.");
+    }
+    const fxAblation = model.fx_ablation;
+    const fxAblationFields = [
+      "role", "variants", "minimum_common_weeks",
+      "historical_availability_backfill", "official_release_archive_ingest",
+      "availability_basis", "archive_revision_policy",
+      "archive_correction_availability_basis", "status", "eligible_common_weeks",
+      "first_eligible_cutoff", "last_eligible_cutoff", "manifest",
+      "status_reason", "common_origin_required_pairs", "minimum_train_weeks",
+      "target_horizon_weeks", "purge_weeks", "target_availability_rule",
+      "model", "common_evaluation_origins", "variant_metrics", "gate",
+      "promotion_allowed", "promotion_candidate", "core_champion_promoted",
+    ];
+    if (!hasExactKeys(fxAblation, fxAblationFields)) {
+      errors.push("v5 model.fx_ablation 필드가 계약과 일치하지 않습니다.");
+    } else {
+      const variantsMatch = Array.isArray(fxAblation.variants)
+        && fxAblation.variants.length === FX_ABLATION_VARIANTS.length
+        && fxAblation.variants.every((value, index) => value === FX_ABLATION_VARIANTS[index]);
+      if (!variantsMatch) errors.push("v5 FX ablation variant 순서가 올바르지 않습니다.");
+      if (
+        fxAblation.role !== "prospective_shadow"
+        || fxAblation.minimum_common_weeks !== 156
+        || fxAblation.historical_availability_backfill !== false
+      ) {
+        errors.push("v5 FX ablation은 비소급 prospective shadow여야 합니다.");
+      }
+      if (
+        typeof fxAblation.official_release_archive_ingest !== "boolean"
+        || !["official_archive_release_schedule", "collection_first_seen_at"].includes(fxAblation.availability_basis)
+        || fxAblation.official_release_archive_ingest !== (fxAblation.availability_basis === "official_archive_release_schedule")
+        || fxAblation.archive_revision_policy !== "later_official_release_preserved_as_new_vintage"
+        || fxAblation.archive_correction_availability_basis !== "date_only_conservative_next_day"
+      ) {
+        errors.push("v5 FX ablation archive availability·revision provenance가 올바르지 않습니다.");
+      }
+      const fxStatuses = ["unavailable", "insufficient_history", "evaluated"];
+      if (!fxStatuses.includes(fxAblation.status)) errors.push("v5 FX ablation status가 올바르지 않습니다.");
+      const statusReasons = {
+        unavailable: [
+          "fx_feature_result_unavailable", "fx_feature_contract_unavailable",
+          "fixed_nine_pair_contract_unavailable", "fx_model_features_non_numeric",
+        ],
+        insufficient_history: [
+          "eligible_common_weeks_below_156",
+          "no_origin_has_104_strictly_available_training_targets",
+        ],
+        evaluated: [null],
+      };
+      if (!statusReasons[fxAblation.status]?.includes(fxAblation.status_reason)) {
+        errors.push("v5 FX ablation status_reason이 올바르지 않습니다.");
+      }
+      validateInteger(fxAblation.eligible_common_weeks, "v5 FX eligible_common_weeks", errors);
+      const eligible = fxAblation.eligible_common_weeks;
+      const hasBounds = isIsoDate(fxAblation.first_eligible_cutoff)
+        && isIsoDate(fxAblation.last_eligible_cutoff)
+        && fxAblation.first_eligible_cutoff <= fxAblation.last_eligible_cutoff;
+      if ((eligible === 0 && (fxAblation.first_eligible_cutoff !== null || fxAblation.last_eligible_cutoff !== null))
+        || (eligible > 0 && !hasBounds)) {
+        errors.push("v5 FX ablation 공통 시점 범위가 올바르지 않습니다.");
+      }
+      const manifest = fxAblation.manifest;
+      if (!Array.isArray(manifest) || (manifest.length !== 0 && manifest.length !== FX_ABLATION_VARIANTS.length)) {
+        errors.push("v5 FX ablation manifest가 불완전합니다.");
+      } else if (manifest.length) {
+        manifest.forEach((row, index) => {
+          const expectedVariant = FX_ABLATION_VARIANTS[index];
+          const validCount = Number.isInteger(row && row.feature_count)
+            && row.feature_count >= 0
+            && ((expectedVariant === "v4_control") === (row.feature_count === 0));
+          if (
+            !hasExactKeys(row, ["variant", "feature_count", "feature_columns_sha256"])
+            || row.variant !== expectedVariant
+            || !validCount
+            || !isLowerSha256(row.feature_columns_sha256)
+          ) {
+            errors.push(`v5 FX ablation manifest[${index}]가 올바르지 않습니다.`);
+          }
+        });
+      }
+      if ((eligible > 0 && manifest.length === 0)
+        || (fxAblation.status === "evaluated" && eligible < 156)
+        || (fxAblation.status_reason === "eligible_common_weeks_below_156" && eligible >= 156)
+        || (fxAblation.status === "unavailable"
+          && fxAblation.status_reason !== "fx_model_features_non_numeric"
+          && (eligible !== 0 || manifest.length !== 0))) {
+        errors.push("v5 FX ablation readiness가 공통 표본 수와 일치하지 않습니다.");
+      }
+
+      if (
+        fxAblation.common_origin_required_pairs !== 9
+        || fxAblation.minimum_train_weeks !== 104
+        || fxAblation.target_horizon_weeks !== 1
+        || fxAblation.purge_weeks !== 1
+        || fxAblation.target_availability_rule !== "last_train_target_strictly_before_evaluation_origin"
+      ) {
+        errors.push("v5 FX ablation 공통 origin·purge 계약이 올바르지 않습니다.");
+      }
+      const fxModel = fxAblation.model;
+      const fxModelFields = [
+        "name", "horizon_weeks", "multiclass", "regularization", "regularization_c",
+        "class_weight", "solver", "max_iter", "tolerance", "random_state",
+        "imputation", "scaling", "fit_window", "state_order",
+      ];
+      const fxModelStatesMatch = Array.isArray(fxModel?.state_order)
+        && fxModel.state_order.length === STATE_ORDER.length
+        && fxModel.state_order.every((value, index) => value === STATE_ORDER[index]);
+      if (
+        !hasExactKeys(fxModel, fxModelFields)
+        || fxModel.name !== "fixed_l2_multinomial_logistic"
+        || fxModel.horizon_weeks !== 1
+        || fxModel.multiclass !== "multinomial"
+        || fxModel.regularization !== "l2"
+        || fxModel.regularization_c !== 0.1
+        || fxModel.class_weight !== null
+        || fxModel.solver !== "lbfgs"
+        || fxModel.max_iter !== 2000
+        || fxModel.tolerance !== 1e-6
+        || fxModel.random_state !== 17
+        || fxModel.imputation !== "expanding_train_median"
+        || fxModel.scaling !== "expanding_train_standard"
+        || fxModel.fit_window !== "expanding"
+        || !fxModelStatesMatch
+      ) {
+        errors.push("v5 FX ablation 고정 모델 계약이 올바르지 않습니다.");
+      }
+
+      const origins = fxAblation.common_evaluation_origins;
+      const originFields = ["count", "first_origin", "last_origin", "sha256", "rows"];
+      const originRows = Array.isArray(origins?.rows) ? origins.rows : [];
+      if (
+        !hasExactKeys(origins, originFields)
+        || !Number.isInteger(origins.count)
+        || origins.count < 0
+        || origins.count !== originRows.length
+      ) {
+        errors.push("v5 FX ablation 공통 평가 origin 계약이 올바르지 않습니다.");
+      } else if (origins.count === 0) {
+        if (origins.first_origin !== null || origins.last_origin !== null || origins.sha256 !== null) {
+          errors.push("v5 FX ablation 빈 평가 origin 요약이 일관되지 않습니다.");
+        }
+      } else {
+        if (
+          !isIsoDate(origins.first_origin)
+          || !isIsoDate(origins.last_origin)
+          || !isLowerSha256(origins.sha256)
+          || origins.first_origin !== originRows[0]?.origin_date
+          || origins.last_origin !== originRows[originRows.length - 1]?.origin_date
+        ) {
+          errors.push("v5 FX ablation 평가 origin 요약이 일관되지 않습니다.");
+        }
+        originRows.forEach((row, index) => {
+          const validRow = hasExactKeys(row, [
+            "origin_date", "target_date", "train_size", "train_start_origin",
+            "last_train_origin", "last_train_target", "purged_origin_count",
+          ])
+            && isIsoDate(row.origin_date)
+            && isIsoDate(row.target_date)
+            && isIsoDate(row.train_start_origin)
+            && isIsoDate(row.last_train_origin)
+            && isIsoDate(row.last_train_target)
+            && Number.isInteger(row.train_size)
+            && row.train_size >= 104
+            && row.purged_origin_count === 1
+            && row.last_train_target < row.origin_date;
+          if (!validRow) errors.push(`v5 FX ablation 평가 origin[${index}] purge 계약이 올바르지 않습니다.`);
+        });
+      }
+
+      const variantMetrics = fxAblation.variant_metrics;
+      if (!Array.isArray(variantMetrics)) {
+        errors.push("v5 FX ablation variant_metrics가 배열이 아닙니다.");
+      } else if (fxAblation.status === "evaluated") {
+        if (variantMetrics.length !== FX_ABLATION_VARIANTS.length || origins.count < 1) {
+          errors.push("v5 FX ablation 평가 metric이 불완전합니다.");
+        }
+        variantMetrics.forEach((row, index) => {
+          const expectedVariant = FX_ABLATION_VARIANTS[index];
+          const fields = [
+            "variant", "feature_count", "fx_feature_count", "feature_columns_sha256",
+            "log_loss", "brier", "accuracy", "balanced_accuracy", "n", "n_predictions", "fallback", "fallback_count",
+            "fallback_reasons", "first_origin", "last_origin", "origin_sha256",
+          ];
+          const valid = hasExactKeys(row, fields)
+            && row.variant === expectedVariant
+            && Number.isInteger(row.feature_count) && row.feature_count >= 1
+            && Number.isInteger(row.fx_feature_count) && row.fx_feature_count >= 0
+            && ((expectedVariant === "v4_control") === (row.fx_feature_count === 0))
+            && isLowerSha256(row.feature_columns_sha256)
+            && Number.isFinite(row.log_loss) && row.log_loss >= 0
+            && Number.isFinite(row.brier) && row.brier >= 0 && row.brier <= 2
+            && Number.isFinite(row.accuracy) && row.accuracy >= 0 && row.accuracy <= 1
+            && Number.isFinite(row.balanced_accuracy) && row.balanced_accuracy >= 0 && row.balanced_accuracy <= 1
+            && row.n === origins.count && row.n_predictions === origins.count
+            && typeof row.fallback === "boolean"
+            && Number.isInteger(row.fallback_count) && row.fallback_count >= 0
+            && row.fallback === (row.fallback_count > 0)
+            && isObject(row.fallback_reasons)
+            && row.first_origin === origins.first_origin
+            && row.last_origin === origins.last_origin
+            && row.origin_sha256 === origins.sha256;
+          if (!valid) errors.push(`v5 FX ablation variant_metrics[${index}]가 올바르지 않습니다.`);
+        });
+      } else if (variantMetrics.length !== 0 || origins.count !== 0) {
+        errors.push("v5 FX ablation 미평가 출력은 비어 있어야 합니다.");
+      }
+
+      const fxGate = fxAblation.gate;
+      const fxGateFields = [
+        "reference_variant", "method", "bootstrap_block_weeks",
+        "bootstrap_effective_block_weeks", "bootstrap_resamples", "bootstrap_seed",
+        "alpha", "minimum_log_loss_improvement", "brier_tolerance",
+        "comparisons", "passed_variants",
+      ];
+      const gateBaseValid = hasExactKeys(fxGate, fxGateFields)
+        && fxGate.reference_variant === "v4_control"
+        && fxGate.method === "paired_circular_moving_block_bootstrap_holm"
+        && fxGate.bootstrap_block_weeks === 13
+        && fxGate.bootstrap_resamples === 1999
+        && fxGate.bootstrap_seed === 17
+        && fxGate.alpha === 0.05
+        && fxGate.minimum_log_loss_improvement === 0.05
+        && fxGate.brier_tolerance === 0.01
+        && Array.isArray(fxGate.comparisons)
+        && Array.isArray(fxGate.passed_variants);
+      if (!gateBaseValid) {
+        errors.push("v5 FX ablation gate 계약이 올바르지 않습니다.");
+      } else if (fxAblation.status === "evaluated") {
+        const expectedBlock = Math.min(13, Math.max(1, Math.floor(origins.count / 2)));
+        if (
+          fxGate.bootstrap_effective_block_weeks !== expectedBlock
+          || fxGate.comparisons.length !== FX_ABLATION_VARIANTS.length - 1
+          || fxGate.comparisons.some((row, index) => (
+            !hasExactKeys(row, [
+              "variant", "reference_variant", "mean_log_loss_improvement", "brier_difference",
+              "control_fallback_count", "fallback_count", "raw_p_value",
+              "holm_adjusted_p_value", "gate_passed", "gate_reasons",
+            ])
+            || row.variant !== FX_ABLATION_VARIANTS[index + 1]
+            || row.reference_variant !== "v4_control"
+            || !Number.isFinite(row.mean_log_loss_improvement)
+            || !Number.isFinite(row.brier_difference)
+            || !Number.isFinite(row.raw_p_value) || row.raw_p_value < 0 || row.raw_p_value > 1
+            || !Number.isFinite(row.holm_adjusted_p_value) || row.holm_adjusted_p_value < 0 || row.holm_adjusted_p_value > 1
+            || typeof row.gate_passed !== "boolean"
+            || !Array.isArray(row.gate_reasons) || row.gate_reasons.length === 0
+          ))) {
+          errors.push("v5 FX ablation paired gate 결과가 올바르지 않습니다.");
+        }
+      } else if (
+        fxGate.bootstrap_effective_block_weeks !== null
+        || fxGate.comparisons.length !== 0
+        || fxGate.passed_variants.length !== 0
+      ) {
+        errors.push("v5 FX ablation 미평가 gate는 비어 있어야 합니다.");
+      }
+      if (
+        fxAblation.promotion_allowed !== false
+        || fxAblation.promotion_candidate !== null
+        || fxAblation.core_champion_promoted !== false
+      ) {
+        errors.push("v5 FX ablation은 core champion을 자동 승격할 수 없습니다.");
+      }
+    }
+
+    const coreArtifacts = model.core_artifacts;
+    const coreArtifactKeys = Object.keys(V5_CORE_ARTIFACT_PATHS);
+    if (!hasExactKeys(coreArtifacts, coreArtifactKeys)) {
+      errors.push("v5 model.core_artifacts manifest가 불완전합니다.");
+    } else {
+      for (const [key, expectedPath] of Object.entries(V5_CORE_ARTIFACT_PATHS)) {
+        const artifact = coreArtifacts[key];
+        if (
+          !hasExactKeys(artifact, ["path", "row_count", "sha256"])
+          || artifact.path !== expectedPath
+          || !Number.isInteger(artifact.row_count)
+          || artifact.row_count < 1
+          || !isLowerSha256(artifact.sha256)
+        ) {
+          errors.push(`v5 core artifact ${key} 계약이 올바르지 않습니다.`);
+        }
+      }
+    }
+
+    const structuralModels = model.structural_models;
+    const structuralModelKeys = [
+      "xgb_hazard_destination", "causal_dynamic_ensemble",
+      "joint_survival_hazard", "causal_multiscale_ensemble",
+    ];
+    if (!hasExactKeys(structuralModels, structuralModelKeys)) {
+      errors.push("v5 model.structural_models 키가 정확한 계약과 일치하지 않습니다.");
+    } else {
+      const expectedExperts = ["markov", "xgboost", "xgb_hazard_destination"];
+      const hazard = structuralModels.xgb_hazard_destination;
+      if (
+        !hasExactKeys(hazard, ["hazard_model", "destination_model", "direct_jump_floor"])
+        || hazard.hazard_model !== "binary_xgboost"
+        || hazard.destination_model !== "xgboost"
+        || hazard.direct_jump_floor !== 0.000001
+      ) {
+        errors.push("v5 xgb_hazard_destination 계약이 올바르지 않습니다.");
+      }
+      const ensemble = structuralModels.causal_dynamic_ensemble;
+      if (
+        !hasExactKeys(ensemble, ["experts", "half_life_weeks", "minimum_history_rows", "eligible_loss_rule"])
+        || !Array.isArray(ensemble.experts)
+        || ensemble.experts.length !== expectedExperts.length
+        || ensemble.experts.some((expert, index) => expert !== expectedExperts[index])
+        || ensemble.half_life_weeks !== 52
+        || ensemble.minimum_history_rows !== 26
+        || ensemble.eligible_loss_rule !== "target_date_strictly_before_origin"
+      ) {
+        errors.push("v5 causal_dynamic_ensemble 계약이 올바르지 않습니다.");
+      }
+      const survival = structuralModels.joint_survival_hazard;
+      if (
+        !hasExactKeys(survival, ["base_target_weeks", "horizons_weeks", "future_covariates", "identity"])
+        || survival.base_target_weeks !== 1
+        || !Array.isArray(survival.horizons_weeks)
+        || survival.horizons_weeks.length !== TRANSITION_HORIZONS.length
+        || survival.horizons_weeks.some((value, index) => value !== TRANSITION_HORIZONS[index])
+        || survival.future_covariates !== "origin_values_frozen"
+        || survival.identity !== "one_minus_product_one_minus_weekly_hazard"
+      ) {
+        errors.push("v5 joint_survival_hazard 계약이 올바르지 않습니다.");
+      }
+      const multiscale = structuralModels.causal_multiscale_ensemble;
+      const multiscaleFields = [
+        "role", "experts", "scale_half_lives_weeks", "outer_scale_weights",
+        "aggregation", "inner_pool_method", "minimum_history_rows",
+        "eligible_loss_rule", "selection_gate", "automatic_promotion_bypass",
+        "sidecar",
+      ];
+      const scales = [26, 52, 104];
+      const sidecarMatches = isObject(coreArtifacts)
+        && isObject(multiscale?.sidecar)
+        && JSON.stringify(multiscale.sidecar) === JSON.stringify(coreArtifacts.multiscale_ensemble_scales);
+      if (
+        !hasExactKeys(multiscale, multiscaleFields)
+        || multiscale.role !== "v5_opt_in_candidate"
+        || !Array.isArray(multiscale.experts)
+        || multiscale.experts.length !== expectedExperts.length
+        || multiscale.experts.some((expert, index) => expert !== expectedExperts[index])
+        || !Array.isArray(multiscale.scale_half_lives_weeks)
+        || multiscale.scale_half_lives_weeks.length !== scales.length
+        || multiscale.scale_half_lives_weeks.some((value, index) => value !== scales[index])
+        || !Array.isArray(multiscale.outer_scale_weights)
+        || multiscale.outer_scale_weights.length !== scales.length
+        || multiscale.outer_scale_weights.some((value) => Math.abs(value - (1 / 3)) > 1e-15)
+        || multiscale.aggregation !== "fixed_equal_probability_average"
+        || multiscale.inner_pool_method !== "causal_discounted_completed_oos_log_score"
+        || multiscale.minimum_history_rows !== 26
+        || multiscale.eligible_loss_rule !== "target_date_strictly_before_origin"
+        || multiscale.selection_gate !== "existing_multiclass_holm_log_loss_brier_zero_fallback"
+        || multiscale.automatic_promotion_bypass !== false
+        || !sidecarMatches
+      ) {
+        errors.push("v5 causal_multiscale_ensemble과 sidecar 계약이 올바르지 않습니다.");
+      }
+    }
+
+    const candidateManifest = model.candidate_manifest;
+    const candidateNames = Array.isArray(candidateManifest?.models)
+      ? candidateManifest.models.map((row) => row?.name)
+      : [];
+    const expectedCandidateNames = [
+      ...V5_STANDARD_CORE_MODELS,
+      ...(model.profile === "full" ? ["gaussian_hmm"] : []),
+    ];
+    if (
+      !isObject(candidateManifest)
+      || candidateManifest.profile !== model.profile
+      || candidateManifest.random_state !== 17
+      || !isLowerSha256(model.candidate_manifest_sha256)
+      || candidateNames.length !== expectedCandidateNames.length
+      || new Set(candidateNames).size !== candidateNames.length
+      || expectedCandidateNames.some((name) => !candidateNames.includes(name))
+    ) {
+      errors.push("v5 candidate_manifest model set·profile 계약이 올바르지 않습니다.");
+    }
+
+    const researchArtifacts = model.research_artifacts;
+    const researchKeys = isObject(researchArtifacts) ? Object.keys(researchArtifacts) : [];
+    const hasRequiredResearch = V5_REQUIRED_RESEARCH_ARTIFACTS.every((key) => researchKeys.includes(key));
+    const fxResearchCount = V5_FX_RESEARCH_ARTIFACTS.filter((key) => researchKeys.includes(key)).length;
+    const allowedResearchKeys = new Set([
+      ...V5_REQUIRED_RESEARCH_ARTIFACTS,
+      ...V5_FX_RESEARCH_ARTIFACTS,
+    ]);
+    if (
+      !isObject(researchArtifacts)
+      || !hasRequiredResearch
+      || researchKeys.some((key) => !allowedResearchKeys.has(key))
+      || (fxResearchCount !== 0 && fxResearchCount !== V5_FX_RESEARCH_ARTIFACTS.length)
+      || (fxAblation?.status === "evaluated" && fxResearchCount !== V5_FX_RESEARCH_ARTIFACTS.length)
+    ) {
+      errors.push("v5 model.research_artifacts manifest가 불완전합니다.");
+    } else {
+      for (const key of researchKeys) {
+        const artifact = researchArtifacts[key];
+        if (
+          !hasExactKeys(artifact, ["path", "row_count", "sha256"])
+          || artifact.path !== V5_RESEARCH_ARTIFACT_PATHS[key]
+          || !Number.isInteger(artifact.row_count)
+          || artifact.row_count < (key === "fx_ablation_oos" ? 0 : 1)
+          || !isLowerSha256(artifact.sha256)
+        ) {
+          errors.push(`v5 research artifact ${key} 계약이 올바르지 않습니다.`);
+        }
+      }
+      const expectedConditionalRows = OUTCOME_ASSETS.length * STATE_ORDER.length * TRANSITION_HORIZONS.length;
+      const conditionalArtifact = researchArtifacts.conditional_asset_statistics;
+      if (!isObject(conditionalArtifact) || conditionalArtifact.row_count !== expectedConditionalRows) {
+        errors.push("v5 conditional asset statistics artifact 행 수가 올바르지 않습니다.");
+      }
+      const leaderboardArtifact = researchArtifacts.directional_model_leaderboard;
+      if (
+        isObject(leaderboardArtifact)
+        && isObject(directional)
+        && Array.isArray(directional.leaderboard)
+        && leaderboardArtifact.row_count !== directional.leaderboard.length
+      ) {
+        errors.push("v5 directional leaderboard artifact 행 수가 payload와 일치하지 않습니다.");
+      }
+      const diagnosticsArtifact = researchArtifacts.directional_selection_diagnostics;
+      if (
+        isObject(diagnosticsArtifact)
+        && isObject(directional)
+        && Array.isArray(directional.selection_diagnostics)
+        && diagnosticsArtifact.row_count !== directional.selection_diagnostics.length
+      ) {
+        errors.push("v5 directional diagnostics artifact 행 수가 payload와 일치하지 않습니다.");
+      }
+      const fxFeaturesArtifact = researchArtifacts.fx_features;
+      const fxCoverageArtifact = researchArtifacts.fx_coverage;
+      const fxAblationOosArtifact = researchArtifacts.fx_ablation_oos;
+      if (
+        fxResearchCount === V5_FX_RESEARCH_ARTIFACTS.length
+        && isObject(fxFeaturesArtifact)
+        && isObject(fxCoverageArtifact)
+        && (
+          fxFeaturesArtifact.row_count !== fxCoverageArtifact.row_count
+          || !isObject(fxAblationOosArtifact)
+          || fxAblationOosArtifact.row_count !== (
+            fxAblation?.status === "evaluated"
+              ? fxAblation.common_evaluation_origins.count * FX_ABLATION_VARIANTS.length
+              : 0
+          )
+        )
+      ) {
+        errors.push("v5 FX research artifact 행 수가 일치하지 않습니다.");
+      }
+    }
+
+    const evidence = model.evidence_artifacts;
+    if (!hasExactKeys(evidence, ["state_membership_history", "weekly_state_forecasts"])) {
+      errors.push("v5 model.evidence_artifacts 필드가 계약과 일치하지 않습니다.");
+    } else {
+      const membership = evidence.state_membership_history;
+      if (
+        !hasExactKeys(membership, [
+          "path", "row_count", "sha256", "label_fit_weeks", "label_fit_end",
+          "initial_state", "method",
+        ])
+        || membership.path !== "state-membership-history.csv"
+        || !Number.isInteger(membership.row_count)
+        || membership.row_count < 520
+        || !isLowerSha256(membership.sha256)
+        || membership.label_fit_weeks !== 520
+        || !isIsoTimestamp(membership.label_fit_end)
+        || !STATE_ORDER.includes(membership.initial_state)
+        || membership.method !== "risk_score_anchor_membership"
+      ) {
+        errors.push("v5 state_membership_history artifact 계약이 올바르지 않습니다.");
+      }
+      const forecasts = evidence.weekly_state_forecasts;
+      if (
+        !hasExactKeys(forecasts, ["path", "row_count", "sha256"])
+        || forecasts.path !== "weekly-state-forecasts-v5.csv"
+        || forecasts.row_count !== payload.weekly.length
+        || !isLowerSha256(forecasts.sha256)
+      ) {
+        errors.push("v5 weekly_state_forecasts artifact 계약이 올바르지 않습니다.");
+      }
+    }
+  }
+
+  function validateV5WeekContract(item, path, errors) {
+    const current = item.current;
+    const currentFields = ["state", "memberships", "primary_membership", "membership_entropy", "method"];
+    if (!hasExactKeys(current, currentFields)) {
+      errors.push(`${path}.current 필드가 v5 계약과 정확히 일치하지 않습니다.`);
+      return;
+    }
+    const memberships = validateStateVector(current.memberships, `${path}.current.memberships`, errors, "소속도");
+    const primary = strictProbability(current.primary_membership);
+    if (primary === null) errors.push(`${path}.current.primary_membership가 0–1 범위가 아닙니다.`);
+    if (memberships && primary !== null && Math.abs(primary - memberships[current.state]) > 0.00000001) {
+      errors.push(`${path}.current.primary_membership는 hard state 소속도와 일치해야 합니다.`);
+    }
+    if (strictProbability(current.membership_entropy) === null) errors.push(`${path}.current.membership_entropy가 0–1 범위가 아닙니다.`);
+    if (current.method !== "risk_score_anchor_membership") errors.push(`${path}.current.method가 올바르지 않습니다.`);
+
+    const forecast = item.next_week;
+    const forecastFields = [
+      "state", "probabilities", "confidence", "entropy", "date",
+      "method", "model", "fallback", "fallback_reason",
+    ];
+    if (!hasExactKeys(forecast, forecastFields)) {
+      errors.push(`${path}.next_week 필드가 v5 계약과 정확히 일치하지 않습니다.`);
+      return;
+    }
+    const forecastProbabilities = validateStateVector(forecast.probabilities, `${path}.next_week.probabilities`, errors, "예측확률");
+    const confidence = strictProbability(forecast.confidence);
+    if (confidence === null) errors.push(`${path}.next_week.confidence가 0–1 범위가 아닙니다.`);
+    if (forecastProbabilities && confidence !== null && Math.abs(confidence - forecastProbabilities[forecast.state]) > 0.00000001) {
+      errors.push(`${path}.next_week.confidence는 예측 state 확률과 일치해야 합니다.`);
+    }
+    if (strictProbability(forecast.entropy) === null) errors.push(`${path}.next_week.entropy가 0–1 범위가 아닙니다.`);
+    if (forecast.date !== isoDateOffset(item.date, 7)) errors.push(`${path}.next_week.date가 1주 horizon과 일치하지 않습니다.`);
+    for (const field of ["method", "model", "fallback_reason"]) {
+      if (typeof forecast[field] !== "string") errors.push(`${path}.next_week.${field}는 문자열이어야 합니다.`);
+    }
+    if (typeof forecast.fallback !== "boolean") errors.push(`${path}.next_week.fallback은 boolean이어야 합니다.`);
+
+    const risk = item.transition_risk;
+    if (!hasExactKeys(risk, ["1w", "4w", "13w"])) {
+      errors.push(`${path}.transition_risk horizon이 v5 계약과 일치하지 않습니다.`);
+      return;
+    }
+    const riskValues = {};
+    for (const horizon of TRANSITION_HORIZONS) {
+      const key = `${horizon}w`;
+      const row = risk[key];
+      const value = strictProbability(isObject(row) ? row.probability : null);
+      if (value === null) errors.push(`${path}.transition_risk.${key}.probability가 0–1 범위가 아닙니다.`);
+      if (!isObject(row) || row.target_end !== isoDateOffset(item.date, 7 * horizon)) {
+        errors.push(`${path}.transition_risk.${key}.target_end가 horizon과 일치하지 않습니다.`);
+      }
+      riskValues[key] = value;
+    }
+    const transitionAlias = strictProbability(item.transition_probability);
+    if (transitionAlias === null) errors.push(`${path}.transition_probability가 0–1 범위가 아닙니다.`);
+    if (transitionAlias !== null && riskValues["1w"] !== null && Math.abs(transitionAlias - riskValues["1w"]) > 0.00000001) {
+      errors.push(`${path}.transition_probability와 transition_risk.1w가 일치하지 않습니다.`);
+    }
+
+    const directional = item.directional_risk;
+    if (!hasExactKeys(directional, ["1w", "4w", "13w"])) {
+      errors.push(`${path}.directional_risk horizon이 v5 계약과 일치하지 않습니다.`);
+    } else {
+      for (const horizon of TRANSITION_HORIZONS) {
+        const key = `${horizon}w`;
+        const rowPath = `${path}.directional_risk.${key}`;
+        const row = directional[key];
+        const directionalFields = ["probability", "no_departure", "first_destination", "target_end", "model", "method"];
+        if (!hasExactKeys(row, directionalFields)) {
+          errors.push(`${rowPath} 필드가 v5 계약과 일치하지 않습니다.`);
+          continue;
+        }
+        const departure = strictProbability(row.probability);
+        const noDeparture = strictProbability(row.no_departure);
+        if (departure === null || riskValues[key] === null || Math.abs(departure - riskValues[key]) > 0.00000001) {
+          errors.push(`${rowPath}.probability가 transition risk와 일치하지 않습니다.`);
+        }
+        if (departure === null || noDeparture === null || Math.abs(noDeparture - (1 - departure)) > 0.00000001) {
+          errors.push(`${rowPath}.no_departure가 이탈 확률과 일치하지 않습니다.`);
+        }
+        const destinations = row.first_destination;
+        if (!hasExactKeys(destinations, STATE_ORDER)) {
+          errors.push(`${rowPath}.first_destination 키가 올바르지 않습니다.`);
+        } else {
+          let total = 0;
+          let validDestinations = true;
+          for (const code of STATE_ORDER) {
+            const value = strictProbability(destinations[code]);
+            if (value === null) {
+              errors.push(`${rowPath}.first_destination.${code}가 0–1 범위가 아닙니다.`);
+              validDestinations = false;
+            } else {
+              total += value;
+            }
+          }
+          if (validDestinations && departure !== null && Math.abs(total - departure) > 0.000001) errors.push(`${rowPath}.first_destination 합계가 이탈 확률과 일치하지 않습니다.`);
+          if (strictProbability(destinations[current.state]) !== 0) errors.push(`${rowPath}는 현재 state로 최초 이탈할 수 없습니다.`);
+        }
+        if (row.target_end !== isoDateOffset(item.date, 7 * horizon)) errors.push(`${rowPath}.target_end가 horizon과 일치하지 않습니다.`);
+        if (typeof row.model !== "string" || !row.model) errors.push(`${rowPath}.model이 없습니다.`);
+        if (row.method !== "first_departure_state_within_h_or_no_departure") errors.push(`${rowPath}.method가 올바르지 않습니다.`);
+      }
+    }
+
+    const duration = item.duration_context;
+    if (!isObject(duration)) {
+      errors.push(`${path}.duration_context 객체가 없습니다.`);
+    } else {
+      if (!["ok", "insufficient_history", "unavailable"].includes(duration.status)) errors.push(`${path}.duration_context.status가 올바르지 않습니다.`);
+      if (duration.method !== "state_specific_kaplan_meier" || duration.state !== current.state) errors.push(`${path}.duration_context state/method가 올바르지 않습니다.`);
+      validateInteger(duration.elapsed_weeks, `${path}.duration_context.elapsed_weeks`, errors, 1);
+      validateInteger(duration.episodes, `${path}.duration_context.episodes`, errors, 1);
+      validateInteger(duration.completed_spells, `${path}.duration_context.completed_spells`, errors);
+      validateInteger(duration.censored_spells, `${path}.duration_context.censored_spells`, errors);
+      validateInteger(duration.minimum_completed_spells, `${path}.duration_context.minimum_completed_spells`, errors, 1);
+      validateOptionalFinite(duration.median_remaining_weeks, `${path}.duration_context.median_remaining_weeks`, errors, 0);
+      validateOptionalFinite(duration.restricted_mean_remaining_weeks, `${path}.duration_context.restricted_mean_remaining_weeks`, errors, 0);
+      if (duration.restriction_weeks !== 52) errors.push(`${path}.duration_context.restriction_weeks는 52여야 합니다.`);
+      const survival = duration.conditional_survival;
+      const departure = duration.departure_probability;
+      if (!hasExactKeys(survival, ["4w", "13w"]) || !hasExactKeys(departure, ["4w", "13w"])) {
+        errors.push(`${path}.duration_context 4w/13w 생존·이탈 키가 올바르지 않습니다.`);
+      } else {
+        for (const key of ["4w", "13w"]) {
+          validateOptionalFinite(survival[key], `${path}.duration_context.conditional_survival.${key}`, errors, 0, 1);
+          validateOptionalFinite(departure[key], `${path}.duration_context.departure_probability.${key}`, errors, 0, 1);
+          const survivalValue = survival[key] === null ? null : strictProbability(survival[key]);
+          const departureValue = departure[key] === null ? null : strictProbability(departure[key]);
+          if ((survivalValue === null) !== (departureValue === null)) errors.push(`${path}.duration_context.${key} 생존·이탈 null 상태가 다릅니다.`);
+          if (survivalValue !== null && departureValue !== null && Math.abs(survivalValue + departureValue - 1) > 0.00000001) errors.push(`${path}.duration_context.${key} 생존·이탈 합계가 1이 아닙니다.`);
+        }
+      }
+      const bootstrap = duration.bootstrap;
+      if (!isObject(bootstrap) || bootstrap.unit !== "episode") {
+        errors.push(`${path}.duration_context.bootstrap.unit이 올바르지 않습니다.`);
+      } else {
+        validateInteger(bootstrap.resamples, `${path}.duration_context.bootstrap.resamples`, errors);
+        validateInteger(bootstrap.valid_resamples, `${path}.duration_context.bootstrap.valid_resamples`, errors);
+        validateInteger(bootstrap.seed, `${path}.duration_context.bootstrap.seed`, errors);
+        validateOptionalFinite(bootstrap.interval, `${path}.duration_context.bootstrap.interval`, errors, 0, 1);
+      }
+      if (duration.ci95 !== null && duration.ci95 !== undefined && !isObject(duration.ci95)) errors.push(`${path}.duration_context.ci95는 객체 또는 null이어야 합니다.`);
+    }
+
+    const fx = item.fx_context;
+    if (!isObject(fx)) {
+      errors.push(`${path}.fx_context 객체가 없습니다.`);
+    } else {
+      if (!["ok", "partial", "degraded", "stale", "insufficient_history", "unavailable"].includes(fx.status)) errors.push(`${path}.fx_context.status가 올바르지 않습니다.`);
+      if (fx.method !== "fed_h10_usd_strength") errors.push(`${path}.fx_context.method가 올바르지 않습니다.`);
+      if (!Array.isArray(fx.bilateral_panel) || fx.bilateral_panel.length !== FX_BILATERAL_PANEL.length || fx.bilateral_panel.some((code, index) => code !== FX_BILATERAL_PANEL[index])) {
+        errors.push(`${path}.fx_context.bilateral_panel이 고정 9통화 panel과 일치하지 않습니다.`);
+      }
+      if (!isObject(fx.coverage)) {
+        errors.push(`${path}.fx_context.coverage 객체가 없습니다.`);
+      } else {
+        validateInteger(fx.coverage.available_pairs, `${path}.fx_context.coverage.available_pairs`, errors);
+        validateInteger(fx.coverage.required_pairs, `${path}.fx_context.coverage.required_pairs`, errors);
+        if (fx.coverage.required_pairs !== FX_BILATERAL_PANEL.length || fx.coverage.available_pairs > fx.coverage.required_pairs) {
+          errors.push(`${path}.fx_context coverage가 9통화 panel과 일치하지 않습니다.`);
+        }
+      }
+      for (const blockName of ["indexes", "bilateral"]) {
+        if (!isObject(fx[blockName])) errors.push(`${path}.fx_context.${blockName} 객체가 없습니다.`);
+        else for (const [name, value] of Object.entries(fx[blockName])) validateOptionalFinite(value, `${path}.fx_context.${blockName}.${name}`, errors);
+      }
+    }
+
+    const contextScores = item.context_scores;
+    if (!hasExactKeys(contextScores, Object.keys(FACTOR_META))) {
+      errors.push(`${path}.context_scores 키가 올바르지 않습니다.`);
+    } else {
+      for (const [name, value] of Object.entries(contextScores)) {
+        const number = strictFiniteNumber(value);
+        if (number === null || number < -1 || number > 1) errors.push(`${path}.context_scores.${name}가 -1–1 범위가 아닙니다.`);
+      }
+    }
+    if (!Array.isArray(item.extreme_context)) {
+      errors.push(`${path}.extreme_context 배열이 없습니다.`);
+    } else {
+      item.extreme_context.forEach((row, index) => {
+        const rowPath = `${path}.extreme_context[${index}]`;
+        if (!hasExactKeys(row, ["feature", "label", "z_score", "position", "method"])) errors.push(`${rowPath} 필드가 올바르지 않습니다.`);
+        if (isObject(row) && ("impact" in row || "direction" in row)) errors.push(`${rowPath}에 attribution 필드가 있습니다.`);
+        if (!isObject(row) || strictFiniteNumber(row.z_score) === null || !["high", "low"].includes(row.position)) errors.push(`${rowPath} z-score/position이 올바르지 않습니다.`);
+      });
+    }
+    if ("scores" in item || "top_drivers" in item) errors.push(`${path}에 제거된 v4 semantic field가 있습니다.`);
+    if (typeof item.summary !== "string" || !item.summary.trim()) errors.push(`${path}.summary가 없습니다.`);
+    if (!isObject(item.market) || !isObject(item.health)) errors.push(`${path}.market/health 객체가 없습니다.`);
+  }
+
+  function validateV5ResearchContract(research, model, errors) {
+    const stats = isObject(research) ? research.conditional_asset_stats : null;
+    if (!isObject(stats)) {
+      errors.push("v5 research.conditional_asset_stats 객체가 없습니다.");
+      return;
+    }
+    if (stats.method !== "state_conditioned_forward_total_return") errors.push("v5 conditional asset method가 올바르지 않습니다.");
+    if (stats.role !== "descriptive_only") errors.push("v5 conditional asset role은 descriptive_only여야 합니다.");
+    if (stats.execution_lag_weeks !== 1 || stats.return_currency !== "USD") errors.push("v5 conditional asset 실행시점/통화가 올바르지 않습니다.");
+    if (!Array.isArray(stats.horizons_weeks) || stats.horizons_weeks.length !== TRANSITION_HORIZONS.length || stats.horizons_weeks.some((value, index) => value !== TRANSITION_HORIZONS[index])) {
+      errors.push("v5 conditional asset horizons가 올바르지 않습니다.");
+    }
+    if (!Array.isArray(stats.assets) || stats.assets.length !== OUTCOME_ASSETS.length || stats.assets.some((value, index) => value !== OUTCOME_ASSETS[index])) {
+      errors.push("v5 conditional asset 목록이 올바르지 않습니다.");
+    }
+    if (!Array.isArray(stats.rows)) {
+      errors.push("v5 conditional asset rows 배열이 없습니다.");
+      return;
+    }
+    const forbidden = ["weight", "allocation", "position", "signal", "target_weight"];
+    const metrics = [
+      "mean_return", "median_return", "positive_rate", "annualized_volatility",
+      "downside_volatility", "cvar_5", "mean_max_drawdown",
+    ];
+    const combinations = new Set();
+    stats.rows.forEach((row, index) => {
+      const path = `research.conditional_asset_stats.rows[${index}]`;
+      if (!isObject(row)) {
+        errors.push(`${path}는 객체여야 합니다.`);
+        return;
+      }
+      if (forbidden.some((field) => field in row)) errors.push(`${path}에 allocation 의미 필드가 있습니다.`);
+      if (!OUTCOME_ASSETS.includes(row.asset) || !STATE_ORDER.includes(row.state) || !TRANSITION_HORIZONS.includes(row.horizon_weeks)) {
+        errors.push(`${path} asset/state/horizon이 올바르지 않습니다.`);
+      } else {
+        const combination = `${row.asset}|${row.state}|${row.horizon_weeks}`;
+        if (combinations.has(combination)) errors.push(`${path} asset/state/horizon이 중복됩니다.`);
+        combinations.add(combination);
+      }
+      if (row.execution_lag_weeks !== 1 || row.return_currency !== "USD") errors.push(`${path} 실행시점/통화가 올바르지 않습니다.`);
+      if (row.bootstrap_method !== "episode_bounded_circular_block" || row.bootstrap_block_weeks !== 13) errors.push(`${path} bootstrap 방법이 올바르지 않습니다.`);
+      if (row.bootstrap_resamples !== model.execution_parameters.conditional_outcome_bootstrap_resamples) errors.push(`${path} bootstrap 횟수가 실행 계약과 일치하지 않습니다.`);
+      if (row.minimum_observations !== 20 || row.minimum_unique_episodes !== 5) errors.push(`${path} 지원 기준이 올바르지 않습니다.`);
+      validateInteger(row.n, `${path}.n`, errors);
+      validateInteger(row.unique_episodes, `${path}.unique_episodes`, errors);
+      if (!["ok", "insufficient_support"].includes(row.status)) errors.push(`${path}.status가 올바르지 않습니다.`);
+      for (const metric of metrics) {
+        validateOptionalFinite(row[metric], `${path}.${metric}`, errors);
+        const lower = row[`${metric}_ci95_lower`];
+        const upper = row[`${metric}_ci95_upper`];
+        validateOptionalFinite(lower, `${path}.${metric}_ci95_lower`, errors);
+        validateOptionalFinite(upper, `${path}.${metric}_ci95_upper`, errors);
+        if ((lower == null) !== (upper == null)) errors.push(`${path}.${metric} CI null 상태가 다릅니다.`);
+        if (lower != null && upper != null && lower > upper) errors.push(`${path}.${metric} CI 순서가 뒤집혔습니다.`);
+      }
+    });
+    if (combinations.size !== OUTCOME_ASSETS.length * STATE_ORDER.length * TRANSITION_HORIZONS.length) {
+      errors.push("v5 conditional asset rows는 모든 asset/state/horizon 조합을 포함해야 합니다.");
+    }
+  }
+
   function validatePayload(payload) {
     const errors = [];
     const warnings = [];
@@ -359,10 +1628,18 @@
 
     if (errors.length || !Array.isArray(payload.weekly)) return { errors, warnings, weekly: [] };
 
-    if (payload.meta.schema_version !== "1.0.0") errors.push("지원하지 않는 schema_version입니다.");
+    const declaredResultVersion = payload.meta.result_version;
+    const isV3 = declaredResultVersion === V3_RESULT_VERSION;
+    const isV4 = declaredResultVersion === V4_RESULT_VERSION;
+    const isV5 = declaredResultVersion === V5_RESULT_VERSION;
+    if (![V3_RESULT_VERSION, V4_RESULT_VERSION, V5_RESULT_VERSION].includes(declaredResultVersion)) {
+      errors.push(`지원하지 않는 meta.result_version입니다: ${textValue(declaredResultVersion)}`);
+    }
+    const expectedSchemaVersion = isV5 ? V5_SCHEMA_VERSION : "1.0.0";
+    if (payload.meta.schema_version !== expectedSchemaVersion) errors.push(`schema_version은 ${expectedSchemaVersion}이어야 합니다.`);
     if (!payload.meta.generated_at) errors.push("meta.generated_at이 없습니다.");
     if (!payload.meta.data_as_of) errors.push("meta.data_as_of가 없습니다.");
-    if (!payload.meta.mode) errors.push("meta.mode가 없습니다.");
+    if (!isV5 && !payload.meta.mode) errors.push("meta.mode가 없습니다.");
     if (payload.meta.timezone !== "America/New_York") {
       errors.push("meta.timezone은 America/New_York이어야 합니다.");
     }
@@ -379,18 +1656,6 @@
       errors.push("feature_catalog는 비어 있지 않은 객체 배열이어야 합니다.");
     }
 
-    const declaredResultVersion = payload.meta.result_version;
-    if (
-      declaredResultVersion !== undefined
-      && declaredResultVersion !== null
-      && declaredResultVersion !== ""
-      && declaredResultVersion !== V3_RESULT_VERSION
-      && declaredResultVersion !== V4_RESULT_VERSION
-    ) {
-      errors.push(`지원하지 않는 meta.result_version입니다: ${textValue(declaredResultVersion)}`);
-    }
-    const isV3 = declaredResultVersion === V3_RESULT_VERSION;
-    const isV4 = declaredResultVersion === V4_RESULT_VERSION;
     const isTransitionContract = isV3 || isV4;
     if (isTransitionContract) {
       if (typeof payload.meta.generation_id !== "string" || !payload.meta.generation_id) {
@@ -640,6 +1905,7 @@
         }
       }
     }
+    if (isV5) validateV5ModelContract(payload, errors);
 
     const seenDates = new Set();
     const weekly = [];
@@ -674,7 +1940,7 @@
         errors.push(`${item.date} 다음 주 국면 코드가 표준 세 상태와 일치하지 않습니다.`);
       }
 
-      for (const horizon of ["current", "next_week"]) {
+      for (const horizon of isV5 ? [] : ["current", "next_week"]) {
         const probabilities = isObject(item[horizon]) ? item[horizon].probabilities : null;
         if (!isObject(probabilities)) {
           errors.push(`${item.date} ${horizon} 확률 객체가 없습니다.`);
@@ -706,6 +1972,7 @@
       if (probability(item.transition_probability) === null) {
         errors.push(`${item.date} transition_probability가 0–1 범위가 아닙니다.`);
       }
+      if (isV5) validateV5WeekContract(item, path, errors);
       if (isTransitionContract) {
         const transitionRisk = item.transition_risk;
         const expectedKeys = ["1w", "4w", "13w"];
@@ -770,9 +2037,9 @@
           }
         }
       }
-      if (!isObject(item.scores)) {
+      if (!isV5 && !isObject(item.scores)) {
         errors.push(`${item.date} scores 객체가 없습니다.`);
-      } else {
+      } else if (!isV5) {
         for (const scoreName of Object.keys(FACTOR_META)) {
           const score = finiteNumber(item.scores[scoreName]);
           if (score === null || score < -1 || score > 1) {
@@ -798,6 +2065,7 @@
         errors.push(`sources[${index}].status가 지원하는 상태가 아닙니다.`);
       }
     }
+    if (isV5) validateV5ResearchContract(payload.research, payload.model, errors);
 
     return { errors: [...new Set(errors)], warnings: [...new Set(warnings)], weekly };
   }
@@ -821,6 +2089,27 @@
 
   function getProbability(result, code) {
     return probability(isObject(result) && isObject(result.probabilities) ? result.probabilities[code] : null);
+  }
+
+  function resultVersion() {
+    return isObject(state.raw && state.raw.meta) ? state.raw.meta.result_version : null;
+  }
+
+  function isV5Payload() {
+    return resultVersion() === V5_RESULT_VERSION;
+  }
+
+  function currentMeasureKind(version = resultVersion()) {
+    return version === V5_RESULT_VERSION ? "membership" : "probability";
+  }
+
+  function getCurrentMeasure(result, code, version = resultVersion()) {
+    const field = currentMeasureKind(version) === "membership" ? "memberships" : "probabilities";
+    return probability(isObject(result) && isObject(result[field]) ? result[field][code] : null);
+  }
+
+  function extractCurrentStrength(result, version = resultVersion()) {
+    return probability(isObject(result) ? (version === V5_RESULT_VERSION ? result.primary_membership : result.confidence) : null);
   }
 
   function extractConfidence(result) {
@@ -871,20 +2160,26 @@
   function initializeDom() {
     const ids = [
       "app-state", "loading-state", "error-state", "empty-state", "error-title", "error-detail", "retry-button",
-      "dashboard", "header-analysis-date", "header-data-as-of", "theme-toggle",
+      "dashboard", "header-result-identity", "header-analysis-date", "header-data-as-of", "header-model-health", "theme-toggle",
       "theme-toggle-text", "dashboard-subtitle", "date-form", "analysis-date", "week-select",
       "snap-note", "previous-week", "next-week", "latest-week", "history-window",
       "current-regime-card", "current-horizon", "current-regime-symbol", "current-regime-name",
       "current-regime-confidence", "current-probabilities", "current-entropy", "next-regime-card", "next-horizon",
       "next-regime-symbol", "next-regime-name", "next-regime-confidence",
-      "next-probabilities", "next-entropy", "probability-shifts",
+      "next-probabilities", "next-entropy", "next-model-context",
       "transition-card", "transition-value", "transition-value-label", "transition-meter",
       "transition-horizon-bars", "probability-chart",
       "probability-chart-wrap", "chart-tooltip", "history-caption",
       "chart-selection-readout", "chart-interaction-hint",
       "chart-readout-date", "chart-readout-risk-on", "chart-readout-transition", "chart-readout-risk-off",
-      "history-data-body", "factor-axis", "factor-caption", "factor-scores", "regime-timeline", "timeline-start",
-      "timeline-end", "top-drivers", "market-context", "champion-summary", "model-caption", "model-loss-caption",
+      "history-data-body", "probability-chart-title", "history-chart-legend", "history-table-scroll", "history-table-caption",
+      "factor-title", "factor-axis", "factor-caption", "factor-scores", "regime-timeline", "timeline-start",
+      "timeline-end", "drivers-title", "drivers-caption", "top-drivers", "market-context",
+      "duration-context-card", "duration-context-caption", "duration-context", "duration-baselines",
+      "fx-context-card", "fx-context-caption", "fx-coverage", "fx-ablation-status", "fx-context",
+      "conditional-stats-nav", "conditional-stats", "conditional-asset-select", "conditional-horizon-select",
+      "conditional-stat-grid", "conditional-stat-table-caption", "conditional-stat-body",
+      "champion-summary", "model-evidence-summary", "model-caption", "model-loss-caption",
       "model-loss-chart", "model-loss-axis", "leaderboard-body",
       "transition-model-section", "transition-model-caption", "transition-horizon-select",
       "transition-model-summary", "transition-leaderboard-caption", "transition-leaderboard-body",
@@ -1034,6 +2329,17 @@
       state.transitionHorizon = TRANSITION_HORIZONS.includes(requested) ? requested : 1;
       renderTransitionModels();
     });
+    dom["conditional-asset-select"].addEventListener("change", () => {
+      state.outcomeAsset = OUTCOME_ASSETS.includes(dom["conditional-asset-select"].value)
+        ? dom["conditional-asset-select"].value
+        : "SPY";
+      renderConditionalStats();
+    });
+    dom["conditional-horizon-select"].addEventListener("change", () => {
+      const requested = Number(dom["conditional-horizon-select"].value);
+      state.outcomeHorizon = TRANSITION_HORIZONS.includes(requested) ? requested : 13;
+      renderConditionalStats();
+    });
     dom["probability-chart"].addEventListener("pointermove", (event) => previewChartDateFromPointer(event, false));
     dom["probability-chart"].addEventListener("click", (event) => previewChartDateFromPointer(event, true));
     dom["probability-chart-wrap"].addEventListener("pointerleave", resetChartPreview);
@@ -1081,18 +2387,33 @@
     const cutoff = firstValue(week, ["data_as_of", "available_at", "cutoff_at"]) ||
       firstValue(state.raw.meta, ["data_as_of", "dataAsOf", "cutoff_at"]);
     setText(dom["header-analysis-date"], formatDate(week.date));
-    setText(dom["header-data-as-of"], cutoff ? formatDateTime(cutoff) : "미기재");
+    renderHeaderDataAsOf(cutoff);
     dom["dashboard-subtitle"].textContent = `${formatDate(week.date)} 관측 주${cutoff ? ` · 컷오프 ${formatDateTime(cutoff)}` : ""}`;
 
     renderRegime("current", week.current, week.date);
     renderRegime("next", week.next_week, firstValue(week.next_week, ["date", "target_date", "period_end"]));
+    renderNextModelContext(week.next_week);
     renderTransition(week);
-    renderProbabilityShifts(week);
+    renderSemanticLabels();
     renderHistory();
     renderTimeline();
-    renderFactors(week.scores);
-    renderDrivers(week.top_drivers);
+    renderFactors(isV5Payload() ? week.context_scores : week.scores);
+    if (isV5Payload()) renderContextExtremes(week.extreme_context);
+    else renderDrivers(week.top_drivers);
     renderMarket(week.market);
+    renderDurationContext(week.duration_context);
+    renderFxContext(week.fx_context);
+  }
+
+  function renderSemanticLabels() {
+    const membership = isV5Payload();
+    setText(dom["probability-chart-title"], membership ? "국면 소속도 히스토리" : "국면 확률 히스토리");
+    setText(dom["factor-title"], membership ? "시장 맥락 점수" : "국면 팩터");
+    setText(dom["drivers-title"], membership ? "52주 극단값" : "주요 지표");
+    setText(dom["drivers-caption"], membership ? "52주 표준점수 · 시장 맥락, 예측 기여도 아님" : "52주 표준점수");
+    dom["history-chart-legend"].setAttribute("aria-label", membership ? "국면 소속도 선 범례" : "국면 확률 선 범례");
+    dom["history-table-scroll"].setAttribute("aria-label", membership ? "표시 기간의 국면 소속도 표" : "표시 기간의 국면 확률 표");
+    setText(dom["history-table-caption"], membership ? "표시 기간의 현재 국면 소속도" : "표시 기간의 현재 국면 확률");
   }
 
   function renderRegime(prefix, result, horizonDate) {
@@ -1104,14 +2425,16 @@
 
     setText(dom[`${prefix}-regime-symbol`], meta.symbol);
     setText(dom[`${prefix}-regime-name`], `${meta.ko} · ${meta.label}`);
-    const confidence = extractConfidence(result);
-    setText(dom[`${prefix}-regime-confidence`], `확률 ${formatPercent(confidence)}`);
+    const isCurrent = prefix === "current";
+    const semantic = isCurrent && isV5Payload() ? "소속도" : isCurrent ? "확률" : "예측확률";
+    const confidence = isCurrent ? extractCurrentStrength(result) : extractConfidence(result);
+    setText(dom[`${prefix}-regime-confidence`], `${semantic} ${formatPercent(confidence)}`);
     dom[`${prefix}-horizon`].textContent = `${prefix === "current" ? "t" : "t+1"}${horizonDate ? ` · ${formatDate(horizonDate, false)}` : ""}`;
     const probabilityContainer = dom[`${prefix}-probabilities`];
     probabilityContainer.replaceChildren();
     for (const stateCode of STATE_ORDER) {
       const stateDefinition = STATE_META[stateCode];
-      const value = getProbability(result, stateCode);
+      const value = isCurrent ? getCurrentMeasure(result, stateCode) : getProbability(result, stateCode);
       const row = createElement("div", "probability-row");
       const label = createElement("span", "probability-label");
       const marker = createElement("span", `state-dot ${stateCode}`, stateDefinition.short);
@@ -1122,54 +2445,38 @@
       fill.style.width = value === null ? "0" : `${(value * 100).toFixed(2)}%`;
       track.append(fill);
       const display = createElement("span", "probability-value", formatPercent(value));
-      row.setAttribute("aria-label", `${stateDefinition.ko} 확률 ${formatPercent(value)}`);
+      row.setAttribute("aria-label", `${stateDefinition.ko} ${semantic} ${formatPercent(value)}`);
       row.append(label, track, display);
       probabilityContainer.append(row);
     }
 
-    const entropy = finiteNumber(isObject(result) ? result.entropy : null);
-    setText(dom[`${prefix}-entropy`], `${prefix === "current" ? "불확실성" : "예측 불확실성"} 엔트로피 ${formatNumber(entropy, 3)}`);
+    const entropyField = isCurrent && isV5Payload() ? "membership_entropy" : "entropy";
+    const entropy = finiteNumber(isObject(result) ? result[entropyField] : null);
+    const entropyLabel = isCurrent && isV5Payload() ? "소속도" : isCurrent ? "불확실성" : "예측 불확실성";
+    setText(dom[`${prefix}-entropy`], `${entropyLabel} 엔트로피 ${formatNumber(entropy, 3)}`);
   }
 
-  function renderProbabilityShifts(week) {
-    const container = dom["probability-shifts"];
-    container.replaceChildren();
-    for (const code of STATE_ORDER) {
-      const definition = STATE_META[code];
-      const current = getProbability(week.current, code);
-      const forecast = getProbability(week.next_week, code);
-      const row = createElement("div", `probability-shift-row ${code}`);
-      const label = createElement("span", "probability-shift-label");
-      const marker = createElement("span", `state-dot ${code}`, definition.short);
-      marker.setAttribute("aria-hidden", "true");
-      label.append(marker, document.createTextNode(definition.label));
-
-      const track = createElement("span", "probability-shift-track");
-      if (current !== null && forecast !== null) {
-        const start = Math.min(current, forecast) * 100;
-        const distance = Math.abs(forecast - current) * 100;
-        const connector = createElement("span", "probability-shift-connector");
-        connector.style.left = `${start.toFixed(2)}%`;
-        connector.style.width = `${distance.toFixed(2)}%`;
-        const currentMarker = createElement("span", "probability-shift-point current");
-        currentMarker.style.left = `${(current * 100).toFixed(2)}%`;
-        const forecastMarker = createElement("span", "probability-shift-point forecast");
-        forecastMarker.style.left = `${(forecast * 100).toFixed(2)}%`;
-        track.append(connector, currentMarker, forecastMarker);
-      }
-
-      const values = createElement("span", "probability-shift-values");
-      values.append(createElement("strong", null, `${formatPercent(current)} → ${formatPercent(forecast)}`));
-      const delta = current === null || forecast === null ? null : (forecast - current) * 100;
-      const deltaText = delta === null ? "변화 —" : `${delta > 0 ? "+" : ""}${formatNumber(delta, 1)}%p`;
-      values.append(createElement("span", `probability-shift-delta ${delta !== null && delta > 0 ? "is-up" : delta !== null && delta < 0 ? "is-down" : ""}`, deltaText));
-      row.setAttribute(
-        "aria-label",
-        `${definition.ko} 확률 현재 ${formatPercent(current)}, 다음 주 ${formatPercent(forecast)}, 변화 ${deltaText}`,
-      );
-      row.append(label, track, values);
-      container.append(row);
+  function renderNextModelContext(result) {
+    const model = textValue(isObject(result) ? result.model : null, "미기재");
+    const details = [`모델 ${model}`];
+    const inputLabel = {
+      markov: "입력 현재 국면·과거 전이",
+      persistence: "입력 현재 국면",
+      xgboost: "입력 PIT 구조 피처",
+      xgb_hazard_destination: "입력 PIT 피처·이탈/목적지",
+      causal_dynamic_ensemble: "입력 완료 OOS 예측 풀",
+      causal_multiscale_ensemble: "입력 완료 OOS 예측 풀 26·52·104주",
+    }[model];
+    if (inputLabel) details.push(inputLabel);
+    if (isObject(result) && result.fallback === true) details.push("fallback");
+    const health = state.raw && isObject(state.raw.model)
+      ? state.raw.model.model_health
+      : null;
+    if (isV5Payload() && isObject(health)) {
+      details.push(health.status === "review_due" ? "검토 필요" : "정상");
+      details.push(...modelHealthReasonLabels(health.reasons));
     }
+    setText(dom["next-model-context"], details.join(" · "));
   }
 
   function renderTransition(week) {
@@ -1196,12 +2503,13 @@
       dom["transition-meter"].setAttribute("aria-valuenow", String(Math.round(value * 100)));
       dom["transition-meter"].setAttribute("aria-valuetext", formatPercent(value));
     }
-    renderTransitionHorizons(riskByHorizon);
+    renderTransitionHorizons(week);
   }
 
-  function renderTransitionHorizons(riskByHorizon) {
+  function renderTransitionHorizons(week) {
     const container = dom["transition-horizon-bars"];
     container.replaceChildren();
+    const riskByHorizon = isObject(week.transition_risk) ? week.transition_risk : null;
     if (!isObject(riskByHorizon)) {
       container.hidden = true;
       return;
@@ -1220,11 +2528,42 @@
       const meterFill = createElement("span");
       meterFill.style.width = value === null ? "0" : `${(value * 100).toFixed(2)}%`;
       meter.append(meterFill);
+      row.append(heading, meter);
+      if (isV5Payload()) {
+        const detail = createElement("div", "transition-horizon-detail");
+        const kmDeparture = probability(
+          week.duration_context
+          && week.duration_context.departure_probability
+          && week.duration_context.departure_probability[`${horizon}w`],
+        );
+        const difference = value === null || kmDeparture === null ? null : (value - kmDeparture) * 100;
+        const comparison = createElement("div", "transition-horizon-comparison");
+        comparison.append(
+          createElement("span", null, `KM 기준 ${formatPercent(kmDeparture)}`),
+          createElement("strong", null, difference === null ? "차이 —" : `${difference > 0 ? "+" : ""}${formatNumber(difference, 1)}%p`),
+        );
+        detail.append(comparison);
+
+        const directional = isObject(week.directional_risk) ? week.directional_risk[`${horizon}w`] : null;
+        const masses = createElement("div", "direction-mass-list");
+        for (const code of STATE_ORDER) {
+          if (code === week.current.state) continue;
+          const mass = probability(directional && directional.first_destination ? directional.first_destination[code] : null);
+          if (mass === null || mass === 0) continue;
+          const item = createElement("span", "direction-mass");
+          const marker = createElement("span", `state-dot ${code}`, STATE_META[code].short);
+          marker.setAttribute("aria-hidden", "true");
+          item.append(marker, document.createTextNode(`${STATE_META[code].label} ${formatPercent(mass)}`));
+          masses.append(item);
+        }
+        if (masses.childElementCount) detail.append(masses);
+        row.title = directional && directional.model ? `최초 이탈 방향 모델 · ${directional.model}` : "";
+        row.append(detail);
+      }
       row.setAttribute(
         "aria-label",
-        `향후 ${horizon}주 안에 한 번 이상 현재 국면에서 이탈할 확률 ${formatPercent(value)}`,
+        `향후 ${horizon}주 안에 한 번 이상 현재 국면에서 이탈할 확률 ${formatPercent(value)}${isV5Payload() ? ", 최초 이탈 방향과 Kaplan-Meier 기준 포함" : ""}`,
       );
-      row.append(heading, meter);
       container.append(row);
     }
     container.hidden = false;
@@ -1280,7 +2619,7 @@
     setText(dom["chart-readout-date"], week ? formatDate(week.date) : "—");
     for (const code of STATE_ORDER) {
       const readout = dom[`chart-readout-${code.replaceAll("_", "-")}`];
-      if (readout) setText(readout, week ? formatPercent(getProbability(week.current, code)) : "—");
+      if (readout) setText(readout, week ? formatPercent(getCurrentMeasure(week.current, code)) : "—");
     }
     if (week) updateChartCursor(index);
     for (const point of dom["probability-chart"].querySelectorAll(".chart-point")) {
@@ -1289,7 +2628,7 @@
 
     if (dom["chart-selection-readout"]) {
       const summary = week
-        ? `${formatDate(week.date)}. Risk-on ${formatPercent(getProbability(week.current, "risk_on"))}, Transition ${formatPercent(getProbability(week.current, "transition"))}, Risk-off ${formatPercent(getProbability(week.current, "risk_off"))}.`
+        ? `${formatDate(week.date)}. Risk-on ${formatPercent(getCurrentMeasure(week.current, "risk_on"))}, Transition ${formatPercent(getCurrentMeasure(week.current, "transition"))}, Risk-off ${formatPercent(getCurrentMeasure(week.current, "risk_off"))}.`
         : "선택된 차트 날짜가 없습니다.";
       dom["chart-selection-readout"].setAttribute("aria-label", summary);
     }
@@ -1297,7 +2636,7 @@
 
   function showChartTooltipForWeek(event, week) {
     const tooltip = dom["chart-tooltip"];
-    tooltip.textContent = `${formatDate(week.date)} · Risk-on ${formatPercent(getProbability(week.current, "risk_on"))} · Transition ${formatPercent(getProbability(week.current, "transition"))} · Risk-off ${formatPercent(getProbability(week.current, "risk_off"))}`;
+    tooltip.textContent = `${formatDate(week.date)} · Risk-on ${formatPercent(getCurrentMeasure(week.current, "risk_on"))} · Transition ${formatPercent(getCurrentMeasure(week.current, "transition"))} · Risk-off ${formatPercent(getCurrentMeasure(week.current, "risk_off"))}`;
     tooltip.hidden = false;
     const wrapRect = dom["probability-chart-wrap"].getBoundingClientRect();
     const left = finiteNumber(event.clientX) === null ? 8 : event.clientX - wrapRect.left + 10;
@@ -1389,7 +2728,7 @@
         "text-anchor": "middle",
         class: "chart-axis-label",
       });
-      empty.textContent = "표시할 확률 히스토리가 없습니다.";
+      empty.textContent = `표시할 ${isV5Payload() ? "소속도" : "확률"} 히스토리가 없습니다.`;
       svg.append(empty);
       return;
     }
@@ -1437,7 +2776,7 @@
     let validPointCount = 0;
     for (const code of STATE_ORDER) {
       const points = history.map((week, index) => {
-        const value = getProbability(week.current, code);
+        const value = getCurrentMeasure(week.current, code);
         return { week, value, x: x(index), y: value === null ? null : y(value), index };
       });
       const pathData = makeLinePath(points);
@@ -1463,12 +2802,12 @@
 
     if (!validPointCount) {
       const empty = createSvg("text", { x: width / 2, y: height / 2, "text-anchor": "middle", class: "chart-axis-label" });
-      empty.textContent = "이 기간에는 유효한 확률 값이 없습니다.";
+      empty.textContent = `이 기간에는 유효한 ${isV5Payload() ? "소속도" : "확률"} 값이 없습니다.`;
       svg.append(empty);
     }
 
     const range = `${formatDate(history[0].date)}–${formatDate(history[history.length - 1].date)}`;
-    dom["history-caption"].textContent = `${range} · ${history.length}주 관측 · 현재 국면 확률 · 0–100% 축`;
+    dom["history-caption"].textContent = `${range} · ${history.length}주 관측 · 현재 국면 ${isV5Payload() ? "소속도" : "확률"} · 0–100% 축`;
     renderChartReadout(state.chartPinnedDate);
     requestAnimationFrame(() => scrollChartDateIntoView(state.chartPinnedDate));
   }
@@ -1490,7 +2829,7 @@
     for (const week of history) {
       const row = createElement("tr");
       row.append(createElement("td", null, week.date));
-      for (const code of STATE_ORDER) row.append(createElement("td", null, formatPercent(getProbability(week.current, code))));
+      for (const code of STATE_ORDER) row.append(createElement("td", null, formatPercent(getCurrentMeasure(week.current, code))));
       dom["history-data-body"].append(row);
     }
   }
@@ -1650,6 +2989,204 @@
       item.append(copy, track, impact);
       dom["top-drivers"].append(item);
     }
+  }
+
+  function renderContextExtremes(extremes) {
+    dom["top-drivers"].replaceChildren();
+    if (!Array.isArray(extremes) || !extremes.length) {
+      dom["top-drivers"].append(createElement("li", "empty-inline", "이 관측 주에는 52주 극단값이 없습니다."));
+      return;
+    }
+    const rows = [...extremes]
+      .filter((row) => isObject(row))
+      .sort((left, right) => Math.abs(right.z_score) - Math.abs(left.z_score))
+      .slice(0, 8);
+    const scale = Math.max(4, ...rows.map((row) => Math.abs(row.z_score)));
+    for (const extreme of rows) {
+      const item = createElement("li", "driver-item");
+      const copy = createElement("div", "driver-copy");
+      copy.append(
+        createElement("strong", null, textValue(extreme.label, textValue(extreme.feature))),
+        createElement("span", null, extreme.position === "high" ? "52주 분포 상단" : "52주 분포 하단"),
+      );
+      const track = createElement("span", "driver-track");
+      const fill = createElement("span", `driver-fill ${extreme.z_score < 0 ? "negative" : "positive"}`);
+      fill.style.width = `${Math.min(50, Math.abs(extreme.z_score) / scale * 50).toFixed(2)}%`;
+      track.append(fill);
+      const value = createElement("span", "driver-impact", `${extreme.z_score > 0 ? "+" : ""}${formatNumber(extreme.z_score, 2)}`);
+      item.setAttribute("aria-label", `${textValue(extreme.label, extreme.feature)}, 52주 분포 ${extreme.position === "high" ? "상단" : "하단"}, z-score ${formatNumber(extreme.z_score, 2)}`);
+      item.append(copy, track, value);
+      dom["top-drivers"].append(item);
+    }
+  }
+
+  function appendMetric(container, label, value) {
+    const wrapper = createElement("div");
+    wrapper.append(createElement("dt", null, label), createElement("dd", null, value));
+    container.append(wrapper);
+  }
+
+  function renderDurationContext(duration) {
+    const card = dom["duration-context-card"];
+    if (!isV5Payload() || !isObject(duration)) {
+      card.hidden = true;
+      return;
+    }
+    const supported = duration.status === "ok";
+    const median = finiteNumber(duration.median_remaining_weeks);
+    const rmst = finiteNumber(duration.restricted_mean_remaining_weeks);
+    dom["duration-context"].replaceChildren();
+    appendMetric(dom["duration-context"], "현재 지속", `${formatNumber(duration.elapsed_weeks, 0)}주`);
+    appendMetric(
+      dom["duration-context"],
+      median === null ? "52주 제한 잔여기간" : "중앙 잔여기간",
+      `${formatNumber(median === null ? rmst : median, 1)}주`,
+    );
+    appendMetric(dom["duration-context"], "완료 / 검열 spell", `${formatNumber(duration.completed_spells, 0)} / ${formatNumber(duration.censored_spells, 0)}`);
+    setText(dom["duration-context-caption"], supported ? "상태별 Kaplan–Meier" : "표본 축적 중");
+    dom["duration-baselines"].replaceChildren();
+    for (const horizon of [4, 13]) {
+      const departure = probability(duration.departure_probability && duration.departure_probability[`${horizon}w`]);
+      const block = createElement("div", "duration-baseline");
+      block.append(createElement("span", null, `${horizon}주 KM 이탈 기준`), createElement("strong", null, formatPercent(departure)));
+      dom["duration-baselines"].append(block);
+    }
+    card.hidden = false;
+  }
+
+  function formatFxMetric(key, value) {
+    const number = finiteNumber(value);
+    if (number === null) return "—";
+    if (/(return|vol|share|mad|minus_afe)/i.test(key) && Math.abs(number) <= 1) return formatSignedPercent(number);
+    return `${number > 0 ? "+" : ""}${formatNumber(number, 3)}`;
+  }
+
+  function renderFxContext(fx) {
+    const card = dom["fx-context-card"];
+    if (!isV5Payload() || !isObject(fx)) {
+      card.hidden = true;
+      return;
+    }
+    const available = finiteNumber(fx.coverage && fx.coverage.available_pairs);
+    const required = finiteNumber(fx.coverage && fx.coverage.required_pairs);
+    dom["fx-coverage"].replaceChildren(
+      createElement("span", null, `환율 ${formatNumber(available, 0)} / ${formatNumber(required, 0)}`),
+      createElement("span", `support-chip ${fx.status === "ok" ? "is-ok" : "is-limited"}`, fxStatusLabel(fx.status)),
+    );
+    const model = state.raw && isObject(state.raw.model) ? state.raw.model : {};
+    const ablation = isObject(model.fx_ablation) ? model.fx_ablation : {};
+    const eligibleWeeks = finiteNumber(ablation.eligible_common_weeks);
+    const minimumWeeks = finiteNumber(ablation.minimum_common_weeks);
+    const requiredPairs = finiteNumber(ablation.common_origin_required_pairs);
+    const evaluationOrigins = finiteNumber(
+      isObject(ablation.common_evaluation_origins)
+        ? ablation.common_evaluation_origins.count
+        : null,
+    );
+    const comparisons = isObject(ablation.gate) && Array.isArray(ablation.gate.comparisons)
+      ? ablation.gate.comparisons
+      : [];
+    const passedVariants = isObject(ablation.gate) && Array.isArray(ablation.gate.passed_variants)
+      ? ablation.gate.passed_variants.length
+      : 0;
+    const ablationLabel = fxStatusLabel(ablation.status);
+    const coverageSummary = [
+      `FX 평가 ${ablationLabel}`,
+      `가용 공통 ${formatNumber(eligibleWeeks, 0)}/${formatNumber(minimumWeeks, 0)}주`,
+      `실제 OOS ${formatNumber(evaluationOrigins, 0)}개`,
+      `통화 ${formatNumber(requiredPairs, 0)}/9`,
+      ablation.role === "prospective_shadow" ? "전향적 shadow" : "shadow 상태 확인",
+    ].join(" · ");
+    const gateSummary = [
+      `FX 후보 gate ${formatNumber(passedVariants, 0)}/${formatNumber(comparisons.length, 0)} 통과`,
+      ablation.core_champion_promoted === true ? "core 승격" : "core 비승격",
+    ].join(" · ");
+    dom["fx-ablation-status"].replaceChildren(
+      createElement("span", null, coverageSummary),
+      createElement("strong", null, gateSummary),
+    );
+    dom["fx-ablation-status"].setAttribute("aria-label", `${coverageSummary} · ${gateSummary}`);
+    dom["fx-context"].replaceChildren();
+    for (const [blockLabel, block] of [["Index", fx.indexes], ["Bilateral", fx.bilateral]]) {
+      if (!isObject(block)) continue;
+      for (const [key, value] of Object.entries(block).slice(0, 6)) {
+        appendMetric(dom["fx-context"], `${blockLabel} · ${humanizeKey(key)}`, formatFxMetric(key, value));
+      }
+    }
+    setText(dom["fx-context-caption"], "Federal Reserve H.10 · USD 강세 방향 통일");
+    card.hidden = false;
+  }
+
+  function conditionalRows() {
+    const research = isObject(state.raw && state.raw.research) ? state.raw.research : null;
+    const stats = research && isObject(research.conditional_asset_stats) ? research.conditional_asset_stats : null;
+    return stats && Array.isArray(stats.rows)
+      ? stats.rows.filter((row) => row.asset === state.outcomeAsset && row.horizon_weeks === state.outcomeHorizon)
+      : [];
+  }
+
+  function conditionalInterval(row) {
+    return row.mean_return_ci95_lower !== null && row.mean_return_ci95_lower !== undefined
+      && row.mean_return_ci95_upper !== null && row.mean_return_ci95_upper !== undefined
+      ? `${formatSignedPercent(row.mean_return_ci95_lower)}–${formatSignedPercent(row.mean_return_ci95_upper)}`
+      : "—";
+  }
+
+  function renderConditionalStats() {
+    const section = dom["conditional-stats"];
+    if (!isV5Payload()) {
+      section.hidden = true;
+      dom["conditional-stats-nav"].hidden = true;
+      return;
+    }
+    dom["conditional-stats-nav"].hidden = false;
+    dom["conditional-asset-select"].value = state.outcomeAsset;
+    dom["conditional-horizon-select"].value = String(state.outcomeHorizon);
+    const rows = conditionalRows();
+    dom["conditional-stat-grid"].replaceChildren();
+    dom["conditional-stat-body"].replaceChildren();
+    for (const code of STATE_ORDER) {
+      const row = rows.find((candidate) => candidate.state === code) || { state: code, n: 0, unique_episodes: 0, status: "insufficient_support" };
+      const supported = row.status === "ok";
+      const card = createElement("article", `conditional-state-card state-${code}`);
+      const heading = createElement("div", "conditional-state-heading");
+      heading.append(
+        createElement("strong", null, `${STATE_META[code].short} ${STATE_META[code].label}`),
+        createElement("span", `support-chip ${supported ? "is-ok" : "is-limited"}`, supported ? "표본 충족" : "표본 부족"),
+      );
+      const mean = createElement("div", "conditional-mean");
+      mean.append(createElement("strong", null, formatSignedPercent(row.mean_return)), createElement("span", null, `평균 수익률 · 95% CI ${conditionalInterval(row)}`));
+      const metrics = createElement("dl", "conditional-metrics");
+      for (const [label, field, formatter] of [
+        ["중앙값", "median_return", formatSignedPercent],
+        ["양(+) 비율", "positive_rate", formatPercent],
+        ["하방 변동성", "downside_volatility", formatPercent],
+        ["CVaR 5%", "cvar_5", formatSignedPercent],
+        ["평균 MDD", "mean_max_drawdown", formatSignedPercent],
+      ]) {
+        const wrapper = createElement("div");
+        wrapper.append(createElement("dt", null, label), createElement("dd", null, formatter(row[field])));
+        metrics.append(wrapper);
+      }
+      card.append(heading, mean, metrics, createElement("span", "conditional-sample", `n ${formatNumber(row.n, 0)} · episode ${formatNumber(row.unique_episodes, 0)}`));
+      dom["conditional-stat-grid"].append(card);
+
+      const tableRow = createElement("tr");
+      tableRow.append(
+        createElement("td", null, STATE_META[code].label),
+        createElement("td", null, formatSignedPercent(row.mean_return)),
+        createElement("td", null, formatSignedPercent(row.median_return)),
+        createElement("td", null, formatPercent(row.positive_rate)),
+        createElement("td", null, conditionalInterval(row)),
+        createElement("td", null, formatPercent(row.downside_volatility)),
+        createElement("td", null, formatSignedPercent(row.cvar_5)),
+        createElement("td", null, formatSignedPercent(row.mean_max_drawdown)),
+        createElement("td", null, `${formatNumber(row.n, 0)} / ${formatNumber(row.unique_episodes, 0)}`),
+      );
+      dom["conditional-stat-body"].append(tableRow);
+    }
+    setText(dom["conditional-stat-table-caption"], `${state.outcomeAsset} ${state.outcomeHorizon}주 국면별 조건부 성과`);
+    section.hidden = false;
   }
 
   function metricParts(key, raw) {
@@ -1905,6 +3442,7 @@
       createElement("span", null, "선정 모델"),
       createElement("strong", null, championName),
     );
+    renderModelEvidenceSummary(model, championName, holdoutDiagnostic);
     renderTransitionModels();
     const selection = firstValue(model, ["selection_period"]);
     const holdout = firstValue(model, ["holdout_period", "validation_period", "evaluation_period", "oos_period"]);
@@ -1952,6 +3490,48 @@
     });
   }
 
+  function renderModelEvidenceSummary(model, championName, holdoutDiagnostic) {
+    const container = dom["model-evidence-summary"];
+    container.replaceChildren();
+    if (!isV5Payload()) {
+      container.hidden = true;
+      return;
+    }
+    const appendEvidence = (label, value, className = "") => {
+      const item = createElement("div", `model-evidence-item ${className}`.trim());
+      item.append(createElement("span", null, label), createElement("strong", null, value));
+      container.append(item);
+    };
+    appendEvidence(
+      "선정 상태",
+      `${state.raw.meta.publication_status === V5_PUBLICATION_STATUS ? "공개 검토 완료" : "배포 전 잠정"} · ${championName} 유지`,
+      state.raw.meta.publication_status === V5_PUBLICATION_STATUS ? "is-ok" : "is-provisional",
+    );
+    const diagnostics = Array.isArray(model.selection_diagnostics) ? model.selection_diagnostics : [];
+    const multiscale = diagnostics.find((row) => isObject(row) && row.model === "causal_multiscale_ensemble");
+    if (isObject(multiscale)) {
+      appendEvidence(
+        "Multiscale gate",
+        `Log loss 개선 ${formatNumber(multiscale.absolute_log_loss_improvement, 4)} < 승격 기준 ${formatNumber(multiscale.minimum_log_loss_improvement, 4)} · ${multiscale.gate_passed === true ? "통과" : "미통과"}`,
+        multiscale.gate_passed === true ? "is-ok" : "is-review",
+      );
+    }
+    if (isObject(holdoutDiagnostic) && holdoutDiagnostic.applicable === true) {
+      appendEvidence(
+        "2023+ 진단",
+        `${championName} ${formatNumber(holdoutDiagnostic.champion_rank, 0)}/${formatNumber(holdoutDiagnostic.model_count, 0)}위 · ${textValue(holdoutDiagnostic.best_model)} 대비 Log loss +${formatNumber(holdoutDiagnostic.absolute_regret, 4)}`,
+        holdoutDiagnostic.status === "ok" ? "is-ok" : "is-review",
+      );
+    }
+    if (isObject(state.comparisonSummary) && state.comparisonSummary.exactParity === true) {
+      appendEvidence(
+        "Frozen V4",
+        `공통 OOS ${formatNumber(state.comparisonSummary.commonKeys, 0)}개 · Markov 확률 완전 일치`,
+      );
+    }
+    container.hidden = false;
+  }
+
   function sourceStatus(source) {
     return normalizeStatus(firstValue(source, ["status", "health", "quality_status"]));
   }
@@ -1962,6 +3542,7 @@
       .toLowerCase();
     if (value === "private_noncommercial") return "개인 · 비상업";
     if (value.startsWith("user_confirmed")) return "사용자 확인";
+    if (value === "federal_reserve_board_public_domain_citation_requested") return "미 연준 공개 · 출처 표기";
     if (value === "rights_unconfirmed") return "공개 미확인";
     if (value === "license_blocked") return "이용 차단";
     return textValue(firstValue(source, ["license_class", "license", "rights", "usage_scope"]), "미기재");
@@ -2043,14 +3624,73 @@
   function renderGlobalMetadata() {
     const meta = state.raw.meta || {};
     const dataAsOf = firstValue(meta, ["data_as_of", "dataAsOf", "cutoff_at"]);
-    setText(dom["header-data-as-of"], dataAsOf ? formatDateTime(dataAsOf) : "미기재");
-    setText(dom["source-freshness"], dataAsOf ? formatDateTime(dataAsOf) : "기준 시점 미기재");
+    renderResultIdentity();
+    renderHeaderDataAsOf(dataAsOf);
+    const freshness = isObject(meta.freshness) ? meta.freshness : null;
+    const currentFreshness = freshness
+      ? displayFreshness(dataAsOf, freshness.maximum_age_days)
+      : null;
+    const freshnessText = dataAsOf ? formatDateTime(dataAsOf) : "기준 시점 미기재";
+    setText(
+      dom["source-freshness"],
+      currentFreshness
+        ? `${freshnessText} · ${currentFreshness.status === "stale" ? `지연 ${formatNumber(currentFreshness.age_days, 0)}일` : `최신 ${formatNumber(currentFreshness.age_days, 0)}일`}`
+        : freshnessText,
+    );
 
     const model = state.raw.model || {};
     const champion = model.champion;
     setText(dom["footer-model-version"], firstValue(isObject(champion) ? champion : {}, ["version", "model_version"]) || firstValue(model, ["version", "model_version"]) || "미기재");
     setText(dom["footer-schema-version"], firstValue(meta, ["schema_version", "schemaVersion"]) || "미기재");
     setText(dom["footer-generated-at"], formatDateTime(firstValue(meta, ["generated_at", "generatedAt"])));
+    renderHeaderModelHealth();
+  }
+
+  function renderResultIdentity() {
+    const identity = resultIdentity(state.raw);
+    const element = dom["header-result-identity"];
+    element.className = `result-identity-chip is-${identity.mode}`;
+    setText(element, identity.label);
+  }
+
+  function renderHeaderDataAsOf(value) {
+    const container = dom["header-data-as-of"];
+    container.replaceChildren(
+      createElement("span", null, value ? formatDateTime(value) : "미기재"),
+    );
+    const freshness = state.raw && isObject(state.raw.meta) && isObject(state.raw.meta.freshness)
+      ? state.raw.meta.freshness
+      : null;
+    if (!isV5Payload() || !freshness) return;
+    const currentFreshness = displayFreshness(value, freshness.maximum_age_days);
+    if (!currentFreshness) return;
+    const stale = currentFreshness.status === "stale";
+    container.append(
+      createElement(
+        "span",
+        `model-health-chip ${stale ? "is-review" : "is-ok"}`,
+        stale ? `지연 ${formatNumber(currentFreshness.age_days, 0)}일` : "최신",
+      ),
+    );
+  }
+
+  function renderHeaderModelHealth() {
+    const model = state.raw && isObject(state.raw.model) ? state.raw.model : {};
+    const champion = modelName(model.champion);
+    dom["header-model-health"].replaceChildren(createElement("span", null, champion));
+    if (isV5Payload() && isObject(model.model_health)) {
+      const review = model.model_health.status === "review_due";
+      const chip = createElement("span", `model-health-chip ${review ? "is-review" : "is-ok"}`, review ? "검토 필요" : "정상");
+      dom["header-model-health"].append(chip);
+      const reasons = modelHealthReasonLabels(model.model_health.reasons);
+      if (reasons.length) {
+        dom["header-model-health"].append(createElement("small", "model-health-reasons", reasons.join(" · ")));
+      }
+      dom["header-model-health"].setAttribute(
+        "aria-label",
+        [champion, review ? "검토 필요" : "정상", ...reasons].join(" · "),
+      );
+    }
   }
 
   function renderStaticSections() {
@@ -2058,12 +3698,16 @@
     renderModel();
     renderSources();
     renderFeatureCatalog();
+    renderConditionalStats();
   }
 
   async function loadData() {
     showAppState("loading");
+    dom["header-result-identity"].className = "result-identity-chip is-loading";
+    setText(dom["header-result-identity"], "결과 상태 불러오는 중");
     setText(dom["header-analysis-date"], "불러오는 중");
     setText(dom["header-data-as-of"], "불러오는 중");
+    setText(dom["header-model-health"], "불러오는 중");
 
     try {
       const response = await fetch(DATA_URL, {
@@ -2071,11 +3715,13 @@
         headers: { Accept: "application/json" },
       });
       if (!response.ok) throw new Error(`결과 파일 요청이 실패했습니다 (HTTP ${response.status}).`);
-      const payload = await response.json();
+      const payloadText = await response.text();
+      const payload = JSON.parse(payloadText);
       const validation = validatePayload(payload);
       if (validation.errors.length) throw new DataContractError(validation.errors);
 
       state.raw = payload;
+      state.comparisonSummary = await loadV5ComparisonSummary(payload, payloadText);
       state.weekly = validation.weekly;
       state.validationWarnings = validation.warnings;
       state.preferredHistoryWindow = dom["history-window"].value === "all"
@@ -2101,8 +3747,11 @@
           ? "결과 파일이 올바른 JSON이 아닙니다."
           : textValue(error && error.message, "데이터 요청 중 알 수 없는 오류가 발생했습니다.");
       showAppState("error", "국면 결과를 표시할 수 없습니다", detail);
+      dom["header-result-identity"].className = "result-identity-chip is-unknown";
+      setText(dom["header-result-identity"], "결과 유형 확인 필요");
       setText(dom["header-analysis-date"], "사용 불가");
       setText(dom["header-data-as-of"], "사용 불가");
+      setText(dom["header-model-health"], "사용 불가");
     }
   }
 
@@ -2121,6 +3770,7 @@
 
   const dashboardApi = Object.freeze({
     DATA_URL,
+    V5_COMPARISON_URL,
     STATE_ORDER,
     finiteNumber,
     strictFiniteNumber,
@@ -2132,6 +3782,13 @@
     snapToPriorDate,
     resolveHistoryWindow,
     validatePayload,
+    resultIdentity,
+    validateV5ComparisonSummary,
+    fxStatusLabel,
+    displayFreshness,
+    currentMeasureKind,
+    getCurrentMeasure,
+    extractCurrentStrength,
   });
 
   if (typeof window !== "undefined") window.__REGIME_DASHBOARD__ = dashboardApi;

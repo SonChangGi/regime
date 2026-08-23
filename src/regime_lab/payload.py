@@ -71,6 +71,6 @@ def estimate_from_probabilities(values: Mapping[str, float] | list[float] | np.n
 
 
 def write_dashboard_payload(payload: dict[str, Any], path: str | Path) -> Path:
-    payload.setdefault("meta", {})["schema_version"] = SCHEMA_VERSION
+    payload.setdefault("meta", {}).setdefault("schema_version", SCHEMA_VERSION)
     validate_dashboard_payload(payload)
     return write_json_atomic(path, payload)

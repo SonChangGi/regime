@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -80,6 +82,48 @@ def test_pipeline_passes_profile_specific_time_split_minimums(
     assert captured["minimum_selection_predictions"] == expected_minimum
     assert captured["minimum_holdout_predictions"] == expected_minimum
     assert captured["progress"] == progress_messages.append
+    assert captured["checkpoint_directory"] is None
+    assert captured["source_fingerprint_sha256"] is None
+
+
+def test_pipeline_forwards_private_checkpoint_only_for_v5(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def intercept(*args, **kwargs):
+        captured.update(kwargs)
+        raise _BenchmarkIntercept
+
+    monkeypatch.setattr(pipeline, "verify_frozen_v4_baseline", lambda: {})
+    monkeypatch.setattr(pipeline, "run_benchmark", intercept)
+    checkpoint = tmp_path / "private-checkpoint"
+    with pytest.raises(_BenchmarkIntercept):
+        pipeline.build_dashboard_result(
+            _minimal_weekly_dataset(),
+            None,
+            profile_name="standard",
+            mode="live",
+            selection_end="2023-01-01",
+            contract_version="v5",
+            checkpoint_directory=checkpoint,
+            source_fingerprint_sha256="a" * 64,
+        )
+
+    assert captured["checkpoint_directory"] == checkpoint
+    assert captured["source_fingerprint_sha256"] == "a" * 64
+
+    with pytest.raises(ValueError, match="V5-only"):
+        pipeline.build_dashboard_result(
+            _minimal_weekly_dataset(),
+            None,
+            profile_name="standard",
+            mode="live",
+            selection_end="2023-01-01",
+            contract_version="v4",
+            checkpoint_directory=checkpoint,
+        )
 
 
 def test_cli_progress_printer_flushes(monkeypatch: pytest.MonkeyPatch) -> None:

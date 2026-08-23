@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 import argparse
 import hashlib
@@ -16,7 +17,10 @@ from regime_lab import cli
 ROOT = Path(__file__).resolve().parents[1]
 UTC = timezone.utc
 LIVE_TARGET = datetime.fromisoformat("2026-08-07T20:00:00+00:00")
-LIVE_PAYLOAD = (ROOT / "publication/live/regime-results.json").read_bytes()
+LIVE_PAYLOAD = (
+    ROOT
+    / "publication/baselines/v4-20260821/regime-results.json"
+).read_bytes()
 CANDIDATE_CONTEXT = {
     "source_tree_sha256": "1" * 64,
     "series_config_sha256": "2" * 64,
@@ -47,6 +51,7 @@ def _settings(tmp_path: Path, *, root: Path | None = None) -> automation.Automat
         public_root="https://sonchanggi.github.io/regime/",
         workflow_timeout=timedelta(minutes=1),
         public_readback_timeout=timedelta(minutes=1),
+        contract="v4",
     )
 
 
@@ -97,6 +102,7 @@ def test_project_automation_config_and_launch_agent_are_secret_free() -> None:
     rendered = json.dumps(document)
 
     assert settings.profile == "standard"
+    assert settings.contract == "v5"
     assert settings.payload.is_relative_to(settings.state_directory)
     assert settings.artifacts.is_relative_to(settings.state_directory)
     assert settings.payload != ROOT / "web/data/regime-results.json"
@@ -236,6 +242,143 @@ def test_public_readback_requires_exact_payload_manifest_and_consumer(
         )
 
 
+def test_public_readback_rejects_invalid_v5_pair_despite_matching_manifest(
+    tmp_path: Path,
+) -> None:
+    settings = replace(_settings(tmp_path), contract="v5")
+    payload = (
+        json.dumps(
+            {
+                "meta": {
+                    "result_version": "weekly-regime-result-v5",
+                    "data_as_of": "2026-08-21T20:00:00+00:00",
+                }
+            }
+        )
+        + "\n"
+    ).encode()
+    invalid_comparison = b'{"invalid": true}\n'
+    manifest = json.dumps(
+        {
+            "payload_data_as_of": "2026-08-21T20:00:00+00:00",
+            "files": {
+                automation.PUBLIC_PAYLOAD_PATH: {
+                    "sha256": hashlib.sha256(payload).hexdigest()
+                },
+                automation.PUBLIC_COMPARISON_PATH: {
+                    "sha256": hashlib.sha256(invalid_comparison).hexdigest()
+                },
+            },
+        }
+    ).encode()
+
+    def fetch(url: str) -> bytes:
+        if url.endswith(automation.PUBLIC_PAYLOAD_PATH):
+            return payload
+        if url.endswith(automation.PUBLIC_MANIFEST_PATH):
+            return manifest
+        if url.endswith(automation.PUBLIC_COMPARISON_PATH):
+            return invalid_comparison
+        return b"<title>US Market Regime Lab</title><script src='./app.js'></script>"
+
+    with pytest.raises(
+        automation.AutomationError,
+        match="expected publication comparison contract failed",
+    ):
+        automation.verify_public_readback(
+            settings,
+            expected_payload=payload,
+            expected_comparison=invalid_comparison,
+            fetch=fetch,
+        )
+
+
+def test_public_readback_rejects_missing_v5_comparison_before_fetch(
+    tmp_path: Path,
+) -> None:
+    settings = replace(_settings(tmp_path), contract="v5")
+    payload = b'{"meta":{"result_version":"weekly-regime-result-v5"}}\n'
+
+    with pytest.raises(
+        automation.AutomationError,
+        match="V5 public readback requires an expected comparison",
+    ):
+        automation.verify_public_readback(
+            settings,
+            expected_payload=payload,
+            fetch=lambda _url: pytest.fail("public fetch must not start"),
+        )
+
+
+def test_git_preflight_rejects_invalid_remote_v5_comparison(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = replace(_settings(tmp_path), contract="v5")
+    payload = (
+        json.dumps(
+            {
+                "meta": {
+                    "result_version": "weekly-regime-result-v5",
+                    "data_as_of": "2026-08-21T20:00:00+00:00",
+                }
+            }
+        )
+        + "\n"
+    ).encode()
+    invalid_comparison = b'{"invalid": true}\n'
+
+    def run(args, **_kwargs) -> bytes:
+        command = tuple(args)
+        if command == ("git", "branch", "--show-current"):
+            return b"main\n"
+        if command == ("git", "status", "--porcelain", "--untracked-files=all"):
+            return b""
+        if command == ("git", "remote", "get-url", "origin"):
+            return b"git@github.com:SonChangGi/regime.git\n"
+        if command == ("git", "fetch", "--quiet", "origin", "main"):
+            return b""
+        if command == (
+            "git",
+            "diff",
+            "--name-only",
+            "HEAD",
+            "origin/main",
+            "--",
+        ):
+            return b""
+        if command == ("git", "rev-parse", "origin/main"):
+            return b"a" * 40 + b"\n"
+        if command == (
+            "git",
+            "show",
+            f"origin/main:{automation.PUBLICATION_PATH}",
+        ):
+            return payload
+        if command == (
+            "git",
+            "show",
+            f"origin/main:{automation.PUBLICATION_COMPARISON_PATH}",
+        ):
+            return invalid_comparison
+        raise AssertionError(f"unexpected command: {command}")
+
+    monkeypatch.setattr(automation, "_run", run)
+    monkeypatch.setattr(
+        automation,
+        "validate_automation_candidate",
+        lambda *_args, **_kwargs: {
+            "meta": {"result_version": "weekly-regime-result-v5"}
+        },
+    )
+
+    with pytest.raises(
+        automation.AutomationError,
+        match="remote publication comparison contract failed",
+    ):
+        automation._git_preflight(settings)
+
+
 def test_expired_local_authorization_fails_closed(tmp_path: Path) -> None:
     settings = _settings(tmp_path)
     automation._write_local_authorization(
@@ -343,7 +486,7 @@ def test_already_current_run_never_builds_or_publishes(
     monkeypatch.setattr(
         automation,
         "verify_public_readback",
-        lambda _settings, *, expected_payload: None,
+        lambda _settings, *, expected_payload, expected_comparison=None: None,
     )
     monkeypatch.setattr(
         automation,

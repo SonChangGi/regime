@@ -6,7 +6,8 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import timedelta
 import importlib
-from typing import Callable, Iterable, Literal, Mapping
+from pathlib import Path
+from typing import Any, Callable, Iterable, Literal, Mapping
 import warnings
 
 import numpy as np
@@ -66,6 +67,7 @@ class BenchmarkResult:
     holdout_leaderboard: pd.DataFrame | None = None
     selection_diagnostics: pd.DataFrame | None = None
     stacking_weights: pd.DataFrame | None = None
+    multiscale_scale_forecasts: pd.DataFrame | None = None
     state_label_history: pd.DataFrame | None = None
     weekly_state_forecasts: pd.DataFrame | None = None
 
@@ -893,6 +895,8 @@ def run_benchmark(
     minimum_selection_predictions: int = 12,
     minimum_holdout_predictions: int = 12,
     progress: Callable[[str], None] | None = None,
+    checkpoint_directory: str | Path | None = None,
+    source_fingerprint_sha256: str | None = None,
 ) -> BenchmarkResult:
     """Compare non-DL models with an expanding, one-week-purged walk-forward.
 
@@ -911,6 +915,10 @@ def run_benchmark(
     """
 
     features, states = _validate_inputs(features, states)
+    if checkpoint_directory is None and source_fingerprint_sha256 is not None:
+        raise ValueError(
+            "source_fingerprint_sha256 requires checkpoint_directory"
+        )
     if gap < 0:
         raise ValueError("gap must be non-negative")
     if model_workers < 1:
@@ -968,6 +976,53 @@ def run_benchmark(
     prediction_rows: list[dict[str, object]] = []
     split_rows: list[dict[str, object]] = []
     total_origins = len(test_positions)
+    checkpoint = None
+    cached_origins: dict[int, Any] = {}
+    if checkpoint_directory is not None:
+        # Kept lazy so the default V4 path does not import or initialize the
+        # private V5 checkpoint subsystem.
+        from regime_lab.walkforward_checkpoint import (
+            BenchmarkCheckpointIdentity,
+            ResolvedBenchmarkParameters,
+            WalkForwardCheckpoint,
+        )
+
+        checkpoint_parameters = ResolvedBenchmarkParameters.from_arguments(
+            profile=cfg,
+            models=names,
+            include_hmm=include_hmm,
+            gap=gap,
+            random_state=random_state,
+            selection_end=cutoff,
+            selection_max_origins=selection_max_origins,
+            model_workers=model_workers,
+            minimum_selection_predictions=minimum_selection_predictions,
+            minimum_holdout_predictions=minimum_holdout_predictions,
+        )
+        checkpoint_identity = BenchmarkCheckpointIdentity.build(
+            features,
+            states,
+            checkpoint_parameters,
+            source_fingerprint_sha256=source_fingerprint_sha256,
+        )
+        expected_origin_dates = tuple(
+            pd.Timestamp(features.index[position]) for position in test_positions
+        )
+        checkpoint_origin_dates = tuple(
+            origin.origin_date for origin in checkpoint_identity.origins
+        )
+        if checkpoint_origin_dates != expected_origin_dates:
+            raise RuntimeError(
+                "checkpoint origin resolver differs from run_benchmark"
+            )
+        checkpoint = WalkForwardCheckpoint.open(
+            checkpoint_directory,
+            checkpoint_identity,
+        )
+        cached_origins = {
+            record.origin.sequence: record
+            for record in checkpoint.load_completed_origins()
+        }
     checkpoint_count = min(21, total_origins)
     progress_checkpoints = set(
         np.rint(np.linspace(1, total_origins, checkpoint_count)).astype(int)
@@ -981,6 +1036,16 @@ def run_benchmark(
                 f"{progress_origin.date().isoformat()} → "
                 f"{progress_target.date().isoformat()}"
             )
+        cached = cached_origins.get(origin_number)
+        if cached is not None:
+            cached_split = dict(cached.split_audit)
+            if cached_split["first_purged_origin"] is None:
+                cached_split["first_purged_origin"] = pd.NaT
+            split_rows.append(cached_split)
+            prediction_rows.extend(
+                dict(row) for row in cached.prediction_rows
+            )
+            continue
         train_stop = test_position - gap
         x_train = features.iloc[:train_stop]
         y_train = next_states.iloc[:train_stop].astype(str)
@@ -1007,22 +1072,20 @@ def run_benchmark(
         )
 
         purged = features.index[train_stop:test_position]
-        split_rows.append(
-            {
-                "origin_date": origin_date,
-                "target_date": target_date,
-                "train_size": int(train_stop),
-                "train_start": pd.Timestamp(features.index[0]),
-                "last_train_origin": pd.Timestamp(features.index[train_stop - 1]),
-                "last_train_target": pd.Timestamp(features.index[train_stop]),
-                "purged_origin_count": int(len(purged)),
-                "first_purged_origin": (
-                    pd.Timestamp(purged[0]) if len(purged) else pd.NaT
-                ),
-                "gap": int(gap),
-                "evaluation_split": evaluation_split,
-            }
-        )
+        split_row = {
+            "origin_date": origin_date,
+            "target_date": target_date,
+            "train_size": int(train_stop),
+            "train_start": pd.Timestamp(features.index[0]),
+            "last_train_origin": pd.Timestamp(features.index[train_stop - 1]),
+            "last_train_target": pd.Timestamp(features.index[train_stop]),
+            "purged_origin_count": int(len(purged)),
+            "first_purged_origin": (
+                pd.Timestamp(purged[0]) if len(purged) else pd.NaT
+            ),
+            "gap": int(gap),
+            "evaluation_split": evaluation_split,
+        }
 
         def evaluate_name(name: str) -> dict[str, object]:
             fallback = False
@@ -1088,6 +1151,13 @@ def run_benchmark(
                 # executor.map preserves registry order, keeping artifact row
                 # ordering deterministic while model fits remain independent.
                 origin_predictions = list(executor.map(evaluate_name, names))
+        if checkpoint is not None:
+            checkpoint.save_origin(
+                origin_number,
+                origin_predictions,
+                split_row,
+            )
+        split_rows.append(split_row)
         prediction_rows.extend(origin_predictions)
 
     predictions = pd.DataFrame(prediction_rows)
@@ -2193,6 +2263,7 @@ from .structural_models import augment_benchmark_with_structural_models
 from .structural_models import build_causal_dynamic_ensemble_oos
 from .structural_models import build_xgb_hazard_destination_oos
 from .structural_models import causal_dynamic_ensemble
+from .structural_models import causal_multiscale_ensemble
 from .structural_models import forecast_structural_probabilities
 from .structural_models import project_joint_survival_hazard
 
@@ -2202,6 +2273,7 @@ __all__.extend(
         "build_causal_dynamic_ensemble_oos",
         "build_xgb_hazard_destination_oos",
         "causal_dynamic_ensemble",
+        "causal_multiscale_ensemble",
         "forecast_structural_probabilities",
         "project_joint_survival_hazard",
     ]

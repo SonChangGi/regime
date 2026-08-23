@@ -286,7 +286,7 @@ def test_v4_producer_uses_schema_canonical_frozen_contracts() -> None:
 
 def test_dashboard_contract_rejects_unknown_declared_result_version() -> None:
     payload = _payload()
-    payload["meta"]["result_version"] = "weekly-regime-result-v5"
+    payload["meta"]["result_version"] = "weekly-regime-result-v6"
     with pytest.raises(ContractError, match="unsupported result version"):
         validate_dashboard_payload(payload)
 

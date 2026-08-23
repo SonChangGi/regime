@@ -44,6 +44,7 @@ def _settings(tmp_path: Path) -> automation.AutomationSettings:
         public_root="https://sonchanggi.github.io/regime/",
         workflow_timeout=timedelta(hours=1),
         public_readback_timeout=timedelta(minutes=10),
+        contract="v4",
         retry_hours=(3, 9, 15, 21),
         transient_retry_delay=timedelta(hours=6),
         heartbeat_interval=timedelta(seconds=30),

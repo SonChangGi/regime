@@ -1,4 +1,67 @@
-# Methodology
+# 방법론
+
+## 구조 v5 운영 계약
+
+주간 자동화와 publication은 현재 v5 계약이다. 수동 build/demo의 기본값은 V4
+재현을 위해 유지하며 raw V5 후보는 명시적으로 opt-in한다. 첫 표준 실데이터 실행에서 Markov는 frozen v4
+Markov와 matched OOS 확률·평가값이 정확히 일치해 champion을 유지했다. 다중 기억
+앙상블과 FX ablation은 사전등록 gate를 통과하지 못해 core champion에 승격하지
+않았다. 후보 생성과 공개 검토 표식 추가는 분리하며, 공개 payload는 파생 비교
+sidecar와 byte 단위로 결속한다. 전체 사전등록값은
+[`structural-v5-preregistration.md`](structural-v5-preregistration.md)에 고정한다.
+
+- **현재 국면:** `causal_hysteresis_state`가 hard label이다. `memberships`는 같은
+  시점 risk-score anchor에 대한 소속도이며 미래 확률이 아니다. 다음 주 예측은
+  별도 `next_week.probabilities`에 둔다.
+- **방향성 이탈:** 1·4·13주 안에 현재 국면을 처음 떠날 때의 도착 상태를
+  `no_departure`와 함께 예측한다. horizon 말의 상태를 예측하는 target이 아니다.
+  목적지 확률의 합은 기존 any-departure 확률에 맞춘다. 방향 모델은 실제 이탈
+  origin의 conditional destination loss로 고르고 8 events·2 classes·3 blocks
+  미만이면 empirical baseline을 유지한다.
+- **다중 기억 앙상블:** Markov·XGBoost·hazard-destination의 완료된
+  OOS log score를 26·52·104주 half-life로 각각 할인한 후 세 확률을
+  정확히 1/3씩 평균한다. 해당 origin의 fallback expert는 가중치 0이며,
+  기존 common-origin log-loss·Brier·Holm gate를 통과해야만 v5 후보로
+  선택된다.
+- **잔여기간:** `as_of`까지 확정된 spell만 구성하고 현재 spell은 우측 검열한다.
+  현재 상태를 `d`개 주간 관측에서 확인했을 때 이탈 직전 시점 `d-1`을 조건으로
+  `S(d-1+h)/S(d-1)`을 계산하고, 52주까지의 조건부 생존율 합을 제한 평균
+  잔여기간(RMST)으로 보고한다.
+- **FX:** Federal Reserve H.10의 Broad·AFE·EME 지수와 EUR·JPY·GBP·CHF·CAD·
+  AUD·CNY·MXN·BRL 고정 패널을 사용한다. 로그 변화의 부호는 모두
+  `양수 = USD 강세`로 통일한다. 1·4·13주 변화, 13·26주 변동성, AFE–EME
+  divergence와 9개 통화쌍 median·상승 breadth·MAD를 만든다.
+- **FX 시점:** Board XML 전체 이력은 historical-vintage archive로 간주하지 않는다.
+  최초 발견값의 가용시점은 `first_seen`이며 이후 발견한 과거값 변경도 발견 시점부터
+  prospective revision이다. 최초 수집 이전 availability를 소급 채우지 않는다.
+- **FX archive 민감도:** 2022-01-01 이후 공식 `releaseDates.json`과 dated
+  release page를 XML과 별도 chain으로 replay한다. 정상 발표는 16:15 ET,
+  시각이 없는 선언 정정 페이지는 다음 날 00:00 ET부터 가용하다. 선언 정정,
+  직전 page 대비 material revision, 신규 series-date가 없고 직전 page key와
+  정확히 일치하는 완전 재발행을 correction-equivalent event로 판정한다. 3일 이내
+  page gap은 보조 경보만 맡는다. 해당 page가 표 범위 밖 과거값에 미친 영향을
+  알 수 없으므로 각 event 이후 27개 model origin을 평가에서 제외한다. 이 chain은
+  민감도이며 core 자동 승격은 금지된다.
+- **조건부 자산 통계:** state `t`를 관측한 뒤 다음 주 종가 `t+1`에 진입한 것으로
+  정렬해 SPY·QQQ·IWM·TLT·HYG·UUP의 1·4·13주 성과를 요약한다. 결과는
+  descriptive-only이며 allocation·position·signal을 만들지 않는다. 신뢰구간은
+  episode 경계를 넘지 않는 circular block으로 주간 origin 가중치를 보존한다.
+
+FX의 champion 투입은 잠겨 있다. `v4_control`, `v4_plus_broad_index`,
+`v4_plus_bilateral_panel`, `v4_plus_all_fx` 네 shadow ablation을 모든 필요한
+FX 피처와 9개 bilateral pair가 실제 가용한 공통 156주 이상에서 비교한다. 화면용
+context의 6/9 coverage 기준은 모델 평가의 9/9 기준과 분리한다. 다음 주 국면에 대해
+최소 104주 expanding 학습, 1주 target purge, 고정 L2 multinomial logistic을
+사용한다. 네 변형은 동일 origin의 log loss·multiclass Brier로 평가하며, control
+대비 log loss 0.05 이상 개선, Brier 악화 0.01 이하, 13주 paired circular block
+bootstrap 1,999회와 Holm 5% gate를 모두 충족해야 통과로 기록한다. 통과 여부와
+관계없이 core champion 자동 승격은 금지한다.
+공개 계약은 파생값만 허용하며 H.10 raw observation과 로컬 snapshot DB를 제외한다.
+`fx-ablation-oos.csv`는 공통 origin별 실제 state·확률·purge·fallback만 담는
+derived-only 감사 자료이며, aggregate metric과 paired bootstrap/Holm gate는 이
+자료에서 독립 재계산한다.
+
+## Frozen V4 기준선·비교 계약
 
 The structural-v4 experiment is frozen in
 [`config/structural_v4.json`](../config/structural_v4.json) and summarized in

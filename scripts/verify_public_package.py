@@ -22,12 +22,15 @@ from scripts.package_public_demo import (  # noqa: E402
     PUBLICATION_MODE_DEMO,
     PUBLICATION_MODE_LIVE_DERIVED,
     STATIC_ALLOWLIST,
+    V5_COMPARISON_DESTINATION,
+    V5_RESULT_VERSION,
     PackagingError,
     validate_public_payload,
+    validate_v5_comparison_sidecar,
 )
 
 
-EXPECTED_FILES = frozenset(
+BASE_EXPECTED_FILES = frozenset(
     (*STATIC_ALLOWLIST, PAYLOAD_DESTINATION, MANIFEST_DESTINATION)
 )
 EXPECTED_MANIFEST_KEYS = frozenset(
@@ -80,9 +83,27 @@ def verify_public_package(directory: str | Path) -> dict[str, Any]:
             raise VerificationError(f"package must not contain symbolic links: {path}")
         if path.is_file():
             actual_files.add(path.relative_to(package_root).as_posix())
-    if actual_files != EXPECTED_FILES:
-        missing = sorted(EXPECTED_FILES - actual_files)
-        extra = sorted(actual_files - EXPECTED_FILES)
+
+    missing_base = sorted(BASE_EXPECTED_FILES - actual_files)
+    if missing_base:
+        raise VerificationError(
+            f"package inventory mismatch (missing={missing_base}, extra=[])"
+        )
+    payload_path = package_root / PAYLOAD_DESTINATION
+    try:
+        payload_raw = payload_path.read_bytes()
+    except OSError as exc:
+        raise VerificationError(
+            f"dashboard payload could not be read: {payload_path}"
+        ) from exc
+    payload = _load_json(payload_path, label="dashboard payload")
+    result_version = payload.get("meta", {}).get("result_version")
+    expected_files = set(BASE_EXPECTED_FILES)
+    if result_version == V5_RESULT_VERSION:
+        expected_files.add(V5_COMPARISON_DESTINATION)
+    if actual_files != expected_files:
+        missing = sorted(expected_files - actual_files)
+        extra = sorted(actual_files - expected_files)
         raise VerificationError(
             f"package inventory mismatch (missing={missing}, extra={extra})"
         )
@@ -120,7 +141,7 @@ def verify_public_package(directory: str | Path) -> dict[str, Any]:
         raise VerificationError("contains_raw_observations must be false")
 
     manifest_files = manifest.get("files")
-    expected_manifest_files = EXPECTED_FILES - {MANIFEST_DESTINATION}
+    expected_manifest_files = expected_files - {MANIFEST_DESTINATION}
     if not isinstance(manifest_files, dict) or set(manifest_files) != expected_manifest_files:
         raise VerificationError("publication manifest file inventory is not exact")
 
@@ -136,16 +157,22 @@ def verify_public_package(directory: str | Path) -> dict[str, Any]:
         if any(pattern.search(raw) for pattern in SECRET_PATTERNS):
             raise VerificationError(f"credential-like material found: {relative_path}")
 
-    payload = _load_json(
-        package_root / PAYLOAD_DESTINATION,
-        label="dashboard payload",
-    )
     try:
         validate_public_payload(
             payload,
             publication_mode=publication_mode,
             rights_acknowledged=publication_mode == PUBLICATION_MODE_LIVE_DERIVED,
         )
+        if result_version == V5_RESULT_VERSION:
+            comparison = _load_json(
+                package_root / V5_COMPARISON_DESTINATION,
+                label="V5/V4 comparison sidecar",
+            )
+            validate_v5_comparison_sidecar(
+                comparison,
+                payload=payload,
+                payload_raw=payload_raw,
+            )
     except PackagingError as exc:
         raise VerificationError(str(exc)) from exc
     payload_source_ids = sorted(
@@ -163,6 +190,7 @@ def verify_public_package(directory: str | Path) -> dict[str, Any]:
         "package_kind": package_kind,
         "payload_mode": manifest["payload_mode"],
         "payload_data_as_of": manifest.get("payload_data_as_of"),
+        "comparison_included": result_version == V5_RESULT_VERSION,
         "files": sorted(actual_files),
     }
 

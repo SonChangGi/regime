@@ -1,0 +1,123 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!--
+  SYNTHETIC TEST FIXTURE ONLY.
+  This document was hand-authored for parser tests. Dates, release metadata,
+  descriptions, and every observation value below are fabricated; it is not a
+  saved or excerpted Federal Reserve response.
+-->
+<message:MessageGroup
+  xmlns:message="http://www.SDMX.org/resources/SDMXML/schemas/v1_0/message"
+  xmlns:common="http://www.SDMX.org/resources/SDMXML/schemas/v1_0/common"
+  xmlns:frb="http://www.federalreserve.gov/structure/compact/common">
+  <message:Header>
+    <message:ID>H10</message:ID>
+    <message:Test>false</message:Test>
+    <message:Name>Synthetic H.10 parser fixture</message:Name>
+    <message:Prepared>2026-08-17T00:00:00</message:Prepared>
+    <message:Sender id="FRB">
+      <message:Name>Synthetic provider fixture</message:Name>
+    </message:Sender>
+  </message:Header>
+  <frb:DataSet id="H10"
+    xmlns:kf="http://www.federalreserve.gov/structure/compact/H10_H10">
+    <kf:Series CURRENCY="NA" FREQ="9" FX="BRD"
+      SERIES_NAME="JRXWTFB_N.B" UNIT="Index:_1997_Jan_100" UNIT_MULT="1">
+      <frb:Annotations>
+        <common:Annotation>
+          <common:AnnotationType>Short Description</common:AnnotationType>
+          <common:AnnotationText>Synthetic broad dollar index</common:AnnotationText>
+        </common:Annotation>
+      </frb:Annotations>
+      <frb:Obs OBS_STATUS="A" OBS_VALUE="101.0000" TIME_PERIOD="2026-08-13"/>
+      <frb:Obs OBS_STATUS="A" OBS_VALUE="102.0000" TIME_PERIOD="2026-08-14"/>
+    </kf:Series>
+    <kf:Series CURRENCY="NA" FREQ="9" FX="AFE"
+      SERIES_NAME="JRXWTFN_N.B" UNIT="Index:_1997_Jan_100" UNIT_MULT="1">
+      <frb:Obs OBS_STATUS="A" OBS_VALUE="201.0000" TIME_PERIOD="2026-08-13"/>
+      <frb:Obs OBS_STATUS="A" OBS_VALUE="202.0000" TIME_PERIOD="2026-08-14"/>
+    </kf:Series>
+    <kf:Series CURRENCY="NA" FREQ="9" FX="EME"
+      SERIES_NAME="JRXWTFO_N.B" UNIT="Index:_1997_Jan_100" UNIT_MULT="1">
+      <frb:Obs OBS_STATUS="A" OBS_VALUE="301.0000" TIME_PERIOD="2026-08-13"/>
+      <frb:Obs OBS_STATUS="A" OBS_VALUE="302.0000" TIME_PERIOD="2026-08-14"/>
+    </kf:Series>
+
+    <kf:Series CURRENCY="AUD" FREQ="9" FX="AUD"
+      SERIES_NAME="RXI$US_N.B.AL" UNIT="Currency" UNIT_MULT="1">
+      <frb:Annotations>
+        <common:Annotation>
+          <common:AnnotationType>Short Description</common:AnnotationType>
+          <common:AnnotationText>Synthetic AUD quote (USD per AUD)</common:AnnotationText>
+        </common:Annotation>
+      </frb:Annotations>
+      <frb:Obs OBS_STATUS="A" OBS_VALUE="0.5000" TIME_PERIOD="2026-08-13"/>
+      <frb:Obs OBS_STATUS="A" OBS_VALUE="0.6250" TIME_PERIOD="2026-08-14"/>
+    </kf:Series>
+    <kf:Series CURRENCY="CAD" FREQ="9" FX="CAD"
+      SERIES_NAME="RXI_N.B.CA" UNIT="Currency" UNIT_MULT="1">
+      <frb:Obs OBS_STATUS="A" OBS_VALUE="1.2500" TIME_PERIOD="2026-08-13"/>
+      <frb:Obs OBS_STATUS="A" OBS_VALUE="1.5000" TIME_PERIOD="2026-08-14"/>
+    </kf:Series>
+    <kf:Series CURRENCY="CHF" FREQ="9" FX="CHF"
+      SERIES_NAME="RXI_N.B.SZ" UNIT="Currency" UNIT_MULT="1">
+      <frb:Obs OBS_STATUS="A" OBS_VALUE="0.7500" TIME_PERIOD="2026-08-13"/>
+      <frb:Obs OBS_STATUS="A" OBS_VALUE="0.8000" TIME_PERIOD="2026-08-14"/>
+    </kf:Series>
+    <kf:Series CURRENCY="CNY" FREQ="9" FX="CNY"
+      SERIES_NAME="RXI_N.B.CH" UNIT="Currency" UNIT_MULT="1">
+      <frb:Obs OBS_STATUS="A" OBS_VALUE="6.0000" TIME_PERIOD="2026-08-13"/>
+      <frb:Obs OBS_STATUS="A" OBS_VALUE="6.2500" TIME_PERIOD="2026-08-14"/>
+    </kf:Series>
+    <kf:Series CURRENCY="EUR" FREQ="9" FX="EUR"
+      SERIES_NAME="RXI$US_N.B.EU" UNIT="Currency" UNIT_MULT="1">
+      <frb:Annotations>
+        <common:Annotation>
+          <common:AnnotationType>Short Description</common:AnnotationType>
+          <common:AnnotationText>Synthetic EUR quote (USD per EUR)</common:AnnotationText>
+        </common:Annotation>
+      </frb:Annotations>
+      <frb:Obs OBS_STATUS="ND" OBS_VALUE="-9999" TIME_PERIOD="2026-07-03"/>
+      <frb:Obs OBS_STATUS="A" OBS_VALUE="1.2500" TIME_PERIOD="2026-08-13"/>
+      <frb:Obs OBS_STATUS="A" OBS_VALUE="1.5000" TIME_PERIOD="2026-08-14"/>
+    </kf:Series>
+    <kf:Series CURRENCY="GBP" FREQ="9" FX="GBP"
+      SERIES_NAME="RXI$US_N.B.UK" UNIT="Currency" UNIT_MULT="1">
+      <frb:Obs OBS_STATUS="A" OBS_VALUE="1.5000" TIME_PERIOD="2026-08-13"/>
+      <frb:Obs OBS_STATUS="A" OBS_VALUE="1.7500" TIME_PERIOD="2026-08-14"/>
+    </kf:Series>
+    <kf:Series CURRENCY="JPY" FREQ="9" FX="JPY"
+      SERIES_NAME="RXI_N.B.JA" UNIT="Currency" UNIT_MULT="1">
+      <frb:Obs OBS_STATUS="A" OBS_VALUE="125.0000" TIME_PERIOD="2026-08-13"/>
+      <frb:Obs OBS_STATUS="A" OBS_VALUE="130.0000" TIME_PERIOD="2026-08-14"/>
+    </kf:Series>
+    <kf:Series CURRENCY="MXN" FREQ="9" FX="MXN"
+      SERIES_NAME="RXI_N.B.MX" UNIT="Currency" UNIT_MULT="1">
+      <frb:Obs OBS_STATUS="A" OBS_VALUE="15.0000" TIME_PERIOD="2026-08-13"/>
+      <frb:Obs OBS_STATUS="A" OBS_VALUE="16.0000" TIME_PERIOD="2026-08-14"/>
+    </kf:Series>
+    <kf:Series CURRENCY="BRL" FREQ="9" FX="BRL"
+      SERIES_NAME="RXI_N.B.BZ" UNIT="Currency" UNIT_MULT="1">
+      <frb:Obs OBS_STATUS="A" OBS_VALUE="4.0000" TIME_PERIOD="2026-08-13"/>
+      <frb:Obs OBS_STATUS="A" OBS_VALUE="5.0000" TIME_PERIOD="2026-08-14"/>
+    </kf:Series>
+
+    <kf:Series CURRENCY="KRW" FREQ="9" FX="KRW"
+      SERIES_NAME="RXI_N.B.KO" UNIT="Currency" UNIT_MULT="1">
+      <frb:Annotations>
+        <common:Annotation>
+          <common:AnnotationType>Short Description</common:AnnotationType>
+          <common:AnnotationText>Synthetic KRW quote</common:AnnotationText>
+        </common:Annotation>
+      </frb:Annotations>
+      <frb:Obs OBS_STATUS="A" OBS_VALUE="1200.0000" TIME_PERIOD="2026-08-13"/>
+      <frb:Obs OBS_STATUS="A" OBS_VALUE="1250.0000" TIME_PERIOD="2026-08-14"/>
+    </kf:Series>
+
+    <!-- The official ZIP also contains non-daily frequencies.  The parser
+         must skip this even though its FX code is allowlisted. -->
+    <kf:Series CURRENCY="NA" FREQ="129" FX="BRD"
+      SERIES_NAME="JRXWTFB_N.M" UNIT="Index:_1997_Jan_100" UNIT_MULT="1">
+      <frb:Obs OBS_STATUS="A" OBS_VALUE="999.0000" TIME_PERIOD="2026-07-31"/>
+    </kf:Series>
+  </frb:DataSet>
+</message:MessageGroup>

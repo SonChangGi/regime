@@ -474,6 +474,14 @@ def validate_dashboard_payload(payload: Mapping[str, Any]) -> None:
     meta = _require(payload, "meta", "payload")
     if not isinstance(meta, Mapping):
         raise ContractError("payload.meta must be an object")
+    if meta.get("result_version") == "weekly-regime-result-v5":
+        from regime_lab.contract_v5 import V5ContractError, validate_v5_payload
+
+        try:
+            validate_v5_payload(payload)
+        except V5ContractError as exc:
+            raise ContractError(str(exc)) from exc
+        return
     if _require(meta, "schema_version", "payload.meta") != SCHEMA_VERSION:
         raise ContractError(f"unsupported schema version: {meta.get('schema_version')}")
     _require(meta, "generated_at", "payload.meta")
