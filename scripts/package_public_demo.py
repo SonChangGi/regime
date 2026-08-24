@@ -28,6 +28,10 @@ from regime_lab.frozen_v4 import (
     FROZEN_V4_OOS_PREDICTIONS,
 )
 from regime_lab.path_safety import UnsafeMutablePath, confined_mutable_path
+from regime_lab.provider_rights import (
+    ProviderRightsError,
+    verify_provider_rights,
+)
 from regime_lab.publication_contract import (
     PublicContractError as PackagingError,
     V5_COMPARISON_SCHEMA_VERSION,
@@ -58,6 +62,11 @@ LIVE_SOURCE_LICENSES_BY_RESULT_VERSION = {
         "alfred": "user_confirmed_ml_storage_derived",
         "frb_h10": "federal_reserve_board_public_domain_citation_requested",
     },
+}
+RIGHTS_PROVIDER_BY_SOURCE_ID = {
+    "alpha_vantage": "alpha_vantage",
+    "alfred": "fred_alfred",
+    "frb_h10": "frb_h10",
 }
 
 
@@ -181,6 +190,16 @@ def validate_public_live_derived_payload(payload: dict[str, Any]) -> None:
             raise PackagingError(
                 f"{source_id}.license_class must be {expected_license}"
             )
+    try:
+        verify_provider_rights(
+            (RIGHTS_PROVIDER_BY_SOURCE_ID[source_id] for source_id in by_id),
+            policy_path=project_root() / "config/provider_rights.json",
+            capabilities=("derived_publication",),
+        )
+    except (KeyError, ProviderRightsError) as exc:
+        raise PackagingError(
+            f"live-derived publication blocked by provider-rights policy: {exc}"
+        ) from exc
 
 
 def validate_public_payload(

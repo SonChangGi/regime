@@ -1,5 +1,9 @@
 # v3 resume checkpoint — 2026-08-12
 
+> **폐기된 체크포인트:** 이 문서는 당시 중단 상태의 이력만 보존한다. 아래 live
+> 재개 명령은 현재 provider-rights gate와 V5 운영 계약을 우회하므로 실행하지 않는다.
+> 현재 상태와 안전한 데모 명령은 저장소 루트의 `README.md`를 따른다.
+
 The v3 implementation is complete, but the standard live walk-forward build
 was intentionally interrupted at the user's request before it produced any v3
 dashboard/artifact output.
@@ -14,7 +18,7 @@ dashboard/artifact output.
   without additional provider calls.
 - No deployment has occurred.
 
-## Resume
+## 당시 Resume 명령 (실행 금지)
 
 ```bash
 .venv/bin/regime-lab build \

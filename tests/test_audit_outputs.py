@@ -12,6 +12,12 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from regime_lab.feature_quality import (
+    canonical_feature_quality_json_bytes,
+    feature_quality_artifact_manifest,
+    feature_quality_document,
+)
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "audit_outputs.py"
@@ -19,6 +25,46 @@ SPEC = importlib.util.spec_from_file_location("audit_outputs", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
 audit_outputs = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(audit_outputs)
+
+
+def test_v5_feature_quality_binds_to_model_features_not_source_catalog(
+    tmp_path: Path,
+) -> None:
+    index = pd.date_range("2024-01-05", periods=60, freq="W-FRI", tz="UTC")
+    document = feature_quality_document(
+        pd.DataFrame(
+            {
+                "signal": np.arange(60, dtype=float),
+                "regime_boundary": np.linspace(0.0, 1.0, 60),
+            },
+            index=index,
+        )
+    )
+    manifest = feature_quality_artifact_manifest(document)
+    (tmp_path / "feature-quality.json").write_bytes(
+        canonical_feature_quality_json_bytes(document)
+    )
+    payload = {
+        "model": {"feature_quality_artifact": manifest},
+        "feature_catalog": [{"id": "source-level-catalog-entry"}],
+    }
+
+    result = audit_outputs._audit_v5_feature_quality(
+        payload,
+        tmp_path,
+        expected_features=("regime_boundary", "signal"),
+    )
+    assert result["feature_count"] == 2
+
+    with pytest.raises(
+        audit_outputs.AuditFailure,
+        match="model feature manifest",
+    ):
+        audit_outputs._audit_v5_feature_quality(
+            payload,
+            tmp_path,
+            expected_features=("signal", "missing_feature"),
+        )
 
 
 def test_v5_serialized_probability_tolerance_matches_eight_decimal_contract() -> None:
@@ -1078,6 +1124,85 @@ def test_v5_file_contract_recomputes_hash_and_rows(tmp_path: Path) -> None:
             tmp_path,
             context="fixture",
         )
+
+
+def test_v5_audit_runs_all_inherited_structural_audits(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    predictions = pd.DataFrame({"model": ["markov"]})
+    payload = {"model": {"champion": "markov"}}
+    feature_manifest = {"group_features": {"legacy_v3": ["signal"]}}
+    calls: list[str] = []
+
+    def fake_read_csv(path: Path, date_columns: tuple[str, ...]) -> pd.DataFrame:
+        assert path == tmp_path / "oos-predictions.csv"
+        assert date_columns == ("origin_date", "target_date")
+        return predictions
+
+    def fake_transition(
+        actual_payload: dict,
+        artifacts: Path,
+        **kwargs: object,
+    ) -> dict[str, bool]:
+        calls.append("transition")
+        assert actual_payload is payload
+        assert artifacts == tmp_path
+        assert kwargs == {
+            "main_predictions": predictions,
+            "main_champion": "markov",
+            "main_published_split": "holdout",
+        }
+        return {"verified": True}
+
+    def fake_ablation(
+        actual_payload: dict,
+        artifacts: Path,
+        **kwargs: object,
+    ) -> dict[str, bool]:
+        calls.append("feature_ablation")
+        assert actual_payload is payload
+        assert artifacts == tmp_path
+        assert kwargs == {
+            "main_predictions": predictions,
+            "feature_manifest": feature_manifest,
+        }
+        return {"verified": True}
+
+    def fake_joint_survival(artifacts: Path) -> dict[str, bool]:
+        calls.append("joint_survival")
+        assert artifacts == tmp_path
+        return {"verified": True}
+
+    monkeypatch.setattr(audit_outputs, "read_csv", fake_read_csv)
+    monkeypatch.setattr(
+        audit_outputs,
+        "audit_transition_outputs",
+        fake_transition,
+    )
+    monkeypatch.setattr(
+        audit_outputs,
+        "audit_feature_ablation",
+        fake_ablation,
+    )
+    monkeypatch.setattr(
+        audit_outputs,
+        "audit_joint_survival_forecasts",
+        fake_joint_survival,
+    )
+
+    result = audit_outputs._audit_v5_inherited_structural_outputs(
+        payload,
+        tmp_path,
+        feature_manifest=feature_manifest,
+    )
+
+    assert calls == ["transition", "feature_ablation", "joint_survival"]
+    assert result == {
+        "transition": {"verified": True},
+        "feature_ablation": {"verified": True},
+        "joint_survival": {"verified": True},
+    }
 
 
 def test_v5_core_audit_recomputes_frozen_champion_and_metrics() -> None:

@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 from pathlib import Path
+import sqlite3
+
+import pytest
 
 from regime_lab.data import (
     HealthStatus,
@@ -15,6 +18,23 @@ from regime_lab.data import (
 
 
 UTC = timezone.utc
+
+
+def test_read_only_snapshot_store_does_not_initialize_or_mutate_database(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "data.sqlite3"
+    with SQLiteSnapshotStore(path):
+        pass
+    before = (path.stat().st_size, path.stat().st_mtime_ns, path.read_bytes())
+
+    with SQLiteSnapshotStore(path, read_only=True) as store:
+        assert store.list_provenance() == ()
+        with pytest.raises(sqlite3.OperationalError, match="readonly"):
+            store._connection.execute("CREATE TABLE forbidden(value INTEGER)")
+
+    after = (path.stat().st_size, path.stat().st_mtime_ns, path.read_bytes())
+    assert after == before
 
 
 def test_snapshot_store_roundtrip_preserves_pit_fields_and_redacts_secrets(

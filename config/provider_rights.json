@@ -1,0 +1,155 @@
+{
+  "schema_version": 1,
+  "reviewed_at": "2026-08-25T08:32:31+09:00",
+  "policy": "affirmative_permission_required",
+  "providers": {
+    "fred_alfred": {
+      "status": "allowed",
+      "reason_code": "project_specific_provider_approval_user_attested",
+      "review_after": "2027-02-25T08:32:31+09:00",
+      "capabilities": {
+        "collection": true,
+        "local_storage": true,
+        "model_training": true,
+        "derived_publication": true
+      },
+      "evidence": {
+        "source_url": "https://fred.stlouisfed.org/legal/terms/",
+        "basis": "user_attested_direct_provider_approval",
+        "attested_at": "2026-08-25T08:32:31+09:00",
+        "approval_reference": "user-confirmed-derived-publication-scope-2026-08-25",
+        "prior_approval_reference": "user-confirmed-provider-approval-2026-08-24",
+        "approval_scope": "personal_noncommercial_derived_results_only"
+      },
+      "conditions": {
+        "project": "regime",
+        "raw_publication": false,
+        "derived_outputs_only": true,
+        "personal_noncommercial_only": true,
+        "commercial_publication": false,
+        "derived_publication_scope_document_pending": false
+      }
+    },
+    "alpha_vantage": {
+      "status": "allowed",
+      "reason_code": "project_specific_provider_approval_user_attested",
+      "review_after": "2027-02-25T08:32:31+09:00",
+      "capabilities": {
+        "collection": true,
+        "local_storage": true,
+        "model_training": true,
+        "derived_publication": true
+      },
+      "evidence": {
+        "source_url": "https://www.alphavantage.co/terms_of_service/",
+        "basis": "user_attested_direct_provider_approval",
+        "attested_at": "2026-08-25T08:32:31+09:00",
+        "approval_reference": "user-confirmed-derived-publication-scope-2026-08-25",
+        "prior_approval_reference": "user-confirmed-provider-approval-2026-08-24",
+        "approval_scope": "personal_noncommercial_derived_results_only"
+      },
+      "conditions": {
+        "project": "regime",
+        "raw_publication": false,
+        "derived_outputs_only": true,
+        "personal_noncommercial_only": true,
+        "commercial_publication": false,
+        "derived_publication_scope_document_pending": false
+      }
+    },
+        "tiingo_eod": {
+            "status": "unconfirmed",
+            "reason_code": "account_terms_and_raw_retention_conditions_not_yet_accepted",
+            "review_after": "2027-02-24T00:00:00+09:00",
+            "capabilities": {
+                "collection": false,
+                "local_storage": false,
+                "model_training": false,
+                "derived_publication": false
+            },
+            "evidence": {
+                "source_url": "https://app.tiingo.com/tos/",
+                "basis": "official_terms_review"
+            },
+            "conditions": {
+                "derived_output_must_not_reconstruct_underlying_data": true,
+                "raw_data_retention_after_subscription": false
+            }
+        },
+        "frb_h10": {
+      "status": "allowed",
+      "reason_code": "federal_reserve_public_domain_content",
+      "review_after": "2027-02-24T00:00:00+09:00",
+      "capabilities": {
+        "collection": true,
+        "local_storage": true,
+        "model_training": true,
+        "derived_publication": true
+      },
+      "evidence": {
+        "source_url": "https://www.federalreserve.gov/disclaimer.htm",
+                "basis": "official_public_domain_notice"
+            }
+        },
+        "frb_direct_releases": {
+            "status": "allowed",
+            "reason_code": "federal_reserve_public_domain_content",
+            "review_after": "2027-02-24T00:00:00+09:00",
+            "capabilities": {
+                "collection": true,
+                "local_storage": true,
+                "model_training": true,
+                "derived_publication": true
+            },
+            "evidence": {
+                "source_url": "https://www.federalreserve.gov/disclaimer.htm",
+                "basis": "official_public_domain_notice"
+            },
+            "conditions": {
+                "releases": ["H.15", "H.4.1", "H.8", "CP"],
+                "attribution_required": true,
+                "third_party_material_excluded": true
+            }
+        },
+        "ofr_fsi": {
+            "status": "allowed",
+            "reason_code": "published_federal_aggregate_public_domain",
+            "review_after": "2027-02-24T00:00:00+09:00",
+            "capabilities": {
+                "collection": true,
+                "local_storage": true,
+                "model_training": true,
+                "derived_publication": true
+            },
+            "evidence": {
+                "source_url": "https://www.financialresearch.gov/legal-notices/",
+                "basis": "official_public_domain_notice"
+            },
+            "conditions": {
+                "published_aggregate_only": true,
+                "underlying_proprietary_inputs_excluded": true,
+                "credit_requested": true
+            }
+        },
+        "philadelphia_ads_rtdsm": {
+            "status": "allowed",
+            "reason_code": "official_terms_allow_informational_educational_research_use",
+            "review_after": "2027-02-24T00:00:00+09:00",
+            "capabilities": {
+                "collection": true,
+                "local_storage": true,
+                "model_training": true,
+                "derived_publication": true
+            },
+            "evidence": {
+                "source_url": "https://www.philadelphiafed.org/about-us/privacy-notice",
+                "basis": "official_online_terms"
+            },
+            "conditions": {
+                "commercial_use": false,
+                "copyrighted_source_material_republication": false,
+                "attribution_required": true
+            }
+        }
+  }
+}

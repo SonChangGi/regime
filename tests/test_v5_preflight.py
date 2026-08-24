@@ -52,6 +52,30 @@ def test_source_fingerprint_ignores_build_outputs(tmp_path: Path) -> None:
     assert after == before
 
 
+def test_source_fingerprint_binds_effective_config_and_rights_policy(
+    tmp_path: Path,
+) -> None:
+    root = _project(tmp_path)
+    policy = root / "config/custom-rights.json"
+    policy.write_text('{"schema_version":1}', encoding="utf-8")
+    config = {
+        "provider_rights_policy": "config/custom-rights.json",
+        "model": {"final_holdout_start": "2023-01-01"},
+    }
+    before, count = v5_preflight.v5_analysis_source_fingerprint(
+        project_directory=root,
+        config=config,
+    )
+    policy.write_text('{"schema_version":1,"changed":true}', encoding="utf-8")
+    after, after_count = v5_preflight.v5_analysis_source_fingerprint(
+        project_directory=root,
+        config=config,
+    )
+
+    assert count == after_count == 6
+    assert before != after
+
+
 def test_source_stability_guard_fails_closed(tmp_path: Path) -> None:
     root = _project(tmp_path)
     expected, _ = v5_preflight.v5_analysis_source_fingerprint(

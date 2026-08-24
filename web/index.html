@@ -9,8 +9,8 @@
       content="선택한 시점까지 공개된 정보로 미국 증시 국면을 판단하고 다음 주 국면 확률을 보여주는 연구 대시보드"
     >
     <title>US Market Regime Lab | Quant Research</title>
-    <link rel="stylesheet" href="./styles.css?v=20260824-v5-7">
-    <script src="./app.js?v=20260824-v5-7" defer></script>
+    <link rel="stylesheet" href="./styles.css?v=20260824-v5-9">
+    <script src="./app.js?v=20260824-v5-9" defer></script>
   </head>
   <body id="top">
     <a class="skip-link" href="#main-content">본문으로 건너뛰기</a>
@@ -358,6 +358,11 @@
             <strong>자산군별 평균 수익률</strong>
             <span id="conditional-comparison-caption">13주 보유 · 동일 축 · 0 기준</span>
           </div>
+          <div class="conditional-regime-legend" aria-label="국면 범례">
+            <span><i class="legend-line risk-on-line" aria-hidden="true"></i>Risk-on</span>
+            <span><i class="legend-line transition-line" aria-hidden="true"></i>Transition</span>
+            <span><i class="legend-line risk-off-line" aria-hidden="true"></i>Risk-off</span>
+          </div>
           <div id="conditional-stat-grid" class="conditional-stat-grid" role="region" aria-label="국면별 자산군 평균 수익률 비교"></div>
           <details class="compact-table-details">
             <summary>
@@ -449,7 +454,7 @@
               <div id="model-forecast-probabilities" class="probability-list" aria-label="선택 모델의 다음 주 국면별 예측 확률"></div>
               <dl class="model-forecast-metrics" aria-label="선택 모델의 2023년 이후 진단 지표">
                 <div><dt>2023+ 순위</dt><dd id="model-forecast-rank">—</dd></div>
-                <div><dt>Log loss</dt><dd id="model-forecast-log-loss">—</dd></div>
+                <div><dt>Log loss · 선정→2023+</dt><dd id="model-forecast-log-loss">—</dd></div>
                 <div><dt>Brier</dt><dd id="model-forecast-brier">—</dd></div>
                 <div><dt>보정 오차</dt><dd id="model-forecast-calibration">—</dd></div>
               </dl>

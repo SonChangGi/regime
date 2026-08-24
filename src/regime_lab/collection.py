@@ -29,6 +29,11 @@ from regime_lab.data import (
     plan_incremental_realtime_window,
     prepare_incremental_snapshot,
 )
+from regime_lab.config import project_root
+from regime_lab.provider_rights import (
+    providers_for_live_config,
+    verify_provider_rights,
+)
 
 
 EASTERN = ZoneInfo("America/New_York")
@@ -829,6 +834,20 @@ def collect_live_data(
 ) -> LiveCollection:
     """Collect Alpha Vantage and ALFRED data without paid fallback."""
 
+    raw_rights_policy = config.get(
+        "provider_rights_policy",
+        "config/provider_rights.json",
+    )
+    if not isinstance(raw_rights_policy, str) or not raw_rights_policy.strip():
+        raise ValueError("provider_rights_policy must be a non-empty path")
+    rights_path = Path(raw_rights_policy)
+    if not rights_path.is_absolute():
+        rights_path = project_root() / rights_path
+    verify_provider_rights(
+        providers_for_live_config(config),
+        policy_path=rights_path,
+        capabilities=("collection", "local_storage", "model_training"),
+    )
     emit = progress or (lambda _message: None)
     current = (now or datetime.now(UTC)).astimezone(UTC)
     latest_completed = last_completed_week_cutoff(current)

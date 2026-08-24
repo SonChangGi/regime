@@ -2252,6 +2252,22 @@ th {
   background: color-mix(in srgb, var(--risk-on-soft) 60%, var(--surface));
 }
 
+.model-name-cell {
+  font-weight: 700;
+}
+
+.model-code {
+  display: block;
+  margin-top: 2px;
+  overflow: hidden;
+  color: var(--ink-faint);
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .champion-label,
 .holdout-label {
   min-height: 18px;
@@ -4889,76 +4905,110 @@ tr.is-holdout-best td,
   font-size: 10px;
 }
 
+.conditional-regime-legend {
+  display: flex;
+  margin-top: 10px;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  color: var(--ink-soft);
+  font-size: 10px;
+}
+
+.conditional-regime-legend > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.conditional-regime-legend .legend-line {
+  width: 24px;
+}
+
 .conditional-stat-grid {
   display: grid;
   margin-top: 10px;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
 }
 
-.conditional-state-card {
+.conditional-asset-card {
   display: grid;
   min-width: 0;
-  padding: 14px;
-  gap: 13px;
+  padding: 14px 16px;
+  gap: 12px;
   border: 1px solid var(--line);
-  border-top: 3px solid var(--neutral);
   border-radius: var(--radius-sm);
   background: var(--surface-soft);
 }
 
-.conditional-state-card.state-risk_on { border-top-color: var(--risk-on); }
-.conditional-state-card.state-transition { border-top-color: var(--transition); }
-.conditional-state-card.state-risk_off { border-top-color: var(--risk-off); }
-
-.conditional-state-heading {
+.conditional-asset-heading {
   display: flex;
   min-width: 0;
   align-items: center;
-  justify-content: space-between;
   gap: 8px;
 }
 
-.conditional-state-heading strong {
+.conditional-asset-heading strong {
   color: var(--ink-strong);
+  font-family: var(--mono);
   font-size: 14px;
 }
 
-.conditional-asset-list {
-  display: grid;
-  gap: 10px;
-}
-
-.conditional-asset-row {
-  display: grid;
-  min-width: 0;
-  grid-template-columns: minmax(76px, 0.9fr) minmax(72px, 1.25fr) 51px;
-  align-items: center;
-  gap: 8px;
-}
-
-.conditional-asset-label {
-  display: grid;
-  min-width: 0;
-  gap: 1px;
-}
-
-.conditional-asset-label strong {
-  color: var(--ink);
-  font-family: var(--mono);
-  font-size: 11px;
-}
-
-.conditional-asset-label small {
+.conditional-asset-heading span {
   overflow: hidden;
   color: var(--ink-faint);
-  font-size: 10px;
-  line-height: 1.25;
+  font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.conditional-asset-row.is-limited {
+.conditional-regime-list {
+  display: grid;
+  gap: 8px;
+}
+
+.conditional-regime-row {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: 82px minmax(100px, 1fr) 62px;
+  align-items: center;
+  gap: 8px;
+}
+
+.conditional-regime-label {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  color: var(--ink-soft);
+  font-size: 10px;
+}
+
+.conditional-regime-label b {
+  display: inline-grid;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  font-family: var(--mono);
+  font-size: 9px;
+}
+
+.conditional-regime-label span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conditional-regime-row.state-risk_on .conditional-regime-label { color: var(--risk-on); }
+.conditional-regime-row.state-transition .conditional-regime-label { color: var(--transition); }
+.conditional-regime-row.state-transition .conditional-regime-label b { border-style: dashed; }
+.conditional-regime-row.state-risk_off .conditional-regime-label { color: var(--risk-off); }
+.conditional-regime-row.state-risk_off .conditional-regime-label b { border-style: double; }
+
+.conditional-regime-row.is-limited {
   opacity: 0.72;
 }
 
@@ -4992,13 +5042,15 @@ tr.is-holdout-best td,
 
 .conditional-return-fill.is-positive {
   left: 50%;
-  background: var(--positive);
 }
 
 .conditional-return-fill.is-negative {
   right: 50%;
-  background: var(--negative);
 }
+
+.conditional-return-fill.state-risk_on { background: var(--risk-on); }
+.conditional-return-fill.state-transition { background: var(--transition); }
+.conditional-return-fill.state-risk_off { background: var(--risk-off); }
 
 .conditional-return-value {
   display: grid;
@@ -5020,9 +5072,9 @@ tr.is-holdout-best td,
   font-weight: 650;
 }
 
-.conditional-return-value.is-negative {
-  color: var(--negative);
-}
+.conditional-regime-row.state-risk_on .conditional-return-value strong { color: var(--risk-on); }
+.conditional-regime-row.state-transition .conditional-return-value strong { color: var(--transition); }
+.conditional-regime-row.state-risk_off .conditional-return-value strong { color: var(--risk-off); }
 
 .conditional-detail-toolbar {
   display: flex;
@@ -5195,6 +5247,20 @@ tr.is-holdout-best td,
     display: grid;
     gap: 3px;
   }
+
+  .conditional-asset-card {
+    padding-inline: 12px;
+  }
+
+  .conditional-regime-row {
+    grid-template-columns: 70px minmax(60px, 1fr) 54px;
+    gap: 6px;
+  }
+
+  .conditional-regime-label {
+    gap: 4px;
+    font-size: 9px;
+  }
 }
 
 @media print {
@@ -5207,7 +5273,7 @@ tr.is-holdout-best td,
   }
 
   .conditional-stat-grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 

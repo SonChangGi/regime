@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 import hashlib
 import importlib.util
+import json
 from pathlib import Path
 import sqlite3
 from typing import Any
@@ -48,12 +49,16 @@ def verify_structural_v5_preregistration(
     return actual
 
 
-def _fingerprint_paths(root: Path) -> tuple[Path, ...]:
+def _fingerprint_paths(
+    root: Path,
+    *,
+    include_default_config: bool,
+) -> tuple[Path, ...]:
     required = (
         root / "pyproject.toml",
-        root / "config" / "series.json",
         root / "config" / "structural_v4.json",
         root / "config" / "structural_v5.json",
+        *((root / "config" / "series.json",) if include_default_config else ()),
     )
     source_root = root / "src" / "regime_lab"
     if source_root.is_symlink() or not source_root.is_dir():
@@ -74,12 +79,13 @@ def _fingerprint_paths(root: Path) -> tuple[Path, ...]:
 def v5_analysis_source_fingerprint(
     *,
     project_directory: Path | None = None,
+    config: Mapping[str, Any] | None = None,
 ) -> tuple[str, int]:
     """Hash every source/config byte that defines a v5 model generation."""
 
     root = (project_directory or project_root()).resolve()
     digest = hashlib.sha256()
-    paths = _fingerprint_paths(root)
+    paths = _fingerprint_paths(root, include_default_config=config is None)
     for path in paths:
         relative = path.relative_to(root).as_posix().encode("utf-8")
         body = path.read_bytes()
@@ -87,18 +93,51 @@ def v5_analysis_source_fingerprint(
         digest.update(relative)
         digest.update(len(body).to_bytes(8, "big"))
         digest.update(body)
-    return digest.hexdigest(), len(paths)
+    extra_count = 0
+    if config is not None:
+        config_body = json.dumps(
+            config,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+        policy_value = config.get("provider_rights_policy")
+        if not isinstance(policy_value, str) or not policy_value.strip():
+            raise V5PreflightError(
+                "effective v5 config has no provider_rights_policy"
+            )
+        policy_path = Path(policy_value)
+        if not policy_path.is_absolute():
+            policy_path = root / policy_path
+        if policy_path.is_symlink() or not policy_path.is_file():
+            raise V5PreflightError(
+                "effective v5 provider-rights policy is missing or unsafe"
+            )
+        for label, body in (
+            ("effective-config.json", config_body),
+            ("effective-provider-rights-policy.json", policy_path.read_bytes()),
+        ):
+            encoded_label = label.encode("utf-8")
+            digest.update(len(encoded_label).to_bytes(8, "big"))
+            digest.update(encoded_label)
+            digest.update(len(body).to_bytes(8, "big"))
+            digest.update(body)
+            extra_count += 1
+    return digest.hexdigest(), len(paths) + extra_count
 
 
 def require_v5_analysis_source_unchanged(
     expected_sha256: str,
     *,
     project_directory: Path | None = None,
+    config: Mapping[str, Any] | None = None,
 ) -> None:
     """Block candidate publication if code/config changed during training."""
 
     actual, _ = v5_analysis_source_fingerprint(
         project_directory=project_directory,
+        config=config,
     )
     if actual != expected_sha256:
         raise V5PreflightError(
@@ -138,6 +177,7 @@ def verify_v5_preflight(
     profile: str,
     database_path: Path,
     project_directory: Path | None = None,
+    config: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return a secret-free receipt for the checks required before collection."""
 
@@ -154,6 +194,7 @@ def verify_v5_preflight(
     database_status = _database_quick_check(database_path)
     source_sha256, source_file_count = v5_analysis_source_fingerprint(
         project_directory=root,
+        config=config,
     )
     return {
         "profile": profile,

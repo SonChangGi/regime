@@ -19,6 +19,16 @@ UTC = timezone.utc
 def _settings(tmp_path: Path) -> automation.AutomationSettings:
     root = tmp_path / "repo"
     root.mkdir()
+    config_directory = root / "config"
+    config_directory.mkdir()
+    (config_directory / "series.json").write_text(
+        json.dumps({"provider_rights_providers": []}),
+        encoding="utf-8",
+    )
+    (config_directory / "provider_rights.json").write_text(
+        json.dumps({"schema_version": 1, "providers": {}}),
+        encoding="utf-8",
+    )
     python = root / ".venv/bin/python"
     python.parent.mkdir(parents=True)
     python.touch()
@@ -146,6 +156,11 @@ def test_launch_agent_status_compares_plists_semantically_and_reports_drift(
         heartbeat_at=datetime.now(UTC),
         consecutive_failures=0,
     )
+    automation._write_local_authorization(
+        settings,
+        alfred_rights_confirmed=True,
+        personal_noncommercial_publication_acknowledged=True,
+    )
     monkeypatch.setattr(automation, "_launch_agent_path", lambda: plist)
     monkeypatch.setattr(automation, "_launch_agent_loaded", lambda _settings: True)
 
@@ -222,6 +237,41 @@ def test_old_terminal_health_is_not_reported_as_operational(
     assert status["health_stale"] is True
     assert status["heartbeat_stale"] is False
     assert status["operational"] is False
+
+
+@pytest.mark.parametrize("authorization_state", ("missing", "expired"))
+def test_launch_agent_status_requires_current_local_authorization(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    authorization_state: str,
+) -> None:
+    settings = _settings(tmp_path)
+    plist = tmp_path / "LaunchAgents/regime.plist"
+    _install_plist(settings, plist)
+    _write_health(
+        settings,
+        status="succeeded",
+        heartbeat_at=datetime.now(UTC),
+        consecutive_failures=0,
+    )
+    if authorization_state == "expired":
+        automation._write_local_authorization(
+            settings,
+            alfred_rights_confirmed=True,
+            personal_noncommercial_publication_acknowledged=True,
+            now=datetime.now(UTC) - timedelta(days=181),
+        )
+    monkeypatch.setattr(automation, "_launch_agent_path", lambda: plist)
+    monkeypatch.setattr(automation, "_launch_agent_loaded", lambda _settings: True)
+
+    status = automation.launch_agent_status(settings)
+
+    assert status["authorization_ok"] is False
+    assert status["authorization_error"]
+    assert status["operational"] is False
+    assert status["ok"] is False
+    expected = "missing" if authorization_state == "missing" else "renewal"
+    assert expected in status["authorization_error"]
 
 
 def test_retry_backoff_skips_external_provider_and_build_work(
@@ -327,6 +377,13 @@ def test_force_retry_bypasses_only_transient_backoff(
     )
     assert blocked is not None
     assert blocked["stage"] == "retry_blocked"
+
+    assert automation._retry_guard(
+        settings,
+        target=target,
+        now=now,
+        force_blocked_recovery=True,
+    ) is None
 
 
 def test_same_blocked_fingerprint_skips_external_provider_and_build_work(
@@ -671,3 +728,41 @@ def test_child_failure_before_collection_receipt_is_transient(
 
     assert caught.value.error_code == "child_precollection_failed"
     assert caught.value.retry_class == "transient"
+
+
+def test_existing_database_is_backed_up_before_child_collection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings(tmp_path)
+    settings.database.parent.mkdir(parents=True, exist_ok=True)
+    settings.database.write_bytes(b"placeholder")
+    calls: list[list[str]] = []
+
+    def run(command: list[str], *_args: object, **_kwargs: object) -> bytes:
+        calls.append(command)
+        raise automation.AutomationError("python failed with exit code 1")
+
+    monkeypatch.setattr(
+        automation,
+        "_run",
+        run,
+    )
+
+    with pytest.raises(automation.ScheduledRetry):
+        automation._build_candidate(
+            settings,
+            target=datetime.fromisoformat("2026-08-14T20:00:00+00:00"),
+            context={"workspace_state_sha256": "a" * 64},
+        )
+
+    assert len(calls) == 1
+    command = calls[0]
+    backup_position = command.index("--backup-directory")
+    assert command[backup_position + 1] == str(
+        settings.state_directory / "database-backups"
+    )
+    fingerprint_position = command.index(
+        "--backup-source-code-fingerprint-sha256"
+    )
+    assert command[fingerprint_position + 1] == "a" * 64

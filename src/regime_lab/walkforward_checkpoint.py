@@ -10,10 +10,12 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from datetime import datetime
 import hashlib
+from importlib import metadata as importlib_metadata
 import json
 import math
 import os
 from pathlib import Path
+import platform
 import re
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -21,7 +23,11 @@ import numpy as np
 import pandas as pd
 
 from regime_lab.analysis.labels import STATE_ORDER
-from regime_lab.analysis.models import MODEL_NAMES, BenchmarkProfile
+from regime_lab.analysis.models import (
+    DIRECT_NEXT_STATE_MODEL_NAMES,
+    MODEL_NAMES,
+    BenchmarkProfile,
+)
 from regime_lab.analysis.models import model_manifest_sha256
 from regime_lab.io import write_json_atomic
 
@@ -60,6 +66,75 @@ SPLIT_AUDIT_COLUMNS: tuple[str, ...] = (
 
 _SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 _INTEGER_PATTERN = re.compile(r"0|-?[1-9][0-9]*")
+_MANIFEST_KEYS = frozenset(
+    {"schema_version", "visibility", "identity", "run_signature"}
+)
+_IDENTITY_KEYS = frozenset(
+    {
+        "checkpoint_kind",
+        "implementation_version",
+        "feature_matrix",
+        "state_vector",
+        "benchmark_parameters",
+        "source_fingerprint_sha256",
+        "origins",
+    }
+)
+_ORIGIN_MANIFEST_KEYS = frozenset(
+    {
+        "sequence",
+        "origin_date",
+        "target_date",
+        "evaluation_split",
+        "train_size",
+        "train_start",
+        "last_train_origin",
+        "last_train_target",
+        "purged_origin_count",
+        "first_purged_origin",
+        "gap",
+        "signature",
+        "record_file",
+    }
+)
+_RECORD_KEYS = frozenset(
+    {
+        "schema_version",
+        "run_signature",
+        "origin_signature",
+        "sequence",
+        "prediction_rows",
+        "split_audit",
+        "record_sha256",
+    }
+)
+
+
+def runtime_version_manifest() -> dict[str, str | None]:
+    """Return the estimator runtime versions that can change fitted outputs."""
+
+    packages = (
+        "numpy",
+        "pandas",
+        "scipy",
+        "scikit-learn",
+        "xgboost",
+        "hmmlearn",
+        "joblib",
+        "threadpoolctl",
+    )
+    versions: dict[str, str | None] = {
+        "python": platform.python_version(),
+        "platform_system": platform.system(),
+        "platform_release": platform.release(),
+        "platform_machine": platform.machine(),
+    }
+    for package in packages:
+        try:
+            versions[package] = importlib_metadata.version(package)
+        except importlib_metadata.PackageNotFoundError:
+            versions[package] = None
+    return versions
 _FORBIDDEN_PUBLIC_PATH_COMPONENTS = frozenset(
     {
         "docs",
@@ -425,7 +500,10 @@ class ResolvedBenchmarkParameters:
         if include_hmm and "gaussian_hmm" not in names:
             names.append("gaussian_hmm")
         names = list(dict.fromkeys(names))
-        supported = set(MODEL_NAMES).union({"gaussian_hmm"})
+        supported = set(MODEL_NAMES).union(
+            DIRECT_NEXT_STATE_MODEL_NAMES,
+            {"gaussian_hmm"},
+        )
         unknown = sorted(set(names).difference(supported))
         if unknown:
             raise ValueError(f"unknown benchmark models: {unknown}")
@@ -482,6 +560,7 @@ class ResolvedBenchmarkParameters:
                 random_state=self.random_state,
                 names=self.model_names,
             ),
+            "runtime_versions": runtime_version_manifest(),
         }
 
 
@@ -835,6 +914,299 @@ def _require_private_mode(path: Path, *, directory: bool) -> None:
         raise CheckpointPrivacyError(f"checkpoint {kind} is group/world accessible: {path}")
 
 
+@dataclass(frozen=True)
+class _StoredCheckpointInspection:
+    run_signature: str
+    model_names: tuple[str, ...]
+    origins: tuple[CheckpointOrigin, ...]
+
+
+def _require_real_private_directory(path: Path, *, label: str) -> None:
+    if path.is_symlink():
+        raise CheckpointPrivacyError(f"{label} must not be a symlink")
+    if not path.is_dir():
+        raise CheckpointPrivacyError(f"{label} must be a real directory")
+    _require_private_mode(path, directory=True)
+
+
+def _stored_origin(value: Any, *, expected_sequence: int) -> CheckpointOrigin:
+    if not isinstance(value, Mapping) or set(value) != _ORIGIN_MANIFEST_KEYS:
+        raise CheckpointCorruptionError("checkpoint origin manifest keys are invalid")
+    sequence = value.get("sequence")
+    if type(sequence) is not int or sequence != expected_sequence:
+        raise CheckpointCorruptionError("checkpoint origin sequence is invalid")
+    evaluation_split = value.get("evaluation_split")
+    if evaluation_split not in {"legacy", "selection", "holdout"}:
+        raise CheckpointCorruptionError("checkpoint origin split is invalid")
+    train_size = value.get("train_size")
+    gap = value.get("gap")
+    purged_origin_count = value.get("purged_origin_count")
+    if type(train_size) is not int or train_size < 1:
+        raise CheckpointCorruptionError("checkpoint origin train_size is invalid")
+    if type(gap) is not int or gap < 0:
+        raise CheckpointCorruptionError("checkpoint origin gap is invalid")
+    if (
+        type(purged_origin_count) is not int
+        or purged_origin_count < 0
+        or purged_origin_count != gap
+    ):
+        raise CheckpointCorruptionError("checkpoint origin purge count is invalid")
+    signature = value.get("signature")
+    if not isinstance(signature, str) or not _SHA256_PATTERN.fullmatch(signature):
+        raise CheckpointCorruptionError("checkpoint origin signature is invalid")
+    record_file = value.get("record_file")
+    if record_file != f"{sequence:06d}.json":
+        raise CheckpointCorruptionError("checkpoint origin record file is invalid")
+
+    origin_date = _timestamp_from_document(value.get("origin_date"))
+    target_date = _timestamp_from_document(value.get("target_date"))
+    train_start = _timestamp_from_document(value.get("train_start"))
+    last_train_origin = _timestamp_from_document(value.get("last_train_origin"))
+    last_train_target = _timestamp_from_document(value.get("last_train_target"))
+    raw_first_purged = value.get("first_purged_origin")
+    first_purged_origin = (
+        None
+        if raw_first_purged is None
+        else _timestamp_from_document(raw_first_purged)
+    )
+    if (gap == 0) != (first_purged_origin is None):
+        raise CheckpointCorruptionError("checkpoint origin first purge is invalid")
+    if not (
+        train_start <= last_train_origin <= last_train_target <= origin_date < target_date
+    ):
+        raise CheckpointCorruptionError("checkpoint origin dates are inconsistent")
+
+    origin = CheckpointOrigin(
+        sequence=sequence,
+        origin_date=origin_date,
+        target_date=target_date,
+        evaluation_split=evaluation_split,
+        train_size=train_size,
+        train_start=train_start,
+        last_train_origin=last_train_origin,
+        last_train_target=last_train_target,
+        purged_origin_count=purged_origin_count,
+        first_purged_origin=first_purged_origin,
+        gap=gap,
+        # The public manifest deliberately omits labels.  A present record binds
+        # them back to ``signature`` before it can be accepted below.
+        current_state="transition",
+        actual="transition",
+        signature=signature,
+        record_file=record_file,
+    )
+    if origin.public_manifest() != dict(value):
+        raise CheckpointCorruptionError("checkpoint origin manifest is non-canonical")
+    return origin
+
+
+def _validate_stored_record(
+    path: Path,
+    *,
+    run_signature: str,
+    model_names: tuple[str, ...],
+    stored_origin: CheckpointOrigin,
+) -> None:
+    _require_private_mode(path, directory=False)
+    document = _read_json_strict(path)
+    if not isinstance(document, Mapping) or set(document) != _RECORD_KEYS:
+        raise CheckpointCorruptionError("checkpoint record keys are invalid")
+    if document.get("schema_version") != RECORD_SCHEMA_VERSION:
+        raise CheckpointCorruptionError("checkpoint record schema mismatch")
+    body = {key: document[key] for key in _RECORD_KEYS if key != "record_sha256"}
+    stored_sha256 = document.get("record_sha256")
+    if (
+        not isinstance(stored_sha256, str)
+        or not _SHA256_PATTERN.fullmatch(stored_sha256)
+        or _sha256_document(body) != stored_sha256
+    ):
+        raise CheckpointCorruptionError("checkpoint record digest mismatch")
+    if document.get("run_signature") != run_signature:
+        raise CheckpointCorruptionError("checkpoint record has the wrong run signature")
+    if document.get("origin_signature") != stored_origin.signature:
+        raise CheckpointCorruptionError("checkpoint record has the wrong origin signature")
+    if document.get("sequence") != stored_origin.sequence:
+        raise CheckpointCorruptionError("checkpoint record has the wrong origin sequence")
+
+    raw_predictions = document.get("prediction_rows")
+    if not isinstance(raw_predictions, list) or not raw_predictions:
+        raise CheckpointCorruptionError("checkpoint prediction_rows must be a non-empty list")
+    predictions = tuple(
+        _decode_row(row, PREDICTION_COLUMNS) for row in raw_predictions
+    )
+    split = _decode_row(document.get("split_audit"), SPLIT_AUDIT_COLUMNS)
+    current_state = predictions[0]["current_state"]
+    actual = predictions[0]["actual"]
+    bound_origin = CheckpointOrigin(
+        sequence=stored_origin.sequence,
+        origin_date=stored_origin.origin_date,
+        target_date=stored_origin.target_date,
+        evaluation_split=stored_origin.evaluation_split,
+        train_size=stored_origin.train_size,
+        train_start=stored_origin.train_start,
+        last_train_origin=stored_origin.last_train_origin,
+        last_train_target=stored_origin.last_train_target,
+        purged_origin_count=stored_origin.purged_origin_count,
+        first_purged_origin=stored_origin.first_purged_origin,
+        gap=stored_origin.gap,
+        current_state=current_state,
+        actual=actual,
+        signature=stored_origin.signature,
+        record_file=stored_origin.record_file,
+    )
+    origin_core = {
+        "sequence": bound_origin.sequence,
+        "origin_date": _timestamp_document(bound_origin.origin_date),
+        "target_date": _timestamp_document(bound_origin.target_date),
+        "evaluation_split": bound_origin.evaluation_split,
+        "train_size": bound_origin.train_size,
+        "train_start": _timestamp_document(bound_origin.train_start),
+        "last_train_origin": _timestamp_document(bound_origin.last_train_origin),
+        "last_train_target": _timestamp_document(bound_origin.last_train_target),
+        "purged_origin_count": bound_origin.purged_origin_count,
+        "first_purged_origin": (
+            None
+            if bound_origin.first_purged_origin is None
+            else _timestamp_document(bound_origin.first_purged_origin)
+        ),
+        "gap": bound_origin.gap,
+        "current_state": bound_origin.current_state,
+        "actual": bound_origin.actual,
+    }
+    if _sha256_document(origin_core) != bound_origin.signature:
+        raise CheckpointCorruptionError("checkpoint origin signature mismatch")
+    stored_identity = BenchmarkCheckpointIdentity(
+        feature_identity={},
+        state_identity={},
+        parameter_manifest={},
+        source_fingerprint_sha256=None,
+        origins=(bound_origin,),
+        model_names=model_names,
+        run_signature=run_signature,
+    )
+    _validate_completed_origin(stored_identity, bound_origin, predictions, split)
+
+
+def _inspect_stored_checkpoint(root: Path) -> _StoredCheckpointInspection:
+    """Validate an existing checkpoint without assuming the requested identity."""
+
+    _require_real_private_directory(root, label="checkpoint root")
+    allowed_root_entries = {"manifest.json", "origins", "runs"}
+    for entry in root.iterdir():
+        if entry.is_symlink():
+            raise CheckpointPrivacyError("checkpoint entries must not be symlinks")
+        if entry.name not in allowed_root_entries:
+            raise CheckpointCorruptionError(
+                f"unexpected checkpoint root entry: {entry.name}"
+            )
+
+    manifest_path = root / "manifest.json"
+    if manifest_path.is_symlink():
+        raise CheckpointPrivacyError("checkpoint manifest must not be a symlink")
+    if not manifest_path.is_file():
+        raise CheckpointCorruptionError("checkpoint manifest is missing")
+    _require_private_mode(manifest_path, directory=False)
+    manifest = _read_json_strict(manifest_path)
+    if not isinstance(manifest, Mapping) or set(manifest) != _MANIFEST_KEYS:
+        raise CheckpointCorruptionError("checkpoint manifest keys are invalid")
+    if manifest.get("schema_version") != MANIFEST_SCHEMA_VERSION:
+        raise CheckpointCorruptionError("checkpoint manifest schema mismatch")
+    identity = manifest.get("identity")
+    if manifest.get("visibility") != "private" or not isinstance(identity, Mapping):
+        raise CheckpointCorruptionError("checkpoint manifest is not private and valid")
+    if set(identity) != _IDENTITY_KEYS:
+        raise CheckpointCorruptionError("checkpoint identity keys are invalid")
+    if (
+        identity.get("checkpoint_kind") != CHECKPOINT_KIND
+        or identity.get("implementation_version")
+        != CHECKPOINT_IMPLEMENTATION_VERSION
+    ):
+        raise CheckpointCorruptionError("checkpoint identity kind is invalid")
+    run_signature = manifest.get("run_signature")
+    if (
+        not isinstance(run_signature, str)
+        or not _SHA256_PATTERN.fullmatch(run_signature)
+        or _sha256_document(identity) != run_signature
+    ):
+        raise CheckpointCorruptionError("checkpoint manifest signature mismatch")
+    fingerprint = identity.get("source_fingerprint_sha256")
+    if fingerprint is not None and (
+        not isinstance(fingerprint, str)
+        or not _SHA256_PATTERN.fullmatch(fingerprint)
+    ):
+        raise CheckpointCorruptionError("checkpoint source fingerprint is invalid")
+    parameters = identity.get("benchmark_parameters")
+    if not isinstance(parameters, Mapping):
+        raise CheckpointCorruptionError("checkpoint benchmark parameters are invalid")
+    raw_model_names = parameters.get("model_names")
+    if (
+        not isinstance(raw_model_names, list)
+        or not raw_model_names
+        or any(not isinstance(name, str) or not name for name in raw_model_names)
+        or len(set(raw_model_names)) != len(raw_model_names)
+    ):
+        raise CheckpointCorruptionError("checkpoint model names are invalid")
+    model_names = tuple(raw_model_names)
+    raw_origins = identity.get("origins")
+    if not isinstance(raw_origins, list) or not raw_origins:
+        raise CheckpointCorruptionError("checkpoint origins are invalid")
+    origins = tuple(
+        _stored_origin(value, expected_sequence=sequence)
+        for sequence, value in enumerate(raw_origins, start=1)
+    )
+
+    records_root = root / "origins"
+    _require_real_private_directory(records_root, label="checkpoint records directory")
+    expected_records = {origin.record_file: origin for origin in origins}
+    for path in records_root.iterdir():
+        if path.is_symlink():
+            raise CheckpointPrivacyError("checkpoint records must not be symlinks")
+        if path.name.startswith(".") and path.name.endswith(".tmp"):
+            if not path.is_file():
+                raise CheckpointCorruptionError(
+                    f"unexpected checkpoint temporary record: {path.name}"
+                )
+            _require_private_mode(path, directory=False)
+            continue
+        stored_origin = expected_records.get(path.name)
+        if stored_origin is None or not path.is_file():
+            raise CheckpointCorruptionError(
+                f"unexpected checkpoint record: {path.name}"
+            )
+        _validate_stored_record(
+            path,
+            run_signature=run_signature,
+            model_names=model_names,
+            stored_origin=stored_origin,
+        )
+
+    runs_root = root / "runs"
+    if runs_root.exists() or runs_root.is_symlink():
+        _require_real_private_directory(
+            runs_root,
+            label="versioned checkpoint runs directory",
+        )
+        for child in runs_root.iterdir():
+            if child.is_symlink():
+                raise CheckpointPrivacyError(
+                    "versioned checkpoint run must not be a symlink"
+                )
+            if (
+                not _SHA256_PATTERN.fullmatch(child.name)
+                or not child.is_dir()
+            ):
+                raise CheckpointCorruptionError(
+                    f"unexpected versioned checkpoint run: {child.name}"
+                )
+            _require_private_mode(child, directory=True)
+
+    return _StoredCheckpointInspection(
+        run_signature=run_signature,
+        model_names=model_names,
+        origins=origins,
+    )
+
+
 class WalkForwardCheckpoint:
     """Atomic reader/writer for fully validated V5 base origins."""
 
@@ -864,6 +1236,81 @@ class WalkForwardCheckpoint:
         checkpoint._open_manifest()
         checkpoint._reject_unexpected_records()
         return checkpoint
+
+    @classmethod
+    def open_versioned(
+        cls,
+        root: str | Path,
+        identity: BenchmarkCheckpointIdentity,
+    ) -> "WalkForwardCheckpoint":
+        """Resume a matching legacy run or isolate a valid new run by signature.
+
+        The first identity keeps the historical ``root`` layout.  A later valid
+        identity uses ``root/runs/<run_signature>`` without moving or deleting
+        the legacy run.  Only an identity mismatch permits rollover: malformed,
+        non-private, or symlinked existing state always fails closed.
+        """
+
+        requested = Path(root).expanduser()
+        if requested.is_symlink():
+            raise CheckpointPrivacyError("checkpoint root must not be a symlink")
+        resolved = _validate_private_root(requested)
+        if not resolved.exists():
+            return cls.open(resolved, identity)
+        if not resolved.is_dir():
+            raise CheckpointPrivacyError(
+                "checkpoint root must be a real directory"
+            )
+
+        # ``open`` creates the root and ``origins`` before atomically writing
+        # the manifest.  A hard interruption in that narrow window leaves no
+        # trusted state to preserve, so an otherwise empty layout is safely
+        # re-initializable.  Any record, extra entry, symlink, or manifest-like
+        # file still fails closed through the normal inspector below.
+        entries = list(resolved.iterdir())
+        if not entries:
+            os.chmod(resolved, 0o700)
+            return cls.open(resolved, identity)
+        if len(entries) == 1 and entries[0].name == "origins":
+            origins = entries[0]
+            if origins.is_symlink():
+                raise CheckpointPrivacyError(
+                    "checkpoint origins directory must not be a symlink"
+                )
+            if origins.is_dir() and not any(origins.iterdir()):
+                os.chmod(resolved, 0o700)
+                os.chmod(origins, 0o700)
+                return cls.open(resolved, identity)
+
+        stored = _inspect_stored_checkpoint(resolved)
+        if stored.run_signature == identity.run_signature:
+            return cls.open(resolved, identity)
+
+        runs_root = resolved / "runs"
+        if runs_root.is_symlink():
+            raise CheckpointPrivacyError(
+                "versioned checkpoint runs directory must not be a symlink"
+            )
+        if not runs_root.exists():
+            runs_root.mkdir(mode=0o700)
+        _require_real_private_directory(
+            runs_root,
+            label="versioned checkpoint runs directory",
+        )
+
+        child = runs_root / identity.run_signature
+        if child.is_symlink():
+            raise CheckpointPrivacyError("versioned checkpoint run must not be a symlink")
+        if child.exists() and child.is_dir() and not any(child.iterdir()):
+            os.chmod(child, 0o700)
+            return cls.open(child, identity)
+        if child.exists():
+            child_stored = _inspect_stored_checkpoint(child)
+            if child_stored.run_signature != identity.run_signature:
+                raise CheckpointCorruptionError(
+                    "versioned checkpoint manifest does not match its namespace"
+                )
+        return cls.open(child, identity)
 
     def _open_manifest(self) -> None:
         path = self.root / "manifest.json"
@@ -1049,4 +1496,5 @@ __all__ = [
     "WalkForwardCheckpoint",
     "decode_checkpoint_scalar",
     "encode_checkpoint_scalar",
+    "runtime_version_manifest",
 ]

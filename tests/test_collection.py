@@ -52,6 +52,59 @@ def _configured_test_alpha_key(monkeypatch) -> None:
     monkeypatch.setenv("ALPHA_VANTAGE_API_KEY", "test-alpha-key")
 
 
+def test_collection_enforces_declared_rights_policy_before_database_write(
+    tmp_path: Path,
+) -> None:
+    policy = tmp_path / "rights.json"
+    policy.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "providers": {
+                    "fred_alfred": {
+                        "status": "blocked",
+                        "reason_code": "test_blocked",
+                    },
+                    "alpha_vantage": {
+                        "status": "unconfirmed",
+                        "reason_code": "test_unconfirmed",
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    database = tmp_path / "never-created.sqlite3"
+
+    with pytest.raises(RuntimeError, match="test_blocked"):
+        collection_module.collect_live_data(
+            {
+                "provider_rights_policy": str(policy),
+                "alfred": {},
+                "alpha_vantage": {},
+            },
+            database_path=database,
+        )
+
+    assert not database.exists()
+
+
+def test_collection_missing_default_rights_policy_fails_before_database_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(collection_module, "project_root", lambda: tmp_path)
+    database = tmp_path / "never-created.sqlite3"
+
+    with pytest.raises(RuntimeError, match="policy is unavailable"):
+        collection_module.collect_live_data(
+            {"alfred": {}, "alpha_vantage": {}},
+            database_path=database,
+        )
+
+    assert not database.exists()
+
+
 def _alpha_test_record(
     symbol: str,
     field: str,

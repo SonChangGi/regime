@@ -1,5 +1,13 @@
 # 연구 참고문헌과 설계 반영
 
+> **현재 연구 경계:** FRED/ALFRED·Alpha Vantage는 프로젝트별 로컬
+> 수집·저장·학습 승인 범위에서 V5 연구에 사용하며 원자료는 공개하지 않는다. 신규
+> V6 경로는 Board H.15/H.10/H.4.1/H.8/CP, OFR FSI,
+> Philadelphia Fed ADS/RTDSM의 공식 배포·빈티지를 우선한다. 시장가격 label은
+> 승인된 Alpha Vantage를 비공개 연구에 사용하되 최초 과거 조정 이력은
+> retrospective sensitivity로만 취급한다. 검토를 통과한 파생 결과만 확인된
+> 개인·비상업 범위에서 공개한다.
+
 ## 구조 v5 연구 및 공식 데이터
 
 아래 자료의 추정 대상과 시간축을 v5 계약에 맞춰 사용한다. 논문의 이름을 모델명으로

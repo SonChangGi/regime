@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import sqlite3
 import subprocess
 import sys
 
@@ -32,6 +33,17 @@ CANDIDATE_CONTEXT = {
 
 def _settings(tmp_path: Path, *, root: Path | None = None) -> automation.AutomationSettings:
     selected_root = root or tmp_path
+    if root is None:
+        config_directory = selected_root / "config"
+        config_directory.mkdir(parents=True, exist_ok=True)
+        (config_directory / "series.json").write_text(
+            json.dumps({"provider_rights_providers": []}),
+            encoding="utf-8",
+        )
+        (config_directory / "provider_rights.json").write_text(
+            json.dumps({"schema_version": 1, "providers": {}}),
+            encoding="utf-8",
+        )
     return automation.AutomationSettings(
         config_path=selected_root / "config/automation.json",
         root=selected_root,
@@ -82,6 +94,135 @@ def test_target_cutoff_uses_eastern_friday_and_minimum_age_across_dst() -> None:
     )
     assert cutoff == datetime.fromisoformat("2026-07-31T20:00:00+00:00")
     assert ready is True
+
+
+def test_status_separates_health_check_from_full_pipeline_success(
+    tmp_path: Path,
+) -> None:
+    settings = _settings(tmp_path)
+    started = datetime.fromisoformat("2026-08-24T00:00:00+00:00")
+    target = datetime.fromisoformat("2026-08-21T20:00:00+00:00")
+
+    checked = automation._status_document(
+        settings,
+        status="succeeded",
+        stage="already_current",
+        started_at=started,
+        target=target,
+    )
+    assert checked["last_check_at"] is not None
+    assert checked["last_public_verification_at"] is not None
+    assert checked["last_full_success_at"] is None
+    assert checked["last_success_at"] is None
+
+    automation.write_json_atomic(settings.status_path, checked)
+    full = automation._status_document(
+        settings,
+        status="succeeded",
+        stage="public_readback_verified",
+        started_at=started,
+        target=target,
+    )
+    assert full["last_full_success_at"] is not None
+    assert full["last_full_success_target"] == target.isoformat()
+    assert full["last_success_at"] == full["last_full_success_at"]
+
+
+def test_status_records_each_completed_pipeline_stage(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    started = datetime.fromisoformat("2026-08-24T00:00:00+00:00")
+    target = datetime.fromisoformat("2026-08-21T20:00:00+00:00")
+    first = automation._status_document(
+        settings,
+        status="running",
+        stage="collect_train_audit",
+        started_at=started,
+        target=target,
+        run_id="run-1",
+    )
+    automation.write_json_atomic(settings.status_path, first)
+
+    second = automation._status_document(
+        settings,
+        status="running",
+        stage="publish_snapshot",
+        started_at=started,
+        target=target,
+        run_id="run-1",
+    )
+    automation.write_json_atomic(settings.status_path, second)
+    final = automation._status_document(
+        settings,
+        status="succeeded",
+        stage="public_readback_verified",
+        started_at=started,
+        target=target,
+        run_id="run-1",
+    )
+
+    assert set(final["last_stage_successes"]) == {
+        "collect_train_audit",
+        "publish_snapshot",
+        "public_readback_verified",
+    }
+    assert final["last_stage_successes"]["collect_train_audit"][
+        "target_data_as_of"
+    ] == target.isoformat()
+
+
+def test_heartbeat_stage_transition_records_completed_stage(
+    tmp_path: Path,
+) -> None:
+    settings = _settings(tmp_path)
+    started = datetime.fromisoformat("2026-08-24T00:00:00+00:00")
+    target = datetime.fromisoformat("2026-08-21T20:00:00+00:00")
+    automation.write_json_atomic(
+        settings.status_path,
+        automation._status_document(
+            settings,
+            status="running",
+            stage="collect_live_data",
+            started_at=started,
+            target=target,
+            run_id="run-1",
+        ),
+    )
+
+    automation._heartbeat_status(settings, stage="train_models")
+    updated = json.loads(settings.status_path.read_text(encoding="utf-8"))
+
+    assert updated["stage"] == "train_models"
+    assert updated["last_stage_successes"]["collect_live_data"] == {
+        "completed_at": updated["stage_started_at"],
+        "target_data_as_of": target.isoformat(),
+        "run_id": "run-1",
+    }
+
+
+def test_failure_status_preserves_exact_failed_stage(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    started = datetime.fromisoformat("2026-08-24T00:00:00+00:00")
+    target = datetime.fromisoformat("2026-08-21T20:00:00+00:00")
+
+    failed = automation._status_document(
+        settings,
+        status="failed",
+        stage="failed",
+        started_at=started,
+        target=target,
+        failed_stage="audit_candidate",
+    )
+    automation.write_json_atomic(settings.status_path, failed)
+    blocked = automation._status_document(
+        settings,
+        status="blocked",
+        stage="retry_blocked",
+        started_at=started,
+        target=target,
+    )
+
+    assert failed["failed_stage"] == "audit_candidate"
+    assert blocked["failed_stage"] == "audit_candidate"
 
     just_after = datetime.fromisoformat("2026-08-07T20:01:00+00:00")
     cutoff, ready = automation.target_cutoff(
@@ -166,6 +307,37 @@ def test_candidate_context_rejects_nonignored_untracked_python_shadow(
         automation._candidate_context(settings)
 
 
+def test_candidate_context_is_content_based_not_inode_or_mtime(tmp_path: Path) -> None:
+    root = tmp_path / "repo"
+    (root / "config").mkdir(parents=True)
+    subprocess.run(["git", "init", str(root)], check=True, capture_output=True)
+    tracked = root / "tracked.txt"
+    tracked.write_text("safe\n", encoding="utf-8")
+    (root / "config/series.json").write_text("{}\n", encoding="utf-8")
+    (root / "config/automation.json").write_text("{}\n", encoding="utf-8")
+    _git(["add", "tracked.txt", "config/series.json", "config/automation.json"], root)
+    _git(
+        [
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-m",
+            "seed",
+        ],
+        root,
+    )
+    settings = _settings(tmp_path / "state", root=root)
+
+    before = automation._candidate_context(settings)
+    original = tracked.stat()
+    os.utime(tracked, ns=(original.st_atime_ns, original.st_mtime_ns + 1_000_000))
+    after = automation._candidate_context(settings)
+
+    assert after == before
+
+
 def test_current_weak_generalization_live_payload_is_publishable() -> None:
     payload = automation.validate_automation_candidate(
         LIVE_PAYLOAD, target=LIVE_TARGET
@@ -218,10 +390,27 @@ def test_public_readback_requires_exact_payload_manifest_and_consumer(
 ) -> None:
     settings = _settings(tmp_path)
     digest = hashlib.sha256(LIVE_PAYLOAD).hexdigest()
+    assets = {
+        "index.html": b"<title>US Market Regime Lab</title><script src='./app.js'></script>",
+        "styles.css": b"body { color: black; }\n",
+        "app.js": b"console.log('regime');\n",
+    }
     manifest = json.dumps(
         {
             "payload_data_as_of": "2026-08-07T20:00:00+00:00",
-            "files": {"data/regime-results.json": {"sha256": digest}},
+            "files": {
+                "data/regime-results.json": {
+                    "sha256": digest,
+                    "bytes": len(LIVE_PAYLOAD),
+                },
+                **{
+                    path: {
+                        "sha256": hashlib.sha256(raw).hexdigest(),
+                        "bytes": len(raw),
+                    }
+                    for path, raw in assets.items()
+                },
+            },
         }
     ).encode()
 
@@ -230,17 +419,75 @@ def test_public_readback_requires_exact_payload_manifest_and_consumer(
             return LIVE_PAYLOAD
         if url.endswith("publication-manifest.json"):
             return manifest
-        return b"<title>US Market Regime Lab</title><script src='./app.js'></script>"
+        for path, raw in assets.items():
+            if url.endswith(path):
+                return raw
+        raise AssertionError(url)
 
     automation.verify_public_readback(
-        settings, expected_payload=LIVE_PAYLOAD, fetch=fetch
+        settings,
+        expected_payload=LIVE_PAYLOAD,
+        expected_assets=assets,
+        fetch=fetch,
     )
 
     with pytest.raises(automation.AutomationError, match="SHA-256"):
         automation.verify_public_readback(
             settings,
             expected_payload=LIVE_PAYLOAD + b" ",
+            expected_assets=assets,
             fetch=fetch,
+        )
+
+    def tampered_fetch(url: str) -> bytes:
+        if url.endswith("app.js"):
+            return assets["app.js"] + b" "
+        return fetch(url)
+
+    with pytest.raises(automation.AutomationError, match="app.js"):
+        automation.verify_public_readback(
+            settings,
+            expected_payload=LIVE_PAYLOAD,
+            expected_assets=assets,
+            fetch=tampered_fetch,
+        )
+
+    old_assets = {**assets, "app.js": b"console.log('old release');\n"}
+    old_manifest = json.dumps(
+        {
+            "payload_data_as_of": "2026-08-07T20:00:00+00:00",
+            "files": {
+                "data/regime-results.json": {
+                    "sha256": digest,
+                    "bytes": len(LIVE_PAYLOAD),
+                },
+                **{
+                    path: {
+                        "sha256": hashlib.sha256(raw).hexdigest(),
+                        "bytes": len(raw),
+                    }
+                    for path, raw in old_assets.items()
+                },
+            },
+        }
+    ).encode()
+
+    def stale_but_self_consistent(url: str) -> bytes:
+        if url.endswith("data/regime-results.json"):
+            return LIVE_PAYLOAD
+        if url.endswith("publication-manifest.json"):
+            return old_manifest
+        for path, raw in old_assets.items():
+            if url.endswith(path):
+                return raw
+        raise AssertionError(url)
+
+    with pytest.raises(automation.AutomationError, match="expected checkout"):
+        automation.verify_public_readback(
+            settings,
+            expected_payload=LIVE_PAYLOAD,
+            expected_assets=assets,
+            fetch=stale_but_self_consistent,
         )
 
 
@@ -419,6 +666,40 @@ else:
     fake_git.chmod(0o755)
     entrypoint = Path(sys.executable).with_name("regime-lab")
     assert entrypoint.is_file()
+    database = tmp_path / "regime.sqlite3"
+    with sqlite3.connect(database):
+        pass
+    authorization = tmp_path / "authorization.json"
+    reviewed_at = datetime.now(UTC)
+    authorization.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "automation_id": "weekly-regime-release-v1",
+                "confirmed": True,
+                "scopes": [
+                    "alfred_local_storage_ml",
+                    "personal_noncommercial_derived_publication",
+                ],
+                "reviewed_at": reviewed_at.isoformat(),
+                "review_after": (reviewed_at + timedelta(days=180)).isoformat(),
+                "contains_credentials": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+    config = json.loads((ROOT / "config/automation.json").read_text(encoding="utf-8"))
+    config["build"].update(
+        {
+            "database": str(database),
+            "payload": str(tmp_path / "regime-results.json"),
+            "artifacts": str(tmp_path / "artifacts"),
+            "state_directory": str(tmp_path / "automation-state"),
+            "authorization": str(authorization),
+        }
+    )
+    automation_config = tmp_path / "automation.json"
+    automation_config.write_text(json.dumps(config), encoding="utf-8")
     env = os.environ.copy()
     env["PATH"] = f"{fake_bin}{os.pathsep}{env.get('PATH', '')}"
 
@@ -428,7 +709,7 @@ else:
             "automation",
             "preflight",
             "--config",
-            str(ROOT / "config/automation.json"),
+            str(automation_config),
         ],
         cwd=tmp_path,
         env=env,
@@ -441,11 +722,21 @@ else:
     assert completed.returncode == 0, completed.stderr
     result = json.loads(completed.stdout)
     assert result["ok"] is True
+    assert result["authorization_ok"] is True
+    assert result["database_ok"] is True
     assert result["remote_head_sha"] == "a" * 40
 
 
-def test_expired_local_authorization_fails_closed(tmp_path: Path) -> None:
+def test_expired_local_authorization_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     settings = _settings(tmp_path)
+    monkeypatch.setattr(
+        automation,
+        "_validate_provider_rights_policy",
+        lambda *_args, **_kwargs: None,
+    )
     automation._write_local_authorization(
         settings,
         alfred_rights_confirmed=True,
@@ -457,6 +748,69 @@ def test_expired_local_authorization_fails_closed(tmp_path: Path) -> None:
             settings, now=datetime.fromisoformat("2026-08-01T00:00:00+00:00")
         )
     assert settings.authorization.stat().st_mode & 0o777 == 0o600
+
+
+def test_current_automation_accepts_provider_scope_before_local_authorization(
+    tmp_path: Path,
+) -> None:
+    settings = _settings(tmp_path, root=ROOT)
+    checked_at = datetime.fromisoformat("2026-08-25T00:00:00+00:00")
+    automation._validate_provider_rights_policy(settings, now=checked_at)
+    with pytest.raises(automation.AutomationError, match="authorization is missing"):
+        automation._validate_local_authorization(
+            settings,
+            now=checked_at,
+        )
+
+
+def test_automation_provider_gate_rejects_missing_series_config(
+    tmp_path: Path,
+) -> None:
+    settings = _settings(tmp_path)
+    (settings.root / "config/series.json").unlink()
+
+    with pytest.raises(automation.AutomationError, match="series config is missing"):
+        automation._validate_provider_rights_policy(
+            settings,
+            now=datetime.fromisoformat("2026-08-24T06:00:00+00:00"),
+        )
+
+
+def test_missing_local_authorization_keeps_installed_status_non_operational(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings(tmp_path, root=ROOT)
+    health = {
+        "schema_version": automation.HEALTH_SCHEMA_VERSION,
+        "status": "succeeded",
+        "updated_at": datetime.now(UTC).isoformat(),
+        "consecutive_failures": 0,
+    }
+    settings.status_path.parent.mkdir(parents=True, exist_ok=True)
+    settings.status_path.write_text(json.dumps(health), encoding="utf-8")
+    monkeypatch.setattr(automation, "_launch_agent_loaded", lambda _settings: True)
+    monkeypatch.setattr(
+        automation,
+        "_launch_agent_configuration",
+        lambda _settings, target=None: {
+            "configuration_matches": True,
+            "expected_plist_sha256": "a" * 64,
+            "installed_plist_sha256": "a" * 64,
+            "drift_keys": [],
+        },
+    )
+    fake_plist = tmp_path / "regime.plist"
+    fake_plist.write_text("fixture", encoding="utf-8")
+    monkeypatch.setattr(automation, "_launch_agent_path", lambda: fake_plist)
+
+    status = automation.launch_agent_status(settings)
+
+    assert status["provider_rights_ok"] is True
+    assert status["provider_rights_error"] is None
+    assert status["authorization_ok"] is False
+    assert "missing" in str(status["authorization_error"])
+    assert status["operational"] is False
 
 
 def test_local_authorization_requires_both_explicit_acknowledgements(
@@ -531,8 +885,12 @@ def test_alpha_quota_preflight_blocks_before_full_batch(tmp_path: Path) -> None:
         limit=25, database_path=settings.database
     )
     assert budget.reserve(3) is not None
+    before = settings.database.read_bytes()
+    before_mtime = settings.database.stat().st_mtime_ns
     with pytest.raises(automation.AutomationError, match="full batch"):
         automation._alpha_quota_preflight(settings, target=LIVE_TARGET)
+    assert settings.database.read_bytes() == before
+    assert settings.database.stat().st_mtime_ns == before_mtime
 
 
 def test_already_current_run_never_builds_or_publishes(
@@ -989,8 +1347,9 @@ def test_force_retry_cli_is_explicit_run_only_and_forwarded(
     monkeypatch.setattr(
         automation,
         "run_weekly_release",
-        lambda _settings, *, force_transient_retry=False: (
-            seen.append(force_transient_retry)
+        lambda _settings, *, force_transient_retry=False,
+        force_blocked_recovery=False: (
+            seen.append(force_transient_retry or force_blocked_recovery)
             or {"ok": True, "status": "succeeded"}
         ),
     )
@@ -1004,12 +1363,32 @@ def test_force_retry_cli_is_explicit_run_only_and_forwarded(
     error = json.loads(capsys.readouterr().err)
     assert "valid only" in error["error"]
 
+    blocked_args = parser.parse_args(
+        ["automation", "run", "--force-blocked-recovery"]
+    )
+    assert automation.command_automation(blocked_args) == 0
+    assert seen == [True, True]
+    capsys.readouterr()
+
+    invalid_blocked = parser.parse_args(
+        ["automation", "status", "--force-blocked-recovery"]
+    )
+    assert automation.command_automation(invalid_blocked) == 1
+    blocked_error = json.loads(capsys.readouterr().err)
+    assert "valid only" in blocked_error["error"]
+
 
 def test_public_readback_recovery_pushes_a_credential_independent_empty_commit(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     settings = _settings(tmp_path)
+    automation._write_local_authorization(
+        settings,
+        alfred_rights_confirmed=True,
+        personal_noncommercial_publication_acknowledged=True,
+        now=datetime.fromisoformat("2026-08-01T00:00:00+00:00"),
+    )
     calls: dict[str, object] = {"publish": 0, "wait": 0}
     monkeypatch.setattr(automation, "_git_preflight", lambda _settings: _remote())
     monkeypatch.setattr(
@@ -1105,4 +1484,7 @@ def test_pages_workflow_remains_provider_free_and_unscheduled() -> None:
     assert "Refuse a stale main deployment" in workflow
     assert 'git/ref/heads/main' in workflow
     assert 'test "$current_sha" = "$EXPECTED_SHA"' in workflow
-    assert "actions/deploy-pages@v4" in workflow
+    assert (
+        "actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0"
+        in workflow
+    )

@@ -3,14 +3,19 @@ from __future__ import annotations
 from dataclasses import replace
 import hashlib
 import json
+import sys
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
 import pytest
 from sklearn.base import clone
 
-from regime_lab.analysis.models import MODEL_NAMES, MODEL_REGISTRY
-from regime_lab.analysis.models import BenchmarkProfile, StateEncodedXGBoostClassifier
+from regime_lab.analysis.models import DIRECT_NEXT_STATE_MODEL_NAMES, MODEL_NAMES
+from regime_lab.analysis.models import MODEL_REGISTRY, BenchmarkProfile
+from regime_lab.analysis.models import DiscountedMarkovClassifier
+from regime_lab.analysis.models import RecencyWeightedXGBoostClassifier
+from regime_lab.analysis.models import StateEncodedXGBoostClassifier
 from regime_lab.analysis.models import align_probabilities, augment_with_current_state
 from regime_lab.analysis.models import build_model, model_complexity_rank
 from regime_lab.analysis.models import model_manifest, model_manifest_sha256
@@ -145,6 +150,136 @@ def test_model_manifest_is_json_stable_and_hashes_exact_serialization() -> None:
         serialized.encode("utf-8")
     ).hexdigest()
     assert serialize_model_manifest(_small_profile(), random_state=31) == serialized
+
+
+def test_optional_direct_model_manifest_has_fixed_search_spaces() -> None:
+    serialized = serialize_model_manifest(
+        _small_profile(),
+        random_state=31,
+        names=DIRECT_NEXT_STATE_MODEL_NAMES,
+    )
+    parsed = json.loads(serialized)
+    indexed = {row["name"]: row for row in parsed["models"]}
+
+    assert tuple(indexed) == DIRECT_NEXT_STATE_MODEL_NAMES
+    assert all(row["default"] is False for row in indexed.values())
+    assert indexed["recency_weighted_xgboost_208w"]["search_space"] == {
+        "half_life_weeks": [208.0],
+        "sample_weight_normalization": ["mean_one"],
+    }
+    assert indexed["pca_ridge_logistic"]["search_space"] == {
+        "C": [0.1],
+        "max_components_profile_field": ["spline_pca_components"],
+        "penalty": ["l2"],
+        "solver": ["lbfgs"],
+    }
+    assert indexed["discounted_markov_208w"]["search_space"] == {
+        "alpha": [1.0],
+        "half_life_weeks": [208.0],
+    }
+    assert (
+        serialize_model_manifest(
+            _small_profile(),
+            random_state=31,
+            names=DIRECT_NEXT_STATE_MODEL_NAMES,
+        )
+        == serialized
+    )
+
+
+def test_pca_ridge_pipeline_is_fold_local_and_profile_capped() -> None:
+    estimator = build_model("pca_ridge_logistic", _small_profile(), random_state=23)
+
+    assert tuple(estimator.named_steps) == ("imputer", "scaler", "pca", "classifier")
+    assert estimator.named_steps["pca"].max_components == 4
+    assert not hasattr(estimator.named_steps["imputer"], "statistics_")
+    assert not hasattr(estimator.named_steps["scaler"], "mean_")
+    assert not hasattr(estimator.named_steps["pca"], "pca_")
+
+
+def test_recency_weighted_xgboost_uses_mean_one_row_order_weights(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeXGBClassifier:
+        def __init__(self, **parameters) -> None:
+            self.parameters = parameters
+
+        def fit(self, features, target, **parameters):
+            self.fit_features = np.asarray(features)
+            self.fit_target = np.asarray(target)
+            self.fit_parameters = parameters
+            return self
+
+    monkeypatch.setitem(
+        sys.modules,
+        "xgboost",
+        SimpleNamespace(XGBClassifier=FakeXGBClassifier),
+    )
+    rows = 417
+    estimator = RecencyWeightedXGBoostClassifier(
+        n_estimators=6,
+        half_life_weeks=208.0,
+    )
+    estimator.fit(
+        np.arange(rows * 2, dtype=float).reshape(rows, 2),
+        np.resize(STATE_ORDER, rows),
+    )
+
+    expected = np.exp2(-np.arange(rows - 1, -1, -1, dtype=float) / 208.0)
+    expected /= expected.mean()
+    np.testing.assert_allclose(estimator.sample_weight_, expected, rtol=0, atol=1e-15)
+    np.testing.assert_allclose(
+        estimator.estimator_.fit_parameters["sample_weight"],
+        expected,
+        rtol=0,
+        atol=1e-15,
+    )
+    assert np.isclose(estimator.sample_weight_.mean(), 1.0)
+    assert np.isclose(estimator.sample_weight_[-1] / estimator.sample_weight_[0], 4.0)
+
+
+def test_recency_weighted_xgboost_keeps_fixed_xgboost_hyperparameters() -> None:
+    profile = _small_profile()
+    ordinary = build_model("xgboost", profile, random_state=47).named_steps[
+        "classifier"
+    ]
+    recency = build_model(
+        "recency_weighted_xgboost_208w",
+        profile,
+        random_state=47,
+    ).named_steps["classifier"]
+    shared_parameters = (
+        "n_estimators",
+        "learning_rate",
+        "max_depth",
+        "min_child_weight",
+        "subsample",
+        "colsample_bytree",
+        "reg_lambda",
+        "reg_alpha",
+        "gamma",
+        "random_state",
+        "n_jobs",
+    )
+
+    assert {
+        name: getattr(recency, name) for name in shared_parameters
+    } == {
+        name: getattr(ordinary, name) for name in shared_parameters
+    }
+    assert recency.half_life_weeks == 208.0
+
+
+def test_discounted_markov_uses_unscaled_208_week_transition_weights() -> None:
+    rows = 209
+    current = np.resize(np.asarray(STATE_ORDER, dtype=object), rows)
+    target = np.roll(current, -1)
+    estimator = DiscountedMarkovClassifier(alpha=1.0, half_life_weeks=208.0)
+    estimator.fit(current, target)
+
+    assert np.isclose(estimator.transition_weights_[0], 0.5)
+    assert np.isclose(estimator.transition_weights_[-1], 1.0)
+    np.testing.assert_allclose(estimator.transition_matrix_.sum(axis=1), 1.0)
 
 
 def test_transition_augmentation_defaults_to_pooled_shared_slopes() -> None:

@@ -89,6 +89,24 @@ def _identity(
     )
 
 
+def test_checkpoint_identity_accepts_opt_in_direct_candidates() -> None:
+    parameters = _parameters(
+        models=(
+            "markov",
+            "discounted_markov_208w",
+            "pca_ridge_logistic",
+            "recency_weighted_xgboost_208w",
+        )
+    )
+
+    assert parameters.model_names == (
+        "markov",
+        "discounted_markov_208w",
+        "pca_ridge_logistic",
+        "recency_weighted_xgboost_208w",
+    )
+
+
 def _rows(identity: BenchmarkCheckpointIdentity, sequence: int = 1):
     origin = identity.origins[sequence - 1]
     rows: list[dict[str, object]] = []
@@ -381,6 +399,278 @@ def test_manifest_schema_corruption_and_identity_drift_fail_closed(tmp_path: Pat
         WalkForwardCheckpoint.open(root, identity)
 
 
+def test_versioned_open_rolls_appended_week_and_preserves_legacy_bytes(
+    tmp_path: Path,
+) -> None:
+    features, states = _inputs()
+    identity = BenchmarkCheckpointIdentity.build(
+        features,
+        states,
+        _parameters(),
+        source_fingerprint_sha256="a" * 64,
+    )
+    root = tmp_path / "v5-checkpoint"
+    legacy = WalkForwardCheckpoint.open_versioned(root, identity)
+    rows, split = _rows(identity)
+    legacy_record = legacy.save_origin(1, rows, split)
+    legacy_manifest_bytes = (root / "manifest.json").read_bytes()
+    legacy_record_bytes = legacy_record.read_bytes()
+
+    appended_features, appended_states = _inputs(43)
+    appended_identity = BenchmarkCheckpointIdentity.build(
+        appended_features,
+        appended_states,
+        _parameters(),
+        source_fingerprint_sha256="a" * 64,
+    )
+    rolled = WalkForwardCheckpoint.open_versioned(root, appended_identity)
+
+    assert legacy.root == root.resolve()
+    assert rolled.root == (
+        root / "runs" / appended_identity.run_signature
+    ).resolve()
+    assert rolled.load_completed_origins() == ()
+    assert (root / "manifest.json").read_bytes() == legacy_manifest_bytes
+    assert legacy_record.read_bytes() == legacy_record_bytes
+    resumed_legacy = WalkForwardCheckpoint.open_versioned(root, identity)
+    assert resumed_legacy.root == root.resolve()
+    assert resumed_legacy.load_origin(1) is not None
+    assert (rolled.root.stat().st_mode & 0o077) == 0
+
+
+@pytest.mark.parametrize("with_origins", [False, True])
+def test_versioned_open_recovers_empty_interrupted_initialization(
+    tmp_path: Path,
+    with_origins: bool,
+) -> None:
+    features, states = _inputs()
+    identity = BenchmarkCheckpointIdentity.build(
+        features,
+        states,
+        _parameters(),
+        source_fingerprint_sha256="a" * 64,
+    )
+    root = tmp_path / "v5-checkpoint"
+    root.mkdir()
+    if with_origins:
+        (root / "origins").mkdir()
+
+    checkpoint = WalkForwardCheckpoint.open_versioned(root, identity)
+
+    assert checkpoint.root == root.resolve()
+    assert (root / "manifest.json").is_file()
+    assert checkpoint.load_completed_origins() == ()
+    assert (root.stat().st_mode & 0o077) == 0
+    assert ((root / "origins").stat().st_mode & 0o077) == 0
+
+
+def test_checkpoint_identity_changes_with_estimator_runtime_versions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    features, states = _inputs()
+    first = BenchmarkCheckpointIdentity.build(
+        features,
+        states,
+        _parameters(),
+        source_fingerprint_sha256="a" * 64,
+    )
+    monkeypatch.setattr(
+        "regime_lab.walkforward_checkpoint.runtime_version_manifest",
+        lambda: {
+            "python": "future",
+            "platform_system": "future",
+            "platform_release": "future",
+            "platform_machine": "future",
+            "numpy": "future",
+            "pandas": "future",
+            "scipy": "future",
+            "scikit-learn": "future",
+            "xgboost": "future",
+            "hmmlearn": "future",
+            "joblib": "future",
+            "threadpoolctl": "future",
+        },
+    )
+    second = BenchmarkCheckpointIdentity.build(
+        features,
+        states,
+        _parameters(),
+        source_fingerprint_sha256="a" * 64,
+    )
+
+    assert first.parameter_manifest["runtime_versions"] != second.parameter_manifest[
+        "runtime_versions"
+    ]
+    assert first.run_signature != second.run_signature
+
+
+def test_versioned_open_resumes_the_same_rolled_run(tmp_path: Path) -> None:
+    features, states = _inputs()
+    root = tmp_path / "v5-checkpoint"
+    legacy_identity = BenchmarkCheckpointIdentity.build(
+        features,
+        states,
+        _parameters(),
+        source_fingerprint_sha256="a" * 64,
+    )
+    WalkForwardCheckpoint.open_versioned(root, legacy_identity)
+
+    appended_features, appended_states = _inputs(43)
+    appended_identity = BenchmarkCheckpointIdentity.build(
+        appended_features,
+        appended_states,
+        _parameters(),
+        source_fingerprint_sha256="a" * 64,
+    )
+    rolled = WalkForwardCheckpoint.open_versioned(root, appended_identity)
+    rows, split = _rows(appended_identity)
+    record_path = rolled.save_origin(1, rows, split)
+    record_bytes = record_path.read_bytes()
+
+    resumed = WalkForwardCheckpoint.open_versioned(root, appended_identity)
+
+    assert resumed.root == rolled.root
+    assert record_path.read_bytes() == record_bytes
+    assert [record.origin.sequence for record in resumed.load_completed_origins()] == [1]
+
+
+def test_versioned_open_uses_source_fingerprint_bound_namespaces(
+    tmp_path: Path,
+) -> None:
+    features, states = _inputs()
+    root = tmp_path / "v5-checkpoint"
+    first = BenchmarkCheckpointIdentity.build(
+        features,
+        states,
+        _parameters(),
+        source_fingerprint_sha256="a" * 64,
+    )
+    second = BenchmarkCheckpointIdentity.build(
+        features,
+        states,
+        _parameters(),
+        source_fingerprint_sha256="b" * 64,
+    )
+    third = BenchmarkCheckpointIdentity.build(
+        features,
+        states,
+        _parameters(),
+        source_fingerprint_sha256="c" * 64,
+    )
+
+    assert WalkForwardCheckpoint.open_versioned(root, first).root == root.resolve()
+    second_checkpoint = WalkForwardCheckpoint.open_versioned(root, second)
+    third_checkpoint = WalkForwardCheckpoint.open_versioned(root, third)
+
+    assert second_checkpoint.root == (root / "runs" / second.run_signature).resolve()
+    assert third_checkpoint.root == (root / "runs" / third.run_signature).resolve()
+    assert second_checkpoint.root != third_checkpoint.root
+    assert WalkForwardCheckpoint.open_versioned(root, second).root == second_checkpoint.root
+
+
+@pytest.mark.parametrize("corruption", ["manifest", "record"])
+def test_versioned_open_does_not_roll_over_corrupt_legacy_state(
+    tmp_path: Path,
+    corruption: str,
+) -> None:
+    features, states = _inputs()
+    root = tmp_path / "v5-checkpoint"
+    identity = BenchmarkCheckpointIdentity.build(features, states, _parameters())
+    legacy = WalkForwardCheckpoint.open_versioned(root, identity)
+    rows, split = _rows(identity)
+    record_path = legacy.save_origin(1, rows, split)
+    if corruption == "manifest":
+        manifest_path = root / "manifest.json"
+        document = json.loads(manifest_path.read_text(encoding="utf-8"))
+        document["schema_version"] = "future-schema"
+        manifest_path.write_text(json.dumps(document) + "\n", encoding="utf-8")
+        os.chmod(manifest_path, 0o600)
+    else:
+        record_path.write_text("{broken", encoding="utf-8")
+        os.chmod(record_path, 0o600)
+
+    appended_features, appended_states = _inputs(43)
+    appended_identity = BenchmarkCheckpointIdentity.build(
+        appended_features,
+        appended_states,
+        _parameters(),
+    )
+    with pytest.raises(CheckpointCorruptionError):
+        WalkForwardCheckpoint.open_versioned(root, appended_identity)
+    assert not (root / "runs").exists()
+
+
+@pytest.mark.parametrize("corruption", ["manifest", "record"])
+def test_versioned_open_does_not_resume_corrupt_child_state(
+    tmp_path: Path,
+    corruption: str,
+) -> None:
+    features, states = _inputs()
+    root = tmp_path / "v5-checkpoint"
+    legacy_identity = BenchmarkCheckpointIdentity.build(features, states, _parameters())
+    WalkForwardCheckpoint.open_versioned(root, legacy_identity)
+    appended_features, appended_states = _inputs(43)
+    appended_identity = BenchmarkCheckpointIdentity.build(
+        appended_features,
+        appended_states,
+        _parameters(),
+    )
+    child = WalkForwardCheckpoint.open_versioned(root, appended_identity)
+    rows, split = _rows(appended_identity)
+    record_path = child.save_origin(1, rows, split)
+    if corruption == "manifest":
+        manifest_path = child.root / "manifest.json"
+        manifest_path.write_text("{broken", encoding="utf-8")
+        os.chmod(manifest_path, 0o600)
+    else:
+        record_path.write_text("{broken", encoding="utf-8")
+        os.chmod(record_path, 0o600)
+
+    with pytest.raises(CheckpointCorruptionError):
+        WalkForwardCheckpoint.open_versioned(root, appended_identity)
+
+
+def test_versioned_open_rejects_symlinked_or_non_private_rollover_state(
+    tmp_path: Path,
+) -> None:
+    features, states = _inputs()
+    identity = BenchmarkCheckpointIdentity.build(features, states, _parameters())
+
+    legacy_root = tmp_path / "legacy-symlink"
+    WalkForwardCheckpoint.open_versioned(legacy_root, identity)
+    records_root = legacy_root / "origins"
+    records_backing = tmp_path / "origins-backing"
+    records_root.rename(records_backing)
+    records_root.symlink_to(records_backing, target_is_directory=True)
+    with pytest.raises(CheckpointPrivacyError, match="symlink"):
+        WalkForwardCheckpoint.open_versioned(legacy_root, identity)
+
+    root = tmp_path / "child-symlink"
+    WalkForwardCheckpoint.open_versioned(root, identity)
+    changed_identity = BenchmarkCheckpointIdentity.build(
+        features,
+        states,
+        _parameters(),
+        source_fingerprint_sha256="b" * 64,
+    )
+    runs_root = root / "runs"
+    runs_root.mkdir(mode=0o700)
+    child_backing = tmp_path / "child-backing"
+    child_backing.mkdir(mode=0o700)
+    (runs_root / changed_identity.run_signature).symlink_to(
+        child_backing,
+        target_is_directory=True,
+    )
+    with pytest.raises(CheckpointPrivacyError, match="symlink"):
+        WalkForwardCheckpoint.open_versioned(root, changed_identity)
+
+    (runs_root / changed_identity.run_signature).unlink()
+    child = WalkForwardCheckpoint.open_versioned(root, changed_identity)
+    os.chmod(child.root, 0o755)
+    with pytest.raises(CheckpointPrivacyError, match="group/world accessible"):
+        WalkForwardCheckpoint.open_versioned(root, changed_identity)
+
+
 def test_record_schema_and_unexpected_files_fail_closed(tmp_path: Path) -> None:
     identity = _identity()
     checkpoint = WalkForwardCheckpoint.open(tmp_path / "v5-checkpoint", identity)
@@ -435,6 +725,102 @@ def _assert_benchmark_equal(left, right) -> None:
             getattr(right, attribute),
             check_exact=True,
         )
+
+
+def test_appended_week_versioned_benchmark_is_exact_and_resumes_child(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    arguments = {
+        "profile": _profile(),
+        "models": ("majority", "ridge_logistic"),
+        "gap": 1,
+        "random_state": 17,
+        "selection_end": "2020-07-03",
+        "selection_max_origins": 4,
+        "model_workers": 1,
+        "minimum_selection_predictions": 3,
+        "minimum_holdout_predictions": 3,
+    }
+    parameters = _parameters(
+        models=arguments["models"],
+        model_workers=arguments["model_workers"],
+    )
+    source_fingerprint = "a" * 64
+    root = tmp_path / "private-v5-checkpoint"
+
+    features, states = _inputs()
+    first_identity = BenchmarkCheckpointIdentity.build(
+        features,
+        states,
+        parameters,
+        source_fingerprint_sha256=source_fingerprint,
+    )
+    first_checkpoint = WalkForwardCheckpoint.open_versioned(root, first_identity)
+    first = run_benchmark(
+        features,
+        states,
+        checkpoint_directory=first_checkpoint.root,
+        source_fingerprint_sha256=source_fingerprint,
+        **arguments,
+    )
+    legacy_manifest_bytes = (root / "manifest.json").read_bytes()
+    legacy_record_bytes = {
+        path.name: path.read_bytes()
+        for path in (root / "origins").glob("*.json")
+    }
+
+    appended_features, appended_states = _inputs(43)
+    appended_identity = BenchmarkCheckpointIdentity.build(
+        appended_features,
+        appended_states,
+        parameters,
+        source_fingerprint_sha256=source_fingerprint,
+    )
+    appended_checkpoint = WalkForwardCheckpoint.open_versioned(
+        root,
+        appended_identity,
+    )
+    expected = run_benchmark(appended_features, appended_states, **arguments)
+    actual = run_benchmark(
+        appended_features,
+        appended_states,
+        checkpoint_directory=appended_checkpoint.root,
+        source_fingerprint_sha256=source_fingerprint,
+        **arguments,
+    )
+
+    _assert_benchmark_equal(actual, expected)
+    assert not first.predictions.empty
+    assert appended_checkpoint.root == (
+        root / "runs" / appended_identity.run_signature
+    ).resolve()
+    assert (root / "manifest.json").read_bytes() == legacy_manifest_bytes
+    assert {
+        path.name: path.read_bytes()
+        for path in (root / "origins").glob("*.json")
+    } == legacy_record_bytes
+
+    child_records = sorted(appended_checkpoint.records_root.glob("*.json"))
+    child_records[-1].unlink()
+    learned_calls: list[pd.Timestamp] = []
+    original_predict = validation_module._predict_learned_model
+
+    def count_predict(*args, **kwargs):
+        learned_calls.append(pd.Timestamp(args[3].index[0]))
+        return original_predict(*args, **kwargs)
+
+    monkeypatch.setattr(validation_module, "_predict_learned_model", count_predict)
+    resumed = run_benchmark(
+        appended_features,
+        appended_states,
+        checkpoint_directory=appended_checkpoint.root,
+        source_fingerprint_sha256=source_fingerprint,
+        **arguments,
+    )
+
+    _assert_benchmark_equal(resumed, expected)
+    assert learned_calls == [resumed.predictions["origin_date"].max()]
 
 
 def test_run_benchmark_resume_is_exact_and_refits_only_missing_origins(

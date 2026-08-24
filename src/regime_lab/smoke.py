@@ -17,6 +17,8 @@ from regime_lab.data import (
     DailyRequestBudget,
 )
 from regime_lab.keychain import provider_environment_from_keychain
+from regime_lab.config import project_root
+from regime_lab.provider_rights import ProviderRightsError, verify_provider_rights
 
 
 @dataclass(frozen=True)
@@ -124,6 +126,20 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(
             "ALFRED smoke requires --alfred-rights-confirmed after verifying usage rights"
         )
+    provider_ids = {
+        "alfred": ("fred_alfred",),
+        "alfred_schema": ("fred_alfred",),
+        "alpha_vantage": ("alpha_vantage",),
+        "all": ("fred_alfred", "alpha_vantage"),
+    }[selected]
+    try:
+        verify_provider_rights(
+            provider_ids,
+            policy_path=project_root() / "config/provider_rights.json",
+            capabilities=("collection",),
+        )
+    except ProviderRightsError as exc:
+        raise SystemExit(str(exc)) from exc
     with provider_environment_from_keychain(
         rights_acknowledged=args.alfred_rights_confirmed
     ):

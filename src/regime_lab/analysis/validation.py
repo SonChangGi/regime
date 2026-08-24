@@ -22,7 +22,8 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
 from .labels import STATE_ORDER
-from .models import MODEL_NAMES, BenchmarkProfile, GaussianHMMChallenger
+from .models import DIRECT_NEXT_STATE_MODEL_NAMES, MODEL_NAMES, BenchmarkProfile
+from .models import DiscountedMarkovClassifier, GaussianHMMChallenger
 from .models import SmoothedMarkovClassifier, align_probabilities
 from .models import augment_with_current_state, build_model
 from .models import class_prior_probabilities, majority_probabilities
@@ -224,7 +225,9 @@ def _model_names(
     names = list(MODEL_NAMES if models is None else models)
     if include_hmm and "gaussian_hmm" not in names:
         names.append("gaussian_hmm")
-    supported = set(MODEL_NAMES).union({"gaussian_hmm"})
+    supported = set(MODEL_NAMES).union(
+        DIRECT_NEXT_STATE_MODEL_NAMES, {"gaussian_hmm"}
+    )
     unknown = sorted(set(names).difference(supported))
     if unknown:
         raise ValueError(f"unknown benchmark models: {unknown}")
@@ -1015,7 +1018,7 @@ def run_benchmark(
             raise RuntimeError(
                 "checkpoint origin resolver differs from run_benchmark"
             )
-        checkpoint = WalkForwardCheckpoint.open(
+        checkpoint = WalkForwardCheckpoint.open_versioned(
             checkpoint_directory,
             checkpoint_identity,
         )
@@ -1098,6 +1101,15 @@ def run_benchmark(
                 elif name == "markov":
                     probability = (
                         SmoothedMarkovClassifier(alpha=1.0)
+                        .fit(current_train, y_train)
+                        .predict_proba([current_test])[0]
+                    )
+                elif name == "discounted_markov_208w":
+                    probability = (
+                        DiscountedMarkovClassifier(
+                            alpha=1.0,
+                            half_life_weeks=208.0,
+                        )
                         .fit(current_train, y_train)
                         .predict_proba([current_test])[0]
                     )
@@ -1282,6 +1294,15 @@ def forecast_next_regime(
     elif champion_name == "markov":
         probability = (
             SmoothedMarkovClassifier()
+            .fit(current_train, y_train)
+            .predict_proba([current_test])[0]
+        )
+    elif champion_name == "discounted_markov_208w":
+        probability = (
+            DiscountedMarkovClassifier(
+                alpha=1.0,
+                half_life_weeks=208.0,
+            )
             .fit(current_train, y_train)
             .predict_proba([current_test])[0]
         )

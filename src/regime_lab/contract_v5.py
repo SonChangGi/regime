@@ -1150,6 +1150,52 @@ def _validate_core_artifacts(model: Mapping[str, Any]) -> None:
         _sha256(item["sha256"], f"{item_context}.sha256")
 
 
+def _validate_feature_quality_artifact(model: Mapping[str, Any]) -> None:
+    context = "payload.model.feature_quality_artifact"
+    artifact = _mapping(
+        _require(model, "feature_quality_artifact", "payload.model"),
+        context,
+    )
+    expected_fields = {
+        "path",
+        "row_count",
+        "feature_count",
+        "status",
+        "warning_feature_count",
+        "unavailable_feature_count",
+        "content_sha256",
+        "sha256",
+    }
+    if set(artifact) != expected_fields:
+        raise V5ContractError(f"{context} fields are invalid")
+    if artifact["path"] != "feature-quality.json":
+        raise V5ContractError(f"{context}.path is invalid")
+    _integer(artifact["row_count"], f"{context}.row_count", minimum=1)
+    feature_count = _integer(
+        artifact["feature_count"],
+        f"{context}.feature_count",
+        minimum=1,
+    )
+    warning_count = _integer(
+        artifact["warning_feature_count"],
+        f"{context}.warning_feature_count",
+    )
+    unavailable_count = _integer(
+        artifact["unavailable_feature_count"],
+        f"{context}.unavailable_feature_count",
+    )
+    if warning_count + unavailable_count > feature_count:
+        raise V5ContractError(f"{context} feature counts are inconsistent")
+    if artifact["status"] not in {"ok", "warning"}:
+        raise V5ContractError(f"{context}.status is invalid")
+    if bool(warning_count or unavailable_count) != (
+        artifact["status"] == "warning"
+    ):
+        raise V5ContractError(f"{context}.status is inconsistent")
+    _sha256(artifact["content_sha256"], f"{context}.content_sha256")
+    _sha256(artifact["sha256"], f"{context}.sha256")
+
+
 def _validate_v5_core_candidate_contract(
     model: Mapping[str, Any],
     *,
@@ -1443,6 +1489,8 @@ def _validate_model(model: Any, *, mode: str) -> int:
         raise V5ContractError("payload.model.fx_role is invalid")
     _validate_fx_ablation(_require(model, "fx_ablation", "payload.model"))
     _validate_core_artifacts(model)
+    if "feature_quality_artifact" in model:
+        _validate_feature_quality_artifact(model)
     _validate_v5_core_candidate_contract(model, profile=str(model_profile))
     _validate_research_artifacts(model, directional)
     return _validate_evidence_artifacts(model)
@@ -1463,7 +1511,11 @@ def _validate_forecast_comparison(model: Mapping[str, Any]) -> tuple[str, ...] |
     models = tuple(
         _sequence(comparison["models"], f"{context}.models", nonempty=True)
     )
-    if models != V5_FORECAST_COMPARISON_MODELS:
+    champion = str(_require(model, "champion", "payload.model"))
+    valid_models = models == V5_FORECAST_COMPARISON_MODELS
+    if champion not in V5_FORECAST_COMPARISON_MODELS:
+        valid_models = models == (*V5_FORECAST_COMPARISON_MODELS, champion)
+    if not valid_models:
         raise V5ContractError(f"{context}.models are invalid")
     leaderboard = _sequence(
         _require(model, "leaderboard", "payload.model"),

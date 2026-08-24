@@ -26,6 +26,24 @@ package_public_demo = _load_script("package_public_demo", PACKAGE_SCRIPT)
 verify_public_package = _load_script("verify_public_package", VERIFY_SCRIPT)
 
 
+@pytest.fixture(autouse=True)
+def _grant_provider_rights_for_package_verifier_tests(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Exercise byte-level package verification with an allowed test policy."""
+
+    monkeypatch.setattr(
+        package_public_demo,
+        "verify_provider_rights",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setitem(
+        verify_public_package.validate_public_payload.__globals__,
+        "verify_provider_rights",
+        lambda *_args, **_kwargs: None,
+    )
+
+
 def _web_root(tmp_path: Path) -> Path:
     web = tmp_path / "web"
     web.mkdir()

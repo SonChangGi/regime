@@ -15,6 +15,10 @@ import sys
 import tempfile
 from typing import Any, Mapping
 
+from regime_lab.artifact_inventory import (
+    verify_artifact_inventory,
+    write_artifact_inventory,
+)
 from regime_lab.collection import (
     CollectionGateError,
     collect_live_data,
@@ -26,6 +30,7 @@ from regime_lab.analysis.ablation import feature_ablation_manifest_document
 from regime_lab.analysis.models import model_manifest, model_manifest_sha256
 from regime_lab.config import default_config_path, load_config, project_root
 from regime_lab.dataset import build_weekly_dataset
+from regime_lab.database_backup import create_database_backup
 from regime_lab.demo import generate_demo_payload
 from regime_lab.evidence import (
     STATE_LABEL_HISTORY_COLUMNS,
@@ -34,10 +39,19 @@ from regime_lab.evidence import (
     WEEKLY_STATE_FORECAST_V5_COLUMNS,
     canonical_evidence_csv_bytes,
 )
+from regime_lab.feature_quality import (
+    canonical_feature_quality_json_bytes,
+    verify_feature_quality_artifact,
+)
 from regime_lab.keychain import provider_environment_from_keychain
 from regime_lab.payload import write_dashboard_payload
 from regime_lab.io import write_json_atomic
 from regime_lab.path_safety import confined_mutable_path
+from regime_lab.provider_rights import (
+    ProviderRightsError,
+    providers_for_live_config,
+    verify_provider_rights,
+)
 from regime_lab.pipeline import build_dashboard_result
 from regime_lab.schema import validate_dashboard_payload
 from regime_lab.server import serve_dashboard
@@ -67,6 +81,29 @@ def _mutable_path(value: str | Path, *, label: str) -> Path:
         value,
         project_directory=project_root(),
         label=label,
+    )
+
+
+def _backup_database_before_mutation(
+    database: Path,
+    *,
+    backup_directory: str | Path | None,
+    source_code_fingerprint_sha256: str | None = None,
+) -> None:
+    """Create a verified private generation before a command mutates SQLite."""
+
+    if not (database.exists() or database.is_symlink()):
+        return
+    selected = (
+        database.with_name(f"{database.name}.backups")
+        if backup_directory is None
+        else _mutable_path(backup_directory, label="database backup directory")
+    )
+    create_database_backup(
+        database,
+        selected,
+        retain=4,
+        source_code_fingerprint_sha256=source_code_fingerprint_sha256,
     )
 
 
@@ -304,6 +341,7 @@ def _write_supporting_results(
     directory: Path,
     *,
     generation_id: str | None = None,
+    write_inventory: bool = False,
 ) -> None:
     """Stage a self-consistent artifact generation before replacing latest.
 
@@ -329,6 +367,7 @@ def _write_supporting_results(
     transition = getattr(benchmark, "transition_benchmark", None)
     feature_ablation = getattr(benchmark, "feature_ablation", None)
     feature_manifest = getattr(benchmark, "feature_manifest", None)
+    feature_quality = getattr(benchmark, "feature_quality_report", None)
     structural_forecasts = getattr(benchmark, "structural_forecasts", None)
     joint_survival_forecasts = getattr(
         benchmark, "joint_survival_forecasts", None
@@ -460,6 +499,10 @@ def _write_supporting_results(
         write_json_atomic(staging / "candidate-manifest.json", manifest)
         if feature_manifest is not None:
             write_json_atomic(staging / "feature-manifest.json", feature_manifest)
+        if feature_quality is not None:
+            (staging / "feature-quality.json").write_bytes(
+                canonical_feature_quality_json_bytes(feature_quality)
+            )
         if feature_ablation is not None:
             write_json_atomic(
                 staging / "feature-ablation-manifest.json",
@@ -472,6 +515,8 @@ def _write_supporting_results(
             )
         if not any(staging.iterdir()):
             raise RuntimeError("supporting artifact staging produced no files")
+        if write_inventory:
+            write_artifact_inventory(staging)
         if backup.exists():
             shutil.rmtree(backup)
         if directory.exists():
@@ -556,6 +601,21 @@ def _verify_staged_core_artifacts(
     )
 
 
+def _verify_staged_feature_quality_artifact(
+    payload: dict[str, Any],
+    directory: Path,
+) -> None:
+    if payload.get("meta", {}).get("result_version") != "weekly-regime-result-v5":
+        return
+    manifest = payload.get("model", {}).get("feature_quality_artifact")
+    if manifest is None:
+        return
+    verify_feature_quality_artifact(
+        manifest,
+        directory,
+    )
+
+
 def _publish_active_generation(
     payload: dict[str, Any],
     benchmark: object,
@@ -614,14 +674,28 @@ def _publish_active_generation(
     published_payload = False
     preserve_recovery = False
     try:
-        _write_supporting_results(
-            benchmark,
-            staged_artifacts,
-            generation_id=generation_id,
+        is_v5 = (
+            payload.get("meta", {}).get("result_version")
+            == "weekly-regime-result-v5"
         )
+        if is_v5:
+            _write_supporting_results(
+                benchmark,
+                staged_artifacts,
+                generation_id=generation_id,
+                write_inventory=True,
+            )
+            verify_artifact_inventory(staged_artifacts)
+        else:
+            _write_supporting_results(
+                benchmark,
+                staged_artifacts,
+                generation_id=generation_id,
+            )
         _verify_staged_evidence_artifacts(payload, staged_artifacts)
         _verify_staged_research_artifacts(payload, staged_artifacts)
         _verify_staged_core_artifacts(payload, staged_artifacts)
+        _verify_staged_feature_quality_artifact(payload, staged_artifacts)
         write_dashboard_payload(payload, staged_payload)
 
         # Move both previous outputs away before installing either new output.
@@ -670,6 +744,14 @@ def command_collect_h10(args: argparse.Namespace) -> int:
 
     if getattr(args, "contract", None) != "v5":
         raise SystemExit("H.10 collection requires explicit --contract v5")
+    try:
+        verify_provider_rights(
+            ("frb_h10",),
+            policy_path=project_root() / "config/provider_rights.json",
+            capabilities=("collection", "local_storage"),
+        )
+    except ProviderRightsError as exc:
+        raise SystemExit(str(exc)) from exc
     database = _mutable_path(args.database, label="snapshot database")
     archive_ingest = bool(
         getattr(args, "official_release_archive_ingest", False)
@@ -692,6 +774,15 @@ def command_collect_h10(args: argparse.Namespace) -> int:
     live_build_lock = database.with_name(f"{database.name}.live-build.lock")
     try:
         with automation_lock(live_build_lock):
+            _backup_database_before_mutation(
+                database,
+                backup_directory=getattr(args, "backup_directory", None),
+                source_code_fingerprint_sha256=getattr(
+                    args,
+                    "backup_source_code_fingerprint_sha256",
+                    None,
+                ),
+            )
             from regime_lab.data import (
                 H10ArchiveClient,
                 H10Client,
@@ -820,11 +911,6 @@ def _v5_collection_report_document(
 
 
 def command_build(args: argparse.Namespace) -> int:
-    if not args.alfred_rights_confirmed:
-        raise SystemExit(
-            "live build requires --alfred-rights-confirmed after verifying "
-            "storage, ML training, and derived-output permission"
-        )
     if args.profile == "quick":
         raise SystemExit(
             "live build does not permit the three-origin quick smoke profile; "
@@ -844,6 +930,24 @@ def command_build(args: argparse.Namespace) -> int:
         value=getattr(args, "checkpoint_directory", None),
     )
     config = load_config(args.config)
+    rights_policy_value = config.get(
+        "provider_rights_policy",
+        "config/provider_rights.json",
+    )
+    rights_policy_path = Path(str(rights_policy_value))
+    if not rights_policy_path.is_absolute():
+        rights_policy_path = project_root() / rights_policy_path
+    try:
+        required_provider_ids = list(providers_for_live_config(config))
+        if contract_version == "v5" and "frb_h10" not in required_provider_ids:
+            required_provider_ids.append("frb_h10")
+        verify_provider_rights(
+            required_provider_ids,
+            policy_path=rights_policy_path,
+            capabilities=("collection", "local_storage", "model_training"),
+        )
+    except ProviderRightsError as exc:
+        raise SystemExit(str(exc)) from exc
     database = _mutable_path(args.database, label="snapshot database")
     raw_report = getattr(args, "collection_report", None)
     collection_report = (
@@ -864,12 +968,22 @@ def command_build(args: argparse.Namespace) -> int:
                 v5_preflight = verify_v5_preflight(
                     profile=args.profile,
                     database_path=database,
+                    config=config,
                 )
                 print(
                     "V5 사전점검 완료: "
                     f"source={v5_preflight['source_fingerprint_sha256'][:12]}",
                     flush=True,
                 )
+            _backup_database_before_mutation(
+                database,
+                backup_directory=getattr(args, "backup_directory", None),
+                source_code_fingerprint_sha256=getattr(
+                    args,
+                    "backup_source_code_fingerprint_sha256",
+                    None,
+                ),
+            )
             credentials = (
                 nullcontext()
                 if args.from_env
@@ -1011,6 +1125,7 @@ def command_build(args: argparse.Namespace) -> int:
             if v5_preflight is not None:
                 require_v5_analysis_source_unchanged(
                     str(v5_preflight["source_fingerprint_sha256"]),
+                    config=config,
                 )
             _publish_active_generation(
                 payload,
@@ -1122,6 +1237,16 @@ def build_parser() -> argparse.ArgumentParser:
     build.add_argument("--config", type=Path, default=default_config_path())
     build.add_argument("--database", default="data/regime.sqlite3")
     build.add_argument(
+        "--backup-directory",
+        default=None,
+        help="verified SQLite backup root (default: <database>.backups)",
+    )
+    build.add_argument(
+        "--backup-source-code-fingerprint-sha256",
+        default=None,
+        help=argparse.SUPPRESS,
+    )
+    build.add_argument(
         "--output",
         default=None,
         help="payload target (v4: web/data; v5: build/v5-live)",
@@ -1175,6 +1300,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="explicitly opt in to the local v5 research contract",
     )
     collect_h10.add_argument("--database", default="data/regime.sqlite3")
+    collect_h10.add_argument(
+        "--backup-directory",
+        default=None,
+        help="verified SQLite backup root (default: <database>.backups)",
+    )
+    collect_h10.add_argument(
+        "--backup-source-code-fingerprint-sha256",
+        default=None,
+        help=argparse.SUPPRESS,
+    )
     collect_h10.add_argument(
         "--receipt",
         default=None,
@@ -1286,6 +1421,14 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "for automation run only, bypass a transient retry delay; quota "
             "and blocked guards remain enforced"
+        ),
+    )
+    automation.add_argument(
+        "--force-blocked-recovery",
+        action="store_true",
+        help=(
+            "for automation run only, explicitly retry a repaired blocked "
+            "state while retaining every ordinary preflight"
         ),
     )
     automation.set_defaults(func=command_automation)

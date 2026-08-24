@@ -14,31 +14,31 @@ concurrency:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: "3.13"
+          python-version: "3.13.13"
           cache: pip
+          cache-dependency-path: requirements-ci.lock
+
+      - name: Set up exact Node runtime
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24.7.0"
 
       - name: Install project and release checks
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e '.[test,hmm]'
+          python -m pip install --require-hashes -r requirements-ci.lock
+          python -m pip install --no-build-isolation --no-deps -e .
 
-      - name: Run public-safety and dashboard contract tests
-        run: |
-          python -m pytest \
-            tests/test_public_packaging.py \
-            tests/test_public_package_verifier.py \
-            tests/test_dashboard_contract.py \
-            tests/test_dashboard_accessibility.py \
-            tests/test_schema.py
+      - name: Run the complete regression suite
+        run: python -m pytest
 
       - name: Build allowlisted live-derived package
         run: |
@@ -53,10 +53,10 @@ jobs:
         run: python scripts/verify_public_package.py dist/public-dashboard
 
       - name: Configure Pages
-        uses: actions/configure-pages@v5
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
 
       - name: Upload derived-results-only Pages artifact
-        uses: actions/upload-pages-artifact@v4
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: dist/public-dashboard
 
@@ -68,7 +68,7 @@ jobs:
       contents: read
       pages: write
       id-token: write
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: build
     steps:
       - name: Refuse a stale main deployment
@@ -81,4 +81,4 @@ jobs:
 
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0

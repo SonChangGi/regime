@@ -1,0 +1,545 @@
+{
+  "schema_version": 2,
+  "research_version": "weekly-regime-research-v6",
+  "status": "research_planned",
+  "designed_at": "2026-08-24",
+  "implementation_state": {
+    "collection": "not_started",
+    "training": "not_started",
+    "evaluation": "not_started",
+    "publication": "not_started"
+  },
+  "cutoff": {
+    "timezone": "America/New_York",
+    "weekday": "Friday",
+    "time": "16:00",
+    "same_day_release_policy": "next_week_when_time_unknown",
+    "availability_operator": "available_at_less_than_or_equal_to_cutoff"
+  },
+  "evidence_scope": {
+    "role": "retrospective_exploratory_only",
+    "selection_end_exclusive": "2023-01-01",
+    "retrospective_holdout_start_inclusive": "2023-01-01",
+    "post_2023_evidence_status": "retrospective_only",
+    "prospective_registry_start": "2026-08-21T20:00:00+00:00",
+    "prospective_registry_role": "future_observation_only_not_evidence_yet",
+    "prospective_evidence_eligible": false
+  },
+  "evaluation": {
+    "minimum_train_weeks": 520,
+    "gap_weeks": 1,
+    "primary_metric": "multiclass_log_loss",
+    "secondary_metric": "multiclass_brier",
+    "minimum_log_loss_improvement": 0.05,
+    "maximum_brier_degradation": 0.01,
+    "bootstrap_method": "paired_moving_block_bootstrap_holm",
+    "bootstrap_block_weeks": 13,
+    "bootstrap_resamples": 1999,
+    "bootstrap_seed": 17,
+    "holm_alpha": 0.05,
+    "tiers": {
+      "historical_matched_oos": {
+        "required_sources": ["market_label_source", "philadelphia_ads", "philadelphia_rtdsm"],
+        "minimum_common_weeks": 520,
+        "status": "blocked_until_alpha_historical_pit_and_philadelphia_parsers_are_verified"
+      },
+      "archive_certification_candidates": {
+        "sources": ["board_h41", "board_h8"],
+        "promotion_condition": "dated_release_archive_parser_and_520_common_weeks_verified"
+      },
+      "retrospective_sensitivity_only": {
+        "sources": ["board_h15", "ofr_fsi"],
+        "promotion_eligible": false
+      },
+      "prospective_shadow": {
+        "sources": ["board_h10", "board_cp"],
+        "promotion_condition": "520_observed_point_in_time_weeks_after_registry_start"
+      }
+    }
+  },
+  "source_policy": {
+    "official_primary_sources_only": true,
+    "market_price_exception_requires_licensed_provider": true,
+    "private_raw_inputs": true,
+    "public_output": "derived_results_only",
+    "raw_input_publication": false,
+    "provider_logo_publication": false,
+    "attribution_required": true,
+    "rights_reviewed_at": "2026-08-25"
+  },
+  "market_label_source": {
+    "status": "selected_for_private_research",
+    "provider": "Alpha Vantage",
+    "rights_basis": "user_attested_direct_provider_approval_for_regime",
+    "role": "market_only_label_and_cross_asset_features",
+    "minimum_history_weeks": 520,
+    "approved_capabilities": [
+      "automated_collection",
+      "private_raw_storage",
+      "statistical_and_machine_learning",
+      "personal_noncommercial_derived_publication"
+    ],
+    "derived_publication": "approved_personal_noncommercial_derived_results_only",
+    "historical_evidence": {
+      "initial_backfill": "current_adjusted_history",
+      "point_in_time_certified_before_first_collection": false,
+      "eligible_role": "retrospective_sensitivity_only",
+      "prospective_freeze_start": "2026-08-11"
+    },
+    "required_symbols": [
+      "SPY", "QQQ", "IWM", "DIA", "RSP",
+      "XLB", "XLC", "XLE", "XLF", "XLI", "XLK", "XLP", "XLRE", "XLU", "XLV", "XLY",
+      "SHY", "IEF", "TLT", "HYG", "LQD", "GLD", "UUP"
+    ],
+    "alternative_research_candidate": {
+      "provider": "Tiingo EOD",
+      "status": "account_specific_terms_acceptance_and_retention_review_required",
+      "official_documentation_url": "https://www.tiingo.com/documentation/end-of-day",
+      "official_terms_url": "https://app.tiingo.com/tos/",
+      "coverage_basis": "30_plus_year_adjusted_ohlcv_for_us_equities_and_etfs",
+      "pit_price_method": "raw_ohlcv_plus_same_day_dividend_and_split_events_without_future_back_adjustment",
+      "publication_boundary": "non_reconstructable_derived_results_only",
+      "raw_retention_after_subscription": false
+    },
+    "selection_gate": "alpha_vantage_collection_local_storage_and_model_training_allowed",
+    "selection_gate_passed": true
+  },
+  "rights_profiles": {
+    "alpha_vantage_user_attested": {
+      "status": "allowed_for_private_regime_research_and_derived_publication",
+      "basis": "user_attested_direct_provider_approval",
+      "evidence_url": "https://www.alphavantage.co/terms_of_service/",
+      "collection": true,
+      "local_storage": true,
+      "model_training": true,
+      "derived_publication": true,
+      "raw_publication": false,
+      "commercial_publication": false
+    },
+    "board_public_domain": {
+      "status": "allowed",
+      "basis": "board_content_public_domain_unless_indicated",
+      "evidence_url": "https://www.federalreserve.gov/disclaimer.htm",
+      "attribution": "Board of Governors of the Federal Reserve System"
+    },
+    "ofr_published_aggregate": {
+      "status": "allowed_for_published_aggregate",
+      "basis": "federal_employee_work_public_domain",
+      "evidence_url": "https://www.financialresearch.gov/legal-notices/",
+      "attribution": "Office of Financial Research",
+      "underlying_proprietary_series_collection": false
+    },
+    "philadelphia_research_use": {
+      "status": "allowed_for_informational_educational_research_use",
+      "basis": "official_online_terms",
+      "evidence_url": "https://www.philadelphiafed.org/about-us/privacy-notice",
+      "attribution": "Federal Reserve Bank of Philadelphia",
+      "commercial_use": false,
+      "copyrighted_material_republication": false
+    },
+    "dol_public_domain": {
+      "status": "allowed",
+      "basis": "federal_government_material_generally_public_domain",
+      "evidence_url": "https://www.dol.gov/general/aboutdol/copyright",
+      "attribution": "U.S. Department of Labor"
+    },
+    "bls_secondary_use": {
+      "status": "allowed",
+      "basis": "secondary_use_without_end_use_controls",
+      "evidence_url": "https://www.bls.gov/developers/termsOfService.htm",
+      "attribution": "U.S. Bureau of Labor Statistics",
+      "required_disclaimer": "BLS.gov cannot vouch for the data or analyses derived from these data after the data have been retrieved from BLS.gov."
+    },
+    "census_api_use": {
+      "status": "allowed",
+      "basis": "api_terms_allow_search_display_analysis_retrieval",
+      "evidence_url": "https://www.census.gov/data/developers/about/terms-of-service.html",
+      "attribution": "U.S. Census Bureau",
+      "required_notice": "This product uses the Census Bureau Data API but is not endorsed or certified by the Census Bureau."
+    },
+    "bea_public_domain": {
+      "status": "allowed",
+      "basis": "bea_information_public_domain_unless_stated_otherwise",
+      "evidence_url": "https://www.bea.gov/help/faq/147",
+      "attribution": "U.S. Bureau of Economic Analysis"
+    }
+  },
+  "publication_boundary": {
+    "raw_publication": false,
+    "derived_publication": true,
+    "derived_publication_status": "approved_personal_noncommercial_derived_results_only",
+    "citation_required": true,
+    "provider_specific_notice_required": true
+  },
+  "core_sources": {
+    "board_h15": {
+      "status": "research_planned",
+      "role": "retrospective_sensitivity_only",
+      "rights_profile": "board_public_domain",
+      "official_page_url": "https://www.federalreserve.gov/releases/h15/",
+      "download_url": "https://www.federalreserve.gov/releases/h15/data/FRB_h15_xml.zip",
+      "format": "sdmx_xml_zip",
+      "release_schedule": {
+        "timezone": "America/New_York",
+        "weekdays": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"],
+        "time": "16:15",
+        "holiday_policy": "not_published_when_board_closed"
+      },
+      "cutoff_rule": {
+        "normal_latest_eligible_release": "Thursday 16:15 America/New_York",
+        "friday_release": "next_week"
+      },
+      "pit": {
+        "historical_input": "current_full_history_research_only",
+        "historical_vintage_archive": "not_available_for_current_daily_release",
+        "historical_certification": "not_certified_for_release_level_revisions",
+        "live_input": "freeze_each_official_snapshot_with_retrieved_at_and_sha256",
+        "availability": "scheduled_release_time",
+        "revision_policy": "later_official_value_is_new_vintage"
+      },
+      "series": [
+        {"output_id": "DGS3MO", "source_series_name": "RIFLGFCM03_N.B", "domain": "rates", "frequency": "business_daily"},
+        {"output_id": "DGS1", "source_series_name": "RIFLGFCY01_N.B", "domain": "rates", "frequency": "business_daily"},
+        {"output_id": "DGS2", "source_series_name": "RIFLGFCY02_N.B", "domain": "rates", "frequency": "business_daily"},
+        {"output_id": "DGS5", "source_series_name": "RIFLGFCY05_N.B", "domain": "rates", "frequency": "business_daily"},
+        {"output_id": "DGS7", "source_series_name": "RIFLGFCY07_N.B", "domain": "rates", "frequency": "business_daily"},
+        {"output_id": "DGS10", "source_series_name": "RIFLGFCY10_N.B", "domain": "rates", "frequency": "business_daily"},
+        {"output_id": "DGS20", "source_series_name": "RIFLGFCY20_N.B", "domain": "rates", "frequency": "business_daily"},
+        {"output_id": "DGS30", "source_series_name": "RIFLGFCY30_N.B", "domain": "rates", "frequency": "business_daily"},
+        {"output_id": "DFII10", "source_series_name": "RIFLGFCY10_XII_N.B", "domain": "inflation", "frequency": "business_daily"},
+        {"output_id": "FEDFUNDS", "source_series_name": "RIFSPFF_N.B", "domain": "rates", "frequency": "business_daily", "weekly_transform": "mean_of_available_business_days"}
+      ],
+      "derived_series": [
+        {"output_id": "T10Y2Y", "formula": "DGS10-DGS2", "domain": "rates"},
+        {"output_id": "T10YIE", "formula": "DGS10-DFII10", "domain": "inflation"}
+      ]
+    },
+    "board_h10": {
+      "status": "research_planned",
+      "role": "prospective_shadow_fx",
+      "rights_profile": "board_public_domain",
+      "official_page_url": "https://www.federalreserve.gov/releases/h10/",
+      "download_url": "https://www.federalreserve.gov/releases/h10/data/FRB_h10_xml.zip",
+      "archive_index_url": "https://www.federalreserve.gov/releases/h10/releaseDates.json",
+      "archive_url_template": "https://www.federalreserve.gov/releases/h10/{YYYYMMDD}/",
+      "format": "sdmx_xml_zip_and_html_release_archive",
+      "release_schedule": {
+        "timezone": "America/New_York",
+        "weekday": "Monday",
+        "time": "16:15",
+        "holiday_policy": "following_business_day"
+      },
+      "cutoff_rule": {
+        "weekly_release_before_friday_cutoff": true,
+        "availability": "archived_release_date_16_15_ET",
+        "date_only_correction": "next_day"
+      },
+      "pit": {
+        "historical_input": "official_release_archive",
+        "certified_archive_start": "2022-01-01",
+        "archive_revision_policy": "later_official_release_preserved_as_new_vintage",
+        "current_xml_timestamp_policy": "retrieval_first_seen_only",
+        "known_release_gap": "2006-05-22_to_2009-01",
+        "gap_policy": "no_backfilled_availability"
+      },
+      "series": [
+        {"output_id": "DTWEXBGS", "source_series_name": "JRXWTFB_N.B", "source_code": "BRD", "domain": "fx", "frequency": "business_daily", "quote_convention": "usd_index"}
+      ]
+    },
+    "board_h41": {
+      "status": "research_planned",
+      "role": "archive_certification_candidate",
+      "rights_profile": "board_public_domain",
+      "official_page_url": "https://www.federalreserve.gov/releases/h41/",
+      "download_url": "https://www.federalreserve.gov/releases/h41/data/FRB_h41_xml.zip",
+      "archive_url_template": "https://www.federalreserve.gov/releases/h41/{YYYYMMDD}/",
+      "format": "sdmx_xml_zip_and_dated_release_archive",
+      "release_schedule": {
+        "timezone": "America/New_York",
+        "weekday": "Thursday",
+        "time": "16:30",
+        "holiday_policy": "following_business_day"
+      },
+      "cutoff_rule": {
+        "normal_thursday_release_before_friday_cutoff": true,
+        "holiday_shift_to_friday_16_30": "next_week"
+      },
+      "pit": {
+        "historical_input": "dated_official_release_snapshot",
+        "live_input": "freeze_each_official_snapshot_with_retrieved_at_and_sha256",
+        "revision_policy": "later_official_release_preserved_as_new_vintage"
+      },
+      "series": [
+        {"output_id": "WALCL", "source_series_name": "RESPPA_N.WW", "source_label": "Assets: Total Assets: Total assets: Wednesday level", "domain": "liquidity", "frequency": "weekly", "unit_multiplier": 1000000}
+      ]
+    },
+    "board_h8": {
+      "status": "research_planned",
+      "role": "archive_certification_candidate",
+      "rights_profile": "board_public_domain",
+      "official_page_url": "https://www.federalreserve.gov/releases/h8/",
+      "download_url": "https://www.federalreserve.gov/releases/h8/data/FRB_h8_xml.zip",
+      "archive_url_template": "https://www.federalreserve.gov/releases/h8/{YYYYMMDD}/",
+      "format": "sdmx_xml_zip_and_dated_release_archive",
+      "release_schedule": {
+        "timezone": "America/New_York",
+        "weekday": "Friday",
+        "time": "16:15",
+        "holiday_policy": "preceding_thursday_16_15"
+      },
+      "cutoff_rule": {
+        "normal_friday_release": "next_week",
+        "holiday_thursday_release_before_friday_cutoff": true
+      },
+      "pit": {
+        "historical_input": "dated_official_release_snapshot",
+        "benchmark_and_revision_policy": "preserve_each_release_vintage",
+        "live_input": "freeze_each_official_snapshot_with_retrieved_at_and_sha256"
+      },
+      "series": [
+        {"output_id": "TOTBKCR", "source_series_name": "B1001NCBA", "source_item": "1001", "source_label": "Bank credit", "domain": "bank_credit", "frequency": "weekly", "seasonal_adjustment": "seasonally_adjusted", "bank_group": "all_commercial_banks", "unit_multiplier": 1000000},
+        {"output_id": "TOTCI", "source_series_name": "B1023NCBA", "source_item": "1023", "source_label": "Commercial and industrial loans", "domain": "bank_credit", "frequency": "weekly", "seasonal_adjustment": "seasonally_adjusted", "bank_group": "all_commercial_banks", "unit_multiplier": 1000000},
+        {"output_id": "DPSACBW027SBOG", "source_series_name": "B1058NCBA", "source_item": "1058", "source_label": "Deposits", "domain": "bank_credit", "frequency": "weekly", "seasonal_adjustment": "seasonally_adjusted", "bank_group": "all_commercial_banks", "unit_multiplier": 1000000},
+        {"output_id": "H8B3094NCBA", "source_series_name": "B3094NCBA", "source_item": "3094", "source_label": "Borrowings", "domain": "bank_credit", "frequency": "weekly", "seasonal_adjustment": "seasonally_adjusted", "bank_group": "all_commercial_banks", "unit_multiplier": 1000000}
+      ]
+    },
+    "ofr_fsi": {
+      "status": "research_planned",
+      "role": "retrospective_sensitivity_then_prospective_shadow",
+      "rights_profile": "ofr_published_aggregate",
+      "official_page_url": "https://www.financialresearch.gov/financial-stress-index/",
+      "download_url": "https://www.financialresearch.gov/financial-stress-index/data/fsi.csv",
+      "revision_history_url": "https://www.financialresearch.gov/financial-stress-index/",
+      "format": "csv",
+      "release_schedule": {
+        "frequency": "daily",
+        "observation_lag_business_days": 2,
+        "time": null
+      },
+      "cutoff_rule": {
+        "same_day_unknown_time": "next_week",
+        "live_availability": "collection_first_seen_at"
+      },
+      "pit": {
+        "historical_input": "published_arrow_of_time_index_research_only",
+        "historical_vintage_archive": "not_available",
+        "historical_certification": "not_certified_for_later_corrections",
+        "live_input": "freeze_each_csv_snapshot_with_retrieved_at_and_sha256",
+        "known_restatement": "2022-01-01_to_2023-06-27_reference_rate_transition",
+        "known_corrections": ["2026-05-15", "2026-05-18", "2026-05-21", "2026-05-22"]
+      },
+      "series": [
+        {"output_id": "OFR_FSI", "csv_column": "OFR FSI", "domain": "financial_conditions", "frequency": "daily", "required": true},
+        {"output_id": "OFR_FSI_CREDIT", "csv_column": "Credit", "domain": "financial_conditions", "frequency": "daily", "required": false},
+        {"output_id": "OFR_FSI_EQUITY", "csv_column": "Equity valuation", "domain": "financial_conditions", "frequency": "daily", "required": false},
+        {"output_id": "OFR_FSI_SAFE_ASSETS", "csv_column": "Safe assets", "domain": "financial_conditions", "frequency": "daily", "required": false},
+        {"output_id": "OFR_FSI_FUNDING", "csv_column": "Funding", "domain": "financial_conditions", "frequency": "daily", "required": false},
+        {"output_id": "OFR_FSI_VOLATILITY", "csv_column": "Volatility", "domain": "financial_conditions", "frequency": "daily", "required": false},
+        {"output_id": "OFR_FSI_US", "csv_column": "United States", "domain": "financial_conditions", "frequency": "daily", "required": false}
+      ]
+    },
+    "philadelphia_ads": {
+      "status": "research_planned",
+      "role": "historical_pit_candidate_core",
+      "rights_profile": "philadelphia_research_use",
+      "official_page_url": "https://www.philadelphiafed.org/surveys-and-data/real-time-data-research/ads",
+      "all_vintages_url": "https://www.philadelphiafed.org/-/media/FRBP/Assets/Surveys-And-Data/ads/ADS_All_Vintages-zip.zip",
+      "current_vintage_url": "https://www.philadelphiafed.org/-/media/FRBP/Assets/Surveys-And-Data/ads/ADS_Index_Most_Current_Vintage.xlsx",
+      "technical_documentation_url": "https://www.philadelphiafed.org/-/media/frbp/assets/surveys-and-data/ads/ads-technical-documentation.pdf",
+      "format": "zip_and_xlsx",
+      "release_schedule": {
+        "frequency": "component_release_driven",
+        "updates_per_month_typical": "7_to_8",
+        "timing": "hour_by_hour_after_component_release"
+      },
+      "cutoff_rule": {
+        "latest_timestamped_vintage": "available_at_less_than_or_equal_to_cutoff",
+        "date_only_vintage": "next_day"
+      },
+      "pit": {
+        "historical_input": "official_all_vintages_file",
+        "real_time_version_start": "2008-12-05",
+        "revision_policy": "preserve_each_official_vintage",
+        "live_input": "freeze_each_official_vintage_with_retrieved_at_and_sha256"
+      },
+      "series": [
+        {"output_id": "ADS", "domain": "macro_activity", "frequency": "daily_index", "required": true, "component_domains": ["initial_claims", "payroll_employment", "industrial_production", "real_income_ex_transfers", "real_manufacturing_trade_sales", "real_gdp"]}
+      ]
+    },
+    "philadelphia_rtdsm": {
+      "status": "research_planned",
+      "role": "historical_pit_candidate_core",
+      "rights_profile": "philadelphia_research_use",
+      "official_page_url": "https://www.philadelphiafed.org/surveys-and-data/real-time-data-research/real-time-data-set-for-macroeconomists",
+      "format": "xlsx_vintage_columns",
+      "release_schedule": {
+        "frequency": "end_of_month_or_variable_specific",
+        "time": null
+      },
+      "cutoff_rule": {
+        "vintage_header_date": "official_public_vintage_date",
+        "same_day_unknown_time": "next_week"
+      },
+      "pit": {
+        "historical_input": "official_complete_vintage_history_workbook",
+        "revision_policy": "select_only_vintage_available_before_cutoff",
+        "live_input": "freeze_each_workbook_with_retrieved_at_and_sha256"
+      },
+      "series": [
+        {"output_id": "RUC", "replaces_output_id": "UNRATE", "official_page_url": "https://www.philadelphiafed.org/surveys-and-data/real-time-data-research/ruc", "download_url": "https://www.philadelphiafed.org/-/media/FRBP/Assets/Surveys-And-Data/real-time-data/data-files/xlsx/rucQvMd.xlsx", "domain": "labor", "observation_frequency": "monthly", "vintage_frequency": "quarterly", "history_start": "1965-Q4"},
+        {"output_id": "PCPI", "replaces_output_id": "CPIAUCSL", "official_page_url": "https://www.philadelphiafed.org/surveys-and-data/real-time-data-research/pcpi", "download_url": "https://www.philadelphiafed.org/-/media/FRBP/Assets/Surveys-And-Data/real-time-data/data-files/xlsx/pcpiMvMd.xlsx", "domain": "inflation", "observation_frequency": "monthly", "vintage_frequency": "monthly", "history_start": "1998-11"},
+        {"output_id": "HSTARTS", "replaces_output_id": "HOUST", "official_page_url": "https://www.philadelphiafed.org/surveys-and-data/real-time-data-research/hstarts", "download_url": "https://www.philadelphiafed.org/-/media/FRBP/Assets/Surveys-And-Data/real-time-data/data-files/xlsx/hstartsMvMd.xlsx", "domain": "growth", "observation_frequency": "monthly", "vintage_frequency": "monthly", "history_start": "1968-02"}
+      ]
+    }
+  },
+  "primary_candidates": {
+    "board_cp": {
+      "status": "research_planned",
+      "role": "primary_candidate",
+      "promotion_eligible": false,
+      "rights_profile": "board_public_domain",
+      "official_page_url": "https://www.federalreserve.gov/releases/cp/",
+      "about_url": "https://www.federalreserve.gov/releases/cp/about.htm",
+      "download_url": "https://www.federalreserve.gov/releases/cp/data/FRB_CP_xml.zip",
+      "format": "sdmx_xml_zip",
+      "release_schedule": {
+        "timezone": "America/New_York",
+        "weekdays": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"],
+        "time": "13:00",
+        "timeliness": "normally_one_business_day_lag_no_guarantee",
+        "official_schedule_url": "https://www.federalreserve.gov/newsevents/calendar.htm"
+      },
+      "cutoff_rule": {
+        "friday_13_00_release_before_cutoff": true,
+        "unscheduled_or_unknown_time": "next_week"
+      },
+      "pit": {
+        "historical_input": "current_full_history_retrospective_only",
+        "historical_vintage_archive": "not_preregistered",
+        "live_input": "freeze_each_official_snapshot_with_retrieved_at_and_sha256",
+        "outstanding_amount_series": "excluded_continuously_revised_without_notice"
+      },
+      "series": [
+        {"output_id": "DCPF3M", "source_series_name": "RIFSPPFAAD90_N.B", "source_selector": {"cp_type": "FAA", "cp_term_days": 90, "frequency": "business_daily"}, "domain": "funding_liquidity"},
+        {"output_id": "DCPN3M", "source_series_name": "RIFSPPNAAD90_N.B", "source_selector": {"cp_type": "NAA", "cp_term_days": 90, "frequency": "business_daily"}, "domain": "funding_liquidity"}
+      ],
+      "features": ["DCPF3M-DGS3MO", "DCPN3M-DGS3MO", "DCPF3M-DCPN3M"]
+    }
+  },
+  "shadow_reconciliation_sources": {
+    "dol_weekly_claims": {
+      "status": "research_planned",
+      "role": "shadow_reconciliation",
+      "promotion_eligible": false,
+      "rights_profile": "dol_public_domain",
+      "official_page_url": "https://oui.doleta.gov/unemploy/claims.asp",
+      "release_archive_url": "https://oui.doleta.gov/unemploy/claims_arch.asp",
+      "raw_download_url": "https://oui.doleta.gov/unemploy/DataDownloads.asp",
+      "formats": ["html", "spreadsheet", "xml", "csv", "release_pdf"],
+      "release_schedule": {"timezone": "America/New_York", "weekday": "Thursday", "time": "08:30", "holiday_policy": "official_exception_calendar"},
+      "pit": {"historical_input": "weekly_release_archive_required", "current_time_series": "revised_not_vintage_safe", "revision_policy": "preserve_release_pdf_or_html_snapshot"},
+      "series": [
+        {"output_id": "ICSA", "source_label": "seasonally_adjusted_initial_claims", "frequency": "weekly"},
+        {"output_id": "CCSA", "source_label": "seasonally_adjusted_continued_claims", "frequency": "weekly"}
+      ]
+    },
+    "bls": {
+      "status": "research_planned",
+      "role": "shadow_reconciliation",
+      "promotion_eligible": false,
+      "rights_profile": "bls_secondary_use",
+      "api_url": "https://api.bls.gov/publicAPI/v2/timeseries/data/",
+      "developer_url": "https://www.bls.gov/developers/",
+      "employment_release_archive_url": "https://www.bls.gov/bls/news-release/empsit.htm",
+      "cpi_release_archive_url": "https://www.bls.gov/bls/news-release/cpi.htm",
+      "format": "json_api_and_archived_release_files",
+      "release_schedule": {"timezone": "America/New_York", "time": "08:30", "date_source": "official_release_schedule", "official_schedule_url": "https://www.bls.gov/schedule/news_release/"},
+      "pit": {"historical_input": "archived_release_required", "current_api": "latest_revised_history_not_vintage_safe", "live_input": "release_timestamp_plus_first_seen_snapshot"},
+      "series": [
+        {"output_id": "UNRATE", "source_series_id": "LNS14000000", "frequency": "monthly"},
+        {"output_id": "PAYEMS", "source_series_id": "CES0000000001", "frequency": "monthly"},
+        {"output_id": "CPIAUCSL", "source_series_id": "CUSR0000SA0", "frequency": "monthly"}
+      ]
+    },
+    "census_eits": {
+      "status": "research_planned",
+      "role": "shadow_reconciliation",
+      "promotion_eligible": false,
+      "rights_profile": "census_api_use",
+      "official_dataset_url": "https://www.census.gov/data/developers/data-sets/economic-indicators.html",
+      "retail_api_url": "https://api.census.gov/data/timeseries/eits/marts",
+      "housing_api_url": "https://api.census.gov/data/timeseries/eits/resconst",
+      "release_calendar_url": "https://www.census.gov/economic-indicators/calendar-listview.html",
+      "format": "json_api_and_archived_release_files",
+      "credential": "free_api_key_required",
+      "release_schedule": {"timezone": "America/New_York", "time": "08:30", "date_source": "official_release_calendar"},
+      "pit": {"historical_input": "archived_release_and_spreadsheet_required", "current_api": "latest_revised_history_not_vintage_safe", "live_input": "release_timestamp_plus_first_seen_snapshot"},
+      "series": [
+        {"output_id": "RSAFS", "dataset": "marts", "frequency": "monthly"},
+        {"output_id": "HOUST", "dataset": "resconst", "frequency": "monthly"}
+      ]
+    },
+    "bea": {
+      "status": "research_planned",
+      "role": "shadow_reconciliation",
+      "promotion_eligible": false,
+      "rights_profile": "bea_public_domain",
+      "api_url": "https://apps.bea.gov/api/data",
+      "api_guide_url": "https://apps.bea.gov/api/_pdf/bea_web_service_api_user_guide.pdf",
+      "data_archive_url": "https://apps.bea.gov/histdata/histChildLevels.html?HMI=2",
+      "news_release_archive_url": "https://www.bea.gov/news/archive",
+      "release_schedule_url": "https://www.bea.gov/news/schedule",
+      "format": "json_api_and_archive_html_xlsx_pdf",
+      "credential": "free_api_user_id_required",
+      "release_schedule": {"timezone": "America/New_York", "time": "08:30", "date_source": "official_release_schedule"},
+      "pit": {"historical_input": "official_data_archive_or_news_release_tables_required", "current_api": "latest_revised_history_not_vintage_safe", "live_input": "release_timestamp_plus_first_seen_snapshot"},
+      "series": [
+        {"output_id": "PCEPI", "dataset": "NIPA", "table": "T20304", "source_label": "Price Indexes for Personal Consumption Expenditures", "frequency": "monthly"},
+        {"output_id": "GDPC1", "dataset": "NIPA", "table": "T10106", "source_label": "Real Gross Domestic Product", "frequency": "quarterly"}
+      ]
+    }
+  },
+  "legacy_replacement_map": [
+    {"legacy_output_ids": ["DGS3MO", "DGS1", "DGS2", "DGS5", "DGS7", "DGS10", "DGS20", "DGS30", "DFII10", "FEDFUNDS"], "replacement": "core_sources.board_h15.series", "mode": "direct_identity"},
+    {"legacy_output_ids": ["T10Y2Y", "T10YIE"], "replacement": "core_sources.board_h15.derived_series", "mode": "deterministic_derivation"},
+    {"legacy_output_ids": ["DTWEXBGS"], "replacement": "core_sources.board_h10.series", "mode": "direct_identity"},
+    {"legacy_output_ids": ["ICSA", "PAYEMS", "INDPRO", "RSAFS", "GDPC1"], "replacement": "core_sources.philadelphia_ads.series.ADS", "mode": "absorbed_by_activity_composite", "identity_preserved": false},
+    {"legacy_output_ids": ["CCSA"], "replacement": "shadow_reconciliation_sources.dol_weekly_claims.series.CCSA", "mode": "shadow_only_no_core_equivalent", "identity_preserved": true},
+    {"legacy_output_ids": ["NFCI", "ANFCI", "NFCIRISK", "NFCICREDIT", "NFCILEVERAGE", "NFCINONFINLEVERAGE", "STLFSI4"], "replacement": "core_sources.ofr_fsi", "mode": "domain_replacement", "identity_preserved": false},
+    {"legacy_output_ids": ["WALCL"], "replacement": "core_sources.board_h41.series.WALCL", "mode": "direct_identity"},
+    {"legacy_output_ids": ["TOTBKCR", "TOTCI", "DPSACBW027SBOG", "H8B3094NCBA"], "replacement": "core_sources.board_h8.series", "mode": "direct_identity"},
+    {"legacy_output_ids": ["UNRATE"], "replacement": "core_sources.philadelphia_rtdsm.series.RUC", "mode": "real_time_vintage_identity"},
+    {"legacy_output_ids": ["HOUST"], "replacement": "core_sources.philadelphia_rtdsm.series.HSTARTS", "mode": "real_time_vintage_identity"},
+    {"legacy_output_ids": ["CPIAUCSL"], "replacement": "core_sources.philadelphia_rtdsm.series.PCPI", "mode": "real_time_vintage_identity"},
+    {"legacy_output_ids": ["PCEPI"], "replacement": "shadow_reconciliation_sources.bea.series.PCEPI", "mode": "shadow_only_no_core_equivalent", "identity_preserved": true}
+  ],
+  "feature_blocks": [
+    {"id": "rates_curve", "role": "retrospective_sensitivity", "required_series": ["DGS3MO", "DGS1", "DGS2", "DGS5", "DGS7", "DGS10", "DGS20", "DGS30"], "features": ["nelson_siegel_level", "nelson_siegel_slope", "nelson_siegel_curvature"]},
+    {"id": "rates_and_inflation", "role": "retrospective_sensitivity", "required_series": ["DFII10", "T10Y2Y", "T10YIE", "FEDFUNDS"], "lookbacks_weeks": [1, 4, 13]},
+    {"id": "fx", "role": "prospective_shadow", "required_series": ["DTWEXBGS"], "lookbacks_weeks": [1, 4, 13]},
+    {"id": "central_bank_liquidity", "role": "archive_certification_candidate", "required_series": ["WALCL"], "lookbacks_weeks": [1, 4, 13]},
+    {"id": "bank_credit", "role": "archive_certification_candidate", "required_series": ["TOTBKCR", "TOTCI", "DPSACBW027SBOG", "H8B3094NCBA"], "lookbacks_weeks": [1, 4, 13]},
+    {"id": "financial_stress", "role": "retrospective_sensitivity_then_prospective_shadow", "required_series": ["OFR_FSI"], "optional_series": ["OFR_FSI_CREDIT", "OFR_FSI_EQUITY", "OFR_FSI_SAFE_ASSETS", "OFR_FSI_FUNDING", "OFR_FSI_VOLATILITY", "OFR_FSI_US"], "lookbacks_weeks": [1, 4, 13]},
+    {"id": "macro_activity", "role": "historical_pit_candidate_core", "required_series": ["ADS"], "lookbacks_weeks": [1, 4, 13]},
+    {"id": "macro_vintages", "role": "historical_pit_candidate_core", "required_series": ["RUC", "PCPI", "HSTARTS"], "features": ["level", "first_difference", "release_innovation"]},
+    {"id": "funding_liquidity", "role": "primary_candidate", "required_series": ["DCPF3M", "DCPN3M", "DGS3MO"], "lookbacks_weeks": [1, 4, 13], "z_window_weeks": 52, "minimum_z_observations": 26, "features": ["financial_cp_spread", "nonfinancial_cp_spread", "financial_minus_nonfinancial_cp"]}
+  ],
+  "model_candidates": [
+    {"name": "recency_weighted_xgboost_208w", "role": "primary_research_candidate", "half_life_weeks": 208},
+    {"name": "pca_ridge_logistic", "role": "low_variance_research_candidate"},
+    {"name": "discounted_markov_208w", "role": "drift_sensitivity_shadow", "half_life_weeks": 208, "alpha": 1.0}
+  ],
+  "comparison_models": ["majority", "persistence", "markov", "ridge_logistic", "xgboost", "recency_weighted_xgboost_208w", "pca_ridge_logistic", "discounted_markov_208w"],
+  "promotion": {
+    "automatic": false,
+    "public_payload": false,
+    "retrospective_results_eligible": false,
+    "prospective_results_eligible": false,
+    "candidate_default": "not_promoted",
+    "requires_matured_prospective_review": true,
+    "requires_rights_recheck": true,
+    "requires_pit_audit": true,
+    "requires_numeric_reconciliation": true,
+    "requires_matched_oos_gate": true
+  }
+}

@@ -46,6 +46,10 @@ from regime_lab.feature_manifest import (
     complete_feature_group_manifest,
     feature_manifest_document,
 )
+from regime_lab.feature_quality import (
+    feature_quality_artifact_manifest,
+    feature_quality_document,
+)
 from regime_lab.frozen_v4 import (
     FROZEN_V4_BASELINE,
     verify_frozen_v4_baseline,
@@ -485,7 +489,12 @@ def _comparison_forecast_record(row: Mapping[str, Any]) -> dict[str, Any]:
 def _comparison_forecasts_by_origin(
     predictions: pd.DataFrame,
     latest_forecasts: pd.DataFrame,
+    *,
+    model_names: Sequence[str],
 ) -> dict[pd.Timestamp, list[dict[str, Any]]]:
+    comparison_models = tuple(dict.fromkeys(str(name) for name in model_names))
+    if not comparison_models:
+        raise RuntimeError("model comparison requires at least one model")
     required_columns = {
         "origin_date",
         "target_date",
@@ -508,12 +517,12 @@ def _comparison_forecasts_by_origin(
         [
             predictions.loc[
                 predictions["model"].astype(str).isin(
-                    V5_FORECAST_COMPARISON_MODELS
+                    comparison_models
                 )
             ],
             latest_forecasts.loc[
                 latest_forecasts["model"].astype(str).isin(
-                    V5_FORECAST_COMPARISON_MODELS
+                    comparison_models
                 )
             ],
         ],
@@ -535,13 +544,13 @@ def _comparison_forecasts_by_origin(
             str(row["model"]): row
             for row in group.to_dict(orient="records")
         }
-        if set(by_model) != set(V5_FORECAST_COMPARISON_MODELS):
+        if set(by_model) != set(comparison_models):
             raise RuntimeError(
                 f"model comparison forecasts are incomplete at {origin}"
             )
         result[pd.Timestamp(origin)] = [
             _comparison_forecast_record(by_model[model])
-            for model in V5_FORECAST_COMPARISON_MODELS
+            for model in comparison_models
         ]
     return result
 
@@ -696,6 +705,7 @@ def build_dashboard_result(
         completed_feature_groups,
         feature_set_version=FEATURE_SET_VERSION,
     )
+    feature_quality = feature_quality_document(features)
     champion_predictions = benchmark.champion_predictions().copy()
     manifest_model_frame = getattr(benchmark, "predictions", benchmark.leaderboard)
     evaluated_model_names = tuple(
@@ -916,10 +926,33 @@ def build_dashboard_result(
         ignore_index=True,
         sort=False,
     ).sort_values("model", ignore_index=True)
+    comparison_models = tuple(V5_FORECAST_COMPARISON_MODELS)
+    if contract_version == "v5" and benchmark.champion not in comparison_models:
+        comparison_models = (*comparison_models, benchmark.champion)
+        champion_forecast_row = {
+            "origin_date": latest_date,
+            "target_date": latest_date + timedelta(days=7),
+            "model": benchmark.champion,
+            "current_state": str(states.loc[latest_date]),
+            **{
+                f"p_{state}": float(latest_probability[state])
+                for state in STATE_ORDER
+            },
+            "predicted": str(latest_probability.astype(float).idxmax()),
+            "fallback": latest_fallback,
+            "fallback_reason": latest_fallback_reason,
+            "source_role": "selected_champion_comparison",
+        }
+        structural_forecasts = pd.concat(
+            [structural_forecasts, pd.DataFrame([champion_forecast_row])],
+            ignore_index=True,
+            sort=False,
+        ).sort_values("model", ignore_index=True)
     comparison_forecasts = (
         _comparison_forecasts_by_origin(
             benchmark.predictions,
             structural_forecasts,
+            model_names=comparison_models,
         )
         if contract_version == "v5"
         else {}
@@ -1175,7 +1208,7 @@ def build_dashboard_result(
         payload["model"]["forecast_comparison"] = {
             "role": "research_comparison",
             "horizon_weeks": 1,
-            "models": list(V5_FORECAST_COMPARISON_MODELS),
+            "models": list(comparison_models),
         }
     # The primary multiclass result remains the public return for API
     # compatibility; the CLI reads these additive attributes for the v4 audit
@@ -1188,6 +1221,11 @@ def build_dashboard_result(
     object.__setattr__(benchmark, "transition_benchmark", transition_benchmark)
     object.__setattr__(benchmark, "feature_ablation", ablation)
     object.__setattr__(benchmark, "feature_manifest", feature_manifest)
+    object.__setattr__(
+        benchmark,
+        "feature_quality_report",
+        feature_quality,
+    )
     object.__setattr__(benchmark, "structural_forecasts", structural_forecasts)
     object.__setattr__(
         benchmark,
@@ -1230,6 +1268,9 @@ def build_dashboard_result(
         forecast_evidence_v5 = weekly_state_forecasts_v5(payload["weekly"])
         payload["model"]["champion_core_feature_set_version"] = (
             FEATURE_SET_VERSION
+        )
+        payload["model"]["feature_quality_artifact"] = (
+            feature_quality_artifact_manifest(feature_quality)
         )
         payload["model"]["evidence_artifacts"] = {
             "state_membership_history": {

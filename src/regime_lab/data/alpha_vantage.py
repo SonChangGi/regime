@@ -143,6 +143,102 @@ class DailyRequestBudget:
     def _now(self) -> datetime:
         return ensure_utc(self.clock(), field_name="budget clock")
 
+    @classmethod
+    def read_only_advisory(
+        cls,
+        *,
+        database_path: str | Path,
+        units: int,
+        limit: int = 25,
+        provider: str = "alpha_vantage",
+        now: datetime | None = None,
+    ) -> tuple[int, datetime] | None:
+        """Inspect a current rolling ledger without migrations or writes.
+
+        ``None`` means the child collector must make the authoritative quota
+        decision after its verified pre-mutation backup.  A concrete tuple is
+        ``(remaining, earliest_full_batch_time)`` for a current v3 ledger.
+        """
+
+        if type(limit) is not int or limit != _STANDARD_FREE_LIMIT:
+            raise ValueError(
+                "standard-free Alpha Vantage request limit must be exactly 25"
+            )
+        if units < 1 or units > limit:
+            raise ValueError("advisory units must be between 1 and the limit")
+        current = ensure_utc(now or _utc_now(), field_name="budget advisory clock")
+        path = Path(database_path).expanduser().resolve()
+        if not path.is_file() or path.is_symlink():
+            return None
+        uri = f"{path.as_uri()}?mode=ro"
+        with sqlite3.connect(uri, uri=True, timeout=30) as connection:
+            connection.execute("PRAGMA query_only = ON")
+            connection.execute("PRAGMA busy_timeout = 30000")
+            policy_columns = cls._table_columns(connection, "request_budget_policy")
+            event_columns = cls._table_columns(connection, "request_budget_events")
+            if not {
+                "provider",
+                "policy_version",
+                "policy_kind",
+                "limit_value",
+            }.issubset(policy_columns) or not {
+                "provider",
+                "consumed_at",
+            }.issubset(event_columns):
+                return None
+            policy = connection.execute(
+                """
+                SELECT policy_version, policy_kind, limit_value
+                FROM request_budget_policy
+                WHERE provider = ?
+                """,
+                (provider,),
+            ).fetchone()
+            if policy != (_BUDGET_POLICY_VERSION, _BUDGET_POLICY_KIND, limit):
+                return None
+            legacy_columns = cls._table_columns(connection, "daily_request_budget")
+            if {"provider", "used"}.issubset(legacy_columns):
+                legacy_used = connection.execute(
+                    """
+                    SELECT COALESCE(SUM(used), 0)
+                    FROM daily_request_budget
+                    WHERE provider = ?
+                    """,
+                    (provider,),
+                ).fetchone()[0]
+                if int(legacy_used) > 0:
+                    return None
+            timestamps = [
+                cls._legacy_timestamp(
+                    raw,
+                    field_name="persisted Alpha Vantage budget timestamp",
+                )
+                for (raw,) in connection.execute(
+                    """
+                    SELECT consumed_at
+                    FROM request_budget_events
+                    WHERE provider = ?
+                    ORDER BY consumed_at, event_id
+                    """,
+                    (provider,),
+                )
+            ]
+        if any(timestamp > current for timestamp in timestamps):
+            raise RuntimeError(
+                "persisted Alpha Vantage budget timestamp is in the future"
+            )
+        active = sorted(
+            timestamp
+            for timestamp in timestamps
+            if timestamp > current - _BUDGET_WINDOW
+        )
+        remaining = max(0, limit - len(active))
+        excess = len(active) + units - limit
+        next_available = (
+            current if excess <= 0 else active[excess - 1] + _BUDGET_WINDOW
+        )
+        return remaining, next_available
+
     def _connect(self) -> sqlite3.Connection:
         assert self.database_path is not None
         connection = sqlite3.connect(self.database_path, timeout=30)

@@ -747,7 +747,7 @@ def test_dashboard_assets_are_local_and_present() -> None:
         ]
     }
     assert len(asset_versions) == 1
-    assert asset_versions == {"20260824-v5-7"}
+    assert asset_versions == {"20260824-v5-9"}
 
     assert all(not str(script.get("src", "")).startswith(("http://", "https://", "//")) for script in parser.scripts)
     assert all(not str(link.get("href", "")).startswith(("http://", "https://", "//")) for link in parser.links)
@@ -929,6 +929,11 @@ def test_model_forecast_selector_is_labeled_and_scoped_to_comparison() -> None:
     assert "V5_FORECAST_COMPARISON_MODELS" in script
     assert "function renderModelForecast()" in script
     assert 'dom["model-forecast-select"].addEventListener("change"' in script
+    assert "recency_weighted_xgboost_208w" in script
+    assert "pca_ridge_logistic" in script
+    assert "discounted_markov_208w" in script
+    assert 'selectionLogLoss === null' in script
+    assert '`${formatNumber(selectionLogLoss, 4)} → ${formatNumber(diagnosticLogLoss, 4)}`' in script
     assert '.model-forecast-field select' in styles
     assert "min-height: 44px;" in styles
 
@@ -1627,6 +1632,7 @@ def test_v5_decision_evidence_is_collapsed_at_the_bottom_and_semantically_distin
         "core 비승격",
         "멀티스케일 후보",
         "V4 기준 비교",
+        "입력 피처 품질",
         "Markov 확률 완전 일치",
         "일반화 약화",
         "보정 드리프트",
@@ -1670,15 +1676,17 @@ def test_conditional_performance_leads_with_asset_class_mean_comparison() -> Non
     assert "publicationSnapshotLabel()" in script
     assert '"과거 조회"' in script
     assert "function renderConditionalDetail()" in script
-    assert 'createElement("div", "conditional-asset-list")' in script
+    assert 'createElement("article", "conditional-asset-card")' in script
+    assert 'createElement("div", "conditional-regime-list")' in script
     assert 'createElement("span", "conditional-return-track")' in script
     assert 'track.setAttribute("aria-hidden", "true")' in script
     assert '`${value > 0 ? "+" : ""}${formatSignedPercent(value, comparisonDigits)}`' in script
-    assert 'createElement("small", null, `n ${sample}`)' in script
+    assert 'createElement("small", null, statusLabel || `n ${sample}`)' in script
     assert "표본 부족" in script
     assert "값 없음" in script
     assert 'renderConditionalDetail();\n      dom["screen-reader-status"]' in script
-    assert ".conditional-asset-row" in styles
+    assert ".conditional-regime-row" in styles
+    assert ".conditional-regime-legend" in styles
     assert ".conditional-return-track::after" in styles
 
 

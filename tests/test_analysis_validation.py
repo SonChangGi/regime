@@ -5,10 +5,11 @@ from dataclasses import replace
 import numpy as np
 import pandas as pd
 from pandas.testing import assert_frame_equal
+import pytest
 
 from regime_lab.analysis import BenchmarkProfile, GaussianHMMChallenger
 from regime_lab.analysis import forecast_next_regime, run_benchmark
-from regime_lab.analysis.models import MODEL_NAMES
+from regime_lab.analysis.models import DIRECT_NEXT_STATE_MODEL_NAMES, MODEL_NAMES
 from regime_lab.analysis.validation import PROBABILITY_COLUMNS, evaluate_predictions
 from regime_lab.analysis.validation import select_champion_with_diagnostics
 from regime_lab.schema import STATE_ORDER
@@ -222,6 +223,113 @@ def test_next_week_forecast_returns_exact_shared_state_order() -> None:
     assert tuple(probabilities.index) == STATE_ORDER
     assert np.isclose(probabilities.sum(), 1.0)
     assert probabilities.attrs["as_of"] == features.index[-1].isoformat()
+
+
+def test_explicit_direct_models_run_without_changing_default_suite() -> None:
+    features, states = _model_inputs()
+    requested = (
+        "markov",
+        "pca_ridge_logistic",
+        "discounted_markov_208w",
+    )
+    result = run_benchmark(
+        features,
+        states,
+        profile="quick",
+        models=requested,
+        gap=1,
+        minimum_train_weeks=52,
+    )
+
+    assert set(result.predictions["model"]) == set(requested)
+    assert all(name not in MODEL_NAMES for name in DIRECT_NEXT_STATE_MODEL_NAMES)
+    np.testing.assert_allclose(
+        result.predictions[list(PROBABILITY_COLUMNS)].sum(axis=1),
+        1.0,
+        atol=1e-12,
+    )
+
+
+def test_explicit_models_continue_to_reject_synthetic_structural_candidates() -> None:
+    features, states = _model_inputs()
+
+    with np.testing.assert_raises_regex(
+        ValueError,
+        "unknown benchmark models.*xgb_hazard_destination",
+    ):
+        run_benchmark(
+            features,
+            states,
+            profile="quick",
+            models=("markov", "xgb_hazard_destination"),
+            minimum_train_weeks=52,
+        )
+
+
+def test_pca_ridge_forecast_does_not_read_rows_after_as_of() -> None:
+    features, states = _model_inputs()
+    as_of = features.index[-12]
+    altered_features = features.copy()
+    altered_states = states.copy()
+    future = features.index > as_of
+    altered_features.loc[future, :] = 1_000_000.0
+    altered_states.loc[future] = np.resize(
+        np.asarray(STATE_ORDER, dtype=object),
+        int(future.sum()),
+    )
+    arguments = {
+        "champion_name": "pca_ridge_logistic",
+        "as_of": as_of,
+        "gap": 1,
+        "minimum_train_weeks": 52,
+        "random_state": 37,
+    }
+
+    original = forecast_next_regime(features, states, **arguments)
+    changed = forecast_next_regime(altered_features, altered_states, **arguments)
+
+    np.testing.assert_allclose(original.to_numpy(), changed.to_numpy(), rtol=0, atol=0)
+    assert original.attrs == changed.attrs
+
+
+@pytest.mark.parametrize(
+    "champion_name",
+    ("pca_ridge_logistic", "discounted_markov_208w"),
+)
+def test_optional_direct_models_support_next_regime_forecast(champion_name: str) -> None:
+    features, states = _model_inputs()
+    probability = forecast_next_regime(
+        features,
+        states,
+        champion_name=champion_name,
+        gap=1,
+        minimum_train_weeks=52,
+        random_state=43,
+    )
+
+    assert tuple(probability.index) == STATE_ORDER
+    assert np.isclose(probability.sum(), 1.0)
+    assert probability.attrs["champion"] == champion_name
+    assert probability.attrs["fallback"] is False
+
+
+def test_recency_weighted_xgboost_supports_next_regime_forecast() -> None:
+    pytest.importorskip("xgboost")
+    features, states = _model_inputs()
+    probability = forecast_next_regime(
+        features,
+        states,
+        champion_name="recency_weighted_xgboost_208w",
+        profile=replace(BenchmarkProfile.quick(), xgboost_trees=8),
+        gap=1,
+        minimum_train_weeks=52,
+        random_state=43,
+    )
+
+    assert tuple(probability.index) == STATE_ORDER
+    assert np.isclose(probability.sum(), 1.0)
+    assert probability.attrs["champion"] == "recency_weighted_xgboost_208w"
+    assert probability.attrs["fallback"] is False
 
 
 def test_hmm_mapping_keeps_exactly_one_week_supervised_horizon() -> None:

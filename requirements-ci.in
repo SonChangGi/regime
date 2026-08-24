@@ -1,0 +1,4 @@
+# CI installer and PEP 517 toolchain are explicit inputs to the hash lock.
+pip==26.1
+setuptools==80.9.0
+wheel==0.46.3

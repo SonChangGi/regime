@@ -16,6 +16,43 @@ SPEC = importlib.util.spec_from_file_location("package_public_demo", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
 package_public_demo = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(package_public_demo)
+REAL_VERIFY_PROVIDER_RIGHTS = package_public_demo.verify_provider_rights
+
+
+@pytest.fixture(autouse=True)
+def _grant_provider_rights_for_packaging_contract_tests(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Exercise package contracts independently of the live rights registry."""
+
+    monkeypatch.setattr(
+        package_public_demo,
+        "verify_provider_rights",
+        lambda *_args, **_kwargs: None,
+    )
+
+
+def test_current_live_publication_passes_reviewed_provider_policy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        package_public_demo,
+        "verify_provider_rights",
+        REAL_VERIFY_PROVIDER_RIGHTS,
+    )
+    manifest = package_public_demo.package_public_dashboard(
+        web_root=ROOT / "web",
+        payload_path=LIVE_PUBLICATION,
+        output_directory=tmp_path / "approved-live",
+        publication_mode=package_public_demo.PUBLICATION_MODE_LIVE_DERIVED,
+        rights_acknowledged=True,
+        comparison_path=ROOT / "publication/live/v5-vs-v4-comparison.json",
+    )
+    assert manifest["publication_scope"] == (
+        "personal_noncommercial_derived_results"
+    )
+    assert manifest["contains_raw_observations"] is False
 
 
 def _web_root(tmp_path: Path) -> Path:
@@ -880,7 +917,10 @@ def test_pages_workflow_uploads_only_verified_live_derived_package() -> None:
     assert "--acknowledge-personal-noncommercial-publication" in workflow
     assert "--output dist/public-dashboard" in workflow
     assert "verify_public_package.py dist/public-dashboard" in workflow
-    assert "actions/upload-pages-artifact@v4" in workflow
+    assert (
+        "actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0"
+        in workflow
+    )
     assert "path: dist/public-dashboard" in workflow
     assert "web/data/regime-results.json" not in workflow
     assert "data/regime.sqlite3" not in workflow

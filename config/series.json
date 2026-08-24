@@ -1,4 +1,6 @@
 {
+  "provider_rights_policy": "config/provider_rights.json",
+  "provider_rights_providers": ["frb_h10"],
   "cutoff": {
     "timezone": "America/New_York",
     "weekday": "Friday",

@@ -2,8 +2,9 @@
 
 미국 증시의 **현재 주간 국면**과 **다음 주 국면 확률**을 point-in-time
 정보로 산출하고, 날짜를 선택해 결과를 탐색하는 로컬 연구 프로젝트입니다.
-실제 투자 주문·자산배분 백테스트는 범위에 포함하지 않습니다. 공개 페이지는
-검토를 마친 live v5 개인·비상업 파생 결과 스냅샷을 제공합니다.
+실제 투자 주문·자산배분 백테스트는 범위에 포함하지 않습니다. 현재 공개 페이지는
+2026-08-21까지의 검토된 V5 스냅샷입니다. 로컬 수집·학습과 원자료를 제외한
+개인·비상업 파생 결과 공개는 확인된 프로젝트 승인 범위에서 실행합니다.
 
 ## 무엇을 보여주나
 
@@ -36,10 +37,7 @@ payload에는 검토 결정을 기록하고, 비교 결과는 파생값 전용 s
 .venv/bin/regime-lab demo --contract v5 \
   --output build/v5-demo/regime-results.json \
   --artifacts build/v5-demo/artifacts
-# 권리 확인과 Keychain 설정을 마친 live build에도 --contract v5를 명시
-.venv/bin/regime-lab build --contract v5 --alfred-rights-confirmed \
-  --output build/v5-live/regime-results.json \
-  --artifacts build/v5-live/artifacts
+# live build는 수집·저장·학습 권한이 affirmative일 때만 실행
 ```
 
 H.10 prospective history는 모델 학습과 분리해 가볍게 축적할 수 있다. 이 명령은
@@ -124,130 +122,23 @@ brew install libomp
 
 ## 공개 live 파생 결과 갱신
 
-`web/data/regime-results.json`, `artifacts/latest/`, SQLite와 provider raw/cache는
-계속 로컬 전용입니다. 공개 갱신 시 검토 완료 payload와 그 bytes에 결속된 비교
-sidecar를 `publication/live/`에 함께 반영하고 다음 패키징 계약을 확인합니다.
-
-수동 검토는 raw V5의 validate·독립 audit, frozen V4 matched comparison,
-`promote_v5_publication.py`, 검토 완료 bytes에 대한 comparison 재생성, 재검증 순서로
-수행합니다. 원본 candidate·artifact를 공개 디렉터리에 직접 복사하지 않습니다.
-
-```bash
-.venv/bin/regime-lab validate build/v5-live/regime-results.json
-.venv/bin/python scripts/audit_outputs.py \
-  --payload build/v5-live/regime-results.json \
-  --artifacts build/v5-live/artifacts --mode live
-.venv/bin/python scripts/compare_v5_to_frozen_v4.py \
-  --v5-artifacts build/v5-live/artifacts \
-  --v5-payload build/v5-live/regime-results.json \
-  --v4-artifacts artifacts/baselines/v4-20260821 \
-  --output build/v5-live/v5-vs-v4-comparison.json
-.venv/bin/python scripts/promote_v5_publication.py \
-  --candidate build/v5-live/regime-results.json \
-  --comparison build/v5-live/v5-vs-v4-comparison.json \
-  --output build/v5-release/regime-results.json
-.venv/bin/python scripts/compare_v5_to_frozen_v4.py \
-  --v5-artifacts build/v5-live/artifacts \
-  --v5-payload build/v5-release/regime-results.json \
-  --v4-artifacts artifacts/baselines/v4-20260821 \
-  --output build/v5-release/v5-vs-v4-comparison.json
-.venv/bin/regime-lab validate build/v5-release/regime-results.json
-.venv/bin/python scripts/audit_outputs.py \
-  --payload build/v5-release/regime-results.json \
-  --artifacts build/v5-live/artifacts --mode live
-```
-
-```bash
-.venv/bin/python scripts/package_public_demo.py \
-  --payload publication/live/regime-results.json \
-  --comparison publication/live/v5-vs-v4-comparison.json \
-  --publication-mode live-derived \
-  --acknowledge-personal-noncommercial-publication \
-  --output dist/public-dashboard
-.venv/bin/python scripts/verify_public_package.py dist/public-dashboard
-```
-
-패키지는 `index.html`, `styles.css`, `app.js`, 파생 결과 JSON, V5/V4 비교 sidecar,
-manifest만 포함합니다. 검토 완료 V5 표식·최소 52주·정확한 source 이용범위·V4
-Markov exact parity·금지된 원자료 필드·credential 패턴·파일 inventory·해시를 모두
-검사하며, DB·원관측치·모델 artifact는 복사하지 않습니다.
-`main`의 Pages workflow도 API를 호출하지 않고 이 공개 스냅샷만 재검증해
-`https://sonchanggi.github.io/regime/`에 배포합니다.
+공개 패키지는 정적 앱 3개 파일, 파생 payload, V5/V4 sidecar와 파일별 SHA-256
+manifest만 허용합니다. `config/provider_rights.json`이 수집·저장·학습·파생 공개를
+모두 허용하지 않으면 live 패키징과 Pages 갱신은 시작되지 않습니다. FRED/ALFRED와
+Alpha Vantage의 프로젝트별 수집·저장·학습 승인은 2026-08-24, 원자료를 제외한
+개인·비상업 파생 결과 공개 범위는 2026-08-25 사용자 확인으로 기록했습니다.
+합성 데모 패키징은 이 경계와 분리됩니다.
 
 ## 주간 수집·재학습·배포 자동화
 
-자동화는 private revision DB와 macOS Keychain을 보존하기 위해 두 실행면으로
-분리합니다. 로컬 macOS LaunchAgent가 수집·재학습·감사·공개 후보 승격을 담당하고,
-GitHub-hosted Pages workflow는 provider 호출 없이 검증된 파생 결과만 배포합니다.
+로컬 LaunchAgent와 Pages의 분리 구조를 유지하고, 원자료 또는 승인 범위를 벗어난
+공개는 계속 차단합니다. `automation status`는
+단순 due-check와 전체 수집→공개 성공 시각을 분리해 기록합니다.
 
 ```bash
-# API 호출 없이 cutoff, origin/main, 공개 dataAsOf와 실행 필요 여부 확인
-.venv/bin/regime-lab automation preflight
-
-# 아래 두 권리 범위를 직접 확인한 뒤 LaunchAgent를 설치·갱신합니다.
-# 설치 직후 catch-up due-check를 한 번 수행합니다.
-.venv/bin/regime-lab automation install \
-  --alfred-rights-confirmed \
-  --acknowledge-personal-noncommercial-publication
-
-# 등록 및 최근 실행 health 확인
 .venv/bin/regime-lab automation status
 ```
 
-LaunchAgent는 로컬 시각 03:17·09:17·15:17·21:17과 로그인 시에 누락분을
-확인하지만, Python gate가 새 Friday 16:00 `America/New_York` cutoff에서 24시간이
-지난 경우에만 실제 작업을 시작합니다. 실패 시에도 기록된 `next_retry_at` 전에는
-provider나 모델을 다시 실행하지 않으며, 인증·권리·schema·dirty checkout 문제는
-로컬 상태가 바뀔 때까지 차단합니다. 공개 snapshot이 이미 같은 cutoff이면
-Keychain·provider·모델을 건드리지 않고 종료합니다.
-
-확인된 transient 원인을 코드나 로컬 환경에서 수정한 뒤 예약 시각 전에 즉시
-재검증해야 할 때만 `regime-lab automation run --force-retry`를 사용합니다. 이
-operator override는 transient 시간 지연만 건너뛰며 quota와 blocked gate, provider
-예산, AC, Git 및 publication 검증은 우회하지 않습니다. LaunchAgent 자체는 이
-옵션을 사용하지 않습니다.
-
-실제 실행은 다음 순서를 fail-closed로 적용합니다.
-
-1. 단일-process lock, clean tracked working tree, `origin/main` source 일치와 Git
-   fetch/push 경계를 확인합니다. 새 수집 직전에만 180일 만료의 로컬 권리 확인 파일과 AC
-   전원을 확인합니다. 설치 명령의 첫 번째 동의는 ALFRED를 로컬에 저장해 ML 학습에
-   쓰는 권리, 두 번째 동의는 파생 결과를 개인·비상업 공개하는 권리를 뜻합니다.
-2. Alpha Vantage 23개 종목과 bounded retry 2회를 합친 25 credits 전체가
-   rolling-24h ledger에 들어갈 수 있는지 예약 없이 먼저 확인하고, 실제 collector가
-   다시 하나의 transaction으로 원자 예약합니다. Alpha는 120초 timeout·최대 3회,
-   ALFRED는 60초 timeout·최대 4회로 제한합니다.
-3. V5 build가 같은 DB lock 아래 H.10 prospective snapshot을 한 번 갱신합니다.
-   Alpha/ALFRED/H.10 전체 pass가 exact cutoff와 source health gate를 통과한 경우에만
-   분석을 시작합니다. provider가 degraded이거나 수집 후 AC 전원이 분리되면 분석
-   전에 중단하고 secret-free receipt와 다음 재시도 시각을 남깁니다.
-4. 수동 build 경로와 분리된 `build/weekly-automation/generation-v5/`에서 `standard`
-   live build를 수행한 뒤 SQLite `quick_check`, payload validation,
-   `audit_outputs.py --mode live`, frozen V4 matched comparison을 통과시킵니다. 검토
-   gate가 유지될 때만 별도 promotion 단계가 공개 표식을 추가합니다.
-5. 정확한 cutoff, 세 source `ok`, 최신 주 `ok`, Alpha coverage, forecast fallback
-   부재를 확인합니다. 허용된 모델 진단 경고는 그대로 공개하되 provider degradation은
-   자동 공개하지 않습니다.
-6. 사용자 working tree와 분리된 임시 checkout에서 preflight로 고정한 원격 SHA와
-   publication 경로의 regular-file 상태를 다시 확인한 뒤
-   `publication/live/regime-results.json`과 검증된 비교 sidecar를 함께 commit/push합니다. Pages
-   workflow는 배포 직전 `main` SHA가 자기 커밋과 같은지 확인합니다. 완료 후 public
-   payload·comparison bytes, manifest SHA-256·`dataAsOf`·HTML을 다시 읽습니다. 불일치하면 같은 검증
-   snapshot을 유지하는 빈 복구 commit을 원격 HEAD 고정 하에 push하여 Pages를 다시
-   시작하고, 공개 파일이 정확히 일치할 때까지 기다립니다. GitHub CLI token에는
-   의존하지 않습니다.
-
-상태, lock, 검증된 재시도 후보와 launchd 로그는 Git에서 제외된
-`build/weekly-automation/`에 저장합니다. 권리 확인은 credential 없이
-`data/automation/authorization.json`에 `0600`으로 저장됩니다. push나 Pages가
-실패하면 이전 공개 페이지는 유지되고, 다음 실행은 source tree·핵심 config hash·
-`generation_id`가 모두 같은 cached candidate부터 재개해 provider 호출과 장시간
-재학습을 반복하지 않습니다. 수동 live build와 예약 build는 같은 DB lock을 공유하며,
-payload와 artifact는 서로 다른 경로를 사용해 예약 audit 중 교체될 수 없습니다.
-장시간 child process는 2분 heartbeat를 기록하고 `caffeinate -s`와 Standard QoS로
-AC 연결 중 system sleep을 막습니다. `automation status`는 plist drift, unload,
-failed health, stale heartbeat를 운영 정상으로 오인하지 않습니다. 최초 실패·실패
-유형 변경·복구에는 credential이나 원문 예외 없이 중복 억제된 macOS 알림을 보냅니다.
 자동화 해제는 다음과 같습니다.
 
 ```bash
@@ -256,89 +147,22 @@ failed health, stale heartbeat를 운영 정상으로 오인하지 않습니다.
 
 ## 실데이터 실행
 
-기본 실행은 macOS Keychain의 `regime-fred-api-key`,
-`regime-alpha-vantage-api-key`를 프로세스 환경으로만 잠시 주입합니다. 키
-값을 채팅, `.env`, 명령 출력, SQLite, JSON, Git에 남기지 마세요.
+실데이터 로컬 연구 경로는 승인 범위 안에서 실행할 수 있습니다. 사용자 확인 flag만으로
+권리를 새로 만들지는 않으며, live CLI는 네트워크·DB 변경 전에 기계 판독 가능한
+`config/provider_rights.json`을 검사합니다.
 
-```bash
-.venv/bin/regime-lab build \
-  --config config/series.json \
-  --profile standard \
-  --alfred-rights-confirmed
-.venv/bin/regime-lab validate web/data/regime-results.json
-```
+- FRED/ALFRED·Alpha Vantage: 프로젝트별 수집·저장·학습 및 개인·비상업 파생 결과 공개 승인 기록
+- 두 provider의 원자료·재구성 가능한 관측값 및 상업적 공개: 금지
+- Federal Reserve Board 직접 자료: public-domain 고지와 출처 표기를 전제로 허용
 
-이미 안전한 프로세스 환경에 값을 주입한 경우에만 `--from-env`를 함께
-사용합니다. `--alfred-rights-confirmed`는 어느 경로에서도 생략할 수 없습니다.
-
-`ALFRED_ML_RIGHTS_ACK=1`은 단순 약관 동의가 아니라, 이 프로젝트의 로컬
-저장·ML 학습 사용 범위를 포함하는 권리를 사용자가 확인했다는 fail-closed
-표시입니다. 값이 없으면 ALFRED client는 네트워크 요청 전에
-`license_blocked`로 종료합니다. 공식 약관은 실행 직전에 다시 확인하세요:
-[FRED Terms](https://fred.stlouisfed.org/legal/terms/),
-[FRED API Terms](https://fred.stlouisfed.org/docs/api/terms_of_use.html),
-[Alpha Vantage Terms](https://www.alphavantage.co/terms_of_service/),
-[Federal Reserve H.10](https://www.federalreserve.gov/releases/h10/).
-
-현재 공개 범위는 사용자가 확인한 개인·비상업 목적의 대시보드 파생 결과입니다.
-Alpha Vantage 원시 시계열은 공개하지 않으며, ALFRED는 사용자가 확인한 저장·ML·
-파생결과 범위와 각 series의 표시 조건을 전제로 합니다. 이 확인은 상업 이용이나
-원자료 재배포 권리로 확대되지 않습니다. Federal Reserve H.10은 공식 공개 자료로
-출처 링크를 유지하되 XML·관측행은 공개하지 않습니다. 공개 앱에는 다음 FRED 고지와
-공식 약관 링크를 유지합니다.
-
-> This product uses the FRED® API but is not endorsed or certified by the Federal Reserve Bank of St. Louis.
-
-Alpha Vantage 무료 tier는 일일 호출 수가 작으므로 기본 universe는 23개
-ETF로 제한해 25회 한도에 두 번의 여유를 둡니다. refresh가 quota를 초과할
-가능성이 있으면 유료 fallback을 시도하지 않고 `quota_exhausted`로 멈춥니다.
-standard-free `daily_request_cap` 계약은 형변환 없는 정수 `25`로 고정하며,
-다른 값은 provider 호출과 quota event 기록 전에 fail-closed 처리합니다.
-공식 FAQ는 reset 시간대를 명시하지 않으므로 내부 한도는 calendar-day reset이
-아닌 **rolling 24시간** 요청 event ledger로 집행합니다. 이전 UTC/뉴욕 날짜
-counter가 발견되면 각 날짜 bucket을 성공·실패 batch provenance와 대조해
-입증 가능한 호출 시각으로 이관하고, 시각을 확인할 수 없는 잔여 호출은 이관
-시점부터 24시간 동안 사용량으로 유지합니다. 일반 무료 key가 여러 개여도 프로젝트
-전체 한도는 합산 25회로 유지하며 key rotation으로 한도를 늘리지 않습니다.
-Premium 또는 Alpha Vantage가 확인한 open-source/educational entitlement는
-검증 가능한 plan·분당 한도·만료 정보가 있을 때만 별도 credential로 지원합니다.
-각 수집은 첫 network 요청 전에 필요한 symbol 수 전체를 SQLite transaction으로
-원자 예약합니다. 예약 후 실패하거나 process가 종료되어 쓰지 못한 credit도
-24시간 동안 보수적으로 사용량에 남으며, 무료 plan 호출은 자동 retry하지 않습니다.
-예약 뒤 실제 호출된 credit의 24시간은 해당 transport 시각부터 다시 계산됩니다.
-마이그레이션 중에는 구버전 collector를 먼저 종료해야 합니다. 새 collector가
-예약을 끝낸 뒤 구버전 process가 별도 날짜 counter로 호출하는 경우까지 두 binary가
-상호 배제할 수는 없으며, 다음 새 collector 접근 시에는 이를 즉시 합산·차단합니다.
-
-최초 실데이터 실행은 ALFRED 수정 이력을 보존하는 full base 때문에 로컬
-SQLite가 수백 MB가 될 수 있습니다. 이후 정상 주간 실행은 ALFRED
-`output_type=3`의 신규·수정 event와 Alpha Vantage의 신규·변경 row만 delta로
-저장합니다. 실패 응답은 health·요청 provenance만 남기고 부분 observation은
-저장하지 않습니다. full base와 성공 delta를 합쳐 읽으므로 과거 정보는
-유지하면서 매주 전체 history를 중복 저장하지 않습니다.
-
-ALFRED delta 수집은 주간 overlap의 달력일 범위를 먼저
-`/series/vintagedates`로 조회하고, 해당 series에 대해 실제로 반환된 vintage만
-`output_type=3` 요청에 전달합니다. 2026-08-12 live JSON 점검에서 UNRATE
-요청에 discovery가 반환하지 않은 날짜를 함께 넣으면 HTTP 400이 발생했기
-때문에 적용한 보수적 정규화이며, 모든 series와 미래 API 동작을 일반화한
-공식 보장은 아닙니다. FRED가 실제 vintage가 없는 좁은 구간에 HTTP 500을
-반환하는 경우에는 이 오류를 곧바로 빈 결과로 간주하지 않습니다. bounded
-observation history로 discovery를 한 번 넓혀 schema-valid 응답을 받은 뒤 원래
-주간 구간과의 교집합이 비어 있음이 확인될 때만 정상 empty delta로 처리하며,
-넓은 조회도 실패하면 last-good을 유지하고 분석·배포를 중단합니다.
-
-Alpha Vantage가 과거 adjusted 값을 나중에 바꾸면 변경값은 탐지 시점부터만
-유효한 새 revision으로 추가됩니다. 이전 row가 응답에서 사라진 경우에는
-삭제로 추정하지 않고 해당 수집을 `degraded`로 표시한 뒤 last-good history를
-유지합니다. 아직 끝나지 않은 현재 주 row는 snapshot 당시의 완료 주 cutoff와
-대조해 영구 제외하므로 다음 주에 삭제·수정으로 오인하지 않습니다.
-
-단, 최초 Alpha Vantage baseline은 첫 수집 시점에 공급자가 반환한 adjusted
-history입니다. 공급자가 과거에 어떤 adjusted 값을 보여 주었는지에 대한 원래
-vintage는 이 endpoint만으로 복원할 수 없으므로, baseline 이전 가격 이력은
-엄밀한 historical vintage가 아니라 초기 backfill입니다. 프로젝트는 첫 수집
-이후 탐지한 변경만 prospective revision으로 보존하고 이 한계를 결과에 명시합니다.
+V6의 역사적 matched OOS 후보는 공식 전체 빈티지가 있는 Philadelphia Fed
+ADS/RTDSM으로 제한합니다. Board H.4.1/H.8은 dated archive parser와 520주 공통표본을
+검증한 뒤 합류할 수 있고, H.15/OFR FSI는 retrospective sensitivity, H.10/CP는
+prospective shadow로 분리합니다. 시장 가격·수익률 label은 승인된 Alpha Vantage를
+비공개 수집·저장·학습에 사용합니다. 최초 수집 때 받은 과거 조정 이력은 당시의
+역사적 빈티지를 재현하지 않으므로 retrospective sensitivity로만 평가하고, 이후
+동결한 스냅샷부터 prospective 근거를 축적합니다. 검토를 통과한 파생 결과만
+개인·비상업 공개 경로에 승격할 수 있습니다.
 
 ## 정보 시점 계약
 
@@ -355,22 +179,13 @@ vintage는 이 endpoint만으로 복원할 수 없으므로, baseline 이전 가
 
 ## 입력 자료와 구조 실험
 
-Alpha Vantage의 23개 ETF 조정종가와 거래량을 이용해 주가 추세·변동성·낙폭,
-시장 대비 상대수익률뿐 아니라 주가 상승 breadth, 추세 참여율, 수익률 dispersion,
-방향 동조화와 13·26주 평균 pairwise correlation을 만듭니다. XLY/XLP,
-XLK/XLU, HYG/LQD, HYG/IEF, TLT/SHY의 4·13주 상대수익률은 경기민감/방어,
-성장/방어, 신용위험과 금리곡선 proxy로 사용합니다. 전체 ETF의 거래량 증가
-breadth와 가격-거래량 confirmation도 포함합니다.
-
-SPY·IWM·RSP·HYG·TLT는 공급자의 조정종가/원종가 비율을 같은 주의
-open·high·low에 적용해 조정 OHLC를 만들고, high-low range, close location,
-전주 조정종가 대비 opening gap을 계산합니다. 필드가 일부만 존재하면 값을
-합성하지 않고 해당 수집을 실패 처리합니다.
-
-ALFRED는 기존 금리·물가·고용·성장·달러·유동성 series에 Chicago Fed NFCI와
-`NFCIRISK`, `NFCICREDIT`, `NFCILEVERAGE`, `NFCINONFINLEVERAGE`를 포함합니다.
-수준·변화량 외에 과거 52주만으로 표준화한 4주 변화량을 사용하며, 월·분기
-자료는 발표된 이후에만 주별 행으로 forward-fill합니다.
+V5의 Alpha Vantage·ALFRED feature는 승인된 로컬 연구 경로에서 새 학습에도 사용할
+수 있습니다. V6 preregistration은 ADS/RTDSM만 역사적 PIT core 후보로 두고,
+나머지 공식 자료는 빈티지 복원 가능성에 따라 archive-certification,
+retrospective-sensitivity, prospective-shadow로 나눕니다. 단순 `/USD` 통화쌍 확대는
+기존 H.10 FX ablation과 중복되므로 primary 후보가 아닙니다. CP spread는
+funding-liquidity 후보, DOL/BLS/Census/BEA direct 자료는 archive parser 검증 전까지
+shadow/reconciliation입니다.
 
 구조 v4 실험은 기존 label과 v3 기준선을 그대로 두고, 11개 GICS sector
 breadth, H.15 Treasury curve level/slope/curvature, H.8 bank credit·funding,
@@ -396,6 +211,12 @@ walk-forward gate에서 비교합니다. V5 standard는
 `causal_multiscale_ensemble`을 추가한 17개이며, 실제 검토에서는 Markov가
 champion을 유지했습니다. V5 full은 Gaussian HMM을 더한 18개입니다. Deep learning은 현재 범위에서 제외하며,
 HMM의 full-sample smoothed path는 label이나 실시간 판정에 쓰지 않습니다.
+
+V6 opt-in 연구 후보는 최근 정보에 더 큰 가중치를 두는
+`recency_weighted_xgboost_208w`, fold 내부에서만 PCA를 적합하는
+`pca_ridge_logistic`, 전이행렬에 지수감쇠를 적용하는
+`discounted_markov_208w`입니다. 기존 공개 후보 목록과 champion은 바꾸지 않으며,
+2026-08-21 이후 prospective 표본이 쌓여야 승격 심사를 시작합니다.
 
 2023년 이전의 이용 가능한 OOS origin 전체만으로 provisional champion을
 고정합니다. 각 challenger는 가장 좋은 probabilistic baseline보다 selection
@@ -449,6 +270,7 @@ rollback합니다. 핵심 추가 artifact는 다음과 같습니다.
 - `transition-candidate-forecasts.csv`
 - `transition-candidate-status.csv`
 - `feature-manifest.json`
+- `feature-quality.json`
 - `feature-ablation-manifest.json`
 - `feature-ablation-oos-predictions.csv`
 - `feature-ablation-leaderboard.csv`
@@ -483,7 +305,6 @@ SHA-256은 `8ef3778cc8c36faff0c80e2bf094f1f11bd6966ab3b7b2d6edb84ba292aff6b9`입
 
 ```bash
 .venv/bin/regime-lab demo --profile quick
-.venv/bin/regime-lab build --config config/series.json --profile full --alfred-rights-confirmed
 .venv/bin/regime-lab validate web/data/regime-results.json
 .venv/bin/python scripts/audit_outputs.py
 .venv/bin/pytest

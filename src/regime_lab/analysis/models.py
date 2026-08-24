@@ -254,6 +254,62 @@ class SmoothedMarkovClassifier:
         return np.vstack(output)
 
 
+class DiscountedMarkovClassifier:
+    """First-order Markov baseline with fixed exponential recency discounting."""
+
+    def __init__(
+        self,
+        *,
+        alpha: float = 1.0,
+        half_life_weeks: float = 208.0,
+    ) -> None:
+        if not np.isfinite(alpha) or alpha <= 0:
+            raise ValueError("alpha must be a positive finite number")
+        if not np.isfinite(half_life_weeks) or half_life_weeks <= 0:
+            raise ValueError("half_life_weeks must be a positive finite number")
+        self.alpha = float(alpha)
+        self.half_life_weeks = float(half_life_weeks)
+        self.transition_matrix_: np.ndarray | None = None
+
+    def fit(
+        self,
+        current_states: pd.Series | np.ndarray,
+        next_states: pd.Series | np.ndarray,
+    ) -> "DiscountedMarkovClassifier":
+        current = np.asarray(current_states, dtype=object)
+        target = np.asarray(next_states, dtype=object)
+        if current.ndim != 1 or target.ndim != 1:
+            raise ValueError("current_states and next_states must be one-dimensional")
+        if len(current) != len(target):
+            raise ValueError("current_states and next_states must have equal length")
+        ages = np.arange(len(current) - 1, -1, -1, dtype=float)
+        weights = np.exp2(-ages / self.half_life_weeks)
+        counts = np.full(
+            (len(STATE_ORDER), len(STATE_ORDER)), self.alpha, dtype=float
+        )
+        positions = {state: index for index, state in enumerate(STATE_ORDER)}
+        for source, destination, weight in zip(
+            current, target, weights, strict=False
+        ):
+            if source in positions and destination in positions:
+                counts[positions[source], positions[destination]] += float(weight)
+        self.transition_weights_ = weights
+        self.transition_matrix_ = counts / counts.sum(axis=1, keepdims=True)
+        return self
+
+    def predict_proba(self, current_states: Iterable[str]) -> np.ndarray:
+        if self.transition_matrix_ is None:
+            raise RuntimeError("DiscountedMarkovClassifier must be fit first")
+        prior = self.transition_matrix_.mean(axis=0)
+        output: list[np.ndarray] = []
+        for state in current_states:
+            try:
+                output.append(self.transition_matrix_[STATE_ORDER.index(str(state))])
+            except ValueError:
+                output.append(prior)
+        return np.vstack(output)
+
+
 def augment_with_current_state(
     features: pd.DataFrame,
     current_states: pd.Series | np.ndarray | Iterable[str],
@@ -380,7 +436,12 @@ class StateEncodedXGBoostClassifier(ClassifierMixin, BaseEstimator):
         self.random_state = random_state
         self.n_jobs = n_jobs
 
-    def fit(self, features: Any, target: Any) -> "StateEncodedXGBoostClassifier":
+    def fit(
+        self,
+        features: Any,
+        target: Any,
+        sample_weight: Any | None = None,
+    ) -> "StateEncodedXGBoostClassifier":
         try:
             from xgboost import XGBClassifier
         except ImportError as exc:  # pragma: no cover - environment dependent
@@ -393,6 +454,13 @@ class StateEncodedXGBoostClassifier(ClassifierMixin, BaseEstimator):
             ) from exc
 
         matrix, labels = check_X_y(features, target, dtype=float)
+        weights: np.ndarray | None = None
+        if sample_weight is not None:
+            weights = np.asarray(sample_weight, dtype=float)
+            if weights.ndim != 1 or len(weights) != len(matrix):
+                raise ValueError("sample_weight must be one-dimensional and row-aligned")
+            if not np.isfinite(weights).all() or (weights <= 0.0).any():
+                raise ValueError("sample_weight must contain positive finite values")
         labels = np.asarray([str(value) for value in labels], dtype=object)
         invalid = sorted(set(labels).difference(STATE_ORDER))
         if invalid:
@@ -424,7 +492,10 @@ class StateEncodedXGBoostClassifier(ClassifierMixin, BaseEstimator):
         if len(observed) > 2:
             parameters["num_class"] = len(observed)
         self.estimator_ = XGBClassifier(**parameters)
-        self.estimator_.fit(matrix, encoded, verbose=False)
+        fit_parameters: dict[str, Any] = {"verbose": False}
+        if weights is not None:
+            fit_parameters["sample_weight"] = weights
+        self.estimator_.fit(matrix, encoded, **fit_parameters)
         self.classes_ = np.asarray(observed, dtype=object)
         self.n_features_in_ = int(matrix.shape[1])
         return self
@@ -445,6 +516,58 @@ class StateEncodedXGBoostClassifier(ClassifierMixin, BaseEstimator):
     def predict(self, features: Any) -> np.ndarray:
         probability = self.predict_proba(features)
         return self.classes_[probability.argmax(axis=1)]
+
+
+class RecencyWeightedXGBoostClassifier(StateEncodedXGBoostClassifier):
+    """XGBoost adapter with fixed row-order exponential sample weights."""
+
+    def __init__(
+        self,
+        *,
+        n_estimators: int = 160,
+        learning_rate: float = 0.04,
+        max_depth: int = 2,
+        min_child_weight: float = 8.0,
+        subsample: float = 1.0,
+        colsample_bytree: float = 1.0,
+        reg_lambda: float = 12.0,
+        reg_alpha: float = 0.5,
+        gamma: float = 0.1,
+        random_state: int = 17,
+        n_jobs: int = 1,
+        half_life_weeks: float = 208.0,
+    ) -> None:
+        super().__init__(
+            n_estimators=n_estimators,
+            learning_rate=learning_rate,
+            max_depth=max_depth,
+            min_child_weight=min_child_weight,
+            subsample=subsample,
+            colsample_bytree=colsample_bytree,
+            reg_lambda=reg_lambda,
+            reg_alpha=reg_alpha,
+            gamma=gamma,
+            random_state=random_state,
+            n_jobs=n_jobs,
+        )
+        self.half_life_weeks = half_life_weeks
+
+    def fit(
+        self,
+        features: Any,
+        target: Any,
+    ) -> "RecencyWeightedXGBoostClassifier":
+        if not np.isfinite(self.half_life_weeks) or self.half_life_weeks <= 0:
+            raise ValueError("half_life_weeks must be a positive finite number")
+        target_array = np.asarray(target)
+        if target_array.ndim != 1:
+            raise ValueError("target must be one-dimensional")
+        ages = np.arange(len(target_array) - 1, -1, -1, dtype=float)
+        weights = np.exp2(-ages / float(self.half_life_weeks))
+        weights /= weights.mean()
+        self.sample_weight_ = weights.copy()
+        super().fit(features, target, sample_weight=weights)
+        return self
 
 
 def _scaled_linear_pipeline(classifier: Any) -> Pipeline:
@@ -485,6 +608,31 @@ def _construct_model(
                 tol=1e-6,
                 random_state=random_state,
             )
+        )
+    if name == "pca_ridge_logistic":
+        return Pipeline(
+            steps=[
+                ("imputer", SimpleImputer(strategy="median", add_indicator=True)),
+                ("scaler", StandardScaler()),
+                (
+                    "pca",
+                    AdaptivePCA(
+                        max_components=cfg.spline_pca_components,
+                        random_state=random_state,
+                    ),
+                ),
+                (
+                    "classifier",
+                    LogisticRegression(
+                        solver="lbfgs",
+                        C=0.10,
+                        class_weight=None,
+                        max_iter=2_000,
+                        tol=1e-6,
+                        random_state=random_state,
+                    ),
+                ),
+            ]
         )
     if name == "transition_logistic":
         return _scaled_linear_pipeline(
@@ -623,6 +771,29 @@ def _construct_model(
                         gamma=0.1,
                         random_state=random_state,
                         n_jobs=1,
+                    ),
+                ),
+            ]
+        )
+    if name == "recency_weighted_xgboost_208w":
+        return Pipeline(
+            steps=[
+                ("imputer", SimpleImputer(strategy="median", add_indicator=True)),
+                (
+                    "classifier",
+                    RecencyWeightedXGBoostClassifier(
+                        n_estimators=cfg.xgboost_trees,
+                        learning_rate=0.04,
+                        max_depth=2,
+                        min_child_weight=8.0,
+                        subsample=1.0,
+                        colsample_bytree=1.0,
+                        reg_lambda=12.0,
+                        reg_alpha=0.5,
+                        gamma=0.1,
+                        random_state=random_state,
+                        n_jobs=1,
+                        half_life_weeks=208.0,
                     ),
                 ),
             ]
@@ -829,6 +1000,56 @@ _MODEL_SPECS: tuple[ModelSpec, ...] = (
         factory=_factory_for("xgboost"),
     ),
     ModelSpec(
+        "recency_weighted_xgboost_208w",
+        "learned",
+        14,
+        ("quick", "standard", "full"),
+        default=False,
+        dependency="xgboost",
+        feature_design=(
+            "shared_features_row_order_exponential_sample_weight_mean_one"
+        ),
+        search_space=MappingProxyType(
+            {
+                "half_life_weeks": (208.0,),
+                "sample_weight_normalization": ("mean_one",),
+            }
+        ),
+        factory=_factory_for("recency_weighted_xgboost_208w"),
+    ),
+    ModelSpec(
+        "pca_ridge_logistic",
+        "learned",
+        4,
+        ("quick", "standard", "full"),
+        default=False,
+        feature_design="fold_local_imputer_scaler_adaptive_pca_ridge_multinomial",
+        search_space=MappingProxyType(
+            {
+                "C": (0.10,),
+                "max_components_profile_field": ("spline_pca_components",),
+                "penalty": ("l2",),
+                "solver": ("lbfgs",),
+            }
+        ),
+        factory=_factory_for("pca_ridge_logistic"),
+    ),
+    ModelSpec(
+        "discounted_markov_208w",
+        "baseline",
+        3,
+        ("quick", "standard", "full"),
+        default=False,
+        requires_current_state=True,
+        feature_design="row_order_exponentially_discounted_transition_counts",
+        search_space=MappingProxyType(
+            {
+                "alpha": (1.0,),
+                "half_life_weeks": (208.0,),
+            }
+        ),
+    ),
+    ModelSpec(
         "xgb_hazard_destination",
         "synthetic",
         14,
@@ -914,6 +1135,11 @@ MODEL_REGISTRY: Mapping[str, ModelSpec] = MappingProxyType(
 )
 MODEL_NAMES: tuple[str, ...] = tuple(
     spec.name for spec in _MODEL_SPECS if spec.default
+)
+DIRECT_NEXT_STATE_MODEL_NAMES: tuple[str, ...] = (
+    "recency_weighted_xgboost_208w",
+    "pca_ridge_logistic",
+    "discounted_markov_208w",
 )
 
 
@@ -1080,12 +1306,15 @@ def model_manifest_sha256(
 
 
 __all__ = [
+    "DIRECT_NEXT_STATE_MODEL_NAMES",
     "MODEL_NAMES",
     "MODEL_REGISTRY",
     "AdaptivePCA",
     "BenchmarkProfile",
+    "DiscountedMarkovClassifier",
     "GaussianHMMChallenger",
     "ModelSpec",
+    "RecencyWeightedXGBoostClassifier",
     "SmoothedMarkovClassifier",
     "StateEncodedXGBoostClassifier",
     "align_probabilities",

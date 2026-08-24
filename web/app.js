@@ -740,10 +740,17 @@
           errors.push("v5 model.forecast_comparison 역할·horizon이 올바르지 않습니다.");
         }
         const comparisonModels = forecastComparison.models;
+        const expectedComparisonModels = [...V5_FORECAST_COMPARISON_MODELS];
+        if (
+          typeof model.champion === "string"
+          && !expectedComparisonModels.includes(model.champion)
+        ) {
+          expectedComparisonModels.push(model.champion);
+        }
         if (
           !Array.isArray(comparisonModels)
-          || comparisonModels.length !== V5_FORECAST_COMPARISON_MODELS.length
-          || comparisonModels.some((name, index) => name !== V5_FORECAST_COMPARISON_MODELS[index])
+          || comparisonModels.length !== expectedComparisonModels.length
+          || comparisonModels.some((name, index) => name !== expectedComparisonModels[index])
         ) {
           errors.push("v5 model.forecast_comparison 모델 순서가 올바르지 않습니다.");
         }
@@ -3354,12 +3361,15 @@
     const comparisonScale = Math.max(0.001, ...comparisonValues.map((value) => Math.abs(value)));
     dom["conditional-stat-grid"].replaceChildren();
     setText(dom["conditional-comparison-caption"], `${state.outcomeHorizon}주 보유 · 동일 축 · 0 기준`);
-    for (const code of STATE_ORDER) {
-      const card = createElement("article", `conditional-state-card state-${code}`);
-      const heading = createElement("div", "conditional-state-heading");
-      heading.append(createElement("strong", null, `${STATE_META[code].short} ${STATE_META[code].label}`));
-      const assetList = createElement("div", "conditional-asset-list");
-      for (const asset of OUTCOME_ASSETS) {
+    for (const asset of OUTCOME_ASSETS) {
+      const card = createElement("article", "conditional-asset-card");
+      const heading = createElement("div", "conditional-asset-heading");
+      heading.append(
+        createElement("strong", null, asset),
+        createElement("span", null, OUTCOME_ASSET_LABELS[asset]),
+      );
+      const regimeList = createElement("div", "conditional-regime-list");
+      for (const code of STATE_ORDER) {
         const row = comparisonRows.find((candidate) => candidate.state === code && candidate.asset === asset);
         const supportOk = Boolean(row && row.status === "ok");
         const rawValue = supportOk ? finiteNumber(row.mean_return) : null;
@@ -3373,16 +3383,22 @@
               ? "값 없음"
               : "";
         const sample = row ? formatNumber(row.n, 0) : "—";
-        const assetRow = createElement("div", `conditional-asset-row${available ? "" : " is-limited"}`);
-        const label = createElement("span", "conditional-asset-label");
+        const regimeRow = createElement(
+          "div",
+          `conditional-regime-row state-${code}${available ? "" : " is-limited"}`,
+        );
+        const label = createElement("span", "conditional-regime-label");
         label.append(
-          createElement("strong", null, asset),
-          createElement("small", null, `${OUTCOME_ASSET_LABELS[asset]}${statusLabel ? ` · ${statusLabel}` : ""}`),
+          createElement("b", null, STATE_META[code].short),
+          createElement("span", null, STATE_META[code].label),
         );
         const track = createElement("span", "conditional-return-track");
         track.setAttribute("aria-hidden", "true");
         if (available && value !== 0) {
-          const fill = createElement("span", `conditional-return-fill ${value < 0 ? "is-negative" : "is-positive"}`);
+          const fill = createElement(
+            "span",
+            `conditional-return-fill state-${code} ${value < 0 ? "is-negative" : "is-positive"}`,
+          );
           fill.style.width = `${Math.min(50, (Math.abs(value) / comparisonScale) * 50).toFixed(2)}%`;
           track.append(fill);
         }
@@ -3392,16 +3408,17 @@
         const output = createElement("span", `conditional-return-value ${value !== null && value < 0 ? "is-negative" : "is-positive"}`);
         output.append(
           createElement("strong", null, formatted),
-          createElement("small", null, `n ${sample}`),
+          createElement("small", null, statusLabel || `n ${sample}`),
         );
-        assetRow.setAttribute(
+        regimeRow.setAttribute(
           "aria-label",
           `${STATE_META[code].label}, ${asset} ${OUTCOME_ASSET_LABELS[asset]}, ${state.outcomeHorizon}주 평균 수익률 ${formatted}, 표본 ${sample}개${statusLabel ? `, ${statusLabel}` : ""}`,
         );
-        assetRow.append(label, track, output);
-        assetList.append(assetRow);
+        regimeRow.append(label, track, output);
+        regimeList.append(regimeRow);
       }
-      card.append(heading, assetList);
+      card.setAttribute("aria-label", `${asset} ${OUTCOME_ASSET_LABELS[asset]} 국면별 ${state.outcomeHorizon}주 평균 수익률`);
+      card.append(heading, regimeList);
       dom["conditional-stat-grid"].append(card);
     }
   }
@@ -3649,8 +3666,9 @@
       if (isHoldoutBest) chartRow.classList.add("is-holdout-best");
 
       const label = createElement("span", "model-loss-label");
+      label.title = item.name;
       label.append(
-        createElement("strong", null, item.name),
+        createElement("strong", null, modelForecastLabel(item.name)),
         createElement(
           "span",
           null,
@@ -3696,11 +3714,26 @@
 
   function modelForecastLabel(name) {
     return {
+      majority: "다수 국면",
+      persistence: "직전 국면 유지",
       markov: "Markov",
+      elastic_net_logistic: "Elastic-net Logistic",
+      calibrated_linear_svm: "보정 Linear SVM",
+      random_forest: "Random Forest",
+      extra_trees: "Extra Trees",
+      hist_gradient_boosting: "Histogram Gradient Boosting",
+      ridge_logistic: "Ridge Logistic",
+      transition_logistic: "전환 Logistic",
+      duration_tvtp_hurdle: "Duration TVTP Hurdle",
+      shrinkage_lda: "Shrinkage LDA",
+      spline_logistic: "Spline Logistic",
       xgboost: "XGBoost",
       xgb_hazard_destination: "XGBoost · 이탈/목적지",
       causal_dynamic_ensemble: "동적 앙상블",
       causal_multiscale_ensemble: "멀티스케일 앙상블",
+      recency_weighted_xgboost_208w: "XGBoost · 최근 가중",
+      pca_ridge_logistic: "PCA · Ridge Logistic",
+      discounted_markov_208w: "Markov · 최근 가중",
     }[name] || textValue(name, "모델");
   }
 
@@ -3758,7 +3791,11 @@
       for (const name of models) {
         const row = leaderboard.find((candidate) => modelName(candidate) === name);
         const rank = finiteNumber(firstValue(row, ["rank", "position"]));
-        const role = name === championName ? "공식" : `2023+ #${formatNumber(rank, 0)}`;
+        const role = name === championName
+          ? "공식"
+          : rank === null
+            ? "비교"
+            : `2023+ #${formatNumber(rank, 0)}`;
         const option = createElement("option", null, `${modelForecastLabel(name)} · ${role}`);
         option.value = name;
         select.append(option);
@@ -3797,7 +3834,14 @@
 
     const rank = finiteNumber(firstValue(leaderboardRow, ["rank", "position"]));
     setText(dom["model-forecast-rank"], rank === null ? "—" : `${formatNumber(rank, 0)} / ${formatNumber(leaderboard.length, 0)}`);
-    setText(dom["model-forecast-log-loss"], formatNumber(metricValue(leaderboardRow, ["log_loss", "multiclass_log_loss"]), 4));
+    const selectionLogLoss = metricValue(leaderboardRow, ["selection_log_loss"]);
+    const diagnosticLogLoss = metricValue(leaderboardRow, ["log_loss", "multiclass_log_loss"]);
+    setText(
+      dom["model-forecast-log-loss"],
+      selectionLogLoss === null
+        ? formatNumber(diagnosticLogLoss, 4)
+        : `${formatNumber(selectionLogLoss, 4)} → ${formatNumber(diagnosticLogLoss, 4)}`,
+    );
     setText(dom["model-forecast-brier"], formatNumber(metricValue(leaderboardRow, ["brier", "brier_score"]), 4));
     setText(dom["model-forecast-calibration"], formatNumber(metricValue(leaderboardRow, ["calibration_error"]), 4));
     dom["model-forecast-explorer"].setAttribute(
@@ -3814,7 +3858,7 @@
     const holdoutBestName = holdoutDiagnostic ? textValue(holdoutDiagnostic.best_model, "") : "";
     dom["champion-summary"].replaceChildren(
       createElement("span", null, "선정 모델"),
-      createElement("strong", null, championName),
+      createElement("strong", null, modelForecastLabel(championName)),
     );
     renderModelEvidenceSummary(model, championName, holdoutDiagnostic);
     renderTransitionModels();
@@ -3850,7 +3894,9 @@
       if (isHoldoutBest) row.classList.add("is-holdout-best");
       const rank = firstValue(rowData, ["rank", "position"]) || index + 1;
       row.append(createElement("td", null, rank));
-      const nameCell = createElement("td", null, name);
+      const nameCell = createElement("td", null, modelForecastLabel(name));
+      nameCell.classList.add("model-name-cell");
+      if (modelForecastLabel(name) !== name) nameCell.append(createElement("small", "model-code", name));
       if (isChampion) nameCell.append(createElement("span", "champion-label", "선정"));
       if (isHoldoutBest) nameCell.append(createElement("span", "holdout-label", "2023+ 1위"));
       row.append(nameCell);
@@ -3910,6 +3956,23 @@
       appendEvidence(
         "V4 기준 비교",
         `공통 OOS ${formatNumber(state.comparisonSummary.commonKeys, 0)}개 · Markov 확률 완전 일치`,
+      );
+    }
+    const featureQuality = isObject(model.feature_quality_artifact)
+      ? model.feature_quality_artifact
+      : null;
+    if (
+      featureQuality
+      && Number.isInteger(featureQuality.feature_count)
+      && Number.isInteger(featureQuality.warning_feature_count)
+      && Number.isInteger(featureQuality.unavailable_feature_count)
+    ) {
+      appendEvidence(
+        "입력 피처 품질",
+        `${formatNumber(featureQuality.feature_count, 0)}개 · 경고 ${formatNumber(featureQuality.warning_feature_count, 0)} · 사용 불가 ${formatNumber(featureQuality.unavailable_feature_count, 0)}`,
+        featureQuality.warning_feature_count > 0 || featureQuality.unavailable_feature_count > 0
+          ? "is-review"
+          : "is-ok",
       );
     }
     container.hidden = false;
@@ -4077,7 +4140,8 @@
   function renderHeaderModelHealth() {
     const model = state.raw && isObject(state.raw.model) ? state.raw.model : {};
     const champion = modelName(model.champion);
-    dom["header-model-health"].replaceChildren(createElement("span", null, champion));
+    const championLabel = modelForecastLabel(champion);
+    dom["header-model-health"].replaceChildren(createElement("span", null, championLabel));
     if (isV5Payload() && isObject(model.model_health)) {
       const review = model.model_health.status === "review_due";
       const chip = createElement("span", `model-health-chip ${review ? "is-review" : "is-ok"}`, review ? "검토 필요" : "정상");
@@ -4085,7 +4149,7 @@
       const reasons = modelHealthReasonLabels(model.model_health.reasons);
       dom["header-model-health"].setAttribute(
         "aria-label",
-        [champion, review ? "검토 필요" : "정상", ...reasons].join(" · "),
+        [championLabel, review ? "검토 필요" : "정상", ...reasons].join(" · "),
       );
     }
   }

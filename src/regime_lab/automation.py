@@ -38,6 +38,11 @@ from regime_lab.config import project_root
 from regime_lab.io import write_json_atomic
 from regime_lab.keychain import KEYCHAIN_SERVICES
 from regime_lab.path_safety import confined_mutable_path
+from regime_lab.provider_rights import (
+    ProviderRightsError,
+    providers_for_live_config,
+    verify_provider_rights,
+)
 from regime_lab.publication_contract import (
     PublicContractError,
     validate_v5_comparison_sidecar,
@@ -52,13 +57,14 @@ PUBLICATION_COMPARISON_PATH = "publication/live/v5-vs-v4-comparison.json"
 PUBLIC_PAYLOAD_PATH = "data/regime-results.json"
 PUBLIC_COMPARISON_PATH = "data/v5-vs-v4-comparison.json"
 PUBLIC_MANIFEST_PATH = "publication-manifest.json"
+PUBLIC_STATIC_ASSET_PATHS = ("index.html", "styles.css", "app.js")
 AUTOMATION_LABEL = "com.sonchanggi.regime.weekly-release"
 AUTOMATION_TRAILER = "Regime-Automation: weekly-release-v1"
 ALLOWED_REMOTE_DRIFT = frozenset(
     {PUBLICATION_PATH, PUBLICATION_COMPARISON_PATH}
 )
 DEFAULT_RETRY_HOURS = (3, 9, 15, 21)
-HEALTH_SCHEMA_VERSION = 2
+HEALTH_SCHEMA_VERSION = 4
 GIT_NETWORK_TIMEOUT_SECONDS = 300.0
 GIT_NONINTERACTIVE_ENV = {
     "GIT_TERMINAL_PROMPT": "0",
@@ -438,6 +444,7 @@ def _status_document(
     next_retry_at: datetime | None = None,
     recovery_fingerprint: str | None = None,
     notification: Mapping[str, Any] | None = None,
+    failed_stage: str | None = None,
 ) -> dict[str, Any]:
     now = datetime.now(UTC)
     previous = _read_status(settings)
@@ -456,17 +463,56 @@ def _status_document(
     if type(previous_failures) is not int or previous_failures < 0:
         previous_failures = 0
     consecutive_failures = previous_failures
-    last_success_at = previous.get("last_success_at")
-    last_success_target = previous.get("last_success_target")
+    last_full_success_at = previous.get("last_full_success_at")
+    last_full_success_target = previous.get("last_full_success_target")
+    last_check_at = previous.get("last_check_at")
+    last_public_verification_at = previous.get("last_public_verification_at")
     last_failure_at = previous.get("last_failure_at")
+    raw_stage_successes = previous.get("last_stage_successes", {})
+    last_stage_successes = (
+        dict(raw_stage_successes)
+        if isinstance(raw_stage_successes, Mapping)
+        else {}
+    )
+    if (
+        previous.get("run_id") == selected_run_id
+        and previous.get("status") == "running"
+        and isinstance(previous.get("stage"), str)
+        and previous.get("stage") != stage
+        and status in {"running", "succeeded"}
+    ):
+        last_stage_successes[str(previous["stage"])] = {
+            "completed_at": now.isoformat(),
+            "target_data_as_of": (
+                target.isoformat()
+                if target is not None
+                else previous.get("target_data_as_of")
+            ),
+            "run_id": selected_run_id,
+        }
     public_data_as_of = previous.get("public_data_as_of") or _local_public_data_as_of(
         settings
     )
+    selected_failed_stage = failed_stage
+    if selected_failed_stage is None and status in {"blocked", "skipped"}:
+        previous_failed_stage = previous.get("failed_stage")
+        if isinstance(previous_failed_stage, str):
+            selected_failed_stage = previous_failed_stage
+    if status in {"succeeded", "failed", "blocked", "skipped"}:
+        last_check_at = now.isoformat()
     if status == "succeeded":
+        last_stage_successes[stage] = {
+            "completed_at": now.isoformat(),
+            "target_data_as_of": target.isoformat() if target else None,
+            "run_id": selected_run_id,
+        }
         consecutive_failures = 0
-        last_success_at = now.isoformat()
-        last_success_target = target.isoformat() if target else None
+        if stage in {"already_current", "public_readback_verified"}:
+            last_public_verification_at = now.isoformat()
         public_data_as_of = target.isoformat() if target else public_data_as_of
+        if stage == "public_readback_verified":
+            last_full_success_at = now.isoformat()
+            last_full_success_target = target.isoformat() if target else None
     elif status == "failed":
         consecutive_failures += 1
         last_failure_at = now.isoformat()
@@ -489,9 +535,17 @@ def _status_document(
         if next_retry_at
         else None,
         "recovery_fingerprint": recovery_fingerprint,
-        "last_success_at": last_success_at,
-        "last_success_target": last_success_target,
+        "failed_stage": selected_failed_stage,
+        # Legacy names now mirror only a complete collection-to-public-readback
+        # cycle; an already-current health check is intentionally separate.
+        "last_success_at": last_full_success_at,
+        "last_success_target": last_full_success_target,
+        "last_full_success_at": last_full_success_at,
+        "last_full_success_target": last_full_success_target,
+        "last_check_at": last_check_at,
+        "last_public_verification_at": last_public_verification_at,
         "last_failure_at": last_failure_at,
+        "last_stage_successes": last_stage_successes,
         "consecutive_failures": consecutive_failures,
         "commit_sha": commit_sha,
         "workflow_url": workflow_url,
@@ -536,6 +590,22 @@ def _heartbeat_status(
         return
     now = datetime.now(UTC).isoformat()
     if stage is not None and document.get("stage") != stage:
+        previous_stage = document.get("stage")
+        if document.get("status") == "running" and isinstance(
+            previous_stage, str
+        ):
+            raw_successes = document.get("last_stage_successes", {})
+            successes = (
+                dict(raw_successes)
+                if isinstance(raw_successes, Mapping)
+                else {}
+            )
+            successes[previous_stage] = {
+                "completed_at": now,
+                "target_data_as_of": document.get("target_data_as_of"),
+                "run_id": document.get("run_id"),
+            }
+            document["last_stage_successes"] = successes
         document["stage"] = stage
         document["stage_started_at"] = now
     document["heartbeat_at"] = now
@@ -556,11 +626,43 @@ def _ensure_ac_power(settings: AutomationSettings) -> None:
         raise AutomationError("weekly automation waits for AC power")
 
 
+def _validate_provider_rights_policy(
+    settings: AutomationSettings,
+    *,
+    now: datetime,
+) -> None:
+    series_config = settings.root / "config/series.json"
+    if not series_config.is_file():
+        raise AutomationError("automation provider series config is missing")
+    try:
+        live_config = json.loads(series_config.read_text(encoding="utf-8"))
+        if not isinstance(live_config, dict):
+            raise ValueError("series config must be an object")
+        verify_provider_rights(
+            providers_for_live_config(live_config),
+            policy_path=settings.root / "config/provider_rights.json",
+            now=now,
+        )
+    except (OSError, json.JSONDecodeError, ValueError, ProviderRightsError) as exc:
+        raise AutomationError(str(exc)) from exc
+
+
 def _validate_local_authorization(
     settings: AutomationSettings,
     *,
     now: datetime,
 ) -> None:
+    _validate_provider_rights_policy(settings, now=now)
+    _validate_local_authorization_document(settings, now=now)
+
+
+def _validate_local_authorization_document(
+    settings: AutomationSettings,
+    *,
+    now: datetime,
+) -> None:
+    """Validate the local authorization record independently of provider policy."""
+
     try:
         document = json.loads(settings.authorization.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -702,6 +804,9 @@ def _failure_policy(
         "schema",
         "permission",
         "keychain",
+        "provider-rights",
+        "integrity",
+        "backup",
     )
     if "ac power" in message:
         return "ac_power_unavailable", "transient", now + settings.transient_retry_delay
@@ -720,6 +825,7 @@ def _retry_guard(
     target: datetime,
     now: datetime,
     force_transient_retry: bool = False,
+    force_blocked_recovery: bool = False,
 ) -> dict[str, Any] | None:
     previous = _read_status(settings)
     if previous.get("schema_version") != HEALTH_SCHEMA_VERSION:
@@ -732,6 +838,11 @@ def _retry_guard(
     retry_class = previous.get("retry_class")
     error_code = previous.get("error_code")
     fingerprint = previous.get("recovery_fingerprint")
+    if retry_class == "blocked" and force_blocked_recovery:
+        # An explicit operator recovery reruns every ordinary rights, Git,
+        # credential, database, model, and publication preflight.  It does not
+        # relax any underlying gate; it only clears this deduplication guard.
+        return None
     if retry_class == "blocked" and fingerprint == _recovery_fingerprint(settings):
         return _write_status(
             settings,
@@ -931,10 +1042,15 @@ def _alpha_quota_preflight(
     if type(retry_reserve) is not int or retry_reserve < 0:
         raise AutomationError("Alpha Vantage retry reserve is invalid")
     if settings.database.is_file():
-        with SQLiteSnapshotStore(settings.database) as store:
-            last_good = store.get_last_good_provenance(
-                source="alpha_vantage", dataset="weekly_adjusted_etf"
-            )
+        with SQLiteSnapshotStore(settings.database, read_only=True) as store:
+            try:
+                last_good = store.get_last_good_provenance(
+                    source="alpha_vantage", dataset="weekly_adjusted_etf"
+                )
+            except sqlite3.OperationalError as exc:
+                if "no such table: snapshots" not in str(exc):
+                    raise
+                last_good = None
         if last_good is not None and last_good.cutoff == target.astimezone(UTC):
             configured = {
                 str(item).strip().upper()
@@ -946,13 +1062,17 @@ def _alpha_quota_preflight(
     requests_needed += retry_reserve
     if requests_needed > raw_limit:
         raise AutomationError("Alpha Vantage full batch plus retry reserve exceeds cap")
-    budget = DailyRequestBudget(
+    advisory = DailyRequestBudget.read_only_advisory(
         limit=raw_limit,
         database_path=settings.database,
+        units=requests_needed,
     )
-    remaining = budget.remaining
+    if advisory is None:
+        # Missing or legacy quota schema is resolved by the child build only
+        # after its verified pre-mutation database backup.
+        return
+    remaining, next_available = advisory
     if remaining < requests_needed:
-        next_available = budget.next_available_at(requests_needed)
         raise ScheduledRetry(
             "Alpha Vantage rolling-24h budget cannot reserve the full batch; "
             f"needed={requests_needed}, remaining={remaining}, "
@@ -1237,15 +1357,12 @@ def _candidate_context(settings: AutomationSettings) -> dict[str, str]:
         try:
             relative = line.split("\t", 1)[1]
             path = settings.root / relative
-            stat = path.lstat()
         except (IndexError, OSError) as exc:
             raise AutomationError("tracked workspace state is unavailable") from exc
+        workspace.update(line.encode("utf-8"))
+        workspace.update(b"\0")
         workspace.update(relative.encode("utf-8"))
-        workspace.update(
-            f"\0{stat.st_mode}\0{stat.st_size}\0{stat.st_mtime_ns}\0{stat.st_ino}\0".encode(
-                "ascii"
-            )
-        )
+        workspace.update(b"\0")
         if path.is_symlink():
             workspace.update(os.readlink(path).encode("utf-8"))
         elif path.is_file():
@@ -1477,6 +1594,8 @@ def _build_candidate(
         "config/series.json",
         "--database",
         str(settings.database),
+        "--backup-directory",
+        str(settings.state_directory / "database-backups"),
         "--output",
         str(settings.payload),
         "--artifacts",
@@ -1489,6 +1608,14 @@ def _build_candidate(
         str(settings.collection_report_path),
         "--alfred-rights-confirmed",
     ]
+    workspace_fingerprint = context.get("workspace_state_sha256")
+    if workspace_fingerprint:
+        command.extend(
+            [
+                "--backup-source-code-fingerprint-sha256",
+                workspace_fingerprint,
+            ]
+        )
     if settings.require_ac_power:
         command.append("--require-ac-power")
     try:
@@ -1786,11 +1913,24 @@ def _fetch_url(url: str) -> bytes:
         return response.read()
 
 
+def _expected_static_assets(settings: AutomationSettings) -> dict[str, bytes]:
+    assets: dict[str, bytes] = {}
+    for relative_path in PUBLIC_STATIC_ASSET_PATHS:
+        source = settings.root / "web" / relative_path
+        if source.is_symlink() or not source.is_file():
+            raise AutomationError(
+                f"expected dashboard asset is unavailable: web/{relative_path}"
+            )
+        assets[relative_path] = source.read_bytes()
+    return assets
+
+
 def verify_public_readback(
     settings: AutomationSettings,
     *,
     expected_payload: bytes,
     expected_comparison: bytes | None = None,
+    expected_assets: Mapping[str, bytes] | None = None,
     fetch: Callable[[str], bytes] = _fetch_url,
 ) -> None:
     expected = _json_object(expected_payload, label="expected public payload")
@@ -1806,6 +1946,13 @@ def verify_public_readback(
             expected_comparison,
             label="expected publication",
         )
+    checkout_assets = (
+        _expected_static_assets(settings)
+        if expected_assets is None
+        else {str(path): bytes(raw) for path, raw in expected_assets.items()}
+    )
+    if set(checkout_assets) != set(PUBLIC_STATIC_ASSET_PATHS):
+        raise AutomationError("expected dashboard asset inventory is not exact")
     public_payload = fetch(urljoin(settings.public_root, PUBLIC_PAYLOAD_PATH))
     expected_hash = hashlib.sha256(expected_payload).hexdigest()
     if hashlib.sha256(public_payload).hexdigest() != expected_hash:
@@ -1814,9 +1961,18 @@ def verify_public_readback(
         fetch(urljoin(settings.public_root, PUBLIC_MANIFEST_PATH)),
         label="public publication manifest",
     )
-    record = manifest.get("files", {}).get(PUBLIC_PAYLOAD_PATH, {})
+    manifest_files = manifest.get("files")
+    expected_files = {*PUBLIC_STATIC_ASSET_PATHS, PUBLIC_PAYLOAD_PATH}
+    if expected_comparison is not None:
+        expected_files.add(PUBLIC_COMPARISON_PATH)
+    if not isinstance(manifest_files, dict) or set(manifest_files) != expected_files:
+        raise AutomationError("public manifest file inventory is not exact")
+    record = manifest_files.get(PUBLIC_PAYLOAD_PATH, {})
     if record.get("sha256") != expected_hash:
         raise AutomationError("public manifest does not identify the promoted payload")
+    if record.get("bytes") != len(public_payload):
+        raise AutomationError("public manifest payload byte count is incorrect")
+    fetched_files: dict[str, bytes] = {PUBLIC_PAYLOAD_PATH: public_payload}
     if expected_comparison is not None:
         public_comparison = fetch(
             urljoin(settings.public_root, PUBLIC_COMPARISON_PATH)
@@ -1834,6 +1990,9 @@ def verify_public_readback(
             raise AutomationError(
                 "public manifest does not identify the promoted comparison"
             )
+        if comparison_record.get("bytes") != len(public_comparison):
+            raise AutomationError("public manifest comparison byte count is incorrect")
+        fetched_files[PUBLIC_COMPARISON_PATH] = public_comparison
         _validate_v5_comparison_bytes(
             public_payload,
             public_comparison,
@@ -1841,7 +2000,22 @@ def verify_public_readback(
         )
     if manifest.get("payload_data_as_of") != expected.get("meta", {}).get("data_as_of"):
         raise AutomationError("public manifest data_as_of does not match the payload")
-    html = fetch(settings.public_root)
+    for relative_path in PUBLIC_STATIC_ASSET_PATHS:
+        raw = fetch(urljoin(settings.public_root, relative_path))
+        expected_asset = checkout_assets[relative_path]
+        if raw != expected_asset:
+            raise AutomationError(
+                f"public asset does not match the expected checkout: {relative_path}"
+            )
+        asset_record = manifest_files.get(relative_path)
+        if not isinstance(asset_record, dict):
+            raise AutomationError(f"public manifest asset record is invalid: {relative_path}")
+        if asset_record.get("bytes") != len(raw):
+            raise AutomationError(f"public asset byte count mismatch: {relative_path}")
+        if asset_record.get("sha256") != hashlib.sha256(raw).hexdigest():
+            raise AutomationError(f"public asset SHA-256 mismatch: {relative_path}")
+        fetched_files[relative_path] = raw
+    html = fetched_files["index.html"]
     if b"US Market Regime Lab" not in html or b"app.js" not in html:
         raise AutomationError("public dashboard HTML is not the Regime consumer")
 
@@ -1887,8 +2061,39 @@ def preflight_summary(
     )
     remote = _git_preflight(settings)
     due = old_enough and remote.data_as_of < target
+    authorization_ok = True
+    authorization_error: str | None = None
+    try:
+        _validate_local_authorization(settings, now=current)
+    except AutomationError as exc:
+        authorization_ok = False
+        authorization_error = _safe_error(exc)
+
+    database_ok = True
+    database_error: str | None = None
+    try:
+        _sqlite_quick_check(settings.database)
+    except (AutomationError, OSError, sqlite3.DatabaseError) as exc:
+        database_ok = False
+        database_error = _safe_error(exc)
+
+    runtime_ok = bool(
+        Path(sys.executable).is_file()
+        and (settings.root / "src/regime_lab").is_dir()
+        and (settings.root / "requirements-ci.lock").is_file()
+    )
+    quota_ok = True
+    quota_error: str | None = None
+    if due and authorization_ok and database_ok and runtime_ok:
+        try:
+            _alpha_quota_preflight(settings, target=target)
+        except (AutomationError, RuntimeError, sqlite3.DatabaseError) as exc:
+            quota_ok = False
+            quota_error = _safe_error(exc)
     return {
-        "ok": True,
+        "ok": bool(
+            authorization_ok and database_ok and runtime_ok and quota_ok
+        ),
         "automation_id": settings.automation_id,
         "now": current.isoformat(),
         "target_data_as_of": target.isoformat(),
@@ -1896,6 +2101,13 @@ def preflight_summary(
         "cutoff_age_ready": old_enough,
         "due": due,
         "remote_head_sha": remote.head_sha,
+        "authorization_ok": authorization_ok,
+        "authorization_error": authorization_error,
+        "database_ok": database_ok,
+        "database_error": database_error,
+        "runtime_ok": runtime_ok,
+        "quota_ok": quota_ok,
+        "quota_error": quota_error,
     }
 
 
@@ -1904,6 +2116,7 @@ def run_weekly_release(
     *,
     now: datetime | None = None,
     force_transient_retry: bool = False,
+    force_blocked_recovery: bool = False,
 ) -> dict[str, Any]:
     started = (now or datetime.now(UTC)).astimezone(UTC)
     run_id = uuid.uuid4().hex
@@ -1918,6 +2131,7 @@ def run_weekly_release(
                 target=target,
                 now=started,
                 force_transient_retry=force_transient_retry,
+                force_blocked_recovery=force_blocked_recovery,
             )
             if guarded is not None:
                 return guarded
@@ -1961,6 +2175,10 @@ def run_weekly_release(
                     )
                     workflow_url = None
                 except (AutomationError, OSError):
+                    # A Pages rebuild is a new publication event.  Revalidate
+                    # both provider rights and the local release authorization
+                    # even when the derived payload bytes are unchanged.
+                    _validate_local_authorization(settings, now=started)
                     recovery_sha = _publish_candidate(
                         settings,
                         candidate=remote.payload_bytes,
@@ -2117,6 +2335,7 @@ def run_weekly_release(
                 retry_class=retry_class,
                 next_retry_at=next_retry_at,
                 recovery_fingerprint=fingerprint,
+                failed_stage=current_stage,
             )
             _notify_status_best_effort(
                 settings,
@@ -2268,6 +2487,7 @@ def install_launch_agent(
         raise AutomationError("LaunchAgent installation requires macOS")
     with automation_lock(settings.install_lock_path):
         with automation_lock(settings.lock_path):
+            _validate_provider_rights_policy(settings, now=datetime.now(UTC))
             _ensure_installable_checkout(settings)
             _write_local_authorization(
                 settings,
@@ -2347,6 +2567,21 @@ def launch_agent_status(settings: AutomationSettings) -> dict[str, Any]:
     loaded = _launch_agent_loaded(settings)
     configuration = _launch_agent_configuration(settings, target=target)
     health_ok = bool(health)
+    checked_at = datetime.now(UTC)
+    provider_rights_ok = True
+    provider_rights_error: str | None = None
+    try:
+        _validate_provider_rights_policy(settings, now=checked_at)
+    except AutomationError as exc:
+        provider_rights_ok = False
+        provider_rights_error = _safe_error(exc)
+    authorization_ok = True
+    authorization_error: str | None = None
+    try:
+        _validate_local_authorization_document(settings, now=checked_at)
+    except AutomationError as exc:
+        authorization_ok = False
+        authorization_error = _safe_error(exc)
     heartbeat_stale = False
     health_stale = False
     if health:
@@ -2394,6 +2629,8 @@ def launch_agent_status(settings: AutomationSettings) -> dict[str, Any]:
         and loaded
         and configuration["configuration_matches"]
         and health_ok
+        and provider_rights_ok
+        and authorization_ok
     )
     return {
         "ok": operational,
@@ -2404,6 +2641,10 @@ def launch_agent_status(settings: AutomationSettings) -> dict[str, Any]:
         "path": str(target),
         "heartbeat_stale": heartbeat_stale,
         "health_stale": health_stale,
+        "provider_rights_ok": provider_rights_ok,
+        "provider_rights_error": provider_rights_error,
+        "authorization_ok": authorization_ok,
+        "authorization_error": authorization_error,
         **configuration,
         "health": health,
     }
@@ -2413,14 +2654,22 @@ def command_automation(args: argparse.Namespace) -> int:
     try:
         settings = AutomationSettings.load(args.config)
         force_retry = bool(getattr(args, "force_retry", False))
+        force_blocked_recovery = bool(
+            getattr(args, "force_blocked_recovery", False)
+        )
         if force_retry and args.action != "run":
             raise AutomationError("--force-retry is valid only with automation run")
+        if force_blocked_recovery and args.action != "run":
+            raise AutomationError(
+                "--force-blocked-recovery is valid only with automation run"
+            )
         if args.action == "preflight":
             result = preflight_summary(settings)
         elif args.action == "run":
             result = run_weekly_release(
                 settings,
                 force_transient_retry=force_retry,
+                force_blocked_recovery=force_blocked_recovery,
             )
         elif args.action == "install":
             result = install_launch_agent(

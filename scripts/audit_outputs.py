@@ -22,6 +22,12 @@ from sklearn.metrics import balanced_accuracy_score, f1_score
 from sklearn.metrics import recall_score
 from sklearn.linear_model import LogisticRegression
 
+from regime_lab.artifact_inventory import (
+    ArtifactInventoryError,
+    verify_artifact_inventory,
+)
+from regime_lab.feature_quality import verify_feature_quality_artifact
+
 
 STATE_ORDER = ("risk_on", "transition", "risk_off")
 PROBABILITY_COLUMNS = tuple(f"p_{state}" for state in STATE_ORDER)
@@ -3105,8 +3111,10 @@ def audit_transition_outputs(
     candidate_status_columns = {
         "model", "requested", "available", "published", "reason"
     }
-    is_v4 = payload.get("meta", {}).get("result_version") == V4_RESULT_VERSION
-    if is_v4:
+    uses_structural_v4_contract = payload.get("meta", {}).get(
+        "result_version"
+    ) in {V4_RESULT_VERSION, V5_RESULT_VERSION}
+    if uses_structural_v4_contract:
         candidate_status_columns.update({"selection_eligible", "role"})
     require_columns(
         candidate_status,
@@ -3130,8 +3138,14 @@ def audit_transition_outputs(
         (
             candidate_status,
             (
-                "requested", "available", "published",
-                *( ("selection_eligible",) if is_v4 else () ),
+                "requested",
+                "available",
+                "published",
+                *(
+                    ("selection_eligible",)
+                    if uses_structural_v4_contract
+                    else ()
+                ),
             ),
             "transition candidate status",
         ),
@@ -3175,7 +3189,7 @@ def audit_transition_outputs(
     published_models = set(candidate_status.loc[candidate_status["published"], "model"])
     selection_eligible_models = (
         set(candidate_status.loc[candidate_status["selection_eligible"], "model"])
-        if is_v4
+        if uses_structural_v4_contract
         else published_models
     )
     prediction_models = set(predictions["model"].astype(str))
@@ -3184,7 +3198,7 @@ def audit_transition_outputs(
         and requested_models.issubset(TRANSITION_ALLOWED_MODELS),
         "transition requested candidate set is invalid",
     )
-    if is_v4:
+    if uses_structural_v4_contract:
         require(requested_models == TRANSITION_ALLOWED_MODELS,
                 "v4 transition candidate set must contain exactly six models")
         require(
@@ -3328,7 +3342,7 @@ def audit_transition_outputs(
         calibration_fallback = frame.loc[frame["calibration_fallback"]]
         require(calibration_fallback["calibration_fallback_reason"].fillna("").astype(str).str.len().gt(0).all(), f"{context} calibration fallback reason missing")
 
-    if is_v4:
+    if uses_structural_v4_contract:
         require("one_week_hazard" in predictions,
                 "v4 transition OOS lacks joint one_week_hazard evidence")
         survival_rows = predictions.loc[
@@ -3486,7 +3500,7 @@ def audit_transition_outputs(
         item = payload_status_by_model[str(row["model"])]
         for field in ("requested", "available", "published"):
             require(bool(item.get(field)) == bool(row[field]), f"payload transition candidate {field} mismatch for {row['model']}")
-        if is_v4:
+        if uses_structural_v4_contract:
             require(
                 bool(item.get("selection_eligible"))
                 == bool(row["selection_eligible"]),
@@ -3551,7 +3565,7 @@ def audit_transition_outputs(
             require(str(published_risk.get("fallback_reason", "")) == effective_reason, f"weekly[{index}] {horizon}w effective fallback reason/source mismatch")
 
     candidate_forecast_summary = None
-    if is_v4:
+    if uses_structural_v4_contract:
         candidate_forecast_summary = audit_transition_candidate_forecasts(
             payload,
             artifacts,
@@ -4360,9 +4374,13 @@ def _audit_v5_model_forecasts(
         f"{context} role/horizon mismatch",
     )
     models = comparison.get("models")
+    comparison_models = V5_FORECAST_COMPARISON_MODELS
+    champion = str(model.get("champion", ""))
+    if champion and champion not in comparison_models:
+        comparison_models = (*comparison_models, champion)
     require(
         isinstance(models, list)
-        and tuple(str(name) for name in models) == V5_FORECAST_COMPARISON_MODELS,
+        and tuple(str(name) for name in models) == comparison_models,
         f"{context} model order mismatch",
     )
     leaderboard = model.get("leaderboard")
@@ -4373,7 +4391,7 @@ def _audit_v5_model_forecasts(
         if isinstance(row, Mapping)
     }
     require(
-        set(V5_FORECAST_COMPARISON_MODELS).issubset(leaderboard_names),
+        set(comparison_models).issubset(leaderboard_names),
         f"{context} models are missing from the leaderboard",
     )
 
@@ -4429,7 +4447,7 @@ def _audit_v5_model_forecasts(
         source["_origin_day"] = source["origin_date"].map(_market_date)
         source["_target_day"] = source["target_date"].map(_market_date)
         selected = source.loc[
-            source["model"].astype(str).isin(V5_FORECAST_COMPARISON_MODELS)
+            source["model"].astype(str).isin(comparison_models)
         ]
         require(
             not selected.duplicated(["_origin_day", "model"]).any(),
@@ -4459,22 +4477,22 @@ def _audit_v5_model_forecasts(
         source = latest if position == len(weekly) - 1 else historical
         source_rows = source.loc[
             source["_origin_day"].eq(origin_day)
-            & source["model"].astype(str).isin(V5_FORECAST_COMPARISON_MODELS)
+            & source["model"].astype(str).isin(comparison_models)
         ].copy()
         require(
-            len(source_rows) == len(V5_FORECAST_COMPARISON_MODELS)
+            len(source_rows) == len(comparison_models)
             and set(source_rows["model"].astype(str))
-            == set(V5_FORECAST_COMPARISON_MODELS),
+            == set(comparison_models),
             f"{context} weekly[{position}] {source_name} rows are incomplete",
         )
         source_lookup = source_rows.set_index(source_rows["model"].astype(str))
         published_rows = week.get("model_forecasts")
         require(
             isinstance(published_rows, list)
-            and len(published_rows) == len(V5_FORECAST_COMPARISON_MODELS),
+            and len(published_rows) == len(comparison_models),
             f"{context} weekly[{position}] payload rows are incomplete",
         )
-        for model_position, name in enumerate(V5_FORECAST_COMPARISON_MODELS):
+        for model_position, name in enumerate(comparison_models):
             row_context = f"{context} weekly[{position}] {name}"
             published = published_rows[model_position]
             require(isinstance(published, Mapping), f"{row_context} is invalid")
@@ -4536,10 +4554,51 @@ def _audit_v5_model_forecasts(
 
     return {
         "status": "verified",
-        "models": len(V5_FORECAST_COMPARISON_MODELS),
+        "models": len(comparison_models),
         "weeks": len(weekly),
         "historical_rows": historical_rows,
         "latest_rows": latest_rows,
+    }
+
+
+def _audit_v5_feature_quality(
+    payload: Mapping[str, Any],
+    artifacts: Path,
+    *,
+    expected_features: Sequence[str],
+) -> dict[str, Any]:
+    model = payload.get("model", {})
+    require(isinstance(model, Mapping), "v5 feature quality model is invalid")
+    manifest = model.get("feature_quality_artifact")
+    if manifest is None:
+        return {"status": "legacy_absent"}
+    require(
+        isinstance(manifest, dict),
+        "v5 feature quality manifest is invalid",
+    )
+    try:
+        document = verify_feature_quality_artifact(manifest, artifacts)
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        raise AssertionError(f"v5 feature quality artifact failed: {exc}") from exc
+    rows = document.get("features")
+    require(isinstance(rows, list), "v5 feature quality rows are invalid")
+    names = [
+        str(row.get("feature"))
+        for row in rows
+        if isinstance(row, Mapping)
+    ]
+    require(
+        len(names) == len(rows)
+        and len(names) == len(set(names))
+        and set(names) == {str(name) for name in expected_features},
+        "v5 feature quality rows do not match the model feature manifest",
+    )
+    return {
+        "status": str(document["status"]),
+        "feature_count": int(document["feature_count"]),
+        "warning_feature_count": int(document["warning_feature_count"]),
+        "unavailable_feature_count": int(document["unavailable_feature_count"]),
+        "sha256": str(manifest["sha256"]),
     }
 
 
@@ -7319,6 +7378,45 @@ def _audit_v5_fx(
     }
 
 
+def _audit_v5_inherited_structural_outputs(
+    payload: Mapping[str, Any],
+    artifacts: Path,
+    *,
+    feature_manifest: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Audit the V4 transition and feature-ablation contracts inherited by V5."""
+
+    predictions = read_csv(
+        artifacts / "oos-predictions.csv",
+        ("origin_date", "target_date"),
+    )
+    return {
+        "transition": audit_transition_outputs(
+            payload,
+            artifacts,
+            main_predictions=predictions,
+            main_champion=str(payload["model"]["champion"]),
+            main_published_split="holdout",
+        ),
+        "feature_ablation": audit_feature_ablation(
+            payload,
+            artifacts,
+            main_predictions=predictions,
+            feature_manifest=dict(feature_manifest),
+        ),
+        "joint_survival": audit_joint_survival_forecasts(artifacts),
+    }
+
+
+def audit_v5_artifact_inventory(artifacts: Path) -> dict[str, Any]:
+    """Verify the complete V5 generation before reading individual sidecars."""
+
+    try:
+        return verify_artifact_inventory(artifacts)
+    except (ArtifactInventoryError, OSError) as exc:
+        raise AuditFailure(f"v5 artifact inventory failed: {exc}") from exc
+
+
 def audit_v5(
     payload: Mapping[str, Any],
     payload_path: Path,
@@ -7335,6 +7433,7 @@ def audit_v5(
     if expected_mode != "auto":
         require(mode == expected_mode, f"expected mode={expected_mode}, got {mode}")
     require(meta["schema_version"] == V5_SCHEMA_VERSION, "unexpected v5 schema")
+    artifact_inventory = audit_v5_artifact_inventory(artifacts)
 
     generation_path = _v5_artifact_path(
         artifacts, "build-generation.json", context="v5 generation contract"
@@ -7394,6 +7493,21 @@ def audit_v5(
     core = _audit_v5_core_model(payload, artifacts)
     model_forecasts = _audit_v5_model_forecasts(payload, artifacts)
     feature_summary = audit_feature_manifest(payload, artifacts)
+    inherited_structural = _audit_v5_inherited_structural_outputs(
+        payload,
+        artifacts,
+        feature_manifest=feature_summary,
+    )
+    manifest_features = [
+        feature
+        for group_features in feature_summary["group_features"].values()
+        for feature in group_features
+    ]
+    feature_quality = _audit_v5_feature_quality(
+        payload,
+        artifacts,
+        expected_features=manifest_features,
+    )
     evidence, membership = _audit_v5_evidence(payload, artifacts)
     directional = _audit_v5_directional(payload, frames)
     directional["weekly_binding"] = _audit_v5_weekly_directional(
@@ -7429,14 +7543,19 @@ def audit_v5(
         "execution_parameters_sha256": execution["sha256"],
         "core": core,
         "model_forecasts": model_forecasts,
+        "feature_quality": feature_quality,
         "core_feature_manifest": {
             key: value
             for key, value in feature_summary.items()
             if key != "group_features"
         },
+        "transition": inherited_structural["transition"],
+        "feature_ablation": inherited_structural["feature_ablation"],
+        "joint_survival": inherited_structural["joint_survival"],
         "evidence": evidence,
         "fx": fx,
         "fx_provenance": fx_provenance,
+        "artifact_inventory": artifact_inventory,
         "research_artifacts": list(frames),
         "payload": str(payload_path),
         "artifacts": str(artifacts),

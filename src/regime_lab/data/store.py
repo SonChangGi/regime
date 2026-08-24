@@ -90,25 +90,44 @@ class SQLiteSnapshotStore:
     sanitized before they cross the persistence boundary.
     """
 
-    def __init__(self, path: str | Path) -> None:
+    def __init__(self, path: str | Path, *, read_only: bool = False) -> None:
         self.path = str(path)
+        self.read_only = bool(read_only)
+        if self.read_only and self.path == ":memory:":
+            raise ValueError("an in-memory snapshot store cannot be read-only")
+        connect_target = self.path
+        connect_uri = False
         if self.path != ":memory:":
-            Path(self.path).expanduser().resolve().parent.mkdir(parents=True, exist_ok=True)
+            selected = Path(self.path).expanduser()
+            if self.read_only:
+                if selected.is_symlink() or not selected.is_file():
+                    raise FileNotFoundError(
+                        "read-only snapshot database must be an existing regular file"
+                    )
+                resolved = selected.resolve(strict=True)
+                connect_target = f"{resolved.as_uri()}?mode=ro"
+                connect_uri = True
+            else:
+                selected.resolve().parent.mkdir(parents=True, exist_ok=True)
         self._connection = sqlite3.connect(
-            self.path,
+            connect_target,
             timeout=30,
             check_same_thread=False,
+            uri=connect_uri,
         )
-        if self.path != ":memory:":
+        if self.path != ":memory:" and not self.read_only:
             os.chmod(self.path, 0o600)
         self._connection.row_factory = sqlite3.Row
         self._connection.execute("PRAGMA foreign_keys = ON")
         self._connection.execute("PRAGMA busy_timeout = 30000")
-        if self.path != ":memory:":
+        if self.read_only:
+            self._connection.execute("PRAGMA query_only = ON")
+        elif self.path != ":memory:":
             self._connection.execute("PRAGMA journal_mode = WAL")
         self._lock = RLock()
-        with self._connection:
-            self._connection.executescript(_SCHEMA)
+        if not self.read_only:
+            with self._connection:
+                self._connection.executescript(_SCHEMA)
 
     def close(self) -> None:
         with self._lock:

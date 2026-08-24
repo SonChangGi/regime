@@ -18,6 +18,7 @@ from regime_lab.h10_store import (
     H10StoreRefresh,
     h10_collection_receipt_document,
 )
+from regime_lab.provider_rights import ProviderRightsError
 
 
 UTC = timezone.utc
@@ -108,6 +109,25 @@ def test_collect_h10_parser_requires_explicit_v5_opt_in() -> None:
     assert archive.official_release_archive_ingest is True
     assert archive.archive_start is None
     assert archive.archive_through is None
+
+
+def test_collect_h10_checks_provider_rights_before_any_write(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    args = cli.build_parser().parse_args(["collect-h10", "--contract", "v5"])
+
+    def blocked(*_args: object, **_kwargs: object) -> None:
+        raise ProviderRightsError("frb_h10 rights blocked")
+
+    monkeypatch.setattr(cli, "verify_provider_rights", blocked)
+    monkeypatch.setattr(
+        cli,
+        "_mutable_path",
+        lambda *_args, **_kwargs: pytest.fail("write target must not be resolved"),
+    )
+
+    with pytest.raises(SystemExit, match="frb_h10 rights blocked"):
+        cli.command_collect_h10(args)
 
 
 def test_receipt_is_derived_only_and_reports_prospective_readiness() -> None:
@@ -389,3 +409,45 @@ def test_direct_command_call_rejects_missing_contract() -> None:
 
     with pytest.raises(SystemExit, match="explicit --contract v5"):
         cli.command_collect_h10(args)
+
+
+def test_collect_h10_backs_up_inside_lock_before_provider_setup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    monkeypatch.setattr(cli, "verify_provider_rights", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        cli,
+        "_mutable_path",
+        lambda value, **_kwargs: Path(value),
+    )
+    monkeypatch.setattr(
+        cli,
+        "_backup_database_before_mutation",
+        lambda *_args, **_kwargs: events.append("backup"),
+    )
+
+    def client():
+        events.append("provider")
+        raise RuntimeError("stop after ordering assertion")
+
+    monkeypatch.setattr(data_module, "H10Client", client)
+    args = cli.build_parser().parse_args(
+        [
+            "collect-h10",
+            "--contract",
+            "v5",
+            "--database",
+            str(tmp_path / "regime.sqlite3"),
+            "--receipt",
+            str(tmp_path / "receipt.json"),
+            "--as-of",
+            AS_OF.isoformat(),
+        ]
+    )
+
+    with pytest.raises(RuntimeError, match="ordering assertion"):
+        cli.command_collect_h10(args)
+
+    assert events == ["backup", "provider"]

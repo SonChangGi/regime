@@ -18,6 +18,50 @@ from regime_lab.v5_preflight import V5PreflightError
 TARGET = datetime(2026, 8, 14, 20, tzinfo=timezone.utc)
 
 
+def test_build_backs_up_inside_lock_before_collection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    monkeypatch.setattr(cli, "load_config", lambda _path: {})
+    monkeypatch.setattr(
+        cli,
+        "_mutable_path",
+        lambda value, **_kwargs: Path(value),
+    )
+    monkeypatch.setattr(
+        cli,
+        "_backup_database_before_mutation",
+        lambda *_args, **_kwargs: events.append("backup"),
+    )
+
+    def collect(*_args, **_kwargs):
+        events.append("collect")
+        raise RuntimeError("stop after ordering assertion")
+
+    monkeypatch.setattr(cli, "collect_live_data", collect)
+    args = argparse.Namespace(
+        profile="standard",
+        contract="v4",
+        config=tmp_path / "series.json",
+        database=tmp_path / "regime.sqlite3",
+        output=tmp_path / "result.json",
+        artifacts=tmp_path / "artifacts",
+        checkpoint_directory=None,
+        collection_report=None,
+        expected_cutoff=TARGET,
+        backup_directory=tmp_path / "backups",
+        backup_source_code_fingerprint_sha256="a" * 64,
+        from_env=True,
+        require_ac_power=False,
+    )
+
+    with pytest.raises(RuntimeError, match="ordering assertion"):
+        cli.command_build(args)
+
+    assert events == ["backup", "collect"]
+
+
 def _degraded_collection(database: Path) -> LiveCollection:
     return LiveCollection(
         records=(),

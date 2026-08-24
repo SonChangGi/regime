@@ -153,7 +153,11 @@ def test_comparison_forecasts_combine_oos_and_latest_in_fixed_model_order() -> N
         _comparison_rows("2026-08-14", "2026-08-21")
     )
 
-    forecasts = pipeline._comparison_forecasts_by_origin(historical, latest)
+    forecasts = pipeline._comparison_forecasts_by_origin(
+        historical,
+        latest,
+        model_names=pipeline.V5_FORECAST_COMPARISON_MODELS,
+    )
 
     assert list(forecasts) == [
         pd.Timestamp("2026-08-07", tz="UTC"),
@@ -183,7 +187,11 @@ def test_comparison_forecasts_reject_incomplete_model_set() -> None:
     )
 
     with pytest.raises(RuntimeError, match="incomplete at"):
-        pipeline._comparison_forecasts_by_origin(historical, latest)
+        pipeline._comparison_forecasts_by_origin(
+            historical,
+            latest,
+            model_names=pipeline.V5_FORECAST_COMPARISON_MODELS,
+        )
 
 
 def test_cli_progress_printer_flushes(monkeypatch: pytest.MonkeyPatch) -> None:
