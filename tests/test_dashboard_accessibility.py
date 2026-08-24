@@ -51,15 +51,19 @@ def test_visuals_have_semantic_fallbacks_and_non_color_encoding() -> None:
     assert 'isCurrent && isV5Payload() ? "소속도"' in JS
     assert '"예측확률"' in JS
     assert "최초 이탈 방향" in JS
-    assert "시장 맥락, 예측 기여도 아님" in JS
-    assert 'id="next-model-context"' in HTML
+    assert "52주 극단값은 시장 맥락이며 예측 기여도와는 별도" in HTML
+    assert 'id="next-model-context"' not in HTML
+    assert 'id="next-model-context-detail"' in HTML
     assert "입력 현재 국면·과거 전이" in JS
     assert "입력 완료 OOS 예측 풀 26·52·104주" in JS
     assert "function displayFreshness" in JS
+    assert "과거 조회" in JS
+    assert "공개 스냅샷" in JS
     assert 'currentFreshness.status === "stale"' in JS
-    assert 'supported ? "표본 충족" : "표본 부족"' in JS
-    assert '["중앙값", "median_return", formatSignedPercent]' in JS
-    assert '["양(+) 비율", "positive_rate", formatPercent]' in JS
+    assert 'id="conditional-stat-grid" class="conditional-stat-grid" role="region"' in HTML
+    assert "표본 부족" in JS
+    assert 'createElement("td", null, formatSignedPercent(row.median_return))' in JS
+    assert 'createElement("td", null, formatPercent(row.positive_rate))' in JS
     assert "선정 구간" in HTML and "2023+ 진단" in HTML
     assert "향후 1주 안에 한 번 이상 현재 국면에서 이탈할 확률" in JS
     assert "향후 ${horizon}주 안에 한 번 이상 현재 국면에서 이탈할 확률" in JS
@@ -93,9 +97,28 @@ def test_keyboard_focus_reduced_motion_and_mobile_rules_exist() -> None:
     assert 'event.key === "End"' in JS
     assert 'event.key === "Escape"' in JS
     assert "aria-current" in JS
-    assert HTML.count('class="table-scroll" tabindex="0"') == 5
+    table_scrolls = re.findall(r'class="[^"]*\btable-scroll\b[^"]*" tabindex="0"', HTML)
+    assert len(table_scrolls) == 5
+    assert 'aria-label="선택 자산과 보유 기간의 국면별 조건부 성과 표 · 가로 스크롤 가능"' in HTML
+    assert "${STATE_META[code].label}, ${asset} ${OUTCOME_ASSET_LABELS[asset]}" in JS
     assert '.table-scroll[tabindex="0"]:focus-visible' in CSS
     assert ".transition-horizon-field select" in CSS
+
+
+def test_small_status_chips_use_high_contrast_text_tokens() -> None:
+    assert "--status-ok-text: #006b52;" in CSS
+    assert "--status-review-text: #805000;" in CSS
+    assert "color: var(--status-ok-text);" in CSS
+    assert "color: var(--status-review-text);" in CSS
+
+
+def test_context_and_performance_units_are_explicit() -> None:
+    assert "52주 표준화 기반 합성점수" in HTML
+    assert "52주 표준화 기반 합성점수" in JS
+    assert "평균 95% CI" in HTML
+    assert "연율 하방 변동성" in HTML
+    assert 'observation_week' in JS
+    assert 'observation_age_days' in JS
 
 
 def test_mobile_navigation_reveals_active_project() -> None:
@@ -114,6 +137,9 @@ def test_result_identity_is_compact_without_general_warning_surface() -> None:
     assert 'id="shadow-nowcast-summary"' not in HTML
     assert 'id="header-result-identity" class="result-identity-chip"' in HTML
     assert 'role="status" aria-live="polite"' in HTML
+    assert HTML.index('id="header-result-identity"') > HTML.index('id="research-evidence"')
+    assert HTML.index('id="header-result-identity"') > HTML.index('id="models"')
+    assert 'id="research-evidence-details"' in HTML
     assert '["모의자료", profile, "파이프라인 검증"]' in JS
     assert '["실데이터", profile]' in JS
     assert 'id="fx-ablation-status"' in HTML

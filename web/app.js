@@ -23,6 +23,14 @@
   const V5_PUBLICATION_STATUS = "reviewed_publication";
   const V5_PUBLICATION_REVIEW_SCHEMA = "regime-v5-publication-review/1";
   const OUTCOME_ASSETS = Object.freeze(["SPY", "QQQ", "IWM", "TLT", "HYG", "UUP"]);
+  const OUTCOME_ASSET_LABELS = Object.freeze({
+    SPY: "미국 대형주",
+    QQQ: "나스닥 100",
+    IWM: "미국 소형주",
+    TLT: "미 장기국채",
+    HYG: "미 하이일드",
+    UUP: "달러",
+  });
   const FX_BILATERAL_PANEL = Object.freeze(["EUR", "JPY", "GBP", "CHF", "CAD", "AUD", "CNY", "MXN", "BRL"]);
   const FX_ABLATION_VARIANTS = Object.freeze([
     "v4_control",
@@ -65,6 +73,16 @@
     weak_generalization: "일반화 약화",
     calibration_drift: "보정 드리프트",
   });
+  const FX_DISPLAY_METRICS = Object.freeze([
+    Object.freeze({ block: "indexes", key: "broad_usd_log_return_1w", label: "광의 달러 · 1주", primary: true }),
+    Object.freeze({ block: "indexes", key: "broad_usd_log_return_4w", label: "광의 달러 · 4주", primary: true }),
+    Object.freeze({ block: "indexes", key: "broad_usd_log_return_13w", label: "광의 달러 · 13주", primary: true }),
+    Object.freeze({ block: "bilateral", key: "usd_appreciating_share_1w", label: "달러 강세 통화 비중 · 1주", primary: true }),
+    Object.freeze({ block: "indexes", key: "broad_realized_vol_13w", label: "광의 달러 변동성 · 13주", primary: false }),
+    Object.freeze({ block: "bilateral", key: "median_usd_log_return_1w", label: "9개 통화 중앙값 · 1주", primary: false }),
+    Object.freeze({ block: "bilateral", key: "median_usd_log_return_13w", label: "9개 통화 중앙값 · 13주", primary: false }),
+    Object.freeze({ block: "bilateral", key: "usd_appreciating_share_13w", label: "달러 강세 통화 비중 · 13주", primary: false }),
+  ]);
   const V5_RESEARCH_ARTIFACT_PATHS = Object.freeze({
     directional_oos_predictions: "directional-oos-predictions.csv",
     directional_model_leaderboard: "directional-model-leaderboard.csv",
@@ -445,11 +463,14 @@
   function formatSignedPercent(value, digits = 1) {
     const number = finiteNumber(value);
     if (number === null) return "—";
+    const factor = 10 ** (digits + 2);
+    const rounded = Math.round(number * factor) / factor;
+    const normalized = Object.is(rounded, -0) ? 0 : rounded;
     return new Intl.NumberFormat("ko-KR", {
       style: "percent",
       minimumFractionDigits: digits,
       maximumFractionDigits: digits,
-    }).format(number);
+    }).format(normalized);
   }
 
   function formatNumber(value, digits = 2) {
@@ -520,6 +541,17 @@
       maximum_age_days: maximumAge,
       status: ageDays <= maximumAge ? "current" : "stale",
     };
+  }
+
+  function publicationSnapshotLabel() {
+    const meta = isObject(state.raw && state.raw.meta) ? state.raw.meta : {};
+    const cutoff = firstValue(meta, ["data_as_of", "dataAsOf", "cutoff_at"]);
+    const latest = state.weekly.length ? state.weekly[state.weekly.length - 1] : null;
+    const cutoffDate = typeof cutoff === "string" && isIsoDate(cutoff.slice(0, 10))
+      ? cutoff.slice(0, 10)
+      : cutoff;
+    const date = (latest && latest.date) || cutoffDate;
+    return date ? `공개 스냅샷 ${formatDate(date)}` : "공개 스냅샷";
   }
 
   function humanizeKey(key) {
@@ -2120,6 +2152,11 @@
     return state.weekly[state.selectedIndex] || null;
   }
 
+  function isHistoricalSelection() {
+    if (state.selectedIndex < 0 || !state.weekly.length) return false;
+    return state.selectedIndex !== state.weekly.length - 1;
+  }
+
   function resolveHistoryWindow(availableCount, requestedWindow) {
     const available = Number.isInteger(availableCount) && availableCount > 0 ? availableCount : 0;
     if (requestedWindow === "all") return "all";
@@ -2166,24 +2203,24 @@
       "current-regime-card", "current-horizon", "current-regime-symbol", "current-regime-name",
       "current-regime-confidence", "current-probabilities", "current-entropy", "next-regime-card", "next-horizon",
       "next-regime-symbol", "next-regime-name", "next-regime-confidence",
-      "next-probabilities", "next-entropy", "next-model-context",
+      "next-probabilities", "next-entropy", "next-model-context-detail",
       "transition-card", "transition-value", "transition-value-label", "transition-meter",
-      "transition-horizon-bars", "probability-chart",
+      "transition-horizon-bars", "transition-risk-detail", "probability-chart",
       "probability-chart-wrap", "chart-tooltip", "history-caption",
       "chart-selection-readout", "chart-interaction-hint",
       "chart-readout-date", "chart-readout-risk-on", "chart-readout-transition", "chart-readout-risk-off",
       "history-data-body", "probability-chart-title", "history-chart-legend", "history-table-scroll", "history-table-caption",
       "factor-title", "factor-axis", "factor-caption", "factor-scores", "regime-timeline", "timeline-start",
       "timeline-end", "drivers-title", "drivers-caption", "top-drivers", "market-context",
-      "duration-context-card", "duration-context-caption", "duration-context", "duration-baselines",
-      "fx-context-card", "fx-context-caption", "fx-coverage", "fx-ablation-status", "fx-context",
-      "conditional-stats-nav", "conditional-stats", "conditional-asset-select", "conditional-horizon-select",
-      "conditional-stat-grid", "conditional-stat-table-caption", "conditional-stat-body",
+      "duration-context-card", "duration-context-caption", "duration-context", "duration-baselines", "duration-research-detail",
+      "fx-context-card", "fx-context-caption", "fx-coverage", "fx-ablation-status", "fx-context", "fx-context-detail",
+      "conditional-stats-nav", "conditional-stats", "conditional-stats-caption", "conditional-asset-select", "conditional-horizon-select",
+      "conditional-comparison-caption", "conditional-stat-grid", "conditional-stat-table-caption", "conditional-stat-body",
       "champion-summary", "model-evidence-summary", "model-caption", "model-loss-caption",
       "model-loss-chart", "model-loss-axis", "leaderboard-body",
       "transition-model-section", "transition-model-caption", "transition-horizon-select",
       "transition-model-summary", "transition-leaderboard-caption", "transition-leaderboard-body",
-      "research-notice-summary",
+      "research-evidence", "research-notice-summary",
       "source-freshness", "source-health-body", "feature-catalog", "footer-model-version", "footer-schema-version",
       "footer-generated-at", "screen-reader-status",
     ];
@@ -2333,12 +2370,15 @@
       state.outcomeAsset = OUTCOME_ASSETS.includes(dom["conditional-asset-select"].value)
         ? dom["conditional-asset-select"].value
         : "SPY";
-      renderConditionalStats();
+      renderConditionalDetail();
+      dom["screen-reader-status"].textContent = `${state.outcomeAsset} ${OUTCOME_ASSET_LABELS[state.outcomeAsset]} 상세 성과 표로 변경했습니다.`;
     });
     dom["conditional-horizon-select"].addEventListener("change", () => {
       const requested = Number(dom["conditional-horizon-select"].value);
       state.outcomeHorizon = TRANSITION_HORIZONS.includes(requested) ? requested : 13;
-      renderConditionalStats();
+      renderConditionalComparison();
+      renderConditionalDetail();
+      dom["screen-reader-status"].textContent = `${state.outcomeHorizon}주 보유 자산군 평균 수익률과 상세 성과 표를 갱신했습니다.`;
     });
     dom["probability-chart"].addEventListener("pointermove", (event) => previewChartDateFromPointer(event, false));
     dom["probability-chart"].addEventListener("click", (event) => previewChartDateFromPointer(event, true));
@@ -2409,8 +2449,9 @@
     const membership = isV5Payload();
     setText(dom["probability-chart-title"], membership ? "국면 소속도 히스토리" : "국면 확률 히스토리");
     setText(dom["factor-title"], membership ? "시장 맥락 점수" : "국면 팩터");
+    setText(dom["factor-caption"], membership ? "52주 표준화 기반 합성점수" : "52주 표준점수");
     setText(dom["drivers-title"], membership ? "52주 극단값" : "주요 지표");
-    setText(dom["drivers-caption"], membership ? "52주 표준점수 · 시장 맥락, 예측 기여도 아님" : "52주 표준점수");
+    setText(dom["drivers-caption"], membership ? "52주 표준점수 · 시장 맥락" : "52주 표준점수");
     dom["history-chart-legend"].setAttribute("aria-label", membership ? "국면 소속도 선 범례" : "국면 확률 선 범례");
     dom["history-table-scroll"].setAttribute("aria-label", membership ? "표시 기간의 국면 소속도 표" : "표시 기간의 국면 확률 표");
     setText(dom["history-table-caption"], membership ? "표시 기간의 현재 국면 소속도" : "표시 기간의 현재 국면 확률");
@@ -2476,7 +2517,7 @@
       details.push(health.status === "review_due" ? "검토 필요" : "정상");
       details.push(...modelHealthReasonLabels(health.reasons));
     }
-    setText(dom["next-model-context"], details.join(" · "));
+    setText(dom["next-model-context-detail"], details.join(" · "));
   }
 
   function renderTransition(week) {
@@ -2508,7 +2549,9 @@
 
   function renderTransitionHorizons(week) {
     const container = dom["transition-horizon-bars"];
+    const researchDetail = dom["transition-risk-detail"];
     container.replaceChildren();
+    researchDetail.replaceChildren();
     const riskByHorizon = isObject(week.transition_risk) ? week.transition_risk : null;
     if (!isObject(riskByHorizon)) {
       container.hidden = true;
@@ -2557,12 +2600,14 @@
           masses.append(item);
         }
         if (masses.childElementCount) detail.append(masses);
-        row.title = directional && directional.model ? `최초 이탈 방향 모델 · ${directional.model}` : "";
-        row.append(detail);
+        const researchItem = createElement("div", "research-transition-item");
+        researchItem.append(createElement("strong", null, `${horizon}주 이내`), detail);
+        researchItem.title = directional && directional.model ? `최초 이탈 방향 모델 · ${directional.model}` : "";
+        researchDetail.append(researchItem);
       }
       row.setAttribute(
         "aria-label",
-        `향후 ${horizon}주 안에 한 번 이상 현재 국면에서 이탈할 확률 ${formatPercent(value)}${isV5Payload() ? ", 최초 이탈 방향과 Kaplan-Meier 기준 포함" : ""}`,
+        `향후 ${horizon}주 안에 한 번 이상 현재 국면에서 이탈할 확률 ${formatPercent(value)}`,
       );
       container.append(row);
     }
@@ -2935,7 +2980,7 @@
       createElement("span", null, "0"),
       createElement("span", null, `+${formatNumber(scale, 1)}`),
     );
-    dom["factor-caption"].textContent = `52주 표준점수 · ±${formatNumber(scale, 1)}`;
+    dom["factor-caption"].textContent = `52주 표준화 기반 합성점수 · −${formatNumber(scale, 1)}~+${formatNumber(scale, 1)}`;
 
     for (const entry of entries) {
       const row = createElement("div", "factor-row");
@@ -3030,6 +3075,7 @@
     const card = dom["duration-context-card"];
     if (!isV5Payload() || !isObject(duration)) {
       card.hidden = true;
+      setText(dom["duration-research-detail"], "지속 기간 통계가 없습니다.");
       return;
     }
     const supported = duration.status === "ok";
@@ -3042,13 +3088,16 @@
       median === null ? "52주 제한 잔여기간" : "중앙 잔여기간",
       `${formatNumber(median === null ? rmst : median, 1)}주`,
     );
-    appendMetric(dom["duration-context"], "완료 / 검열 spell", `${formatNumber(duration.completed_spells, 0)} / ${formatNumber(duration.censored_spells, 0)}`);
-    setText(dom["duration-context-caption"], supported ? "상태별 Kaplan–Meier" : "표본 축적 중");
+    setText(dom["duration-context-caption"], supported ? "현재 상태의 과거 지속 패턴" : "표본 축적 중");
+    setText(
+      dom["duration-research-detail"],
+      `상태별 Kaplan–Meier · 완료 구간 ${formatNumber(duration.completed_spells, 0)}개 · 검열 구간 ${formatNumber(duration.censored_spells, 0)}개`,
+    );
     dom["duration-baselines"].replaceChildren();
     for (const horizon of [4, 13]) {
       const departure = probability(duration.departure_probability && duration.departure_probability[`${horizon}w`]);
       const block = createElement("div", "duration-baseline");
-      block.append(createElement("span", null, `${horizon}주 KM 이탈 기준`), createElement("strong", null, formatPercent(departure)));
+      block.append(createElement("span", null, `${horizon}주 이탈 · 과거 KM`), createElement("strong", null, formatPercent(departure)));
       dom["duration-baselines"].append(block);
     }
     card.hidden = false;
@@ -3065,12 +3114,13 @@
     const card = dom["fx-context-card"];
     if (!isV5Payload() || !isObject(fx)) {
       card.hidden = true;
+      dom["fx-context-detail"].replaceChildren();
       return;
     }
     const available = finiteNumber(fx.coverage && fx.coverage.available_pairs);
-    const required = finiteNumber(fx.coverage && fx.coverage.required_pairs);
+    const availableIndexes = finiteNumber(fx.coverage && fx.coverage.available_indexes);
     dom["fx-coverage"].replaceChildren(
-      createElement("span", null, `환율 ${formatNumber(available, 0)} / ${formatNumber(required, 0)}`),
+      createElement("span", null, `환율 ${formatNumber(available, 0)}개 · 달러 지수 ${formatNumber(availableIndexes, 0)}개`),
       createElement("span", `support-chip ${fx.status === "ok" ? "is-ok" : "is-limited"}`, fxStatusLabel(fx.status)),
     );
     const model = state.raw && isObject(state.raw.model) ? state.raw.model : {};
@@ -3107,22 +3157,45 @@
     );
     dom["fx-ablation-status"].setAttribute("aria-label", `${coverageSummary} · ${gateSummary}`);
     dom["fx-context"].replaceChildren();
-    for (const [blockLabel, block] of [["Index", fx.indexes], ["Bilateral", fx.bilateral]]) {
-      if (!isObject(block)) continue;
-      for (const [key, value] of Object.entries(block).slice(0, 6)) {
-        appendMetric(dom["fx-context"], `${blockLabel} · ${humanizeKey(key)}`, formatFxMetric(key, value));
-      }
+    dom["fx-context-detail"].replaceChildren();
+    for (const metric of FX_DISPLAY_METRICS) {
+      const block = isObject(fx[metric.block]) ? fx[metric.block] : {};
+      const formatted = formatFxMetric(metric.key, block[metric.key]);
+      if (metric.primary) appendMetric(dom["fx-context"], metric.label, formatted);
+      appendMetric(dom["fx-context-detail"], metric.label, formatted);
     }
-    setText(dom["fx-context-caption"], "Federal Reserve H.10 · USD 강세 방향 통일");
+    const observationWeek = typeof fx.observation_week === "string" && fx.observation_week
+      ? `관측 ${formatDate(fx.observation_week, false)}`
+      : null;
+    const observationAge = finiteNumber(fx.observation_age_days);
+    const observationLag = observationAge === null
+      ? null
+      : observationAge === 0
+        ? "동일 주"
+        : `${formatNumber(observationAge, 0)}일 전`;
+    setText(
+      dom["fx-context-caption"],
+      ["Federal Reserve H.10", observationWeek, observationLag].filter(Boolean).join(" · "),
+    );
     card.hidden = false;
   }
 
-  function conditionalRows() {
+  function conditionalStatsRows() {
     const research = isObject(state.raw && state.raw.research) ? state.raw.research : null;
     const stats = research && isObject(research.conditional_asset_stats) ? research.conditional_asset_stats : null;
     return stats && Array.isArray(stats.rows)
-      ? stats.rows.filter((row) => row.asset === state.outcomeAsset && row.horizon_weeks === state.outcomeHorizon)
+      ? stats.rows
       : [];
+  }
+
+  function conditionalDetailRows() {
+    return conditionalStatsRows().filter(
+      (row) => row.asset === state.outcomeAsset && row.horizon_weeks === state.outcomeHorizon,
+    );
+  }
+
+  function conditionalComparisonRows() {
+    return conditionalStatsRows().filter((row) => row.horizon_weeks === state.outcomeHorizon);
   }
 
   function conditionalInterval(row) {
@@ -3132,45 +3205,87 @@
       : "—";
   }
 
-  function renderConditionalStats() {
-    const section = dom["conditional-stats"];
-    if (!isV5Payload()) {
-      section.hidden = true;
-      dom["conditional-stats-nav"].hidden = true;
-      return;
-    }
-    dom["conditional-stats-nav"].hidden = false;
-    dom["conditional-asset-select"].value = state.outcomeAsset;
+  function renderConditionalComparison() {
     dom["conditional-horizon-select"].value = String(state.outcomeHorizon);
-    const rows = conditionalRows();
+    const comparisonRows = conditionalComparisonRows();
+    const comparisonDigits = state.outcomeHorizon === 1 ? 2 : 1;
+    const displayValue = (value) => {
+      const number = finiteNumber(value);
+      if (number === null) return null;
+      const factor = 10 ** (comparisonDigits + 2);
+      const rounded = Math.round(number * factor) / factor;
+      return Object.is(rounded, -0) ? 0 : rounded;
+    };
+    const comparisonValues = comparisonRows
+      .filter((row) => row.status === "ok")
+      .map((row) => displayValue(row.mean_return))
+      .filter((value) => value !== null);
+    const comparisonScale = Math.max(0.001, ...comparisonValues.map((value) => Math.abs(value)));
     dom["conditional-stat-grid"].replaceChildren();
-    dom["conditional-stat-body"].replaceChildren();
+    setText(dom["conditional-comparison-caption"], `${state.outcomeHorizon}주 보유 · 동일 축 · 0 기준`);
     for (const code of STATE_ORDER) {
-      const row = rows.find((candidate) => candidate.state === code) || { state: code, n: 0, unique_episodes: 0, status: "insufficient_support" };
-      const supported = row.status === "ok";
       const card = createElement("article", `conditional-state-card state-${code}`);
       const heading = createElement("div", "conditional-state-heading");
-      heading.append(
-        createElement("strong", null, `${STATE_META[code].short} ${STATE_META[code].label}`),
-        createElement("span", `support-chip ${supported ? "is-ok" : "is-limited"}`, supported ? "표본 충족" : "표본 부족"),
-      );
-      const mean = createElement("div", "conditional-mean");
-      mean.append(createElement("strong", null, formatSignedPercent(row.mean_return)), createElement("span", null, `평균 수익률 · 95% CI ${conditionalInterval(row)}`));
-      const metrics = createElement("dl", "conditional-metrics");
-      for (const [label, field, formatter] of [
-        ["중앙값", "median_return", formatSignedPercent],
-        ["양(+) 비율", "positive_rate", formatPercent],
-        ["하방 변동성", "downside_volatility", formatPercent],
-        ["CVaR 5%", "cvar_5", formatSignedPercent],
-        ["평균 MDD", "mean_max_drawdown", formatSignedPercent],
-      ]) {
-        const wrapper = createElement("div");
-        wrapper.append(createElement("dt", null, label), createElement("dd", null, formatter(row[field])));
-        metrics.append(wrapper);
+      heading.append(createElement("strong", null, `${STATE_META[code].short} ${STATE_META[code].label}`));
+      const assetList = createElement("div", "conditional-asset-list");
+      for (const asset of OUTCOME_ASSETS) {
+        const row = comparisonRows.find((candidate) => candidate.state === code && candidate.asset === asset);
+        const supportOk = Boolean(row && row.status === "ok");
+        const rawValue = supportOk ? finiteNumber(row.mean_return) : null;
+        const value = displayValue(rawValue);
+        const available = value !== null;
+        const statusLabel = !row
+          ? "데이터 없음"
+          : !supportOk
+            ? "표본 부족"
+            : !available
+              ? "값 없음"
+              : "";
+        const sample = row ? formatNumber(row.n, 0) : "—";
+        const assetRow = createElement("div", `conditional-asset-row${available ? "" : " is-limited"}`);
+        const label = createElement("span", "conditional-asset-label");
+        label.append(
+          createElement("strong", null, asset),
+          createElement("small", null, `${OUTCOME_ASSET_LABELS[asset]}${statusLabel ? ` · ${statusLabel}` : ""}`),
+        );
+        const track = createElement("span", "conditional-return-track");
+        track.setAttribute("aria-hidden", "true");
+        if (available && value !== 0) {
+          const fill = createElement("span", `conditional-return-fill ${value < 0 ? "is-negative" : "is-positive"}`);
+          fill.style.width = `${Math.min(50, (Math.abs(value) / comparisonScale) * 50).toFixed(2)}%`;
+          track.append(fill);
+        }
+        const formatted = value === null
+          ? "—"
+          : `${value > 0 ? "+" : ""}${formatSignedPercent(value, comparisonDigits)}`;
+        const output = createElement("span", `conditional-return-value ${value !== null && value < 0 ? "is-negative" : "is-positive"}`);
+        output.append(
+          createElement("strong", null, formatted),
+          createElement("small", null, `n ${sample}`),
+        );
+        assetRow.setAttribute(
+          "aria-label",
+          `${STATE_META[code].label}, ${asset} ${OUTCOME_ASSET_LABELS[asset]}, ${state.outcomeHorizon}주 평균 수익률 ${formatted}, 표본 ${sample}개${statusLabel ? `, ${statusLabel}` : ""}`,
+        );
+        assetRow.append(label, track, output);
+        assetList.append(assetRow);
       }
-      card.append(heading, mean, metrics, createElement("span", "conditional-sample", `n ${formatNumber(row.n, 0)} · episode ${formatNumber(row.unique_episodes, 0)}`));
+      card.append(heading, assetList);
       dom["conditional-stat-grid"].append(card);
+    }
+  }
 
+  function renderConditionalDetail() {
+    dom["conditional-asset-select"].value = state.outcomeAsset;
+    const detailRows = conditionalDetailRows();
+    dom["conditional-stat-body"].replaceChildren();
+    for (const code of STATE_ORDER) {
+      const row = detailRows.find((candidate) => candidate.state === code) || { state: code, n: 0, unique_episodes: 0, status: "insufficient_support" };
+      const statusLabel = row.status !== "ok"
+        ? "표본 부족"
+        : finiteNumber(row.mean_return) === null
+          ? "값 없음"
+          : "";
       const tableRow = createElement("tr");
       tableRow.append(
         createElement("td", null, STATE_META[code].label),
@@ -3181,11 +3296,27 @@
         createElement("td", null, formatPercent(row.downside_volatility)),
         createElement("td", null, formatSignedPercent(row.cvar_5)),
         createElement("td", null, formatSignedPercent(row.mean_max_drawdown)),
-        createElement("td", null, `${formatNumber(row.n, 0)} / ${formatNumber(row.unique_episodes, 0)}`),
+        createElement("td", null, `${formatNumber(row.n, 0)} / ${formatNumber(row.unique_episodes, 0)}${statusLabel ? ` · ${statusLabel}` : ""}`),
       );
       dom["conditional-stat-body"].append(tableRow);
     }
     setText(dom["conditional-stat-table-caption"], `${state.outcomeAsset} ${state.outcomeHorizon}주 국면별 조건부 성과`);
+  }
+
+  function renderConditionalStats() {
+    const section = dom["conditional-stats"];
+    if (!isV5Payload()) {
+      section.hidden = true;
+      dom["conditional-stats-nav"].hidden = true;
+      return;
+    }
+    dom["conditional-stats-nav"].hidden = false;
+    setText(
+      dom["conditional-stats-caption"],
+      `국면 이후 자산군별 과거 평균 수익률 · USD · ${publicationSnapshotLabel()}`,
+    );
+    renderConditionalComparison();
+    renderConditionalDetail();
     section.hidden = false;
   }
 
@@ -3446,11 +3577,12 @@
     renderTransitionModels();
     const selection = firstValue(model, ["selection_period"]);
     const holdout = firstValue(model, ["holdout_period", "validation_period", "evaluation_period", "oos_period"]);
-    if (selection && holdout) {
-      dom["model-caption"].textContent = `선정 구간 ${textValue(selection)} · 2023+ 진단 ${textValue(holdout)}`;
-    } else if (holdout) {
-      dom["model-caption"].textContent = `2023+ 진단 ${textValue(holdout)}`;
-    }
+    const comparisonLabel = selection && holdout
+      ? "선정 구간과 2023+ 진단 비교"
+      : holdout
+        ? "2023+ 진단 비교"
+        : "모델 진단 비교";
+    dom["model-caption"].textContent = `${comparisonLabel} · ${publicationSnapshotLabel()}`;
 
     dom["leaderboard-body"].replaceChildren();
     const rows = Array.isArray(model.leaderboard) ? model.leaderboard : [];
@@ -3495,24 +3627,31 @@
     container.replaceChildren();
     if (!isV5Payload()) {
       container.hidden = true;
+      dom["research-evidence"].hidden = true;
       return;
     }
+    dom["research-evidence"].hidden = false;
     const appendEvidence = (label, value, className = "") => {
       const item = createElement("div", `model-evidence-item ${className}`.trim());
       item.append(createElement("span", null, label), createElement("strong", null, value));
       container.append(item);
     };
-    appendEvidence(
-      "선정 상태",
-      `${state.raw.meta.publication_status === V5_PUBLICATION_STATUS ? "공개 검토 완료" : "배포 전 잠정"} · ${championName} 유지`,
-      state.raw.meta.publication_status === V5_PUBLICATION_STATUS ? "is-ok" : "is-provisional",
-    );
     const diagnostics = Array.isArray(model.selection_diagnostics) ? model.selection_diagnostics : [];
+    const selection = firstValue(model, ["selection_period"]);
+    const holdout = firstValue(model, ["holdout_period", "validation_period", "evaluation_period", "oos_period"]);
+    if (selection || holdout) {
+      appendEvidence(
+        "검증 구간",
+        [selection ? `선정 ${textValue(selection)}` : null, holdout ? `2023+ ${textValue(holdout)}` : null]
+          .filter(Boolean)
+          .join(" · "),
+      );
+    }
     const multiscale = diagnostics.find((row) => isObject(row) && row.model === "causal_multiscale_ensemble");
     if (isObject(multiscale)) {
       appendEvidence(
-        "Multiscale gate",
-        `Log loss 개선 ${formatNumber(multiscale.absolute_log_loss_improvement, 4)} < 승격 기준 ${formatNumber(multiscale.minimum_log_loss_improvement, 4)} · ${multiscale.gate_passed === true ? "통과" : "미통과"}`,
+        "멀티스케일 후보",
+        `Log loss 개선 ${formatNumber(multiscale.absolute_log_loss_improvement, 4)} · 기준 ${formatNumber(multiscale.minimum_log_loss_improvement, 4)} · ${multiscale.gate_passed === true ? "통과" : "미통과"}`,
         multiscale.gate_passed === true ? "is-ok" : "is-review",
       );
     }
@@ -3525,7 +3664,7 @@
     }
     if (isObject(state.comparisonSummary) && state.comparisonSummary.exactParity === true) {
       appendEvidence(
-        "Frozen V4",
+        "V4 기준 비교",
         `공통 OOS ${formatNumber(state.comparisonSummary.commonKeys, 0)}개 · Markov 확률 완전 일치`,
       );
     }
@@ -3649,8 +3788,21 @@
   function renderResultIdentity() {
     const identity = resultIdentity(state.raw);
     const element = dom["header-result-identity"];
+    const meta = isObject(state.raw && state.raw.meta) ? state.raw.meta : {};
+    const model = isObject(state.raw && state.raw.model) ? state.raw.model : {};
+    const visibleLabel = identity.mode === "demo"
+      ? "모의자료"
+      : meta.publication_status === V5_PUBLICATION_STATUS
+        ? "공개 검토 완료"
+        : model.selection_status === "provisional_predeployment"
+          ? "배포 전 잠정"
+          : identity.mode === "live"
+            ? "실데이터"
+            : identity.label;
     element.className = `result-identity-chip is-${identity.mode}`;
-    setText(element, identity.label);
+    element.setAttribute("aria-label", identity.label);
+    element.title = identity.label;
+    setText(element, visibleLabel);
   }
 
   function renderHeaderDataAsOf(value) {
@@ -3658,6 +3810,10 @@
     container.replaceChildren(
       createElement("span", null, value ? formatDateTime(value) : "미기재"),
     );
+    if (isHistoricalSelection()) {
+      container.append(createElement("span", "model-health-chip", "과거 조회"));
+      return;
+    }
     const freshness = state.raw && isObject(state.raw.meta) && isObject(state.raw.meta.freshness)
       ? state.raw.meta.freshness
       : null;
@@ -3683,9 +3839,6 @@
       const chip = createElement("span", `model-health-chip ${review ? "is-review" : "is-ok"}`, review ? "검토 필요" : "정상");
       dom["header-model-health"].append(chip);
       const reasons = modelHealthReasonLabels(model.model_health.reasons);
-      if (reasons.length) {
-        dom["header-model-health"].append(createElement("small", "model-health-reasons", reasons.join(" · ")));
-      }
       dom["header-model-health"].setAttribute(
         "aria-label",
         [champion, review ? "검토 필요" : "정상", ...reasons].join(" · "),

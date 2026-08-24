@@ -887,7 +887,7 @@ def test_v5_only_sections_fail_closed_for_v4_payloads() -> None:
     document = HTML_PATH.read_text(encoding="utf-8")
     script = JS_PATH.read_text(encoding="utf-8")
     styles = CSS_PATH.read_text(encoding="utf-8")
-    for section_id in ("conditional-stats-nav", "duration-context-card", "fx-context-card", "conditional-stats"):
+    for section_id in ("conditional-stats-nav", "duration-context-card", "fx-context-card", "conditional-stats", "research-evidence"):
         assert f'id="{section_id}"' in document
         start = document.index(f'id="{section_id}"')
         assert "hidden" in document[start : start + 180]
@@ -902,7 +902,7 @@ def test_full_model_and_conditional_tables_are_collapsed_by_default() -> None:
     assert document.count('class="compact-table-details"') == 3
     assert "<summary>전체 모델 표</summary>" in document
     assert "<summary>전체 이탈 모델 표</summary>" in document
-    assert "<summary>선택 조건 표</summary>" in document
+    assert "상세 성과 표" in document
     assert 'class="compact-table-details" open' not in document
 
 
@@ -1460,27 +1460,79 @@ process.stdout.write(JSON.stringify([
     assert rejected is None
 
 
-def test_v5_decision_evidence_is_visible_and_semantically_distinct() -> None:
+def test_v5_decision_evidence_is_collapsed_at_the_bottom_and_semantically_distinct() -> None:
     document = HTML_PATH.read_text(encoding="utf-8")
     script = JS_PATH.read_text(encoding="utf-8")
     styles = CSS_PATH.read_text(encoding="utf-8")
     assert 'id="model-evidence-summary"' in document
     assert '"champion-summary", "model-evidence-summary"' in script
+    research_position = document.index('id="research-evidence"')
+    assert research_position > document.index('id="models"')
+    assert research_position < document.index('id="data-health"')
+    assert 'id="research-evidence-details"' in document
+    assert 'id="research-evidence-details" open' not in document
+    assert document.index('id="model-evidence-summary"') > research_position
+    assert document.index('id="fx-ablation-status"') > research_position
     for phrase in (
         "가용 공통",
         "실제 OOS",
         "FX 후보 gate",
         "core 비승격",
-        "Multiscale gate",
-        "승격 기준",
-        "Frozen V4",
+        "멀티스케일 후보",
+        "V4 기준 비교",
         "Markov 확률 완전 일치",
         "일반화 약화",
         "보정 드리프트",
     ):
         assert phrase in script
     assert ".model-evidence-summary" in styles
-    assert ".model-health-reasons" in styles
+    assert ".research-evidence-grid" in styles
+
+
+def test_conditional_performance_reuses_card_spacing_and_has_reachable_wide_table() -> None:
+    document = HTML_PATH.read_text(encoding="utf-8")
+    styles = CSS_PATH.read_text(encoding="utf-8")
+    assert 'id="conditional-stat-scroll" class="table-scroll conditional-table-scroll"' in document
+    assert 'class="table-scroll-guide"' in document
+    assert "@media (max-width: 1240px) {\n  .table-scroll-guide {\n    display: block;" in styles
+    assert ".conditional-stats-section {\n  margin-bottom: 12px;\n  padding: 20px;" in styles
+    assert "#conditional-stat-table {\n  width: 100%;\n  min-width: 1160px;\n  table-layout: fixed;" in styles
+    assert "#conditional-stat-table th:first-child" in styles
+    assert "position: sticky;" in styles
+    assert "scrollbar-width: auto;" in styles
+
+
+def test_conditional_performance_leads_with_asset_class_mean_comparison() -> None:
+    document = HTML_PATH.read_text(encoding="utf-8")
+    script = JS_PATH.read_text(encoding="utf-8")
+    styles = CSS_PATH.read_text(encoding="utf-8")
+    section_start = document.index('id="conditional-stats"')
+    details_start = document.index('class="compact-table-details"', section_start)
+    assert document.index('id="conditional-horizon-select"', section_start) < details_start
+    assert document.index('id="conditional-asset-select"', section_start) > details_start
+    assert '<label for="conditional-asset-select">상세 자산</label>' in document
+    assert "자산군별 평균 수익률" in document
+    assert "평균 95% CI" in document
+    assert "연율 하방 변동성" in document
+    assert 'id="conditional-comparison-caption"' in document
+    assert "const OUTCOME_ASSET_LABELS" in script
+    assert "function conditionalStatsRows()" in script
+    assert "function conditionalDetailRows()" in script
+    assert "function conditionalComparisonRows()" in script
+    assert "function renderConditionalComparison()" in script
+    assert "publicationSnapshotLabel()" in script
+    assert '"과거 조회"' in script
+    assert "function renderConditionalDetail()" in script
+    assert 'createElement("div", "conditional-asset-list")' in script
+    assert 'createElement("span", "conditional-return-track")' in script
+    assert 'track.setAttribute("aria-hidden", "true")' in script
+    assert '`${value > 0 ? "+" : ""}${formatSignedPercent(value, comparisonDigits)}`' in script
+    assert 'createElement("small", null, `n ${sample}`)' in script
+    assert "표본 부족" in script
+    assert "값 없음" in script
+    assert 'renderConditionalDetail();\n      dom["screen-reader-status"]' in script
+    assert ".conditional-asset-row" in styles
+    assert ".conditional-return-track::after" in styles
 
 
 def test_operations_are_collapsed_below_results_without_warning_surfaces() -> None:

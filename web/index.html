@@ -9,8 +9,8 @@
       content="선택한 시점까지 공개된 정보로 미국 증시 국면을 판단하고 다음 주 국면 확률을 보여주는 연구 대시보드"
     >
     <title>US Market Regime Lab | Quant Research</title>
-    <link rel="stylesheet" href="./styles.css?v=20260823-v5-3">
-    <script src="./app.js?v=20260823-v5-3" defer></script>
+    <link rel="stylesheet" href="./styles.css?v=20260824-v5-6">
+    <script src="./app.js?v=20260824-v5-6" defer></script>
   </head>
   <body id="top">
     <a class="skip-link" href="#main-content">본문으로 건너뛰기</a>
@@ -40,9 +40,6 @@
         <h1 id="page-title">미국 증시 국면</h1>
       </div>
       <div class="header-status-strip" aria-label="현재 결과 요약">
-        <p id="header-result-identity" class="result-identity-chip" role="status" aria-live="polite">
-          결과 상태 불러오는 중
-        </p>
         <article>
           <span>관측 주</span>
           <strong id="header-analysis-date">불러오는 중</strong>
@@ -159,7 +156,6 @@
             </div>
             <div id="next-probabilities" class="probability-list" aria-label="다음 주 국면별 예측 확률"></div>
             <p id="next-entropy" class="card-footnote" hidden>예측 불확실성 —</p>
-            <p id="next-model-context" class="card-footnote">모델 —</p>
           </article>
 
           <article id="transition-card" class="transition-card card" aria-labelledby="transition-title">
@@ -268,7 +264,7 @@
             <div class="card-heading">
               <div>
                 <h2 id="factor-title">국면 팩터</h2>
-                <p id="factor-caption" class="section-caption">52주 표준점수</p>
+                <p id="factor-caption" class="section-caption">52주 표준화 기반 합성점수</p>
               </div>
             </div>
             <div id="factor-axis" class="factor-axis" aria-hidden="true">
@@ -322,7 +318,7 @@
             <div class="card-heading">
               <div>
                 <h2 id="duration-context-title">현재 국면 지속</h2>
-                <p id="duration-context-caption" class="section-caption">상태별 Kaplan–Meier</p>
+                <p id="duration-context-caption" class="section-caption">현재 상태의 과거 지속 패턴</p>
               </div>
             </div>
             <dl id="duration-context" class="metric-list"></dl>
@@ -333,11 +329,10 @@
             <div class="card-heading">
               <div>
                 <h2 id="fx-context-title">USD 맥락</h2>
-                <p id="fx-context-caption" class="section-caption">Federal Reserve H.10</p>
+                <p id="fx-context-caption" class="section-caption">Federal Reserve H.10 · 주간 달러 흐름</p>
               </div>
             </div>
             <div id="fx-coverage" class="context-status-row"></div>
-            <div id="fx-ablation-status" class="fx-ablation-status"></div>
             <dl id="fx-context" class="metric-list"></dl>
           </article>
         </section>
@@ -346,20 +341,9 @@
           <div class="card-heading conditional-stats-heading">
             <div>
               <h2 id="conditional-stats-title">국면별 자산 성과</h2>
-              <p id="conditional-stats-caption" class="section-caption">t+1 주간 종가 진입 · USD · 과거 조건부 통계</p>
+              <p id="conditional-stats-caption" class="section-caption">국면 이후 자산군별 과거 평균 수익률 · USD</p>
             </div>
-            <div class="conditional-stat-controls" aria-label="조건부 자산 성과 필터">
-              <div class="field-group inline-field">
-                <label for="conditional-asset-select">자산</label>
-                <select id="conditional-asset-select">
-                  <option value="SPY" selected>SPY</option>
-                  <option value="QQQ">QQQ</option>
-                  <option value="IWM">IWM</option>
-                  <option value="TLT">TLT</option>
-                  <option value="HYG">HYG</option>
-                  <option value="UUP">UUP</option>
-                </select>
-              </div>
+            <div class="conditional-stat-controls" aria-label="자산군 평균 수익률 비교 필터">
               <div class="field-group inline-field">
                 <label for="conditional-horizon-select">보유 기간</label>
                 <select id="conditional-horizon-select">
@@ -370,20 +354,52 @@
               </div>
             </div>
           </div>
-          <div id="conditional-stat-grid" class="conditional-stat-grid" aria-live="polite"></div>
+          <div class="conditional-comparison-heading">
+            <strong>자산군별 평균 수익률</strong>
+            <span id="conditional-comparison-caption">13주 보유 · 동일 축 · 0 기준</span>
+          </div>
+          <div id="conditional-stat-grid" class="conditional-stat-grid" role="region" aria-label="국면별 자산군 평균 수익률 비교"></div>
           <details class="compact-table-details">
-            <summary>선택 조건 표</summary>
-            <div class="table-scroll" tabindex="0" aria-label="선택 자산과 보유 기간의 국면별 조건부 성과 표">
+            <summary>
+              <span>상세 성과 표</span>
+            </summary>
+            <div class="conditional-detail-toolbar">
+              <span>선택 자산의 국면별 전체 통계</span>
+              <div class="field-group inline-field">
+                <label for="conditional-asset-select">상세 자산</label>
+                <select id="conditional-asset-select">
+                  <option value="SPY" selected>SPY · 미국 대형주</option>
+                  <option value="QQQ">QQQ · 나스닥 100</option>
+                  <option value="IWM">IWM · 미국 소형주</option>
+                  <option value="TLT">TLT · 미 장기국채</option>
+                  <option value="HYG">HYG · 미 하이일드</option>
+                  <option value="UUP">UUP · 달러</option>
+                </select>
+              </div>
+            </div>
+            <span class="table-scroll-guide" aria-hidden="true">좌우로 스크롤</span>
+            <div id="conditional-stat-scroll" class="table-scroll conditional-table-scroll" tabindex="0" aria-label="선택 자산과 보유 기간의 국면별 조건부 성과 표 · 가로 스크롤 가능">
               <table id="conditional-stat-table">
                 <caption id="conditional-stat-table-caption" class="sr-only">SPY 13주 국면별 조건부 성과</caption>
+                <colgroup>
+                  <col class="conditional-col-state">
+                  <col class="conditional-col-return">
+                  <col class="conditional-col-return">
+                  <col class="conditional-col-rate">
+                  <col class="conditional-col-interval">
+                  <col class="conditional-col-risk">
+                  <col class="conditional-col-risk">
+                  <col class="conditional-col-risk">
+                  <col class="conditional-col-sample">
+                </colgroup>
                 <thead>
                   <tr>
                     <th scope="col">국면</th>
                     <th scope="col">평균 수익률</th>
                     <th scope="col">중앙값</th>
                     <th scope="col">양(+) 비율</th>
-                    <th scope="col">95% CI</th>
-                    <th scope="col">하방 변동성</th>
+                    <th scope="col">평균 95% CI</th>
+                    <th scope="col">연율 하방 변동성</th>
                     <th scope="col">CVaR 5%</th>
                     <th scope="col">평균 MDD</th>
                     <th scope="col">표본 / episode</th>
@@ -403,7 +419,6 @@
             </div>
             <div id="champion-summary" class="champion-summary" aria-label="선정 모델"></div>
           </div>
-          <div id="model-evidence-summary" class="model-evidence-summary v5-only" aria-live="polite" hidden></div>
           <figure class="model-loss-figure" aria-labelledby="model-loss-title model-loss-caption">
             <figcaption>
               <strong id="model-loss-title">Log loss · 선정 구간 → 2023+ 진단</strong>
@@ -479,6 +494,52 @@
           </details>
         </section>
 
+        <section id="research-evidence" class="dashboard-section research-evidence-section v5-only" aria-labelledby="research-evidence-title" hidden>
+          <h2 id="research-evidence-title" class="sr-only">모델 · 연구 검증 상세</h2>
+          <details id="research-evidence-details" class="research-notice-details operations-details research-evidence-details">
+            <summary>
+              <span>
+                <small>Model &amp; Research</small>
+                <strong>모델 · 연구 검증 상세</strong>
+              </span>
+            </summary>
+            <div class="research-notice-body operations-body research-evidence-body">
+              <div class="research-evidence-grid">
+                <article class="research-evidence-block research-model-block" aria-labelledby="research-model-title">
+                  <h3 id="research-model-title">모델 선정</h3>
+                  <dl class="research-fact-grid">
+                    <div>
+                      <dt>다음 주 모델</dt>
+                      <dd id="next-model-context-detail">—</dd>
+                    </div>
+                  </dl>
+                  <div id="model-evidence-summary" class="model-evidence-summary v5-only" aria-live="polite" hidden></div>
+                </article>
+
+                <article class="research-evidence-block research-fx-block" aria-labelledby="research-fx-title">
+                  <h3 id="research-fx-title">USD 연구 평가</h3>
+                  <div id="fx-ablation-status" class="fx-ablation-status"></div>
+                  <dl id="fx-context-detail" class="metric-list research-metric-list"></dl>
+                </article>
+
+                <article class="research-evidence-block research-transition-block" aria-labelledby="research-transition-title">
+                  <h3 id="research-transition-title">국면 지속 · 이탈</h3>
+                  <p id="duration-research-detail" class="research-evidence-copy">—</p>
+                  <div id="transition-risk-detail" class="research-transition-grid"></div>
+                </article>
+
+                <article class="research-evidence-block research-method-block" aria-labelledby="research-method-title">
+                  <h3 id="research-method-title">표시 기준</h3>
+                  <p class="research-evidence-copy">
+                    52주 극단값은 시장 맥락이며 예측 기여도와는 별도입니다. USD 변화의 양(+)은 달러 강세 방향입니다.
+                    자산 성과는 선택 국면 다음 주 종가 진입, USD 기준으로 계산합니다.
+                  </p>
+                </article>
+              </div>
+            </div>
+          </details>
+        </section>
+
         <section id="data-health" class="dashboard-section operations-section" aria-labelledby="health-title">
           <h2 id="health-title" class="sr-only">데이터 · 출처 · 운영</h2>
           <details class="research-notice-details operations-details">
@@ -487,9 +548,12 @@
                 <small>Data &amp; Operations</small>
                 <strong id="research-notice-summary">데이터 · 출처 · 운영</strong>
               </span>
-              <span id="source-freshness">기준 시점 —</span>
+              <span id="header-result-identity" class="result-identity-chip" role="status" aria-live="polite">
+                결과 상태 불러오는 중
+              </span>
             </summary>
             <div class="research-notice-body operations-body">
+              <p id="source-freshness" class="operations-freshness">기준 시점 —</p>
               <div class="table-scroll" tabindex="0" aria-label="데이터 소스 상태와 이용 범위 표">
                 <table>
                   <caption class="sr-only">데이터 소스의 상태와 이용 범위</caption>
