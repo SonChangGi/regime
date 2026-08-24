@@ -61,6 +61,13 @@ FX_VARIANTS = (
     "v4_plus_all_fx",
 )
 V5_MULTISCALE_MODEL = "causal_multiscale_ensemble"
+V5_FORECAST_COMPARISON_MODELS = (
+    "markov",
+    "xgboost",
+    "xgb_hazard_destination",
+    "causal_dynamic_ensemble",
+    V5_MULTISCALE_MODEL,
+)
 V5_STANDARD_CORE_MODELS = frozenset(
     {
         "majority",
@@ -1441,6 +1448,95 @@ def _validate_model(model: Any, *, mode: str) -> int:
     return _validate_evidence_artifacts(model)
 
 
+def _validate_forecast_comparison(model: Mapping[str, Any]) -> tuple[str, ...] | None:
+    raw = model.get("forecast_comparison")
+    if raw is None:
+        return None
+    context = "payload.model.forecast_comparison"
+    comparison = _mapping(raw, context)
+    if set(comparison) != {"role", "horizon_weeks", "models"}:
+        raise V5ContractError(f"{context} fields are invalid")
+    if comparison["role"] != "research_comparison":
+        raise V5ContractError(f"{context}.role is invalid")
+    if comparison["horizon_weeks"] != 1:
+        raise V5ContractError(f"{context}.horizon_weeks must be one")
+    models = tuple(
+        _sequence(comparison["models"], f"{context}.models", nonempty=True)
+    )
+    if models != V5_FORECAST_COMPARISON_MODELS:
+        raise V5ContractError(f"{context}.models are invalid")
+    leaderboard = _sequence(
+        _require(model, "leaderboard", "payload.model"),
+        "payload.model.leaderboard",
+        nonempty=True,
+    )
+    leaderboard_names = {
+        str(row.get("name"))
+        for row in leaderboard
+        if isinstance(row, Mapping) and isinstance(row.get("name"), str)
+    }
+    if not set(models).issubset(leaderboard_names):
+        raise V5ContractError(f"{context}.models must exist in the leaderboard")
+    return models
+
+
+def _validate_model_forecasts(
+    value: Any,
+    context: str,
+    *,
+    origin: date,
+    models: tuple[str, ...],
+    champion: str,
+    official: Mapping[str, Any],
+) -> None:
+    rows = _sequence(value, context, nonempty=True)
+    if len(rows) != len(models):
+        raise V5ContractError(f"{context} model count is invalid")
+    validated: dict[str, Mapping[str, Any]] = {}
+    for index, expected_model in enumerate(models):
+        row_context = f"{context}[{index}]"
+        row = _mapping(rows[index], row_context)
+        target_date = _validate_forecast(row, row_context)
+        if row.get("model") != expected_model:
+            raise V5ContractError(f"{row_context}.model order is invalid")
+        if row.get("method") != "model_comparison_walk_forward_probability":
+            raise V5ContractError(f"{row_context}.method is invalid")
+        if (target_date - origin).days != 7:
+            raise V5ContractError(f"{row_context}.date is inconsistent")
+        probabilities = _mapping(
+            row["probabilities"], f"{row_context}.probabilities"
+        )
+        maximum = max(float(probabilities[state]) for state in STATE_ORDER)
+        if not math.isclose(
+            float(probabilities[str(row["state"])]),
+            maximum,
+            abs_tol=1e-8,
+            rel_tol=0.0,
+        ):
+            raise V5ContractError(
+                f"{row_context}.state is not the probability argmax"
+            )
+        validated[expected_model] = row
+
+    champion_row = validated.get(champion)
+    if champion_row is None:
+        raise V5ContractError(f"{context} does not include the champion")
+    parity_fields = (
+        "state",
+        "probabilities",
+        "confidence",
+        "entropy",
+        "date",
+        "model",
+        "fallback",
+        "fallback_reason",
+    )
+    if any(champion_row[field] != official[field] for field in parity_fields):
+        raise V5ContractError(
+            f"{context} champion forecast differs from next_week"
+        )
+
+
 def _validate_publication_review(
     meta: Mapping[str, Any],
     model: Mapping[str, Any],
@@ -1737,6 +1833,7 @@ def validate_v5_payload(payload: Mapping[str, Any]) -> None:
         raise V5ContractError(f"payload.states must be ordered as {STATE_ORDER}")
     model = _mapping(_require(payload, "model", "payload"), "payload.model")
     evidence_week_count = _validate_model(model, mode=str(mode))
+    forecast_comparison_models = _validate_forecast_comparison(model)
     _validate_publication_review(meta, model, mode=str(mode))
 
     weekly = _sequence(_require(payload, "weekly", "payload"), "payload.weekly", nonempty=True)
@@ -1754,6 +1851,20 @@ def validate_v5_payload(payload: Mapping[str, Any]) -> None:
         )
         if (forecast_date - origin).days != 7:
             raise V5ContractError(f"{context}.next_week.date is inconsistent")
+        if forecast_comparison_models is None:
+            if "model_forecasts" in row:
+                raise V5ContractError(
+                    f"{context}.model_forecasts requires model forecast_comparison metadata"
+                )
+        else:
+            _validate_model_forecasts(
+                _require(row, "model_forecasts", context),
+                f"{context}.model_forecasts",
+                origin=origin,
+                models=forecast_comparison_models,
+                champion=str(model["champion"]),
+                official=_mapping(row["next_week"], f"{context}.next_week"),
+            )
         departure = _validate_transition_risk(
             _require(row, "transition_risk", context),
             f"{context}.transition_risk",
@@ -1952,6 +2063,7 @@ __all__ = [
     "STATE_ORDER",
     "V5ContractError",
     "V5_FEATURE_SET_VERSION",
+    "V5_FORECAST_COMPARISON_MODELS",
     "V5_LABEL_VERSION",
     "V5_MODEL_VERSION",
     "V5_PUBLICATION_REVIEW_SCHEMA",

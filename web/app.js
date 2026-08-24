@@ -120,6 +120,13 @@
     "xgb_hazard_destination", "causal_dynamic_ensemble",
     "causal_multiscale_ensemble",
   ]);
+  const V5_FORECAST_COMPARISON_MODELS = Object.freeze([
+    "markov",
+    "xgboost",
+    "xgb_hazard_destination",
+    "causal_dynamic_ensemble",
+    "causal_multiscale_ensemble",
+  ]);
   const V5_FX_RESEARCH_ARTIFACTS = Object.freeze([
     "fx_features", "fx_coverage", "fx_ablation_oos",
   ]);
@@ -213,6 +220,7 @@
     transitionHorizon: 1,
     outcomeAsset: "SPY",
     outcomeHorizon: 13,
+    comparisonModel: null,
   };
 
   const dom = {};
@@ -722,6 +730,36 @@
     if (model.label_version !== V5_LABEL_VERSION) errors.push(`v5 model.label_version은 ${V5_LABEL_VERSION}이어야 합니다.`);
     if (model.feature_set_version !== V5_FEATURE_SET_VERSION) errors.push(`v5 model.feature_set_version은 ${V5_FEATURE_SET_VERSION}이어야 합니다.`);
     if (!Array.isArray(model.leaderboard) || !model.leaderboard.length) errors.push("v5 model.leaderboard는 비어 있지 않아야 합니다.");
+    const forecastComparison = model.forecast_comparison;
+    if (forecastComparison !== undefined) {
+      const comparisonFields = ["role", "horizon_weeks", "models"];
+      if (!hasExactKeys(forecastComparison, comparisonFields)) {
+        errors.push("v5 model.forecast_comparison 필드가 계약과 일치하지 않습니다.");
+      } else {
+        if (forecastComparison.role !== "research_comparison" || forecastComparison.horizon_weeks !== 1) {
+          errors.push("v5 model.forecast_comparison 역할·horizon이 올바르지 않습니다.");
+        }
+        const comparisonModels = forecastComparison.models;
+        if (
+          !Array.isArray(comparisonModels)
+          || comparisonModels.length !== V5_FORECAST_COMPARISON_MODELS.length
+          || comparisonModels.some((name, index) => name !== V5_FORECAST_COMPARISON_MODELS[index])
+        ) {
+          errors.push("v5 model.forecast_comparison 모델 순서가 올바르지 않습니다.");
+        }
+        const leaderboardNames = new Set(
+          Array.isArray(model.leaderboard)
+            ? model.leaderboard.map((row) => isObject(row) ? row.name : null).filter(Boolean)
+            : [],
+        );
+        if (
+          Array.isArray(comparisonModels)
+          && comparisonModels.some((name) => !leaderboardNames.has(name))
+        ) {
+          errors.push("v5 model.forecast_comparison 모델이 leaderboard에 없습니다.");
+        }
+      }
+    }
 
     const baseline = model.baseline_v4;
     const baselineFields = [
@@ -1389,7 +1427,7 @@
     }
   }
 
-  function validateV5WeekContract(item, path, errors) {
+  function validateV5WeekContract(item, path, errors, model) {
     const current = item.current;
     const currentFields = ["state", "memberships", "primary_membership", "membership_entropy", "method"];
     if (!hasExactKeys(current, currentFields)) {
@@ -1426,6 +1464,80 @@
       if (typeof forecast[field] !== "string") errors.push(`${path}.next_week.${field}는 문자열이어야 합니다.`);
     }
     if (typeof forecast.fallback !== "boolean") errors.push(`${path}.next_week.fallback은 boolean이어야 합니다.`);
+
+    const forecastComparison = isObject(model) ? model.forecast_comparison : null;
+    if (!forecastComparison) {
+      if (item.model_forecasts !== undefined) {
+        errors.push(`${path}.model_forecasts에는 forecast_comparison 메타데이터가 필요합니다.`);
+      }
+    } else {
+      const comparisonModels = Array.isArray(forecastComparison.models)
+        ? forecastComparison.models
+        : [];
+      const modelForecasts = item.model_forecasts;
+      if (!Array.isArray(modelForecasts) || modelForecasts.length !== comparisonModels.length) {
+        errors.push(`${path}.model_forecasts 모델 수가 올바르지 않습니다.`);
+      } else {
+        let championForecast = null;
+        modelForecasts.forEach((row, index) => {
+          const rowPath = `${path}.model_forecasts[${index}]`;
+          const comparisonFields = [
+            "state", "probabilities", "confidence", "entropy", "date",
+            "method", "model", "fallback", "fallback_reason",
+          ];
+          if (!hasExactKeys(row, comparisonFields)) {
+            errors.push(`${rowPath} 필드가 v5 계약과 정확히 일치하지 않습니다.`);
+            return;
+          }
+          if (row.model !== comparisonModels[index]) {
+            errors.push(`${rowPath}.model 순서가 forecast_comparison과 일치하지 않습니다.`);
+          }
+          if (row.method !== "model_comparison_walk_forward_probability") {
+            errors.push(`${rowPath}.method가 올바르지 않습니다.`);
+          }
+          if (!STATE_ORDER.includes(row.state)) errors.push(`${rowPath}.state가 올바르지 않습니다.`);
+          const probabilities = validateStateVector(row.probabilities, `${rowPath}.probabilities`, errors, "예측확률");
+          const rowConfidence = strictProbability(row.confidence);
+          if (rowConfidence === null) errors.push(`${rowPath}.confidence가 0–1 범위가 아닙니다.`);
+          if (
+            probabilities
+            && rowConfidence !== null
+            && Math.abs(rowConfidence - probabilities[row.state]) > 0.00000001
+          ) {
+            errors.push(`${rowPath}.confidence는 예측 state 확률과 일치해야 합니다.`);
+          }
+          if (strictProbability(row.entropy) === null) errors.push(`${rowPath}.entropy가 0–1 범위가 아닙니다.`);
+          if (row.date !== isoDateOffset(item.date, 7)) errors.push(`${rowPath}.date가 1주 horizon과 일치하지 않습니다.`);
+          if (typeof row.model !== "string" || typeof row.fallback_reason !== "string") {
+            errors.push(`${rowPath}.model과 fallback_reason은 문자열이어야 합니다.`);
+          }
+          if (typeof row.fallback !== "boolean") errors.push(`${rowPath}.fallback은 boolean이어야 합니다.`);
+          if (probabilities && STATE_ORDER.includes(row.state)) {
+            const maximum = Math.max(...STATE_ORDER.map((code) => probabilities[code]));
+            if (Math.abs(probabilities[row.state] - maximum) > 0.00000001) {
+              errors.push(`${rowPath}.state가 최대 예측확률과 일치하지 않습니다.`);
+            }
+          }
+          if (row.model === model.champion) championForecast = row;
+        });
+        if (!championForecast) {
+          errors.push(`${path}.model_forecasts에 선정 모델이 없습니다.`);
+        } else {
+          const scalarParityFields = [
+            "state", "confidence", "entropy", "date", "model", "fallback", "fallback_reason",
+          ];
+          const scalarMismatch = scalarParityFields.some((field) => championForecast[field] !== forecast[field]);
+          const probabilityMismatch = !isObject(championForecast.probabilities)
+            || !isObject(forecast.probabilities)
+            || STATE_ORDER.some(
+              (code) => championForecast.probabilities[code] !== forecast.probabilities[code],
+            );
+          if (scalarMismatch || probabilityMismatch) {
+            errors.push(`${path}.model_forecasts 선정 모델이 공식 next_week와 일치하지 않습니다.`);
+          }
+        }
+      }
+    }
 
     const risk = item.transition_risk;
     if (!hasExactKeys(risk, ["1w", "4w", "13w"])) {
@@ -2004,7 +2116,7 @@
       if (probability(item.transition_probability) === null) {
         errors.push(`${item.date} transition_probability가 0–1 범위가 아닙니다.`);
       }
-      if (isV5) validateV5WeekContract(item, path, errors);
+      if (isV5) validateV5WeekContract(item, path, errors, payload.model);
       if (isTransitionContract) {
         const transitionRisk = item.transition_risk;
         const expectedKeys = ["1w", "4w", "13w"];
@@ -2218,6 +2330,11 @@
       "conditional-comparison-caption", "conditional-stat-grid", "conditional-stat-table-caption", "conditional-stat-body",
       "champion-summary", "model-evidence-summary", "model-caption", "model-loss-caption",
       "model-loss-chart", "model-loss-axis", "leaderboard-body",
+      "model-forecast-field", "model-forecast-select", "model-forecast-explorer",
+      "model-forecast-role", "model-forecast-title", "model-forecast-caption",
+      "model-forecast-symbol", "model-forecast-state", "model-forecast-confidence",
+      "model-forecast-probabilities", "model-forecast-rank", "model-forecast-log-loss",
+      "model-forecast-brier", "model-forecast-calibration",
       "transition-model-section", "transition-model-caption", "transition-horizon-select",
       "transition-model-summary", "transition-leaderboard-caption", "transition-leaderboard-body",
       "research-evidence", "research-notice-summary",
@@ -2366,6 +2483,19 @@
       state.transitionHorizon = TRANSITION_HORIZONS.includes(requested) ? requested : 1;
       renderTransitionModels();
     });
+    dom["model-forecast-select"].addEventListener("change", () => {
+      const requested = dom["model-forecast-select"].value;
+      const comparison = isObject(state.raw && state.raw.model)
+        ? state.raw.model.forecast_comparison
+        : null;
+      const models = isObject(comparison) && Array.isArray(comparison.models)
+        ? comparison.models
+        : [];
+      if (!models.includes(requested)) return;
+      state.comparisonModel = requested;
+      renderModelForecast();
+      dom["screen-reader-status"].textContent = `${modelForecastLabel(requested)} 예측 비교로 변경했습니다.`;
+    });
     dom["conditional-asset-select"].addEventListener("change", () => {
       state.outcomeAsset = OUTCOME_ASSETS.includes(dom["conditional-asset-select"].value)
         ? dom["conditional-asset-select"].value
@@ -2443,6 +2573,7 @@
     renderMarket(week.market);
     renderDurationContext(week.duration_context);
     renderFxContext(week.fx_context);
+    renderModelForecast();
   }
 
   function renderSemanticLabels() {
@@ -3563,6 +3694,118 @@
     }
   }
 
+  function modelForecastLabel(name) {
+    return {
+      markov: "Markov",
+      xgboost: "XGBoost",
+      xgb_hazard_destination: "XGBoost · 이탈/목적지",
+      causal_dynamic_ensemble: "동적 앙상블",
+      causal_multiscale_ensemble: "멀티스케일 앙상블",
+    }[name] || textValue(name, "모델");
+  }
+
+  function renderModelForecastProbabilities(forecast) {
+    const container = dom["model-forecast-probabilities"];
+    container.replaceChildren();
+    for (const code of STATE_ORDER) {
+      const definition = STATE_META[code];
+      const value = getProbability(forecast, code);
+      const row = createElement("div", "probability-row");
+      const label = createElement("span", "probability-label");
+      const marker = createElement("span", `state-dot ${code}`, definition.short);
+      marker.setAttribute("aria-hidden", "true");
+      label.append(marker, document.createTextNode(definition.label));
+      const track = createElement("span", "probability-track");
+      const fill = createElement("span", `probability-fill ${code}`);
+      fill.style.width = value === null ? "0" : `${(value * 100).toFixed(2)}%`;
+      track.append(fill);
+      const display = createElement("span", "probability-value", formatPercent(value));
+      row.setAttribute("aria-label", `${definition.ko} 예측확률 ${formatPercent(value)}`);
+      row.append(label, track, display);
+      container.append(row);
+    }
+  }
+
+  function renderModelForecast() {
+    const model = state.raw && isObject(state.raw.model) ? state.raw.model : {};
+    const comparison = isObject(model.forecast_comparison) ? model.forecast_comparison : null;
+    const models = comparison && Array.isArray(comparison.models)
+      ? comparison.models
+      : [];
+    const week = selectedWeek() || state.weekly[state.weekly.length - 1] || null;
+    const forecasts = week && Array.isArray(week.model_forecasts)
+      ? week.model_forecasts
+      : [];
+    const supported = isV5Payload()
+      && models.length > 0
+      && forecasts.length === models.length;
+    dom["model-forecast-field"].hidden = !supported;
+    dom["model-forecast-explorer"].hidden = !supported;
+    if (!supported) return;
+
+    const championName = modelName(model.champion);
+    if (!models.includes(state.comparisonModel)) {
+      state.comparisonModel = models.includes(championName) ? championName : models[0];
+    }
+    const leaderboard = Array.isArray(model.leaderboard) ? model.leaderboard : [];
+    const select = dom["model-forecast-select"];
+    const optionSignature = models.map((name) => {
+      const row = leaderboard.find((candidate) => modelName(candidate) === name);
+      return `${name}:${textValue(firstValue(row, ["rank", "position"]), "")}:${name === championName}`;
+    }).join("|");
+    if (select.dataset.models !== optionSignature) {
+      select.replaceChildren();
+      for (const name of models) {
+        const row = leaderboard.find((candidate) => modelName(candidate) === name);
+        const rank = finiteNumber(firstValue(row, ["rank", "position"]));
+        const role = name === championName ? "공식" : `2023+ #${formatNumber(rank, 0)}`;
+        const option = createElement("option", null, `${modelForecastLabel(name)} · ${role}`);
+        option.value = name;
+        select.append(option);
+      }
+      select.dataset.models = optionSignature;
+    }
+    select.value = state.comparisonModel;
+
+    const forecast = forecasts.find((row) => isObject(row) && row.model === state.comparisonModel);
+    if (!forecast) {
+      dom["model-forecast-explorer"].hidden = true;
+      return;
+    }
+    const leaderboardRow = leaderboard.find((row) => modelName(row) === state.comparisonModel) || {};
+    const isChampion = state.comparisonModel === championName;
+    const role = dom["model-forecast-role"];
+    role.classList.toggle("is-comparison", !isChampion);
+    role.classList.toggle("is-fallback", forecast.fallback === true);
+    setText(role, forecast.fallback === true ? `${isChampion ? "공식 모델" : "비교 모델"} · 보조값` : isChampion ? "공식 모델" : "비교 모델");
+    setText(dom["model-forecast-title"], `${modelForecastLabel(state.comparisonModel)} 주간 예측`);
+
+    const officialState = week.next_week && week.next_week.state;
+    const officialModelLabel = modelForecastLabel(championName);
+    const agreement = forecast.state === officialState
+      ? `공식 ${officialModelLabel}와 국면 일치`
+      : `공식 ${officialModelLabel} ${stateMeta(officialState).ko}`;
+    setText(
+      dom["model-forecast-caption"],
+      `${formatDate(week.date, false)} 관측 → ${formatDate(forecast.date, false)} 예측 · ${agreement}`,
+    );
+    const meta = stateMeta(forecast.state);
+    setText(dom["model-forecast-symbol"], meta.symbol);
+    setText(dom["model-forecast-state"], `${meta.ko} · ${meta.label}`);
+    setText(dom["model-forecast-confidence"], `예측확률 ${formatPercent(forecast.confidence)}`);
+    renderModelForecastProbabilities(forecast);
+
+    const rank = finiteNumber(firstValue(leaderboardRow, ["rank", "position"]));
+    setText(dom["model-forecast-rank"], rank === null ? "—" : `${formatNumber(rank, 0)} / ${formatNumber(leaderboard.length, 0)}`);
+    setText(dom["model-forecast-log-loss"], formatNumber(metricValue(leaderboardRow, ["log_loss", "multiclass_log_loss"]), 4));
+    setText(dom["model-forecast-brier"], formatNumber(metricValue(leaderboardRow, ["brier", "brier_score"]), 4));
+    setText(dom["model-forecast-calibration"], formatNumber(metricValue(leaderboardRow, ["calibration_error"]), 4));
+    dom["model-forecast-explorer"].setAttribute(
+      "aria-label",
+      `${modelForecastLabel(state.comparisonModel)} ${formatDate(week.date, false)} 기준 다음 주 ${meta.ko} 예측, 예측확률 ${formatPercent(forecast.confidence)}`,
+    );
+  }
+
   function renderModel() {
     const model = state.raw.model || {};
     const champion = model.champion;
@@ -3587,6 +3830,7 @@
     dom["leaderboard-body"].replaceChildren();
     const rows = Array.isArray(model.leaderboard) ? model.leaderboard : [];
     renderModelLossChart(rows, championName, holdoutBestName);
+    renderModelForecast();
     if (!rows.length) {
       const row = createElement("tr");
       const cell = createElement("td", null, "모델 비교 결과가 없습니다.");
@@ -3877,6 +4121,7 @@
       state.comparisonSummary = await loadV5ComparisonSummary(payload, payloadText);
       state.weekly = validation.weekly;
       state.validationWarnings = validation.warnings;
+      state.comparisonModel = modelName(payload.model && payload.model.champion);
       state.preferredHistoryWindow = dom["history-window"].value === "all"
         ? "all"
         : Number(dom["history-window"].value);

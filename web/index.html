@@ -9,8 +9,8 @@
       content="선택한 시점까지 공개된 정보로 미국 증시 국면을 판단하고 다음 주 국면 확률을 보여주는 연구 대시보드"
     >
     <title>US Market Regime Lab | Quant Research</title>
-    <link rel="stylesheet" href="./styles.css?v=20260824-v5-6">
-    <script src="./app.js?v=20260824-v5-6" defer></script>
+    <link rel="stylesheet" href="./styles.css?v=20260824-v5-7">
+    <script src="./app.js?v=20260824-v5-7" defer></script>
   </head>
   <body id="top">
     <a class="skip-link" href="#main-content">본문으로 건너뛰기</a>
@@ -417,8 +417,44 @@
               <h2 id="model-title">모델 비교</h2>
               <p id="model-caption" class="section-caption">선정 구간 · 2023+ 진단</p>
             </div>
-            <div id="champion-summary" class="champion-summary" aria-label="선정 모델"></div>
+            <div class="model-heading-controls">
+              <div id="champion-summary" class="champion-summary" aria-label="선정 모델"></div>
+              <div id="model-forecast-field" class="field-group model-forecast-field v5-only" hidden>
+                <label for="model-forecast-select">예측 비교 모델</label>
+                <select
+                  id="model-forecast-select"
+                  aria-controls="model-forecast-explorer"
+                  aria-describedby="model-forecast-scope"
+                ></select>
+                <span id="model-forecast-scope" class="sr-only">공식 선정 모델은 변경하지 않고 비교 예측만 전환합니다.</span>
+              </div>
+            </div>
           </div>
+          <article id="model-forecast-explorer" class="model-forecast-explorer v5-only" aria-labelledby="model-forecast-title" hidden>
+            <div class="model-forecast-heading">
+              <div>
+                <span id="model-forecast-role" class="model-forecast-role">공식 모델</span>
+                <h3 id="model-forecast-title">주간 예측 비교</h3>
+                <p id="model-forecast-caption" class="section-caption">선택한 관측 주의 1주 예측</p>
+              </div>
+              <div class="model-forecast-state">
+                <span id="model-forecast-symbol" class="model-forecast-symbol" aria-hidden="true">—</span>
+                <div>
+                  <strong id="model-forecast-state">—</strong>
+                  <span id="model-forecast-confidence">예측확률 —</span>
+                </div>
+              </div>
+            </div>
+            <div class="model-forecast-body">
+              <div id="model-forecast-probabilities" class="probability-list" aria-label="선택 모델의 다음 주 국면별 예측 확률"></div>
+              <dl class="model-forecast-metrics" aria-label="선택 모델의 2023년 이후 진단 지표">
+                <div><dt>2023+ 순위</dt><dd id="model-forecast-rank">—</dd></div>
+                <div><dt>Log loss</dt><dd id="model-forecast-log-loss">—</dd></div>
+                <div><dt>Brier</dt><dd id="model-forecast-brier">—</dd></div>
+                <div><dt>보정 오차</dt><dd id="model-forecast-calibration">—</dd></div>
+              </dl>
+            </div>
+          </article>
           <figure class="model-loss-figure" aria-labelledby="model-loss-title model-loss-caption">
             <figcaption>
               <strong id="model-loss-title">Log loss · 선정 구간 → 2023+ 진단</strong>

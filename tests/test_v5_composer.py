@@ -7,7 +7,10 @@ from datetime import timedelta
 import numpy as np
 import pandas as pd
 
-from regime_lab.contract_v5 import validate_v5_payload
+from regime_lab.contract_v5 import (
+    V5_FORECAST_COMPARISON_MODELS,
+    validate_v5_payload,
+)
 from regime_lab.frozen_v4 import FROZEN_V4_BASELINE
 from regime_lab.v5 import build_v5_payload, run_v5_directional_benchmark
 
@@ -59,6 +62,46 @@ def _transition_risk(origin: pd.Timestamp, current_state: str):
     }
 
 
+def _model_forecasts(official: dict[str, object]) -> list[dict[str, object]]:
+    probabilities = {
+        "xgboost": {"risk_on": 0.25, "transition": 0.65, "risk_off": 0.1},
+        "xgb_hazard_destination": {
+            "risk_on": 0.2,
+            "transition": 0.7,
+            "risk_off": 0.1,
+        },
+        "causal_dynamic_ensemble": {
+            "risk_on": 0.15,
+            "transition": 0.75,
+            "risk_off": 0.1,
+        },
+        "causal_multiscale_ensemble": {
+            "risk_on": 0.18,
+            "transition": 0.72,
+            "risk_off": 0.1,
+        },
+    }
+    rows: list[dict[str, object]] = []
+    for model in V5_FORECAST_COMPARISON_MODELS:
+        if model == "markov":
+            row = dict(official)
+        else:
+            row_probabilities = probabilities[model]
+            row = {
+                "state": "transition",
+                "probabilities": row_probabilities,
+                "confidence": row_probabilities["transition"],
+                "entropy": 0.75,
+                "date": official["date"],
+                "model": model,
+                "fallback": False,
+                "fallback_reason": "",
+            }
+        row["method"] = "model_comparison_walk_forward_probability"
+        rows.append(row)
+    return rows
+
+
 def _v4_payload(index: pd.DatetimeIndex, states: pd.Series):
     weekly = []
     for origin in index[-2:]:
@@ -69,6 +112,17 @@ def _v4_payload(index: pd.DatetimeIndex, states: pd.Series):
         }
         next_state = "transition"
         next_probs = {"risk_on": 0.2, "transition": 0.6, "risk_off": 0.2}
+        next_week: dict[str, object] = {
+            "state": next_state,
+            "probabilities": next_probs,
+            "confidence": 0.6,
+            "entropy": 0.86,
+            "date": (origin + timedelta(days=7)).date().isoformat(),
+            "method": "champion_walk_forward_probability",
+            "model": "markov",
+            "fallback": False,
+            "fallback_reason": "",
+        }
         weekly.append(
             {
                 "date": origin.date().isoformat(),
@@ -80,17 +134,7 @@ def _v4_payload(index: pd.DatetimeIndex, states: pd.Series):
                     "entropy": 0.75,
                     "method": "causal_rule_filtered_evidence",
                 },
-                "next_week": {
-                    "state": next_state,
-                    "probabilities": next_probs,
-                    "confidence": 0.6,
-                    "entropy": 0.86,
-                    "date": (origin + timedelta(days=7)).date().isoformat(),
-                    "method": "champion_walk_forward_probability",
-                    "model": "markov",
-                    "fallback": False,
-                    "fallback_reason": "",
-                },
+                "next_week": next_week,
                 "transition_probability": 0.2,
                 "transition_risk": _transition_risk(origin, current_state),
                 "scores": {
@@ -143,7 +187,9 @@ def _v4_payload(index: pd.DatetimeIndex, states: pd.Series):
             "label_version": "market-causal-3state-v1",
             "feature_set_version": "weekly-pit-structural-v4",
             "selection_status": "provisional_predeployment",
-            "leaderboard": [{"name": "markov"}],
+            "leaderboard": [
+                {"name": name} for name in V5_FORECAST_COMPARISON_MODELS
+            ],
             "transition_leaderboard": [],
             "holdout_diagnostic": {"status": "ok"},
         },
@@ -193,6 +239,13 @@ def test_v5_composer_changes_semantics_without_allocation_output() -> None:
         duration_bootstrap_resamples=1,
         outcome_bootstrap_resamples=1,
     )
+    payload["model"]["forecast_comparison"] = {
+        "role": "research_comparison",
+        "horizon_weeks": 1,
+        "models": list(V5_FORECAST_COMPARISON_MODELS),
+    }
+    for week in payload["weekly"]:
+        week["model_forecasts"] = _model_forecasts(week["next_week"])
 
     core_paths = {
         "oos_predictions": "oos-predictions.csv",
@@ -276,3 +329,13 @@ def test_v5_composer_changes_semantics_without_allocation_output() -> None:
     assert len(payload["research"]["conditional_asset_stats"]["rows"]) == 54
     assert len(conditional.statistics) == 54
     assert "allocation" not in repr(payload["research"])
+    assert payload["model"]["forecast_comparison"]["models"] == list(
+        V5_FORECAST_COMPARISON_MODELS
+    )
+    assert [
+        row["model"] for row in payload["weekly"][-1]["model_forecasts"]
+    ] == list(V5_FORECAST_COMPARISON_MODELS)
+    assert payload["weekly"][-1]["model_forecasts"][0] == {
+        **payload["weekly"][-1]["next_week"],
+        "method": "model_comparison_walk_forward_probability",
+    }

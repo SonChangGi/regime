@@ -13,6 +13,14 @@ HTML_PATH = WEB / "index.html"
 CSS_PATH = WEB / "styles.css"
 JS_PATH = WEB / "app.js"
 
+V5_FORECAST_COMPARISON_MODELS = [
+    "markov",
+    "xgboost",
+    "xgb_hazard_destination",
+    "causal_dynamic_ensemble",
+    "causal_multiscale_ensemble",
+]
+
 
 def _valid_v3_browser_payload() -> dict:
     current = {
@@ -315,6 +323,41 @@ def _valid_v5_browser_payload() -> dict:
         "xgb_hazard_destination", "causal_dynamic_ensemble",
         "causal_multiscale_ensemble",
     ]
+
+    leaderboard = [
+        {
+            "name": name,
+            "rank": rank,
+            "selection_log_loss": 0.90 + rank / 100,
+            "log_loss": 0.80 + rank / 100,
+            "brier": 0.50 + rank / 100,
+            "calibration_error": 0.05 + rank / 1000,
+        }
+        for name, rank in zip(V5_FORECAST_COMPARISON_MODELS, (3, 1, 4, 2, 5), strict=True)
+    ]
+
+    comparison_probabilities = {
+        "markov": {"risk_on": 0.20, "transition": 0.60, "risk_off": 0.20},
+        "xgboost": {"risk_on": 0.12, "transition": 0.76, "risk_off": 0.12},
+        "xgb_hazard_destination": {"risk_on": 0.15, "transition": 0.70, "risk_off": 0.15},
+        "causal_dynamic_ensemble": {"risk_on": 0.18, "transition": 0.68, "risk_off": 0.14},
+        "causal_multiscale_ensemble": {"risk_on": 0.17, "transition": 0.69, "risk_off": 0.14},
+    }
+    model_forecasts = [
+        {
+            "state": "transition",
+            "probabilities": comparison_probabilities[name],
+            "confidence": comparison_probabilities[name]["transition"],
+            "entropy": 0.70 if name == "markov" else 0.65,
+            "date": "2026-08-14",
+            "method": "model_comparison_walk_forward_probability",
+            "model": name,
+            "fallback": False,
+            "fallback_reason": "",
+        }
+        for name in V5_FORECAST_COMPARISON_MODELS
+    ]
+
     def outcome_row(asset: str, state: str, horizon: int, mean: float) -> dict:
         points = {
             "mean_return": mean,
@@ -402,7 +445,12 @@ def _valid_v5_browser_payload() -> dict:
         "model": {
             "champion": "markov",
             "selection_status": "provisional_predeployment",
-            "leaderboard": [{"name": "markov", "selection_log_loss": 0.9}],
+            "leaderboard": leaderboard,
+            "forecast_comparison": {
+                "role": "research_comparison",
+                "horizon_weeks": 1,
+                "models": V5_FORECAST_COMPARISON_MODELS,
+            },
             "profile": "standard",
             "version": "weekly-nondl-structural-v5",
             "label_version": "market-causal-3state-v1",
@@ -527,6 +575,7 @@ def _valid_v5_browser_payload() -> dict:
                 "fallback": False,
                 "fallback_reason": "",
             },
+            "model_forecasts": model_forecasts,
             "transition_probability": 0.20,
             "transition_risk": transition_risk,
             "directional_risk": directional_risk,
@@ -698,6 +747,7 @@ def test_dashboard_assets_are_local_and_present() -> None:
         ]
     }
     assert len(asset_versions) == 1
+    assert asset_versions == {"20260824-v5-7"}
 
     assert all(not str(script.get("src", "")).startswith(("http://", "https://", "//")) for script in parser.scripts)
     assert all(not str(link.get("href", "")).startswith(("http://", "https://", "//")) for link in parser.links)
@@ -758,6 +808,21 @@ def test_required_result_surfaces_exist() -> None:
         "header-data-as-of",
         "header-analysis-date",
         "model-loss-chart",
+        "model-forecast-field",
+        "model-forecast-select",
+        "model-forecast-scope",
+        "model-forecast-explorer",
+        "model-forecast-role",
+        "model-forecast-title",
+        "model-forecast-caption",
+        "model-forecast-symbol",
+        "model-forecast-state",
+        "model-forecast-confidence",
+        "model-forecast-probabilities",
+        "model-forecast-rank",
+        "model-forecast-log-loss",
+        "model-forecast-brier",
+        "model-forecast-calibration",
         "model-evidence-summary",
         "transition-horizon-bars",
         "transition-model-section",
@@ -844,6 +909,28 @@ def test_model_results_remain_visible_without_generalization_warning_surface() -
     assert "is-holdout-best" in script
     assert "2023+ 1위" in script
     assert "진단 주의" not in script
+
+
+def test_model_forecast_selector_is_labeled_and_scoped_to_comparison() -> None:
+    document = HTML_PATH.read_text(encoding="utf-8")
+    script = JS_PATH.read_text(encoding="utf-8")
+    styles = CSS_PATH.read_text(encoding="utf-8")
+    assert '<label for="model-forecast-select">예측 비교 모델</label>' in document
+    assert 'id="model-forecast-select"' in document
+    assert 'aria-controls="model-forecast-explorer"' in document
+    assert 'aria-describedby="model-forecast-scope"' in document
+    assert (
+        'id="model-forecast-scope" class="sr-only">'
+        "공식 선정 모델은 변경하지 않고 비교 예측만 전환합니다."
+    ) in document
+    assert 'id="model-forecast-explorer"' in document
+    assert 'aria-labelledby="model-forecast-title"' in document
+    assert 'id="model-forecast-probabilities"' in document
+    assert "V5_FORECAST_COMPARISON_MODELS" in script
+    assert "function renderModelForecast()" in script
+    assert 'dom["model-forecast-select"].addEventListener("change"' in script
+    assert '.model-forecast-field select' in styles
+    assert "min-height: 44px;" in styles
 
 
 def test_current_membership_and_forecast_probability_are_separate_surfaces() -> None:
@@ -981,6 +1068,66 @@ def test_browser_validator_executes_valid_v4_semantic_contract() -> None:
 def test_browser_validator_accepts_valid_v5_without_changing_v4() -> None:
     assert _browser_validation_errors(_valid_v4_browser_payload()) == []
     assert _browser_validation_errors(_valid_v5_browser_payload()) == []
+
+
+def test_v5_browser_binds_model_comparison_order_inventory_and_official_parity() -> None:
+    payload = _valid_v5_browser_payload()
+    assert _browser_validation_errors(payload) == []
+
+    missing_row = deepcopy(payload)
+    missing_row["weekly"][0]["model_forecasts"].pop()
+    assert any(
+        "model_forecasts 모델 수" in error
+        for error in _browser_validation_errors(missing_row)
+    )
+
+    wrong_order = deepcopy(payload)
+    rows = wrong_order["weekly"][0]["model_forecasts"]
+    rows[1], rows[2] = rows[2], rows[1]
+    assert any(
+        "model 순서가 forecast_comparison" in error
+        for error in _browser_validation_errors(wrong_order)
+    )
+
+    missing_leaderboard_model = deepcopy(payload)
+    missing_leaderboard_model["model"]["leaderboard"] = [
+        row
+        for row in missing_leaderboard_model["model"]["leaderboard"]
+        if row["name"] != "causal_multiscale_ensemble"
+    ]
+    assert any(
+        "forecast_comparison 모델이 leaderboard" in error
+        for error in _browser_validation_errors(missing_leaderboard_model)
+    )
+
+    champion_mismatch = deepcopy(payload)
+    champion_mismatch["weekly"][0]["model_forecasts"][0]["probabilities"] = {
+        "risk_on": 0.19,
+        "transition": 0.60,
+        "risk_off": 0.21,
+    }
+    assert any(
+        "선정 모델이 공식 next_week와 일치하지 않습니다" in error
+        for error in _browser_validation_errors(champion_mismatch)
+    )
+
+    orphan_forecasts = deepcopy(payload)
+    orphan_forecasts["model"].pop("forecast_comparison")
+    assert any(
+        "model_forecasts에는 forecast_comparison 메타데이터" in error
+        for error in _browser_validation_errors(orphan_forecasts)
+    )
+
+
+def test_v5_browser_rejects_model_forecast_state_that_is_not_probability_argmax() -> None:
+    payload = _valid_v5_browser_payload()
+    forecast = payload["weekly"][0]["model_forecasts"][1]
+    forecast["state"] = "risk_on"
+    forecast["confidence"] = forecast["probabilities"]["risk_on"]
+    assert any(
+        "state가 최대 예측확률과 일치하지 않습니다" in error
+        for error in _browser_validation_errors(payload)
+    )
 
 
 def test_v5_browser_requires_explicit_mode_and_warning_array() -> None:

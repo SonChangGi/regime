@@ -25,6 +25,12 @@ def test_interactive_controls_have_accessible_names() -> None:
     assert '<label for="week-select">' in HTML
     assert '<label for="history-window">' in HTML
     assert '<label for="transition-horizon-select">' in HTML
+    assert '<label for="model-forecast-select">예측 비교 모델</label>' in HTML
+    assert 'id="model-forecast-select"' in HTML
+    assert 'aria-controls="model-forecast-explorer"' in HTML
+    assert 'aria-describedby="model-forecast-scope"' in HTML
+    assert 'id="model-forecast-scope" class="sr-only"' in HTML
+    assert "공식 선정 모델은 변경하지 않고 비교 예측만 전환합니다." in HTML
     assert '<label for="conditional-asset-select">' in HTML
     assert '<label for="conditional-horizon-select">' in HTML
     assert 'id="theme-toggle"' in HTML and 'aria-pressed="false"' in HTML
@@ -103,6 +109,18 @@ def test_keyboard_focus_reduced_motion_and_mobile_rules_exist() -> None:
     assert "${STATE_META[code].label}, ${asset} ${OUTCOME_ASSET_LABELS[asset]}" in JS
     assert '.table-scroll[tabindex="0"]:focus-visible' in CSS
     assert ".transition-horizon-field select" in CSS
+    assert ".model-forecast-field select" in CSS
+    assert "@media (max-width: 760px)" in CSS
+    assert (
+        ".model-heading-controls,\n"
+        "  .model-forecast-field,\n"
+        "  .model-forecast-field select {\n"
+        "    width: 100%;"
+    ) in CSS
+    assert (
+        ".model-forecast-body {\n"
+        "    grid-template-columns: 1fr;"
+    ) in CSS
 
 
 def test_small_status_chips_use_high_contrast_text_tokens() -> None:

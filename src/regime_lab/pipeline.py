@@ -29,6 +29,7 @@ from regime_lab.analysis import (
 )
 from regime_lab.analysis.models import model_manifest, model_manifest_sha256
 from regime_lab.collection import LiveCollection
+from regime_lab.contract_v5 import V5_FORECAST_COMPARISON_MODELS
 from regime_lab.dataset import WeeklyDataset, evidence_drivers, factor_scores
 from regime_lab.evidence import (
     STATE_LABEL_HISTORY_COLUMNS,
@@ -457,6 +458,94 @@ def _next_week_estimate(probabilities: Mapping[str, float], target_date: pd.Time
     return estimate
 
 
+def _comparison_forecast_record(row: Mapping[str, Any]) -> dict[str, Any]:
+    probabilities = {
+        state: float(row[f"p_{state}"])
+        for state in STATE_ORDER
+    }
+    estimate = _next_week_estimate(
+        probabilities,
+        pd.Timestamp(row["target_date"]),
+    )
+    estimate.update(
+        {
+            "method": "model_comparison_walk_forward_probability",
+            "model": str(row["model"]),
+            "fallback": bool(row.get("fallback", False)),
+            "fallback_reason": (
+                ""
+                if pd.isna(row.get("fallback_reason", ""))
+                else str(row.get("fallback_reason", ""))
+            ),
+        }
+    )
+    return estimate
+
+
+def _comparison_forecasts_by_origin(
+    predictions: pd.DataFrame,
+    latest_forecasts: pd.DataFrame,
+) -> dict[pd.Timestamp, list[dict[str, Any]]]:
+    required_columns = {
+        "origin_date",
+        "target_date",
+        "model",
+        "fallback",
+        "fallback_reason",
+        *(f"p_{state}" for state in STATE_ORDER),
+    }
+    for label, frame in (
+        ("OOS predictions", predictions),
+        ("latest structural forecasts", latest_forecasts),
+    ):
+        missing = required_columns.difference(frame.columns)
+        if missing:
+            raise RuntimeError(
+                f"{label} lack model comparison columns: {sorted(missing)}"
+            )
+
+    selected = pd.concat(
+        [
+            predictions.loc[
+                predictions["model"].astype(str).isin(
+                    V5_FORECAST_COMPARISON_MODELS
+                )
+            ],
+            latest_forecasts.loc[
+                latest_forecasts["model"].astype(str).isin(
+                    V5_FORECAST_COMPARISON_MODELS
+                )
+            ],
+        ],
+        ignore_index=True,
+        sort=False,
+    ).copy()
+    selected["origin_date"] = pd.to_datetime(
+        selected["origin_date"], utc=True, errors="raise"
+    )
+    selected["target_date"] = pd.to_datetime(
+        selected["target_date"], utc=True, errors="raise"
+    )
+    if selected.duplicated(["origin_date", "model"]).any():
+        raise RuntimeError("model comparison forecasts duplicate an origin/model")
+
+    result: dict[pd.Timestamp, list[dict[str, Any]]] = {}
+    for origin, group in selected.groupby("origin_date", sort=True):
+        by_model = {
+            str(row["model"]): row
+            for row in group.to_dict(orient="records")
+        }
+        if set(by_model) != set(V5_FORECAST_COMPARISON_MODELS):
+            raise RuntimeError(
+                f"model comparison forecasts are incomplete at {origin}"
+            )
+        result[pd.Timestamp(origin)] = [
+            _comparison_forecast_record(by_model[model])
+            for model in V5_FORECAST_COMPARISON_MODELS
+        ]
+    return result
+
+
 def build_dashboard_result(
     dataset: WeeklyDataset,
     collection: LiveCollection | None,
@@ -827,6 +916,14 @@ def build_dashboard_result(
         ignore_index=True,
         sort=False,
     ).sort_values("model", ignore_index=True)
+    comparison_forecasts = (
+        _comparison_forecasts_by_origin(
+            benchmark.predictions,
+            structural_forecasts,
+        )
+        if contract_version == "v5"
+        else {}
+    )
     joint_survival_forecasts = structural_latest.survival_probabilities.rename(
         columns={
             "horizon": "horizon_weeks",
@@ -890,38 +987,44 @@ def build_dashboard_result(
             for key in ("4w", "13w")
             if transition_risk[key]["fallback"]
         ]
-        weekly.append(
-            {
-                "date": origin.date().isoformat(),
-                "data_as_of": origin.isoformat(),
-                "current": current,
-                "next_week": next_week,
-                "transition_probability": round(transition_probability, 8),
-                "transition_risk": transition_risk,
-                "scores": {
-                    name: _json_number(scores.loc[origin, name]) or 0.0
-                    for name in ("trend", "stress", "macro", "financial_conditions")
-                },
-                "market": _market_context(canonical, origin),
-                "top_drivers": evidence_drivers(features, origin),
-                "health": {
-                    "status": result_health,
-                    "reason": (
-                        f"champion fit 실패로 class prior 사용: {prediction['fallback_reason']}"
-                        if prediction_fallback
+        week_result = {
+            "date": origin.date().isoformat(),
+            "data_as_of": origin.isoformat(),
+            "current": current,
+            "next_week": next_week,
+            "transition_probability": round(transition_probability, 8),
+            "transition_risk": transition_risk,
+            "scores": {
+                name: _json_number(scores.loc[origin, name]) or 0.0
+                for name in ("trend", "stress", "macro", "financial_conditions")
+            },
+            "market": _market_context(canonical, origin),
+            "top_drivers": evidence_drivers(features, origin),
+            "health": {
+                "status": result_health,
+                "reason": (
+                    f"champion fit 실패로 class prior 사용: {prediction['fallback_reason']}"
+                    if prediction_fallback
+                    else (
+                        "구조적 전환위험 fallback: " + " | ".join(fallback_reasons)
+                        if structural_fallback
                         else (
-                            "구조적 전환위험 fallback: " + " | ".join(fallback_reasons)
-                            if structural_fallback
-                            else (
-                                "모든 required series가 cutoff 이전 값으로 결합됨"
-                                if source_health == "ok"
-                                else "하나 이상의 required series가 누락·지연 상태"
-                            )
+                            "모든 required series가 cutoff 이전 값으로 결합됨"
+                            if source_health == "ok"
+                            else "하나 이상의 required series가 누락·지연 상태"
                         )
-                    ),
-                },
-            }
-        )
+                    )
+                ),
+            },
+        }
+        if contract_version == "v5":
+            model_forecasts = comparison_forecasts.get(origin)
+            if model_forecasts is None:
+                raise RuntimeError(
+                    f"model comparison forecasts are missing for {origin}"
+                )
+            week_result["model_forecasts"] = model_forecasts
+        weekly.append(week_result)
 
     forecast_evidence = build_weekly_state_forecasts(weekly)
     evidence_artifacts = {
@@ -1068,6 +1171,12 @@ def build_dashboard_result(
         "sources": source_rows,
         "feature_catalog": list(dataset.feature_catalog),
     }
+    if contract_version == "v5":
+        payload["model"]["forecast_comparison"] = {
+            "role": "research_comparison",
+            "horizon_weeks": 1,
+            "models": list(V5_FORECAST_COMPARISON_MODELS),
+        }
     # The primary multiclass result remains the public return for API
     # compatibility; the CLI reads these additive attributes for the v4 audit
     # bundle.  They stay outside the public JSON to keep the page concise.

@@ -1132,6 +1132,184 @@ def test_v5_core_audit_rejects_forged_stacking_weight(
         audit_outputs._audit_v5_core_model(payload, tmp_path)
 
 
+def _v5_model_forecast_record(
+    *,
+    model: str,
+    target: str,
+    probability: tuple[float, float, float],
+    fallback: bool,
+    fallback_reason: str,
+) -> dict[str, object]:
+    state = audit_outputs.STATE_ORDER[int(np.argmax(probability))]
+    probabilities = {
+        name: round(float(probability[position]), 8)
+        for position, name in enumerate(audit_outputs.STATE_ORDER)
+    }
+    entropy = -sum(
+        value * np.log(value) for value in probabilities.values() if value > 0
+    ) / np.log(len(audit_outputs.STATE_ORDER))
+    return {
+        "state": state,
+        "probabilities": probabilities,
+        "confidence": round(probabilities[state], 8),
+        "entropy": round(float(entropy), 8),
+        "date": target,
+        "method": audit_outputs.V5_FORECAST_COMPARISON_METHOD,
+        "model": model,
+        "fallback": fallback,
+        "fallback_reason": fallback_reason,
+    }
+
+
+def _v5_model_forecast_audit_fixture(tmp_path: Path) -> dict[str, object]:
+    models = audit_outputs.V5_FORECAST_COMPARISON_MODELS
+    probability_by_model = {
+        "markov": (0.6, 0.3, 0.1),
+        "xgboost": (0.2, 0.7, 0.1),
+        "xgb_hazard_destination": (0.1, 0.2, 0.7),
+        "causal_dynamic_ensemble": (0.5, 0.4, 0.1),
+        "causal_multiscale_ensemble": (0.4, 0.5, 0.1),
+    }
+    source_frames: list[pd.DataFrame] = []
+    published_weeks: list[dict[str, object]] = []
+    for week_position, (origin, target) in enumerate(
+        (
+            ("2026-08-14", "2026-08-21"),
+            ("2026-08-21", "2026-08-28"),
+        )
+    ):
+        source_rows: list[dict[str, object]] = []
+        published_rows: list[dict[str, object]] = []
+        for model_position, model in enumerate(models):
+            probability = probability_by_model[model]
+            fallback = model_position == week_position + 2
+            fallback_reason = "fixture_fallback" if fallback else ""
+            predicted = audit_outputs.STATE_ORDER[int(np.argmax(probability))]
+            source_rows.append(
+                {
+                    "origin_date": f"{origin}T20:00:00Z",
+                    "target_date": f"{target}T20:00:00Z",
+                    "model": model,
+                    "predicted": predicted,
+                    "p_risk_on": probability[0],
+                    "p_transition": probability[1],
+                    "p_risk_off": probability[2],
+                    "fallback": fallback,
+                    "fallback_reason": fallback_reason,
+                }
+            )
+            published_rows.append(
+                _v5_model_forecast_record(
+                    model=model,
+                    target=target,
+                    probability=probability,
+                    fallback=fallback,
+                    fallback_reason=fallback_reason,
+                )
+            )
+        source_frames.append(pd.DataFrame(source_rows))
+        published_weeks.append(
+            {"date": origin, "model_forecasts": published_rows}
+        )
+
+    oos_path = tmp_path / "oos-predictions.csv"
+    source_frames[0].to_csv(oos_path, index=False)
+    source_frames[1].to_csv(tmp_path / "structural-forecasts.csv", index=False)
+    return {
+        "model": {
+            "leaderboard": [{"name": model} for model in models],
+            "forecast_comparison": {
+                "role": "research_comparison",
+                "horizon_weeks": 1,
+                "models": list(models),
+            },
+            "core_artifacts": {
+                "oos_predictions": {
+                    "path": oos_path.name,
+                    "row_count": len(source_frames[0]),
+                    "sha256": hashlib.sha256(oos_path.read_bytes()).hexdigest(),
+                }
+            },
+        },
+        "weekly": published_weeks,
+    }
+
+
+def test_v5_model_forecast_audit_binds_historical_and_latest_sources(
+    tmp_path: Path,
+) -> None:
+    payload = _v5_model_forecast_audit_fixture(tmp_path)
+
+    summary = audit_outputs._audit_v5_model_forecasts(payload, tmp_path)
+
+    assert summary == {
+        "status": "verified",
+        "models": 5,
+        "weeks": 2,
+        "historical_rows": 5,
+        "latest_rows": 5,
+    }
+
+
+def test_v5_model_forecast_audit_preserves_absent_contract() -> None:
+    payload = {"model": {}, "weekly": [{"date": "2026-08-21"}]}
+
+    summary = audit_outputs._audit_v5_model_forecasts(payload, Path("unused"))
+
+    assert summary["status"] == "absent"
+    assert summary["weeks"] == 0
+
+
+def test_v5_model_forecast_audit_rejects_orphan_rows_without_metadata() -> None:
+    payload = {
+        "model": {},
+        "weekly": [{"date": "2026-08-21", "model_forecasts": []}],
+    }
+
+    with pytest.raises(audit_outputs.AuditFailure, match="require"):
+        audit_outputs._audit_v5_model_forecasts(payload, Path("unused"))
+
+
+def test_v5_model_forecast_audit_rejects_model_order_tamper(
+    tmp_path: Path,
+) -> None:
+    payload = _v5_model_forecast_audit_fixture(tmp_path)
+    payload["model"]["forecast_comparison"]["models"][0:2] = [
+        "xgboost",
+        "markov",
+    ]
+
+    with pytest.raises(audit_outputs.AuditFailure, match="model order"):
+        audit_outputs._audit_v5_model_forecasts(payload, tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("week_position", "model_position", "field", "replacement", "message"),
+    (
+        (0, 0, "probability", 0.51, "probability/source"),
+        (1, 1, "date", "2026-09-04", "target date/source"),
+        (1, 3, "fallback_reason", "tampered", "fallback reason/source"),
+    ),
+)
+def test_v5_model_forecast_audit_rejects_source_parity_tamper(
+    tmp_path: Path,
+    week_position: int,
+    model_position: int,
+    field: str,
+    replacement: object,
+    message: str,
+) -> None:
+    payload = _v5_model_forecast_audit_fixture(tmp_path)
+    row = payload["weekly"][week_position]["model_forecasts"][model_position]
+    if field == "probability":
+        row["probabilities"]["risk_on"] = replacement
+    else:
+        row[field] = replacement
+
+    with pytest.raises(audit_outputs.AuditFailure, match=message):
+        audit_outputs._audit_v5_model_forecasts(payload, tmp_path)
+
+
 def _v5_multiscale_audit_fixture(
     tmp_path: Path,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:

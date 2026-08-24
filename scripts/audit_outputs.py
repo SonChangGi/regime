@@ -143,6 +143,14 @@ V4_BASE_MODELS = {
 V4_STANDARD_MODELS = V4_BASE_MODELS | V4_STRUCTURAL_MODELS
 V4_FULL_MODELS = V4_STANDARD_MODELS | {"gaussian_hmm"}
 V5_MULTISCALE_MODEL = "causal_multiscale_ensemble"
+V5_FORECAST_COMPARISON_MODELS = (
+    "markov",
+    "xgboost",
+    "xgb_hazard_destination",
+    "causal_dynamic_ensemble",
+    V5_MULTISCALE_MODEL,
+)
+V5_FORECAST_COMPARISON_METHOD = "model_comparison_walk_forward_probability"
 V5_STANDARD_MODELS = V4_STANDARD_MODELS | {V5_MULTISCALE_MODEL}
 V5_FULL_MODELS = V4_FULL_MODELS | {V5_MULTISCALE_MODEL}
 V4_STRUCTURAL_EXPERTS = (
@@ -4310,6 +4318,231 @@ def _audit_v5_core_model(
     }
 
 
+def _audit_v5_model_forecasts(
+    payload: Mapping[str, Any],
+    artifacts: Path,
+) -> dict[str, Any]:
+    """Bind every embedded model comparison forecast to its source CSV row."""
+
+    model = payload.get("model", {})
+    require(isinstance(model, Mapping), "v5 model forecast model metadata is invalid")
+    weekly = payload.get("weekly")
+    require(
+        isinstance(weekly, list) and bool(weekly),
+        "v5 model forecast weekly payload is missing",
+    )
+    comparison = model.get("forecast_comparison")
+    if comparison is None:
+        require(
+            all(
+                isinstance(week, Mapping) and "model_forecasts" not in week
+                for week in weekly
+            ),
+            "v5 model forecasts require forecast_comparison metadata",
+        )
+        return {
+            "status": "absent",
+            "models": 0,
+            "weeks": 0,
+            "historical_rows": 0,
+            "latest_rows": 0,
+        }
+
+    context = "v5 model forecast comparison"
+    require(isinstance(comparison, Mapping), f"{context} metadata is invalid")
+    require(
+        set(comparison) == {"role", "horizon_weeks", "models"},
+        f"{context} metadata fields mismatch",
+    )
+    require(
+        comparison.get("role") == "research_comparison"
+        and comparison.get("horizon_weeks") == 1,
+        f"{context} role/horizon mismatch",
+    )
+    models = comparison.get("models")
+    require(
+        isinstance(models, list)
+        and tuple(str(name) for name in models) == V5_FORECAST_COMPARISON_MODELS,
+        f"{context} model order mismatch",
+    )
+    leaderboard = model.get("leaderboard")
+    require(isinstance(leaderboard, list), f"{context} leaderboard is invalid")
+    leaderboard_names = {
+        str(row.get("name"))
+        for row in leaderboard
+        if isinstance(row, Mapping)
+    }
+    require(
+        set(V5_FORECAST_COMPARISON_MODELS).issubset(leaderboard_names),
+        f"{context} models are missing from the leaderboard",
+    )
+
+    core_contracts = model.get("core_artifacts")
+    require(isinstance(core_contracts, Mapping), f"{context} core artifacts missing")
+    oos_contract = core_contracts.get("oos_predictions")
+    require(isinstance(oos_contract, Mapping), f"{context} OOS contract missing")
+    require(
+        set(oos_contract) == {"path", "row_count", "sha256"}
+        and oos_contract.get("path") == "oos-predictions.csv",
+        f"{context} OOS contract fields/path mismatch",
+    )
+    oos_path = _v5_artifact_path(
+        artifacts,
+        oos_contract["path"],
+        context=f"{context} historical source",
+    )
+    require(
+        file_sha256(oos_path) == str(oos_contract["sha256"]),
+        f"{context} OOS source SHA-256 mismatch",
+    )
+    historical = read_csv(oos_path, ("origin_date", "target_date"))
+    require(
+        len(historical) == int(oos_contract["row_count"]),
+        f"{context} OOS source row_count mismatch",
+    )
+    latest = read_csv(
+        _v5_artifact_path(
+            artifacts,
+            "structural-forecasts.csv",
+            context=f"{context} latest source",
+        ),
+        ("origin_date", "target_date"),
+    )
+
+    required_source_columns = {
+        "origin_date",
+        "target_date",
+        "model",
+        "predicted",
+        "fallback",
+        "fallback_reason",
+        *PROBABILITY_COLUMNS,
+    }
+    for source_name, source in (
+        ("historical OOS", historical),
+        ("latest structural", latest),
+    ):
+        require_columns(source, required_source_columns, f"{context} {source_name}")
+        source["fallback"] = boolean_series(
+            source["fallback"], f"{context} {source_name} fallback"
+        )
+        source["_origin_day"] = source["origin_date"].map(_market_date)
+        source["_target_day"] = source["target_date"].map(_market_date)
+        selected = source.loc[
+            source["model"].astype(str).isin(V5_FORECAST_COMPARISON_MODELS)
+        ]
+        require(
+            not selected.duplicated(["_origin_day", "model"]).any(),
+            f"{context} {source_name} origin/model keys duplicate",
+        )
+
+    weekly_dates = [
+        _market_date(week.get("date"))
+        for week in weekly
+        if isinstance(week, Mapping)
+    ]
+    require(
+        len(weekly_dates) == len(weekly) and len(set(weekly_dates)) == len(weekly),
+        f"{context} weekly dates are invalid/duplicate",
+    )
+
+    historical_rows = 0
+    latest_rows = 0
+    for position, week in enumerate(weekly):
+        require(isinstance(week, Mapping), f"{context} weekly[{position}] is invalid")
+        origin_day = _market_date(week["date"])
+        source_name = (
+            "latest structural"
+            if position == len(weekly) - 1
+            else "historical OOS"
+        )
+        source = latest if position == len(weekly) - 1 else historical
+        source_rows = source.loc[
+            source["_origin_day"].eq(origin_day)
+            & source["model"].astype(str).isin(V5_FORECAST_COMPARISON_MODELS)
+        ].copy()
+        require(
+            len(source_rows) == len(V5_FORECAST_COMPARISON_MODELS)
+            and set(source_rows["model"].astype(str))
+            == set(V5_FORECAST_COMPARISON_MODELS),
+            f"{context} weekly[{position}] {source_name} rows are incomplete",
+        )
+        source_lookup = source_rows.set_index(source_rows["model"].astype(str))
+        published_rows = week.get("model_forecasts")
+        require(
+            isinstance(published_rows, list)
+            and len(published_rows) == len(V5_FORECAST_COMPARISON_MODELS),
+            f"{context} weekly[{position}] payload rows are incomplete",
+        )
+        for model_position, name in enumerate(V5_FORECAST_COMPARISON_MODELS):
+            row_context = f"{context} weekly[{position}] {name}"
+            published = published_rows[model_position]
+            require(isinstance(published, Mapping), f"{row_context} is invalid")
+            require(
+                published.get("model") == name,
+                f"{row_context} model/order mismatch",
+            )
+            require(
+                published.get("method") == V5_FORECAST_COMPARISON_METHOD,
+                f"{row_context} method mismatch",
+            )
+            source_row = source_lookup.loc[name]
+            require(
+                str(published.get("state")) == str(source_row["predicted"]),
+                f"{row_context} predicted state/source mismatch",
+            )
+            require(
+                _market_date(published.get("date"))
+                == str(source_row["_target_day"]),
+                f"{row_context} target date/source mismatch",
+            )
+            probabilities = published.get("probabilities")
+            require(
+                isinstance(probabilities, Mapping)
+                and set(probabilities) == set(STATE_ORDER),
+                f"{row_context} probabilities are invalid",
+            )
+            for state in STATE_ORDER:
+                require(
+                    np.isclose(
+                        float(probabilities[state]),
+                        float(source_row[f"p_{state}"]),
+                        atol=5e-8,
+                        rtol=0.0,
+                    ),
+                    f"{row_context} {state} probability/source mismatch",
+                )
+            require(
+                _v5_boolean(
+                    published.get("fallback"),
+                    context=f"{row_context} payload fallback",
+                )
+                == bool(source_row["fallback"]),
+                f"{row_context} fallback/source mismatch",
+            )
+            expected_reason = (
+                ""
+                if _v5_missing(source_row["fallback_reason"])
+                else str(source_row["fallback_reason"])
+            )
+            require(
+                str(published.get("fallback_reason", "")) == expected_reason,
+                f"{row_context} fallback reason/source mismatch",
+            )
+        if position == len(weekly) - 1:
+            latest_rows += len(published_rows)
+        else:
+            historical_rows += len(published_rows)
+
+    return {
+        "status": "verified",
+        "models": len(V5_FORECAST_COMPARISON_MODELS),
+        "weeks": len(weekly),
+        "historical_rows": historical_rows,
+        "latest_rows": latest_rows,
+    }
+
+
 def _audit_v5_execution_parameters(payload: Mapping[str, Any]) -> dict[str, Any]:
     context = "v5 execution parameters"
     raw = payload.get("model", {}).get("execution_parameters")
@@ -7159,6 +7392,7 @@ def audit_v5(
     )
     execution = _audit_v5_execution_parameters(payload)
     core = _audit_v5_core_model(payload, artifacts)
+    model_forecasts = _audit_v5_model_forecasts(payload, artifacts)
     feature_summary = audit_feature_manifest(payload, artifacts)
     evidence, membership = _audit_v5_evidence(payload, artifacts)
     directional = _audit_v5_directional(payload, frames)
@@ -7194,6 +7428,7 @@ def audit_v5(
         "duration": duration,
         "execution_parameters_sha256": execution["sha256"],
         "core": core,
+        "model_forecasts": model_forecasts,
         "core_feature_manifest": {
             key: value
             for key, value in feature_summary.items()

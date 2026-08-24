@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from regime_lab.contract_v5 import (
+    V5_FORECAST_COMPARISON_MODELS,
     V5ContractError,
     _validate_publication_review,
     validate_v5_payload,
@@ -24,6 +25,46 @@ def _states() -> list[dict[str, str]]:
         {"id": "transition"},
         {"id": "risk_off"},
     ]
+
+
+def _model_forecasts(official: dict[str, object]) -> list[dict[str, object]]:
+    probabilities = {
+        "xgboost": {"risk_on": 0.2, "transition": 0.7, "risk_off": 0.1},
+        "xgb_hazard_destination": {
+            "risk_on": 0.25,
+            "transition": 0.65,
+            "risk_off": 0.1,
+        },
+        "causal_dynamic_ensemble": {
+            "risk_on": 0.15,
+            "transition": 0.75,
+            "risk_off": 0.1,
+        },
+        "causal_multiscale_ensemble": {
+            "risk_on": 0.18,
+            "transition": 0.72,
+            "risk_off": 0.1,
+        },
+    }
+    rows = []
+    for model in V5_FORECAST_COMPARISON_MODELS:
+        if model == "markov":
+            row = deepcopy(official)
+        else:
+            row_probabilities = probabilities[model]
+            row = {
+                "state": "transition",
+                "probabilities": row_probabilities,
+                "confidence": row_probabilities["transition"],
+                "entropy": 0.75,
+                "date": official["date"],
+                "model": model,
+                "fallback": False,
+                "fallback_reason": "",
+            }
+        row["method"] = "model_comparison_walk_forward_probability"
+        rows.append(row)
+    return rows
 
 
 def _conditional_rows() -> list[dict[str, object]]:
@@ -271,6 +312,21 @@ def valid_payload() -> dict[str, object]:
             ("13w", 0.7, "2026-11-06"),
         )
     }
+    next_week: dict[str, object] = {
+        "state": "risk_on",
+        "probabilities": {
+            "risk_on": 0.6,
+            "transition": 0.25,
+            "risk_off": 0.15,
+        },
+        "confidence": 0.6,
+        "entropy": 0.85,
+        "date": "2026-08-14",
+        "method": "champion_walk_forward_probability",
+        "model": "markov",
+        "fallback": False,
+        "fallback_reason": "",
+    }
     return {
         "meta": {
             "schema_version": "2.0.0",
@@ -307,7 +363,14 @@ def valid_payload() -> dict[str, object]:
             "candidate_manifest": candidate_manifest,
             "candidate_manifest_sha256": candidate_manifest_sha256,
             "structural_models": _structural_models(),
-            "leaderboard": [{}],
+            "leaderboard": [
+                {"name": name} for name in V5_FORECAST_COMPARISON_MODELS
+            ],
+            "forecast_comparison": {
+                "role": "research_comparison",
+                "horizon_weeks": 1,
+                "models": list(V5_FORECAST_COMPARISON_MODELS),
+            },
             "baseline_v4": dict(FROZEN_V4_BASELINE),
             "structural_preregistration": {
                 "path": "config/structural_v5.json",
@@ -371,21 +434,8 @@ def valid_payload() -> dict[str, object]:
                     "membership_entropy": 0.73,
                     "method": "risk_score_anchor_membership",
                 },
-                "next_week": {
-                    "state": "risk_on",
-                    "probabilities": {
-                        "risk_on": 0.6,
-                        "transition": 0.25,
-                        "risk_off": 0.15,
-                    },
-                    "confidence": 0.6,
-                    "entropy": 0.85,
-                    "date": "2026-08-14",
-                    "method": "champion_walk_forward_probability",
-                    "model": "markov",
-                    "fallback": False,
-                    "fallback_reason": "",
-                },
+                "next_week": next_week,
+                "model_forecasts": _model_forecasts(next_week),
                 "transition_probability": 0.2,
                 "transition_risk": transition_risk,
                 "directional_risk": directional_risk,
@@ -481,6 +531,71 @@ def test_valid_v5_payload() -> None:
     payload = valid_payload()
     validate_v5_payload(payload)
     validate_dashboard_payload(payload)
+
+
+def test_v5_forecast_comparison_remains_optional_for_older_payloads() -> None:
+    payload = valid_payload()
+    payload["model"].pop("forecast_comparison")
+    for week in payload["weekly"]:
+        week.pop("model_forecasts")
+
+    validate_v5_payload(payload)
+
+
+@pytest.mark.parametrize(
+    ("mutate", "match"),
+    (
+        (
+            lambda value: value["weekly"][0]["model_forecasts"].__setitem__(
+                slice(0, 2),
+                list(reversed(value["weekly"][0]["model_forecasts"][:2])),
+            ),
+            "model order is invalid",
+        ),
+        (
+            lambda value: value["weekly"][0]["model_forecasts"].pop(),
+            "model count is invalid",
+        ),
+        (
+            lambda value: value["weekly"][0]["model_forecasts"][1].update(
+                {"date": "2026-08-21"}
+            ),
+            "date is inconsistent",
+        ),
+        (
+            lambda value: value["weekly"][0]["model_forecasts"][1][
+                "probabilities"
+            ].update({"risk_on": 0.3}),
+            "probabilities must sum to one",
+        ),
+        (
+            lambda value: value["weekly"][0]["model_forecasts"][0].update(
+                {"fallback": True, "fallback_reason": "test"}
+            ),
+            "champion forecast differs from next_week",
+        ),
+    ),
+)
+def test_v5_forecast_comparison_rejects_drift(mutate, match: str) -> None:
+    payload = valid_payload()
+    mutate(payload)
+
+    with pytest.raises(V5ContractError, match=match):
+        validate_v5_payload(payload)
+
+
+def test_v5_forecast_comparison_rejects_metadata_order_and_orphan_rows() -> None:
+    payload = valid_payload()
+    payload["model"]["forecast_comparison"]["models"][:2] = list(
+        reversed(payload["model"]["forecast_comparison"]["models"][:2])
+    )
+    with pytest.raises(V5ContractError, match="models are invalid"):
+        validate_v5_payload(payload)
+
+    payload = valid_payload()
+    payload["model"].pop("forecast_comparison")
+    with pytest.raises(V5ContractError, match="requires model forecast_comparison"):
+        validate_v5_payload(payload)
 
 
 def test_v5_freshness_is_recomputed_from_timestamp_contract() -> None:

@@ -126,6 +126,66 @@ def test_pipeline_forwards_private_checkpoint_only_for_v5(
         )
 
 
+def _comparison_rows(origin: str, target: str) -> list[dict[str, object]]:
+    rows = []
+    for index, model in enumerate(pipeline.V5_FORECAST_COMPARISON_MODELS):
+        transition = 0.6 + index * 0.02
+        rows.append(
+            {
+                "origin_date": origin,
+                "target_date": target,
+                "model": model,
+                "fallback": False,
+                "fallback_reason": "",
+                "p_risk_on": 0.3 - index * 0.01,
+                "p_transition": transition,
+                "p_risk_off": 0.1 - index * 0.01,
+            }
+        )
+    return rows
+
+
+def test_comparison_forecasts_combine_oos_and_latest_in_fixed_model_order() -> None:
+    historical = pd.DataFrame(
+        _comparison_rows("2026-08-07", "2026-08-14")
+    )
+    latest = pd.DataFrame(
+        _comparison_rows("2026-08-14", "2026-08-21")
+    )
+
+    forecasts = pipeline._comparison_forecasts_by_origin(historical, latest)
+
+    assert list(forecasts) == [
+        pd.Timestamp("2026-08-07", tz="UTC"),
+        pd.Timestamp("2026-08-14", tz="UTC"),
+    ]
+    for origin, target in (
+        (pd.Timestamp("2026-08-07", tz="UTC"), "2026-08-14"),
+        (pd.Timestamp("2026-08-14", tz="UTC"), "2026-08-21"),
+    ):
+        rows = forecasts[origin]
+        assert [row["model"] for row in rows] == list(
+            pipeline.V5_FORECAST_COMPARISON_MODELS
+        )
+        assert {row["date"] for row in rows} == {target}
+        assert {row["method"] for row in rows} == {
+            "model_comparison_walk_forward_probability"
+        }
+        assert {row["state"] for row in rows} == {"transition"}
+
+
+def test_comparison_forecasts_reject_incomplete_model_set() -> None:
+    historical = pd.DataFrame(
+        _comparison_rows("2026-08-07", "2026-08-14")[:-1]
+    )
+    latest = pd.DataFrame(
+        _comparison_rows("2026-08-14", "2026-08-21")
+    )
+
+    with pytest.raises(RuntimeError, match="incomplete at"):
+        pipeline._comparison_forecasts_by_origin(historical, latest)
+
+
 def test_cli_progress_printer_flushes(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
 
