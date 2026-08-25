@@ -49,6 +49,49 @@ def _minimal_weekly_dataset(rows: int = 700) -> WeeklyDataset:
     )
 
 
+def test_market_context_uses_scale_free_state_metrics_and_current_percentiles() -> None:
+    index = pd.date_range("2024-01-05", periods=60, freq="W-FRI")
+    position = np.arange(60, dtype=float)
+    spy = 100.0 * np.power(1.01, position)
+    canonical = pd.DataFrame({"spy_close": spy}, index=index)
+    features = pd.DataFrame(
+        {
+            "market_group__gics_sector__positive_return_share_4w": np.linspace(
+                0.2, 0.8, 60
+            ),
+            "market_spread__high_yield_investment_grade__relative_return_13w": (
+                np.linspace(-0.04, 0.05, 60)
+            ),
+            "anfci__change_4w": np.linspace(-0.2, 0.3, 60),
+        },
+        index=index,
+    )
+    at = index[-1]
+
+    context = pipeline._market_context(canonical, features, at)
+
+    assert set(context) == {
+        "spy_trend_26w",
+        "spy_realized_vol_13w",
+        "spy_drawdown_52w",
+        "gics_sector_breadth_4w",
+        "hyg_lqd_relative_13w",
+        "anfci_change_4w",
+    }
+    np.testing.assert_allclose(
+        context["spy_trend_26w"]["value"],
+        np.power(1.01, 26) - 1.0,
+    )
+    assert context["spy_drawdown_52w"]["value"] == 0.0
+    assert all("percentile_52w" in metric for metric in context.values())
+    assert not any("price" in key or "close" in key for key in context)
+
+    features.loc[at, "anfci__change_4w"] = np.nan
+    missing = pipeline._market_context(canonical, features, at)
+    assert missing["anfci_change_4w"]["value"] is None
+    assert missing["anfci_change_4w"]["percentile_52w"] is None
+
+
 @pytest.mark.parametrize(
     ("profile_name", "expected_minimum"),
     (("standard", 12), ("full", 12)),

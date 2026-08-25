@@ -136,6 +136,14 @@ CONDITIONAL_STATISTICS_COLUMNS: tuple[str, ...] = (
         for field in (f"{metric}_ci95_lower", f"{metric}_ci95_upper")
     ),
 )
+MODEL_CONDITIONED_OUTCOME_COLUMNS: tuple[str, ...] = (
+    "conditioning_model",
+    *OUTCOME_COLUMNS,
+)
+MODEL_CONDITIONED_STATISTICS_COLUMNS: tuple[str, ...] = (
+    "conditioning_model",
+    *CONDITIONAL_STATISTICS_COLUMNS,
+)
 
 
 def _fx_feature_columns() -> tuple[str, ...]:
@@ -242,6 +250,20 @@ V5_RESEARCH_ARTIFACT_SPECS: tuple[V5ResearchArtifactSpec, ...] = (
         ("sample_start", "sample_end"),
     ),
     V5ResearchArtifactSpec(
+        "model_conditioned_asset_outcomes",
+        "model-conditioned-asset-outcomes.csv",
+        MODEL_CONDITIONED_OUTCOME_COLUMNS,
+        ("conditioning_model", "origin_position", "horizon_weeks", "asset"),
+        ("origin_date", "entry_date", "exit_date"),
+    ),
+    V5ResearchArtifactSpec(
+        "model_conditioned_asset_statistics",
+        "model-conditioned-asset-statistics.csv",
+        MODEL_CONDITIONED_STATISTICS_COLUMNS,
+        ("conditioning_model", "state", "asset", "horizon_weeks"),
+        ("sample_start", "sample_end"),
+    ),
+    V5ResearchArtifactSpec(
         "fx_features",
         "fx-features.csv",
         FX_FEATURE_COLUMNS,
@@ -277,8 +299,14 @@ V5_RESEARCH_ARTIFACTS = {
 V5_RESEARCH_ARTIFACTS_BY_PATH = {
     spec.path: spec for spec in V5_RESEARCH_ARTIFACT_SPECS
 }
+OPTIONAL_RESEARCH_ARTIFACT_KEYS = frozenset(
+    ("model_conditioned_asset_outcomes", "model_conditioned_asset_statistics")
+)
 REQUIRED_RESEARCH_ARTIFACT_KEYS = frozenset(
-    spec.key for spec in V5_RESEARCH_ARTIFACT_SPECS if not spec.key.startswith("fx_")
+    spec.key
+    for spec in V5_RESEARCH_ARTIFACT_SPECS
+    if not spec.key.startswith("fx_")
+    and spec.key not in OPTIONAL_RESEARCH_ARTIFACT_KEYS
 )
 FX_RESEARCH_ARTIFACT_KEYS = frozenset(
     ("fx_features", "fx_coverage", "fx_ablation_oos")
@@ -399,11 +427,20 @@ def build_v5_research_artifact_manifest(
     """Build the payload manifest from the exact bytes the CLI must stage."""
 
     keys = frozenset(str(key) for key in frames)
-    allowed = REQUIRED_RESEARCH_ARTIFACT_KEYS | FX_RESEARCH_ARTIFACT_KEYS
+    allowed = (
+        REQUIRED_RESEARCH_ARTIFACT_KEYS
+        | OPTIONAL_RESEARCH_ARTIFACT_KEYS
+        | FX_RESEARCH_ARTIFACT_KEYS
+    )
     if not REQUIRED_RESEARCH_ARTIFACT_KEYS.issubset(keys) or not keys.issubset(
         allowed
     ):
         raise ValueError("v5 research artifact set is incomplete or contains unknown keys")
+    present_model_conditioned = keys & OPTIONAL_RESEARCH_ARTIFACT_KEYS
+    if present_model_conditioned and present_model_conditioned != OPTIONAL_RESEARCH_ARTIFACT_KEYS:
+        raise ValueError(
+            "v5 model-conditioned research artifacts must be supplied as a complete set"
+        )
     present_fx = keys & FX_RESEARCH_ARTIFACT_KEYS
     if present_fx and present_fx != FX_RESEARCH_ARTIFACT_KEYS:
         raise ValueError("v5 FX research artifacts must be supplied as a complete set")
@@ -431,11 +468,20 @@ def verify_staged_v5_research_artifacts(
     if not isinstance(manifest, Mapping):
         raise TypeError("v5 research artifact manifest must be a mapping")
     keys = frozenset(str(key) for key in manifest)
-    allowed = REQUIRED_RESEARCH_ARTIFACT_KEYS | FX_RESEARCH_ARTIFACT_KEYS
+    allowed = (
+        REQUIRED_RESEARCH_ARTIFACT_KEYS
+        | OPTIONAL_RESEARCH_ARTIFACT_KEYS
+        | FX_RESEARCH_ARTIFACT_KEYS
+    )
     if not REQUIRED_RESEARCH_ARTIFACT_KEYS.issubset(keys) or not keys.issubset(
         allowed
     ):
         raise ValueError("v5 research artifact manifest keys are invalid")
+    present_model_conditioned = keys & OPTIONAL_RESEARCH_ARTIFACT_KEYS
+    if present_model_conditioned and present_model_conditioned != OPTIONAL_RESEARCH_ARTIFACT_KEYS:
+        raise ValueError(
+            "v5 model-conditioned research artifact manifest must contain the complete set"
+        )
     present_fx = keys & FX_RESEARCH_ARTIFACT_KEYS
     if present_fx and present_fx != FX_RESEARCH_ARTIFACT_KEYS:
         raise ValueError("v5 FX research artifact manifest must contain the complete set")
@@ -619,6 +665,9 @@ __all__ = [
     "FX_COVERAGE_COLUMNS",
     "FX_FEATURE_COLUMNS",
     "FX_RESEARCH_ARTIFACT_KEYS",
+    "MODEL_CONDITIONED_OUTCOME_COLUMNS",
+    "MODEL_CONDITIONED_STATISTICS_COLUMNS",
+    "OPTIONAL_RESEARCH_ARTIFACT_KEYS",
     "REQUIRED_RESEARCH_ARTIFACT_KEYS",
     "V5_CORE_ARTIFACTS",
     "V5_CORE_ARTIFACT_PATHS",

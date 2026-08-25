@@ -11,7 +11,10 @@ from typing import Any
 
 from regime_lab.frozen_v4 import FROZEN_V4_BASELINE
 from regime_lab.v5_artifacts import (
+    CONDITIONAL_STATISTICS_COLUMNS,
     FX_RESEARCH_ARTIFACT_KEYS,
+    MODEL_CONDITIONED_STATISTICS_COLUMNS,
+    OPTIONAL_RESEARCH_ARTIFACT_KEYS,
     REQUIRED_RESEARCH_ARTIFACT_KEYS,
     V5_CORE_ARTIFACT_PATHS,
     V5_RESEARCH_ARTIFACTS,
@@ -1053,11 +1056,20 @@ def _validate_research_artifacts(
     context = "payload.model.research_artifacts"
     artifacts = _mapping(_require(model, "research_artifacts", "payload.model"), context)
     keys = set(artifacts)
-    allowed = REQUIRED_RESEARCH_ARTIFACT_KEYS | FX_RESEARCH_ARTIFACT_KEYS
+    allowed = (
+        REQUIRED_RESEARCH_ARTIFACT_KEYS
+        | OPTIONAL_RESEARCH_ARTIFACT_KEYS
+        | FX_RESEARCH_ARTIFACT_KEYS
+    )
     if not REQUIRED_RESEARCH_ARTIFACT_KEYS.issubset(keys) or not keys.issubset(
         allowed
     ):
         raise V5ContractError(f"{context} keys are invalid")
+    present_model_conditioned = keys & OPTIONAL_RESEARCH_ARTIFACT_KEYS
+    if present_model_conditioned and present_model_conditioned != OPTIONAL_RESEARCH_ARTIFACT_KEYS:
+        raise V5ContractError(
+            f"{context} model-conditioned keys must be supplied as a complete set"
+        )
     present_fx = keys & FX_RESEARCH_ARTIFACT_KEYS
     if present_fx and present_fx != FX_RESEARCH_ARTIFACT_KEYS:
         raise V5ContractError(f"{context} FX keys must be supplied as a complete set")
@@ -1709,10 +1721,23 @@ def _validate_publication_review(
 
 def _validate_conditional_stats(value: Any, *, expected_resamples: int) -> None:
     research = _mapping(value, "payload.research")
+    expected_stats_fields = {
+        "method",
+        "role",
+        "execution_lag_weeks",
+        "horizons_weeks",
+        "assets",
+        "return_currency",
+        "rows",
+    }
     stats = _mapping(
         _require(research, "conditional_asset_stats", "payload.research"),
         "payload.research.conditional_asset_stats",
     )
+    if set(stats) != expected_stats_fields:
+        raise V5ContractError(
+            "payload.research.conditional_asset_stats fields are invalid"
+        )
     if stats.get("method") != "state_conditioned_forward_total_return":
         raise V5ContractError("conditional asset method is invalid")
     if stats.get("role") != "descriptive_only":
@@ -1733,6 +1758,8 @@ def _validate_conditional_stats(value: Any, *, expected_resamples: int) -> None:
         row = _mapping(raw, context)
         if forbidden.intersection(row):
             raise V5ContractError(f"{context} contains an allocation field")
+        if set(row) != set(CONDITIONAL_STATISTICS_COLUMNS):
+            raise V5ContractError(f"{context} fields are invalid")
         if row.get("asset") not in OUTCOME_ASSETS or row.get("state") not in STATE_ORDER:
             raise V5ContractError(f"{context} asset/state is invalid")
         horizon = _integer(
@@ -1802,6 +1829,115 @@ def _validate_conditional_stats(value: Any, *, expected_resamples: int) -> None:
     if combinations != expected:
         raise V5ContractError(
             "conditional asset rows must cover every asset/state/horizon"
+        )
+
+
+def _validate_model_conditioned_stats(
+    value: Any,
+    *,
+    expected_models: tuple[str, ...] | None,
+    expected_resamples: int,
+    model: Mapping[str, Any],
+) -> None:
+    research = _mapping(value, "payload.research")
+    raw = research.get("model_conditioned_asset_stats")
+    artifacts = _mapping(
+        _require(model, "research_artifacts", "payload.model"),
+        "payload.model.research_artifacts",
+    )
+    artifact_keys = set(artifacts)
+    if raw is None:
+        if artifact_keys & OPTIONAL_RESEARCH_ARTIFACT_KEYS:
+            raise V5ContractError(
+                "model-conditioned artifacts require public derived statistics"
+            )
+        return
+    if expected_models is None:
+        raise V5ContractError(
+            "model-conditioned statistics require forecast comparison metadata"
+        )
+    if not OPTIONAL_RESEARCH_ARTIFACT_KEYS.issubset(artifact_keys):
+        raise V5ContractError(
+            "model-conditioned statistics require their complete artifact pair"
+        )
+
+    context = "payload.research.model_conditioned_asset_stats"
+    stats = _mapping(raw, context)
+    expected_stats_fields = {
+        "method",
+        "role",
+        "conditioning",
+        "forecast_horizon_weeks",
+        "execution_lag_weeks",
+        "horizons_weeks",
+        "assets",
+        "models",
+        "return_currency",
+        "rows",
+    }
+    if set(stats) != expected_stats_fields:
+        raise V5ContractError(f"{context} fields are invalid")
+    if stats.get("method") != "oos_one_week_forecast_conditioned_forward_total_return":
+        raise V5ContractError(f"{context}.method is invalid")
+    if stats.get("role") != "retrospective_model_diagnostic":
+        raise V5ContractError(f"{context}.role is invalid")
+    if stats.get("conditioning") != "hard_argmax_oos_forecast":
+        raise V5ContractError(f"{context}.conditioning is invalid")
+    if stats.get("forecast_horizon_weeks") != 1:
+        raise V5ContractError(f"{context}.forecast_horizon_weeks must be one")
+    if stats.get("execution_lag_weeks") != 1:
+        raise V5ContractError(f"{context}.execution_lag_weeks must be one")
+    if tuple(stats.get("horizons_weeks", ())) != HORIZONS:
+        raise V5ContractError(f"{context}.horizons_weeks is invalid")
+    if tuple(stats.get("assets", ())) != OUTCOME_ASSETS:
+        raise V5ContractError(f"{context}.assets is invalid")
+    if tuple(stats.get("models", ())) != expected_models:
+        raise V5ContractError(f"{context}.models is invalid")
+    if stats.get("return_currency") != "USD":
+        raise V5ContractError(f"{context}.return_currency is invalid")
+
+    rows = _sequence(_require(stats, "rows", context), f"{context}.rows")
+    expected_rows = len(expected_models) * len(OUTCOME_ASSETS) * len(STATE_ORDER) * len(HORIZONS)
+    if len(rows) != expected_rows:
+        raise V5ContractError(f"{context}.rows has invalid coverage")
+    for name in expected_models:
+        model_rows: list[dict[str, Any]] = []
+        for index, raw_row in enumerate(rows):
+            row_context = f"{context}.rows[{index}]"
+            row = _mapping(raw_row, row_context)
+            if set(row) != set(MODEL_CONDITIONED_STATISTICS_COLUMNS):
+                raise V5ContractError(f"{row_context} fields are invalid")
+            if row.get("conditioning_model") != name:
+                continue
+            model_rows.append(
+                {
+                    str(key): item
+                    for key, item in row.items()
+                    if key != "conditioning_model"
+                }
+            )
+        canonical = {
+            "method": "state_conditioned_forward_total_return",
+            "role": "descriptive_only",
+            "execution_lag_weeks": 1,
+            "horizons_weeks": list(HORIZONS),
+            "assets": list(OUTCOME_ASSETS),
+            "return_currency": "USD",
+            "rows": model_rows,
+        }
+        _validate_conditional_stats(
+            {"conditional_asset_stats": canonical},
+            expected_resamples=expected_resamples,
+        )
+
+    statistics_count = _integer(
+        artifacts["model_conditioned_asset_statistics"]["row_count"],
+        "payload.model.research_artifacts.model_conditioned_asset_statistics.row_count",
+        minimum=1,
+    )
+    if statistics_count != expected_rows:
+        raise V5ContractError(
+            "model-conditioned asset statistics artifact row count is inconsistent"
         )
 
 
@@ -2107,6 +2243,12 @@ def validate_v5_payload(payload: Mapping[str, Any]) -> None:
     _validate_conditional_stats(
         _require(payload, "research", "payload"),
         expected_resamples=expected_outcome_resamples,
+    )
+    _validate_model_conditioned_stats(
+        _require(payload, "research", "payload"),
+        expected_models=forecast_comparison_models,
+        expected_resamples=expected_outcome_resamples,
+        model=model,
     )
 
 

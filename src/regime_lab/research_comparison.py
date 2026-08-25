@@ -22,6 +22,7 @@ from regime_lab.analysis import (
     run_benchmark,
 )
 from regime_lab.analysis.models import DIRECT_NEXT_STATE_MODEL_NAMES
+from regime_lab.analysis.features import build_cross_asset_correlation_features
 from regime_lab.collection import last_completed_week_cutoff, weekly_cutoffs
 from regime_lab.config import project_root
 from regime_lab.data import SQLiteSnapshotStore
@@ -32,7 +33,7 @@ from regime_lab.feature_quality import (
     feature_quality_document,
 )
 from regime_lab.io import write_json_atomic
-from regime_lab.pipeline import FEATURE_SET_VERSION, _profile
+from regime_lab.pipeline import _profile
 from regime_lab.provider_rights import (
     providers_for_live_config,
     verify_provider_rights,
@@ -57,6 +58,18 @@ RESEARCH_PAIRED_CHALLENGER_NAMES = tuple(
 )
 STATE_ORDER = ("risk_on", "transition", "risk_off")
 PROSPECTIVE_REGISTRY_START = "2026-08-21T20:00:00+00:00"
+V6_SELECTION_POLICY_ID = "selection-policy-v2"
+V6_RESEARCH_FEATURE_SET_VERSION = "weekly-pit-structural-v6-research"
+V6_CROSS_ASSET_FEATURE_NAMES = (
+    "cross_asset__equity_duration__correlation_13w",
+    "cross_asset__equity_duration__correlation_26w",
+    "cross_asset__equity_credit__correlation_13w",
+    "cross_asset__equity_credit__correlation_26w",
+    "cross_asset__equity_usd__correlation_13w",
+    "cross_asset__equity_usd__correlation_26w",
+    "cross_asset__credit_duration__correlation_13w",
+    "cross_asset__credit_duration__correlation_26w",
+)
 ARTIFACT_FRAMES = (
     ("leaderboard", "model-leaderboard.csv"),
     ("oos_predictions", "oos-predictions.csv"),
@@ -168,7 +181,7 @@ def _require_unchanged_research_source(
         )
 
 
-def _require_preregistered_model_suite() -> None:
+def _require_preregistered_model_suite() -> dict[str, Any]:
     path = project_root() / "config/structural_v6_research.json"
     try:
         document = json.loads(path.read_text(encoding="utf-8"))
@@ -179,6 +192,127 @@ def _require_preregistered_model_suite() -> None:
         raise RuntimeError(
             "research comparison model suite differs from V6 preregistration"
         )
+    if document.get("feature_set_version") != V6_RESEARCH_FEATURE_SET_VERSION:
+        raise RuntimeError(
+            "research feature set differs from V6 preregistration"
+        )
+    return document
+
+
+def _preregistered_selection_policy(
+    document: Mapping[str, Any],
+) -> dict[str, Any]:
+    policy = document.get("selection_policy")
+    evaluation = document.get("evaluation")
+    if not isinstance(policy, Mapping) or not isinstance(evaluation, Mapping):
+        raise RuntimeError("V6 selection policy is unavailable")
+    if policy.get("id") != V6_SELECTION_POLICY_ID:
+        raise RuntimeError("V6 selection policy id is invalid")
+    if policy.get("effective_date") != "2026-08-25":
+        raise RuntimeError("V6 selection policy effective date is invalid")
+    if policy.get("application") != "prospective_v6_runs_only":
+        raise RuntimeError("V6 selection policy is not prospective-only")
+    if policy.get("retroactive_reselection") is not False:
+        raise RuntimeError("V6 selection policy permits retroactive reselection")
+    unchanged_gates = policy.get("unchanged_gates")
+    expected_gate_keys = {
+        "holm_alpha",
+        "maximum_brier_degradation",
+        "fallback_count_required",
+    }
+    if (
+        not isinstance(unchanged_gates, Mapping)
+        or set(unchanged_gates) != expected_gate_keys
+    ):
+        raise RuntimeError("V6 unchanged selection gates are invalid")
+    prior_contracts = policy.get("frozen_prior_contracts")
+    if not isinstance(prior_contracts, Mapping):
+        raise RuntimeError("V6 frozen prior contracts are unavailable")
+    try:
+        minimum_improvement = float(policy["minimum_log_loss_improvement"])
+        evaluation_minimum = float(evaluation["minimum_log_loss_improvement"])
+        holm_alpha = float(evaluation["holm_alpha"])
+        brier_tolerance = float(evaluation["maximum_brier_degradation"])
+        policy_holm_alpha = float(unchanged_gates["holm_alpha"])
+        policy_brier_tolerance = float(
+            unchanged_gates["maximum_brier_degradation"]
+        )
+        prior_minimum = float(
+            prior_contracts["v4_v5_minimum_log_loss_improvement"]
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RuntimeError("V6 selection policy thresholds are invalid") from exc
+    if (
+        not np.isfinite(minimum_improvement)
+        or minimum_improvement < 0.0
+        or minimum_improvement != evaluation_minimum
+        or not np.isclose(minimum_improvement, 0.01, rtol=0.0, atol=1e-12)
+    ):
+        raise RuntimeError("V6 log-loss selection threshold is inconsistent")
+    if (
+        not np.isclose(prior_minimum, 0.05, rtol=0.0, atol=1e-12)
+        or prior_contracts.get("v4_v5_reselection") is not False
+    ):
+        raise RuntimeError("V4/V5 selection contracts are not frozen")
+    fallback_count_required = unchanged_gates["fallback_count_required"]
+    if type(fallback_count_required) is not int or fallback_count_required != 0:
+        raise RuntimeError("V6 fallback gate differs from the frozen gate")
+    if (
+        not np.isfinite(holm_alpha)
+        or not np.isfinite(policy_holm_alpha)
+        or not np.isclose(holm_alpha, policy_holm_alpha, rtol=0.0, atol=1e-12)
+        or not np.isclose(holm_alpha, 0.05, rtol=0.0, atol=1e-12)
+    ):
+        raise RuntimeError("V6 Holm alpha differs from the frozen gate")
+    if (
+        not np.isfinite(brier_tolerance)
+        or not np.isfinite(policy_brier_tolerance)
+        or not np.isclose(
+            brier_tolerance,
+            policy_brier_tolerance,
+            rtol=0.0,
+            atol=1e-12,
+        )
+        or not np.isclose(brier_tolerance, 0.01, rtol=0.0, atol=1e-12)
+    ):
+        raise RuntimeError("V6 Brier tolerance differs from the frozen gate")
+    return {
+        "id": V6_SELECTION_POLICY_ID,
+        "effective_date": "2026-08-25",
+        "application": "prospective_v6_runs_only",
+        "retroactive_reselection": False,
+        "minimum_log_loss_improvement": minimum_improvement,
+        "holm_alpha": holm_alpha,
+        "maximum_brier_degradation": brier_tolerance,
+        "fallback_count_required": fallback_count_required,
+    }
+
+
+def _with_v6_cross_asset_features(
+    features: pd.DataFrame,
+    canonical: pd.DataFrame,
+) -> pd.DataFrame:
+    """Add the preregistered V6-only correlation block without collisions."""
+
+    if features.columns.has_duplicates:
+        raise RuntimeError("V6 base feature matrix contains duplicate columns")
+    cross_asset = build_cross_asset_correlation_features(
+        canonical,
+        windows=(13, 26),
+    )
+    if tuple(cross_asset.columns) != V6_CROSS_ASSET_FEATURE_NAMES:
+        raise RuntimeError("V6 cross-asset feature block is incomplete or reordered")
+    overlap = sorted(set(features.columns).intersection(cross_asset.columns))
+    if overlap:
+        raise RuntimeError(
+            f"V6 cross-asset feature names overlap the base matrix: {overlap}"
+        )
+    if not features.index.equals(cross_asset.index):
+        raise RuntimeError("V6 cross-asset features are not row-aligned")
+    combined = features.join(cross_asset, how="left", validate="one_to_one")
+    if combined.columns.has_duplicates:
+        raise RuntimeError("V6 research feature matrix contains duplicate columns")
+    return combined
 
 
 def _frame_identity(frame: pd.DataFrame) -> str:
@@ -377,6 +511,7 @@ def _prepare_matrix(
     if len(canonical) < 650:
         raise RuntimeError("research comparison requires at least 650 weekly rows")
     features = dataset.features.reindex(canonical.index).copy()
+    features = _with_v6_cross_asset_features(features, canonical)
     labeler = CausalRegimeLabeler(
         RegimeLabelConfig(price_column="spy_close", minimum_fit_observations=260)
     )
@@ -430,7 +565,8 @@ def run_research_comparison(
     progress: Callable[[str], None] | None = None,
 ) -> tuple[dict[str, Any], dict[str, pd.DataFrame], dict[str, Any]]:
     source_fingerprint = research_source_fingerprint(config=config)
-    _require_preregistered_model_suite()
+    preregistration = _require_preregistered_model_suite()
+    selection_policy = _preregistered_selection_policy(preregistration)
     features, states, input_metadata = _prepare_matrix(
         config,
         database=database,
@@ -453,6 +589,9 @@ def run_research_comparison(
         model_workers=1 if profile_name == "quick" else 4,
         minimum_selection_predictions=split_minimum,
         minimum_holdout_predictions=split_minimum,
+        minimum_log_loss_improvement=selection_policy[
+            "minimum_log_loss_improvement"
+        ],
         progress=progress,
         checkpoint_directory=checkpoint_directory,
         source_fingerprint_sha256=(
@@ -496,7 +635,8 @@ def run_research_comparison(
         "promotion_status": "comparison_only_noncertifying",
         "profile": profile.name,
         "selection_end": selection_end,
-        "feature_set_version": FEATURE_SET_VERSION,
+        "selection_policy": selection_policy,
+        "feature_set_version": V6_RESEARCH_FEATURE_SET_VERSION,
         "models": list(RESEARCH_MODEL_NAMES),
         "control_model": CONTROL_MODEL,
         "restricted_suite_champion": benchmark.champion,
@@ -611,6 +751,7 @@ __all__ = [
     "CONTROL_MODEL",
     "RESEARCH_MODEL_NAMES",
     "RESEARCH_PAIRED_CHALLENGER_NAMES",
+    "V6_RESEARCH_FEATURE_SET_VERSION",
     "paired_control_comparison",
     "fold_feature_availability",
     "research_source_fingerprint",

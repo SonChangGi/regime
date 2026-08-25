@@ -570,6 +570,77 @@ class RecencyWeightedXGBoostClassifier(StateEncodedXGBoostClassifier):
         return self
 
 
+class RecencyWeightedRidgeLogisticClassifier(BaseEstimator, ClassifierMixin):
+    """Low-variance multinomial ridge with fixed row-order recency weights."""
+
+    def __init__(
+        self,
+        *,
+        C: float = 0.10,
+        half_life_weeks: float = 208.0,
+        random_state: int = 17,
+    ) -> None:
+        self.C = C
+        self.half_life_weeks = half_life_weeks
+        self.random_state = random_state
+
+    def fit(
+        self,
+        features: Any,
+        target: Any,
+    ) -> "RecencyWeightedRidgeLogisticClassifier":
+        if not np.isfinite(self.half_life_weeks) or self.half_life_weeks <= 0:
+            raise ValueError("half_life_weeks must be a positive finite number")
+        if not np.isfinite(self.C) or self.C <= 0:
+            raise ValueError("C must be a positive finite number")
+        matrix = check_array(features, dtype=float, ensure_all_finite="allow-nan")
+        labels = np.asarray(target, dtype=object)
+        if labels.ndim != 1 or len(labels) != len(matrix):
+            raise ValueError("target must be one-dimensional and row-aligned")
+        labels = np.asarray([str(value) for value in labels], dtype=object)
+        invalid = sorted(set(labels).difference(STATE_ORDER))
+        if invalid:
+            raise ValueError(f"target contains unsupported states: {invalid}")
+        if len(set(labels)) < 2:
+            raise ValueError("recency-weighted ridge requires at least two classes")
+
+        ages = np.arange(len(labels) - 1, -1, -1, dtype=float)
+        weights = np.exp2(-ages / float(self.half_life_weeks))
+        weights /= weights.mean()
+        self.sample_weight_ = weights.copy()
+        self.imputer_ = SimpleImputer(strategy="median", add_indicator=True)
+        self.scaler_ = StandardScaler()
+        transformed = self.imputer_.fit_transform(matrix)
+        transformed = self.scaler_.fit_transform(transformed)
+        self.classifier_ = LogisticRegression(
+            solver="lbfgs",
+            C=float(self.C),
+            class_weight=None,
+            max_iter=2_000,
+            tol=1e-6,
+            random_state=int(self.random_state),
+        )
+        self.classifier_.fit(transformed, labels, sample_weight=weights)
+        self.classes_ = np.asarray(self.classifier_.classes_, dtype=object)
+        self.n_features_in_ = int(matrix.shape[1])
+        return self
+
+    def predict_proba(self, features: Any) -> np.ndarray:
+        check_is_fitted(
+            self,
+            ("classifier_", "imputer_", "scaler_", "classes_"),
+        )
+        matrix = check_array(features, dtype=float, ensure_all_finite="allow-nan")
+        if matrix.shape[1] != self.n_features_in_:
+            raise ValueError("feature count changed after recency-weighted ridge fit")
+        transformed = self.scaler_.transform(self.imputer_.transform(matrix))
+        return np.asarray(self.classifier_.predict_proba(transformed), dtype=float)
+
+    def predict(self, features: Any) -> np.ndarray:
+        probabilities = self.predict_proba(features)
+        return self.classes_[np.argmax(probabilities, axis=1)]
+
+
 def _scaled_linear_pipeline(classifier: Any) -> Pipeline:
     return Pipeline(
         steps=[
@@ -608,6 +679,12 @@ def _construct_model(
                 tol=1e-6,
                 random_state=random_state,
             )
+        )
+    if name == "recency_weighted_ridge_logistic_208w":
+        return RecencyWeightedRidgeLogisticClassifier(
+            C=0.10,
+            half_life_weeks=208.0,
+            random_state=random_state,
         )
     if name == "pca_ridge_logistic":
         return Pipeline(
@@ -948,6 +1025,24 @@ _MODEL_SPECS: tuple[ModelSpec, ...] = (
         factory=_factory_for("ridge_logistic"),
     ),
     ModelSpec(
+        "recency_weighted_ridge_logistic_208w",
+        "learned",
+        3,
+        ("quick", "standard", "full"),
+        default=False,
+        feature_design=(
+            "fold_local_imputer_scaler_ridge_with_row_order_exponential_weight"
+        ),
+        search_space=MappingProxyType(
+            {
+                "C": (0.10,),
+                "half_life_weeks": (208.0,),
+                "sample_weight_normalization": ("mean_one",),
+            }
+        ),
+        factory=_factory_for("recency_weighted_ridge_logistic_208w"),
+    ),
+    ModelSpec(
         "transition_logistic",
         "learned",
         6,
@@ -1138,6 +1233,7 @@ MODEL_NAMES: tuple[str, ...] = tuple(
 )
 DIRECT_NEXT_STATE_MODEL_NAMES: tuple[str, ...] = (
     "recency_weighted_xgboost_208w",
+    "recency_weighted_ridge_logistic_208w",
     "pca_ridge_logistic",
     "discounted_markov_208w",
 )
@@ -1314,6 +1410,7 @@ __all__ = [
     "DiscountedMarkovClassifier",
     "GaussianHMMChallenger",
     "ModelSpec",
+    "RecencyWeightedRidgeLogisticClassifier",
     "RecencyWeightedXGBoostClassifier",
     "SmoothedMarkovClassifier",
     "StateEncodedXGBoostClassifier",

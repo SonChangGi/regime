@@ -44,6 +44,24 @@ audit_outputs = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(audit_outputs)
 
 
+def test_calendar_days_preserves_date_only_and_converts_timestamp_to_market_day() -> None:
+    values = pd.Series(
+        [
+            "2023-01-06",
+            "2023-01-06T02:00:00+00:00",
+            "2023-01-06T21:00:00+00:00",
+        ]
+    )
+
+    normalized = audit_outputs._calendar_days(values, context="test dates")
+
+    assert normalized.dt.strftime("%Y-%m-%d").tolist() == [
+        "2023-01-06",
+        "2023-01-05",
+        "2023-01-06",
+    ]
+
+
 def test_v5_feature_quality_binds_to_model_features_not_source_catalog(
     tmp_path: Path,
 ) -> None:
@@ -282,7 +300,12 @@ def _write_v5_contract_frames(
     frames: dict[str, pd.DataFrame],
 ) -> tuple[dict[str, dict[str, object]], dict[str, pd.DataFrame]]:
     keys_by_path = {
-        path: key for key, path in audit_outputs.V5_RESEARCH_ARTIFACTS
+        path: key
+        for key, path in (
+            *audit_outputs.V5_RESEARCH_ARTIFACTS,
+            *audit_outputs.V5_MODEL_CONDITIONED_ARTIFACTS,
+            *audit_outputs.V5_FX_ARTIFACTS,
+        )
     }
     contracts: dict[str, dict[str, object]] = {}
     for path_name, frame in frames.items():
@@ -602,6 +625,139 @@ def _v5_conditional_audit_fixture() -> tuple[dict, dict[str, pd.DataFrame]]:
     return payload, frames
 
 
+def _v5_model_conditioned_audit_fixture() -> tuple[
+    dict,
+    dict[str, pd.DataFrame],
+]:
+    models = ("markov", "xgboost")
+    origins = pd.date_range("2024-01-05T21:00:00Z", periods=24, freq="7D")
+    states_by_model = {
+        "markov": [STATE_ORDER[(position // 2) % 3] for position in range(24)],
+        "xgboost": [STATE_ORDER[2 - ((position // 2) % 3)] for position in range(24)],
+    }
+    episodes_by_model: dict[str, list[int]] = {}
+    for name, states in states_by_model.items():
+        episodes: list[int] = []
+        episode = -1
+        prior: str | None = None
+        for state in states:
+            if state != prior:
+                episode += 1
+            episodes.append(episode)
+            prior = state
+        episodes_by_model[name] = episodes
+
+    weekly = [
+        {
+            "date": origin.date().isoformat(),
+            "model_forecasts": [
+                {
+                    "model": name,
+                    "state": states_by_model[name][position],
+                    "date": (origin + timedelta(weeks=1)).date().isoformat(),
+                }
+                for name in models
+            ],
+        }
+        for position, origin in enumerate(origins)
+    ]
+    outcome_rows: list[dict[str, object]] = []
+    for model_position, name in enumerate(models):
+        for position, origin in enumerate(origins):
+            entry = origin + timedelta(weeks=1)
+            for horizon in audit_outputs.V5_OUTCOME_HORIZONS:
+                if position + 1 + horizon >= len(origins):
+                    continue
+                for asset_position, asset in enumerate(
+                    audit_outputs.V5_OUTCOME_ASSETS
+                ):
+                    outcome_rows.append(
+                        {
+                            "conditioning_model": name,
+                            "origin_position": position,
+                            "origin_date": origin,
+                            "entry_date": entry,
+                            "exit_date": entry + timedelta(weeks=horizon),
+                            "state": states_by_model[name][position],
+                            "episode_id": episodes_by_model[name][position],
+                            "asset": asset,
+                            "horizon_weeks": horizon,
+                            "execution_lag_weeks": 1,
+                            "return_currency": "USD",
+                            "forward_return": (
+                                (
+                                    position
+                                    + asset_position
+                                    + horizon
+                                    + model_position
+                                )
+                                % 11
+                                - 5
+                            )
+                            / 100.0,
+                            "max_drawdown": -(
+                                1 + (position + asset_position + horizon) % 7
+                            )
+                            / 100.0,
+                        }
+                    )
+    outcomes = pd.DataFrame(outcome_rows)
+    statistic_keys = pd.DataFrame(
+        [
+            {
+                "state": state,
+                "asset": asset,
+                "horizon_weeks": horizon,
+            }
+            for state in STATE_ORDER
+            for asset in audit_outputs.V5_OUTCOME_ASSETS
+            for horizon in audit_outputs.V5_OUTCOME_HORIZONS
+        ]
+    )
+    statistic_frames: list[pd.DataFrame] = []
+    for name in models:
+        model_outcomes = outcomes.loc[
+            outcomes["conditioning_model"].eq(name)
+        ].drop(columns="conditioning_model")
+        statistics = audit_outputs._recompute_v5_conditional_statistics(
+            model_outcomes,
+            statistic_keys,
+            expected_resamples=7,
+        )
+        statistics.insert(0, "conditioning_model", name)
+        statistic_frames.append(statistics)
+    combined_statistics = pd.concat(statistic_frames, ignore_index=True)
+    payload = {
+        "model": {
+            "profile": "quick",
+            "execution_parameters": _v5_execution_parameters(),
+            "forecast_comparison": {"models": list(models)},
+        },
+        "weekly": weekly,
+        "research": {
+            "model_conditioned_asset_stats": {
+                "method": (
+                    "oos_one_week_forecast_conditioned_forward_total_return"
+                ),
+                "role": "retrospective_model_diagnostic",
+                "conditioning": "hard_argmax_oos_forecast",
+                "forecast_horizon_weeks": 1,
+                "execution_lag_weeks": 1,
+                "horizons_weeks": list(audit_outputs.V5_OUTCOME_HORIZONS),
+                "assets": list(audit_outputs.V5_OUTCOME_ASSETS),
+                "models": list(models),
+                "return_currency": "USD",
+                "rows": _v5_frame_records(combined_statistics),
+            }
+        },
+    }
+    frames = {
+        "model-conditioned-asset-outcomes.csv": outcomes,
+        "model-conditioned-asset-statistics.csv": combined_statistics,
+    }
+    return payload, frames
+
+
 def _v5_duration_audit_fixture() -> tuple[dict, pd.DataFrame, dict[str, object]]:
     states: list[str] = []
     for duration in (2, 3, 4, 5, 6):
@@ -884,6 +1040,109 @@ def test_v5_conditional_audit_recomputes_all_point_and_interval_fields() -> None
         "statistics_rows": 3,
         "bootstrap_resamples": 7,
     }
+
+
+def test_v5_research_artifact_contract_keeps_legacy_and_optional_order() -> None:
+    legacy = {key: {} for key, _ in audit_outputs.V5_RESEARCH_ARTIFACTS}
+    assert audit_outputs._v5_expected_research_artifacts(legacy) == (
+        audit_outputs.V5_RESEARCH_ARTIFACTS
+    )
+
+    with_optional = {
+        key: {}
+        for key, _ in (
+            *audit_outputs.V5_RESEARCH_ARTIFACTS,
+            *audit_outputs.V5_MODEL_CONDITIONED_ARTIFACTS,
+            *audit_outputs.V5_FX_ARTIFACTS,
+        )
+    }
+    assert audit_outputs._v5_expected_research_artifacts(with_optional) == (
+        *audit_outputs.V5_RESEARCH_ARTIFACTS,
+        *audit_outputs.V5_MODEL_CONDITIONED_ARTIFACTS,
+        *audit_outputs.V5_FX_ARTIFACTS,
+    )
+
+
+def test_v5_research_artifact_contract_rejects_partial_or_reordered_pair() -> None:
+    partial = {
+        key: {}
+        for key, _ in (
+            *audit_outputs.V5_RESEARCH_ARTIFACTS,
+            audit_outputs.V5_MODEL_CONDITIONED_ARTIFACTS[0],
+        )
+    }
+    with pytest.raises(audit_outputs.AuditFailure, match="complete pair"):
+        audit_outputs._v5_expected_research_artifacts(partial)
+
+    reordered_items = [
+        *audit_outputs.V5_RESEARCH_ARTIFACTS[:-1],
+        *audit_outputs.V5_MODEL_CONDITIONED_ARTIFACTS,
+        audit_outputs.V5_RESEARCH_ARTIFACTS[-1],
+    ]
+    reordered = {key: {} for key, _ in reordered_items}
+    with pytest.raises(audit_outputs.AuditFailure, match="key/order"):
+        audit_outputs._v5_expected_research_artifacts(reordered)
+
+
+def test_v5_model_conditioned_audit_is_backward_compatible_when_absent() -> None:
+    summary = audit_outputs._audit_v5_model_conditioned(
+        {"research": {}},
+        {},
+    )
+
+    assert summary == {
+        "status": "legacy_absent",
+        "models": 0,
+        "outcome_rows": 0,
+        "statistics_rows": 0,
+    }
+
+
+def test_v5_model_conditioned_audit_binds_forecasts_and_recomputes_stats() -> None:
+    payload, frames = _v5_model_conditioned_audit_fixture()
+
+    summary = audit_outputs._audit_v5_model_conditioned(payload, frames)
+
+    assert summary == {
+        "status": "verified",
+        "models": 2,
+        "outcome_rows": len(frames["model-conditioned-asset-outcomes.csv"]),
+        "statistics_rows": 108,
+        "bootstrap_resamples": 7,
+    }
+
+
+def test_v5_model_conditioned_audit_rejects_timeline_tamper() -> None:
+    payload, frames = _v5_model_conditioned_audit_fixture()
+    outcomes = frames["model-conditioned-asset-outcomes.csv"]
+    outcomes.loc[0, "entry_date"] += timedelta(weeks=1)
+
+    with pytest.raises(audit_outputs.AuditFailure, match=r"entry is not t\+1"):
+        audit_outputs._audit_v5_model_conditioned(payload, frames)
+
+
+def test_v5_model_conditioned_audit_rejects_forecast_state_tamper() -> None:
+    payload, frames = _v5_model_conditioned_audit_fixture()
+    outcomes = frames["model-conditioned-asset-outcomes.csv"]
+    original = str(outcomes.loc[0, "state"])
+    outcomes.loc[0, "state"] = next(
+        state for state in STATE_ORDER if state != original
+    )
+
+    with pytest.raises(audit_outputs.AuditFailure, match="weekly OOS forecast"):
+        audit_outputs._audit_v5_model_conditioned(payload, frames)
+
+
+def test_v5_model_conditioned_audit_rejects_rehashed_statistics_tamper() -> None:
+    payload, frames = _v5_model_conditioned_audit_fixture()
+    statistics = frames["model-conditioned-asset-statistics.csv"]
+    statistics.loc[0, "n"] = int(statistics.loc[0, "n"]) + 1
+    payload["research"]["model_conditioned_asset_stats"]["rows"][0]["n"] = int(
+        statistics.loc[0, "n"]
+    )
+
+    with pytest.raises(audit_outputs.AuditFailure, match=" n mismatch"):
+        audit_outputs._audit_v5_model_conditioned(payload, frames)
 
 
 def test_v5_duration_audit_recomputes_corrected_d_minus_one_km() -> None:

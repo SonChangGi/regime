@@ -24,13 +24,24 @@ def test_interactive_controls_have_accessible_names() -> None:
     assert '<label for="analysis-date">' in HTML
     assert '<label for="week-select">' in HTML
     assert '<label for="history-window">' in HTML
+    assert '<label for="history-series-select">히스토리 기준</label>' in HTML
     assert '<label for="transition-horizon-select">' in HTML
-    assert '<label for="model-forecast-select">예측 비교 모델</label>' in HTML
+    assert '<label for="model-forecast-select">1주 예측 모델</label>' in HTML
     assert 'id="model-forecast-select"' in HTML
-    assert 'aria-controls="model-forecast-explorer"' in HTML
+    assert (
+        'aria-controls="next-regime-card history transition-card '
+        'model-forecast-explorer conditional-stats"'
+    ) in HTML
     assert 'aria-describedby="model-forecast-scope"' in HTML
     assert 'id="model-forecast-scope" class="sr-only"' in HTML
-    assert "공식 선정 모델은 변경하지 않고 비교 예측만 전환합니다." in HTML
+    assert "선택 모델의 1주 예측 레이어" in HTML
+    assert (
+        'id="history-series-select" '
+        'aria-controls="probability-chart history-data-body regime-timeline"'
+    ) in HTML
+    assert '<label for="conditional-basis-select">국면 기준</label>' in HTML
+    assert 'id="conditional-basis-select"' in HTML
+    assert 'aria-controls="conditional-stat-grid conditional-stat-body"' in HTML
     assert '<label for="conditional-asset-select">' in HTML
     assert '<label for="conditional-horizon-select">' in HTML
     assert 'id="theme-toggle"' in HTML and 'aria-pressed="false"' in HTML
@@ -53,7 +64,9 @@ def test_visuals_have_semantic_fallbacks_and_non_color_encoding() -> None:
     assert "방향키로 날짜 이동" in HTML
     assert "↗" in HTML and "◆" in HTML and "↘" in HTML
     assert "현재 t" not in HTML and "예측 t+1" not in HTML
-    assert 'membership ? "국면 소속도 히스토리" : "국면 확률 히스토리"' in JS
+    assert 'membership ? "관측 국면 소속도 히스토리" : "관측 국면 확률 히스토리"' in JS
+    assert 'title: `${model} 1주 예측 히스토리`' in JS
+    assert 'tableCaption: `${model} 과거 OOS·최신 1주 예측확률`' in JS
     assert 'isCurrent && isV5Payload() ? "소속도"' in JS
     assert '"예측확률"' in JS
     assert "최초 이탈 방향" in JS
@@ -67,6 +80,10 @@ def test_visuals_have_semantic_fallbacks_and_non_color_encoding() -> None:
     assert "공개 스냅샷" in JS
     assert 'currentFreshness.status === "stale"' in JS
     assert 'id="conditional-stat-grid" class="conditional-stat-grid" role="region"' in HTML
+    assert 'setAttribute("aria-label", `${basisLabel} 자산군 평균 수익률 비교`)' in JS
+    assert '`${basisLabel} · 선택 자산과 보유 기간의 국면별 조건부 성과 표 · 가로 스크롤 가능`' in JS
+    assert '`${modelForecastLabel(state.comparisonModel)} OOS 예측 국면 기준`' in JS
+    assert '"관측 국면 기준"' in JS
     assert "표본 부족" in JS
     assert 'createElement("td", null, formatSignedPercent(row.median_return))' in JS
     assert 'createElement("td", null, formatPercent(row.positive_rate))' in JS
@@ -180,4 +197,5 @@ def test_result_identity_is_compact_without_general_warning_surface() -> None:
 def test_probability_chart_declares_honest_fixed_axis() -> None:
     assert "for (const tick of [0, 0.25, 0.5, 0.75, 1])" in JS
     assert '`${Math.round(tick * 100)}%`' in JS
-    assert '현재 국면 ${isV5Payload() ? "소속도" : "확률"} · 0–100% 축' in JS
+    assert '현재 국면 ${historyMeta.measure} · 0–100% 축' in JS
+    assert "관측일 기준 t+1" in JS

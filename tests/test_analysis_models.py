@@ -14,6 +14,7 @@ from sklearn.base import clone
 from regime_lab.analysis.models import DIRECT_NEXT_STATE_MODEL_NAMES, MODEL_NAMES
 from regime_lab.analysis.models import MODEL_REGISTRY, BenchmarkProfile
 from regime_lab.analysis.models import DiscountedMarkovClassifier
+from regime_lab.analysis.models import RecencyWeightedRidgeLogisticClassifier
 from regime_lab.analysis.models import RecencyWeightedXGBoostClassifier
 from regime_lab.analysis.models import StateEncodedXGBoostClassifier
 from regime_lab.analysis.models import align_probabilities, augment_with_current_state
@@ -86,6 +87,7 @@ def _matrix_for(
 
 MODEL_PARAMETERS = [
     "ridge_logistic",
+    "recency_weighted_ridge_logistic_208w",
     "transition_logistic",
     "shrinkage_lda",
     "spline_logistic",
@@ -164,6 +166,11 @@ def test_optional_direct_model_manifest_has_fixed_search_spaces() -> None:
     assert tuple(indexed) == DIRECT_NEXT_STATE_MODEL_NAMES
     assert all(row["default"] is False for row in indexed.values())
     assert indexed["recency_weighted_xgboost_208w"]["search_space"] == {
+        "half_life_weeks": [208.0],
+        "sample_weight_normalization": ["mean_one"],
+    }
+    assert indexed["recency_weighted_ridge_logistic_208w"]["search_space"] == {
+        "C": [0.1],
         "half_life_weeks": [208.0],
         "sample_weight_normalization": ["mean_one"],
     }
@@ -268,6 +275,29 @@ def test_recency_weighted_xgboost_keeps_fixed_xgboost_hyperparameters() -> None:
         name: getattr(ordinary, name) for name in shared_parameters
     }
     assert recency.half_life_weeks == 208.0
+
+
+def test_recency_weighted_ridge_uses_fold_local_mean_one_weights() -> None:
+    features, target, _ = _model_data(rows=417)
+    estimator = RecencyWeightedRidgeLogisticClassifier(
+        C=0.10,
+        half_life_weeks=208.0,
+        random_state=47,
+    )
+
+    estimator.fit(features, target)
+
+    expected = np.exp2(-np.arange(416, -1, -1, dtype=float) / 208.0)
+    expected /= expected.mean()
+    np.testing.assert_allclose(estimator.sample_weight_, expected, rtol=0, atol=1e-15)
+    assert np.isclose(estimator.sample_weight_.mean(), 1.0)
+    assert np.isclose(estimator.sample_weight_[-1] / estimator.sample_weight_[0], 4.0)
+    probabilities = estimator.predict_proba(features.iloc[-5:])
+    predictions = estimator.predict(features.iloc[-5:])
+    np.testing.assert_allclose(probabilities.sum(axis=1), 1.0, atol=1e-12)
+    assert predictions.tolist() == estimator.classes_[
+        np.argmax(probabilities, axis=1)
+    ].tolist()
 
 
 def test_discounted_markov_uses_unscaled_208_week_transition_weights() -> None:

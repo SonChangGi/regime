@@ -91,6 +91,8 @@
     directional_forecasts: "directional-forecasts.csv",
     conditional_asset_outcomes: "conditional-asset-outcomes.csv",
     conditional_asset_statistics: "conditional-asset-statistics.csv",
+    model_conditioned_asset_outcomes: "model-conditioned-asset-outcomes.csv",
+    model_conditioned_asset_statistics: "model-conditioned-asset-statistics.csv",
     fx_features: "fx-features.csv",
     fx_coverage: "fx-coverage.csv",
     fx_ablation_oos: "fx-ablation-oos.csv",
@@ -129,6 +131,9 @@
   ]);
   const V5_FX_RESEARCH_ARTIFACTS = Object.freeze([
     "fx_features", "fx_coverage", "fx_ablation_oos",
+  ]);
+  const V5_MODEL_CONDITIONED_RESEARCH_ARTIFACTS = Object.freeze([
+    "model_conditioned_asset_outcomes", "model_conditioned_asset_statistics",
   ]);
   const FROZEN_V4_BASELINE_V3 = Object.freeze({
     result_version: V3_RESULT_VERSION,
@@ -191,7 +196,12 @@
   });
 
   const MARKET_LABELS = Object.freeze({
-    spy_close: "SPY 종가",
+    spy_trend_26w: "SPY 26주 추세",
+    spy_realized_vol_13w: "SPY 13주 변동성",
+    spy_drawdown_52w: "SPY 52주 고점 대비",
+    gics_sector_breadth_4w: "섹터 상승 비중 · 4주",
+    hyg_lqd_relative_13w: "HYG − LQD · 13주",
+    anfci_change_4w: "ANFCI 변화 · 4주",
     close: "시장 종가",
     weekly_return: "주간 수익률",
     spy_weekly_return: "SPY 주간 수익률",
@@ -220,7 +230,9 @@
     transitionHorizon: 1,
     outcomeAsset: "SPY",
     outcomeHorizon: 13,
+    outcomeBasis: "observed",
     comparisonModel: null,
+    historySeries: "observed",
   };
 
   const dom = {};
@@ -1332,15 +1344,22 @@
     const researchKeys = isObject(researchArtifacts) ? Object.keys(researchArtifacts) : [];
     const hasRequiredResearch = V5_REQUIRED_RESEARCH_ARTIFACTS.every((key) => researchKeys.includes(key));
     const fxResearchCount = V5_FX_RESEARCH_ARTIFACTS.filter((key) => researchKeys.includes(key)).length;
+    const modelConditionedResearchCount = V5_MODEL_CONDITIONED_RESEARCH_ARTIFACTS
+      .filter((key) => researchKeys.includes(key)).length;
     const allowedResearchKeys = new Set([
       ...V5_REQUIRED_RESEARCH_ARTIFACTS,
       ...V5_FX_RESEARCH_ARTIFACTS,
+      ...V5_MODEL_CONDITIONED_RESEARCH_ARTIFACTS,
     ]);
     if (
       !isObject(researchArtifacts)
       || !hasRequiredResearch
       || researchKeys.some((key) => !allowedResearchKeys.has(key))
       || (fxResearchCount !== 0 && fxResearchCount !== V5_FX_RESEARCH_ARTIFACTS.length)
+      || (
+        modelConditionedResearchCount !== 0
+        && modelConditionedResearchCount !== V5_MODEL_CONDITIONED_RESEARCH_ARTIFACTS.length
+      )
       || (fxAblation?.status === "evaluated" && fxResearchCount !== V5_FX_RESEARCH_ARTIFACTS.length)
     ) {
       errors.push("v5 model.research_artifacts manifest가 불완전합니다.");
@@ -1361,6 +1380,20 @@
       const conditionalArtifact = researchArtifacts.conditional_asset_statistics;
       if (!isObject(conditionalArtifact) || conditionalArtifact.row_count !== expectedConditionalRows) {
         errors.push("v5 conditional asset statistics artifact 행 수가 올바르지 않습니다.");
+      }
+      const comparisonModelNames = isObject(forecastComparison) && Array.isArray(forecastComparison.models)
+        ? forecastComparison.models
+        : [];
+      const modelConditionedArtifact = researchArtifacts.model_conditioned_asset_statistics;
+      const expectedModelConditionedRows = comparisonModelNames.length * expectedConditionalRows;
+      if (
+        modelConditionedResearchCount === V5_MODEL_CONDITIONED_RESEARCH_ARTIFACTS.length
+        && (
+          !isObject(modelConditionedArtifact)
+          || modelConditionedArtifact.row_count !== expectedModelConditionedRows
+        )
+      ) {
+        errors.push("v5 model-conditioned asset statistics artifact 행 수가 올바르지 않습니다.");
       }
       const leaderboardArtifact = researchArtifacts.directional_model_leaderboard;
       if (
@@ -1759,6 +1792,119 @@
     });
     if (combinations.size !== OUTCOME_ASSETS.length * STATE_ORDER.length * TRANSITION_HORIZONS.length) {
       errors.push("v5 conditional asset rows는 모든 asset/state/horizon 조합을 포함해야 합니다.");
+    }
+
+    const modelConditioned = isObject(research)
+      ? research.model_conditioned_asset_stats
+      : null;
+    const researchArtifacts = isObject(model) && isObject(model.research_artifacts)
+      ? model.research_artifacts
+      : {};
+    const conditionedArtifactCount = V5_MODEL_CONDITIONED_RESEARCH_ARTIFACTS
+      .filter((key) => Object.hasOwn(researchArtifacts, key)).length;
+    if (modelConditioned == null) {
+      if (conditionedArtifactCount > 0) {
+        errors.push("v5 model-conditioned artifact에는 공개 파생 통계가 필요합니다.");
+      }
+      return;
+    }
+    if (!isObject(modelConditioned)) {
+      errors.push("v5 research.model_conditioned_asset_stats 객체가 올바르지 않습니다.");
+      return;
+    }
+    if (conditionedArtifactCount !== V5_MODEL_CONDITIONED_RESEARCH_ARTIFACTS.length) {
+      errors.push("v5 model-conditioned research artifact는 완전한 pair여야 합니다.");
+    }
+
+    if (modelConditioned.method !== "oos_one_week_forecast_conditioned_forward_total_return") {
+      errors.push("v5 model-conditioned asset method가 올바르지 않습니다.");
+    }
+    if (modelConditioned.role !== "retrospective_model_diagnostic") {
+      errors.push("v5 model-conditioned asset role이 올바르지 않습니다.");
+    }
+    if (
+      modelConditioned.conditioning !== "hard_argmax_oos_forecast"
+      || modelConditioned.forecast_horizon_weeks !== 1
+      || modelConditioned.execution_lag_weeks !== 1
+      || modelConditioned.return_currency !== "USD"
+    ) {
+      errors.push("v5 model-conditioned asset conditioning/horizon/통화가 올바르지 않습니다.");
+    }
+    if (
+      !Array.isArray(modelConditioned.horizons_weeks)
+      || modelConditioned.horizons_weeks.length !== TRANSITION_HORIZONS.length
+      || modelConditioned.horizons_weeks.some((value, index) => value !== TRANSITION_HORIZONS[index])
+    ) {
+      errors.push("v5 model-conditioned asset horizons가 올바르지 않습니다.");
+    }
+    if (
+      !Array.isArray(modelConditioned.assets)
+      || modelConditioned.assets.length !== OUTCOME_ASSETS.length
+      || modelConditioned.assets.some((value, index) => value !== OUTCOME_ASSETS[index])
+    ) {
+      errors.push("v5 model-conditioned asset 목록이 올바르지 않습니다.");
+    }
+    const expectedModels = isObject(model.forecast_comparison)
+      && Array.isArray(model.forecast_comparison.models)
+      ? model.forecast_comparison.models
+      : [];
+    if (
+      !Array.isArray(modelConditioned.models)
+      || modelConditioned.models.length !== expectedModels.length
+      || modelConditioned.models.some((value, index) => value !== expectedModels[index])
+    ) {
+      errors.push("v5 model-conditioned asset models가 forecast_comparison과 일치하지 않습니다.");
+    }
+    if (!Array.isArray(modelConditioned.rows)) {
+      errors.push("v5 model-conditioned asset rows 배열이 없습니다.");
+      return;
+    }
+
+    const expectedConditionedRows = expectedModels.length
+      * OUTCOME_ASSETS.length
+      * STATE_ORDER.length
+      * TRANSITION_HORIZONS.length;
+    if (modelConditioned.rows.length !== expectedConditionedRows) {
+      errors.push("v5 model-conditioned asset rows 행 수가 올바르지 않습니다.");
+    }
+    const conditionedCombinations = new Set();
+    modelConditioned.rows.forEach((row, index) => {
+      const path = `research.model_conditioned_asset_stats.rows[${index}]`;
+      if (!isObject(row)) {
+        errors.push(`${path}는 객체여야 합니다.`);
+        return;
+      }
+      if (forbidden.some((field) => field in row)) errors.push(`${path}에 allocation 의미 필드가 있습니다.`);
+      const conditioningModel = row.conditioning_model;
+      if (!expectedModels.includes(conditioningModel)) {
+        errors.push(`${path}.conditioning_model이 올바르지 않습니다.`);
+      }
+      if (!OUTCOME_ASSETS.includes(row.asset) || !STATE_ORDER.includes(row.state) || !TRANSITION_HORIZONS.includes(row.horizon_weeks)) {
+        errors.push(`${path} model/asset/state/horizon이 올바르지 않습니다.`);
+      } else if (expectedModels.includes(conditioningModel)) {
+        const combination = `${conditioningModel}|${row.asset}|${row.state}|${row.horizon_weeks}`;
+        if (conditionedCombinations.has(combination)) errors.push(`${path} model/asset/state/horizon이 중복됩니다.`);
+        conditionedCombinations.add(combination);
+      }
+      if (row.execution_lag_weeks !== 1 || row.return_currency !== "USD") errors.push(`${path} 실행시점/통화가 올바르지 않습니다.`);
+      if (row.bootstrap_method !== "episode_bounded_circular_block" || row.bootstrap_block_weeks !== 13) errors.push(`${path} bootstrap 방법이 올바르지 않습니다.`);
+      if (row.bootstrap_resamples !== model.execution_parameters.conditional_outcome_bootstrap_resamples) errors.push(`${path} bootstrap 횟수가 실행 계약과 일치하지 않습니다.`);
+      if (row.minimum_observations !== 20 || row.minimum_unique_episodes !== 5) errors.push(`${path} 지원 기준이 올바르지 않습니다.`);
+      validateInteger(row.n, `${path}.n`, errors);
+      validateInteger(row.unique_episodes, `${path}.unique_episodes`, errors);
+      if (!["ok", "insufficient_support"].includes(row.status)) errors.push(`${path}.status가 올바르지 않습니다.`);
+      for (const metric of metrics) {
+        validateOptionalFinite(row[metric], `${path}.${metric}`, errors);
+        const lower = row[`${metric}_ci95_lower`];
+        const upper = row[`${metric}_ci95_upper`];
+        validateOptionalFinite(lower, `${path}.${metric}_ci95_lower`, errors);
+        validateOptionalFinite(upper, `${path}.${metric}_ci95_upper`, errors);
+        if ((lower == null) !== (upper == null)) errors.push(`${path}.${metric} CI null 상태가 다릅니다.`);
+        if (lower != null && upper != null && lower > upper) errors.push(`${path}.${metric} CI 순서가 뒤집혔습니다.`);
+      }
+    });
+    if (conditionedCombinations.size !== expectedConditionedRows) {
+      errors.push("v5 model-conditioned asset rows는 모든 model/asset/state/horizon 조합을 포함해야 합니다.");
     }
   }
 
@@ -2271,6 +2417,119 @@
     return state.weekly[state.selectedIndex] || null;
   }
 
+  function forecastComparisonModels(payload = state.raw) {
+    const model = isObject(payload) && isObject(payload.model) ? payload.model : null;
+    const comparison = model && isObject(model.forecast_comparison)
+      ? model.forecast_comparison
+      : null;
+    return comparison && Array.isArray(comparison.models)
+      ? comparison.models.filter((name) => typeof name === "string" && name)
+      : [];
+  }
+
+  function forecastForWeek(week, requestedModel = state.comparisonModel, payload = state.raw) {
+    if (!isObject(week)) return null;
+    const official = isObject(week.next_week) ? week.next_week : null;
+    const model = isObject(payload) && isObject(payload.model) ? payload.model : {};
+    const championName = modelName(model.champion);
+    const name = typeof requestedModel === "string" && requestedModel
+      ? requestedModel
+      : championName;
+    const forecasts = Array.isArray(week.model_forecasts) ? week.model_forecasts : [];
+    const selected = forecasts.find(
+      (row) => isObject(row) && row.model === name,
+    );
+    if (selected) return selected;
+    return official;
+  }
+
+  function oneWeekDepartureProbability(week, forecast = null) {
+    if (!isObject(week)) return null;
+    const currentState = isObject(week.current) ? week.current.state : null;
+    const selected = isObject(forecast) ? forecast : forecastForWeek(week);
+    if (STATE_ORDER.includes(currentState) && isObject(selected)) {
+      const stay = getProbability(selected, currentState);
+      if (stay !== null) return Math.max(0, Math.min(1, 1 - stay));
+    }
+    const risk = isObject(week.transition_risk) && isObject(week.transition_risk["1w"])
+      ? week.transition_risk["1w"].probability
+      : week.transition_probability;
+    return probability(risk);
+  }
+
+  function forecastHistorySupported(payload = state.raw, requestedModel = state.comparisonModel) {
+    const models = forecastComparisonModels(payload);
+    const name = typeof requestedModel === "string" ? requestedModel : "";
+    const weekly = isObject(payload) && Array.isArray(payload.weekly)
+      ? payload.weekly
+      : state.weekly;
+    return Boolean(
+      name
+      && models.includes(name)
+      && weekly.length
+      && weekly.every((week) => (
+        Array.isArray(week && week.model_forecasts)
+        && week.model_forecasts.some((row) => isObject(row) && row.model === name)
+      )),
+    );
+  }
+
+  function historyUsesForecast() {
+    return state.historySeries === "forecast"
+      && forecastHistorySupported(state.raw, state.comparisonModel);
+  }
+
+  function historyMeasureForWeek(
+    week,
+    code,
+    series = "observed",
+    requestedModel = null,
+    payload = null,
+    version = V5_RESULT_VERSION,
+  ) {
+    if (series === "forecast") {
+      return getProbability(
+        forecastForWeek(week, requestedModel, payload),
+        code,
+      );
+    }
+    return getCurrentMeasure(isObject(week) ? week.current : null, code, version);
+  }
+
+  function historyStateForWeek(
+    week,
+    series = "observed",
+    requestedModel = null,
+    payload = null,
+  ) {
+    const result = series === "forecast"
+      ? forecastForWeek(week, requestedModel, payload)
+      : isObject(week)
+        ? week.current
+        : null;
+    return isObject(result) && STATE_ORDER.includes(result.state) ? result.state : null;
+  }
+
+  function historySeriesMeasure(week, code) {
+    return historyMeasureForWeek(
+      week,
+      code,
+      historyUsesForecast() ? "forecast" : "observed",
+      state.comparisonModel,
+      state.raw,
+      resultVersion(),
+    );
+  }
+
+  function historySeriesState(week) {
+    return historyStateForWeek(
+      week,
+      historyUsesForecast() ? "forecast" : "observed",
+      state.comparisonModel,
+      state.raw,
+    );
+  }
+
   function isHistoricalSelection() {
     if (state.selectedIndex < 0 || !state.weekly.length) return false;
     return state.selectedIndex !== state.weekly.length - 1;
@@ -2318,7 +2577,7 @@
       "app-state", "loading-state", "error-state", "empty-state", "error-title", "error-detail", "retry-button",
       "dashboard", "header-result-identity", "header-analysis-date", "header-data-as-of", "header-model-health", "theme-toggle",
       "theme-toggle-text", "dashboard-subtitle", "date-form", "analysis-date", "week-select",
-      "snap-note", "previous-week", "next-week", "latest-week", "history-window",
+      "snap-note", "previous-week", "next-week", "latest-week", "history-window", "history-series-select",
       "current-regime-card", "current-horizon", "current-regime-symbol", "current-regime-name",
       "current-regime-confidence", "current-probabilities", "current-entropy", "next-regime-card", "next-horizon",
       "next-regime-symbol", "next-regime-name", "next-regime-confidence",
@@ -2329,12 +2588,13 @@
       "chart-selection-readout", "chart-interaction-hint",
       "chart-readout-date", "chart-readout-risk-on", "chart-readout-transition", "chart-readout-risk-off",
       "history-data-body", "probability-chart-title", "history-chart-legend", "history-table-scroll", "history-table-caption",
-      "factor-title", "factor-axis", "factor-caption", "factor-scores", "regime-timeline", "timeline-start",
+      "factor-title", "factor-axis", "factor-caption", "factor-scores", "timeline-title", "regime-timeline", "timeline-start",
       "timeline-end", "drivers-title", "drivers-caption", "top-drivers", "market-context",
       "duration-context-card", "duration-context-caption", "duration-context", "duration-baselines", "duration-research-detail",
       "fx-context-card", "fx-context-caption", "fx-coverage", "fx-ablation-status", "fx-context", "fx-context-detail",
-      "conditional-stats-nav", "conditional-stats", "conditional-stats-caption", "conditional-asset-select", "conditional-horizon-select",
-      "conditional-comparison-caption", "conditional-stat-grid", "conditional-stat-table-caption", "conditional-stat-body",
+      "conditional-stats-nav", "conditional-stats", "conditional-stats-caption", "conditional-basis-field", "conditional-basis-select",
+      "conditional-asset-select", "conditional-horizon-select", "conditional-comparison-caption", "conditional-stat-grid",
+      "conditional-stat-scroll", "conditional-stat-table-caption", "conditional-stat-body",
       "champion-summary", "model-evidence-summary", "model-caption", "model-loss-caption",
       "model-loss-chart", "model-loss-axis", "leaderboard-body",
       "model-forecast-field", "model-forecast-select", "model-forecast-explorer",
@@ -2485,6 +2745,22 @@
       renderHistory();
       renderTimeline();
     });
+    if (dom["history-series-select"]) {
+      dom["history-series-select"].addEventListener("change", () => {
+        const requested = dom["history-series-select"].value;
+        state.historySeries = requested === "forecast"
+          && forecastHistorySupported(state.raw, state.comparisonModel)
+          ? "forecast"
+          : "observed";
+        dom["history-series-select"].value = state.historySeries;
+        renderSemanticLabels();
+        renderHistory();
+        renderTimeline();
+        dom["screen-reader-status"].textContent = historyUsesForecast()
+          ? `${modelForecastLabel(state.comparisonModel)} 1주 예측 히스토리로 변경했습니다.`
+          : "관측 국면 소속도 히스토리로 변경했습니다.";
+      });
+    }
     dom["transition-horizon-select"].addEventListener("change", () => {
       const requested = Number(dom["transition-horizon-select"].value);
       state.transitionHorizon = TRANSITION_HORIZONS.includes(requested) ? requested : 1;
@@ -2492,17 +2768,25 @@
     });
     dom["model-forecast-select"].addEventListener("change", () => {
       const requested = dom["model-forecast-select"].value;
-      const comparison = isObject(state.raw && state.raw.model)
-        ? state.raw.model.forecast_comparison
-        : null;
-      const models = isObject(comparison) && Array.isArray(comparison.models)
-        ? comparison.models
-        : [];
+      const models = forecastComparisonModels(state.raw);
       if (!models.includes(requested)) return;
       state.comparisonModel = requested;
-      renderModelForecast();
-      dom["screen-reader-status"].textContent = `${modelForecastLabel(requested)} 예측 비교로 변경했습니다.`;
+      renderForecastSurfaces();
+      dom["screen-reader-status"].textContent = `${modelForecastLabel(requested)} 1주 예측으로 변경했습니다.`;
     });
+    if (dom["conditional-basis-select"]) {
+      dom["conditional-basis-select"].addEventListener("change", () => {
+        const requested = dom["conditional-basis-select"].value;
+        state.outcomeBasis = requested === "forecast"
+          && modelConditionedAssetRowsComplete(state.raw, state.comparisonModel)
+          ? "forecast"
+          : "observed";
+        syncConditionalBasisControl();
+        renderConditionalComparison();
+        renderConditionalDetail();
+        dom["screen-reader-status"].textContent = `${conditionalBasisLabel()} 자산 성과로 변경했습니다.`;
+      });
+    }
     dom["conditional-asset-select"].addEventListener("change", () => {
       state.outcomeAsset = OUTCOME_ASSETS.includes(dom["conditional-asset-select"].value)
         ? dom["conditional-asset-select"].value
@@ -2557,6 +2841,67 @@
     }
   }
 
+  function syncHistorySeriesControl() {
+    const select = dom["history-series-select"];
+    if (!select) return;
+    const supported = forecastHistorySupported(state.raw, state.comparisonModel);
+    const forecastOption = [...select.options].find((option) => option.value === "forecast");
+    if (forecastOption) forecastOption.disabled = !supported;
+    if (!supported && state.historySeries === "forecast") state.historySeries = "observed";
+    select.value = state.historySeries;
+    select.setAttribute(
+      "aria-label",
+      supported
+        ? `히스토리 시계열 · ${modelForecastLabel(state.comparisonModel)} 1주 예측 선택 가능`
+        : "히스토리 시계열 · 관측 국면",
+    );
+  }
+
+  function renderNextForecastSurface(week) {
+    const forecast = forecastForWeek(week, state.comparisonModel);
+    const forecastDate = firstValue(forecast, ["date", "target_date", "period_end"]);
+    renderRegime("next", forecast, forecastDate);
+    const selectedModel = textValue(isObject(forecast) ? forecast.model : null, "");
+    if (selectedModel && dom["next-horizon"]) {
+      dom["next-horizon"].textContent += ` · ${modelForecastLabel(selectedModel)}`;
+    }
+    if (dom["next-regime-card"]) {
+      const championName = modelName(state.raw && state.raw.model && state.raw.model.champion);
+      dom["next-regime-card"].classList.toggle(
+        "is-comparison-model",
+        Boolean(selectedModel) && selectedModel !== championName,
+      );
+      dom["next-regime-card"].dataset.forecastModel = selectedModel;
+      dom["next-regime-card"].setAttribute(
+        "aria-label",
+        `${modelForecastLabel(selectedModel)} ${selectedModel === championName ? "공식" : "비교"} 1주 예측 · ${stateMeta(isObject(forecast) ? forecast.state : null).ko}`,
+      );
+    }
+    renderNextModelContext(forecast);
+    return forecast;
+  }
+
+  function renderForecastSurfaces() {
+    const week = selectedWeek();
+    if (!week) return;
+    const forecast = renderNextForecastSurface(week);
+    renderTransition(week, forecast);
+    renderModelForecast();
+    const historyWasForecast = state.historySeries === "forecast";
+    syncHistorySeriesControl();
+    if (historyWasForecast || historyUsesForecast()) {
+      renderSemanticLabels();
+      renderHistory();
+      renderTimeline();
+    }
+    const outcomeWasForecast = state.outcomeBasis === "forecast";
+    syncConditionalBasisControl();
+    if (outcomeWasForecast || state.outcomeBasis === "forecast") {
+      renderConditionalComparison();
+      renderConditionalDetail();
+    }
+  }
+
   function renderSelectedWeek() {
     const week = selectedWeek();
     if (!week) return;
@@ -2568,9 +2913,9 @@
     dom["dashboard-subtitle"].textContent = `${formatDate(week.date)} 관측 주${cutoff ? ` · 컷오프 ${formatDateTime(cutoff)}` : ""}`;
 
     renderRegime("current", week.current, week.date);
-    renderRegime("next", week.next_week, firstValue(week.next_week, ["date", "target_date", "period_end"]));
-    renderNextModelContext(week.next_week);
-    renderTransition(week);
+    const forecast = renderNextForecastSurface(week);
+    renderTransition(week, forecast);
+    syncHistorySeriesControl();
     renderSemanticLabels();
     renderHistory();
     renderTimeline();
@@ -2583,16 +2928,47 @@
     renderModelForecast();
   }
 
+  function historySeriesMeta() {
+    if (historyUsesForecast()) {
+      const model = modelForecastLabel(state.comparisonModel);
+      return {
+        title: `${model} 1주 예측 히스토리`,
+        measure: "예측확률",
+        emptyMeasure: "예측확률",
+        legendLabel: `${model} 다음 주 국면 예측확률 선 범례`,
+        tableLabel: `${model} 관측 주별 다음 주 국면 예측확률 표`,
+        tableCaption: `${model} 과거 OOS·최신 1주 예측확률`,
+        timelineTitle: `${model} 예측 타임라인`,
+        timelineLabel: `${model} 관측 주별 다음 주 예측 국면`,
+      };
+    }
+    const membership = isV5Payload();
+    return {
+      title: membership ? "관측 국면 소속도 히스토리" : "관측 국면 확률 히스토리",
+      measure: membership ? "소속도" : "확률",
+      emptyMeasure: membership ? "소속도" : "확률",
+      legendLabel: membership ? "관측 국면 소속도 선 범례" : "관측 국면 확률 선 범례",
+      tableLabel: membership ? "표시 기간의 관측 국면 소속도 표" : "표시 기간의 관측 국면 확률 표",
+      tableCaption: membership ? "표시 기간의 관측 국면 소속도" : "표시 기간의 관측 국면 확률",
+      timelineTitle: "관측 국면 타임라인",
+      timelineLabel: "주간 관측 국면",
+    };
+  }
+
   function renderSemanticLabels() {
     const membership = isV5Payload();
-    setText(dom["probability-chart-title"], membership ? "국면 소속도 히스토리" : "국면 확률 히스토리");
+    const historyMeta = historySeriesMeta();
+    setText(dom["probability-chart-title"], historyMeta.title);
     setText(dom["factor-title"], membership ? "시장 맥락 점수" : "국면 팩터");
     setText(dom["factor-caption"], membership ? "52주 표준화 기반 합성점수" : "52주 표준점수");
     setText(dom["drivers-title"], membership ? "52주 극단값" : "주요 지표");
     setText(dom["drivers-caption"], membership ? "52주 표준점수 · 시장 맥락" : "52주 표준점수");
-    dom["history-chart-legend"].setAttribute("aria-label", membership ? "국면 소속도 선 범례" : "국면 확률 선 범례");
-    dom["history-table-scroll"].setAttribute("aria-label", membership ? "표시 기간의 국면 소속도 표" : "표시 기간의 국면 확률 표");
-    setText(dom["history-table-caption"], membership ? "표시 기간의 현재 국면 소속도" : "표시 기간의 현재 국면 확률");
+    dom["history-chart-legend"].setAttribute("aria-label", historyMeta.legendLabel);
+    dom["history-table-scroll"].setAttribute("aria-label", historyMeta.tableLabel);
+    dom["probability-chart-wrap"].setAttribute("aria-label", historyMeta.tableLabel);
+    setText(dom["history-table-caption"], historyMeta.tableCaption);
+    setText(dom["timeline-title"], historyMeta.timelineTitle);
+    dom["regime-timeline"].setAttribute("aria-label", historyMeta.timelineLabel);
   }
 
   function renderRegime(prefix, result, horizonDate) {
@@ -2651,28 +3027,44 @@
     const health = state.raw && isObject(state.raw.model)
       ? state.raw.model.model_health
       : null;
-    if (isV5Payload() && isObject(health)) {
+    const championName = modelName(state.raw && state.raw.model && state.raw.model.champion);
+    if (isV5Payload() && model && model !== championName) {
+      details.push("비교 예측");
+    } else if (isV5Payload() && isObject(health)) {
       details.push(health.status === "review_due" ? "검토 필요" : "정상");
       details.push(...modelHealthReasonLabels(health.reasons));
     }
     setText(dom["next-model-context-detail"], details.join(" · "));
   }
 
-  function renderTransition(week) {
+  function renderTransition(week, forecast = null) {
     const riskByHorizon = isObject(week.transition_risk) ? week.transition_risk : null;
-    const primaryRisk = riskByHorizon && isObject(riskByHorizon["1w"]) ? riskByHorizon["1w"] : null;
-    const value = probability(primaryRisk ? primaryRisk.probability : week.transition_probability);
+    const selectedForecast = isObject(forecast) ? forecast : forecastForWeek(week);
+    const value = oneWeekDepartureProbability(week, selectedForecast);
+    const selectedModel = textValue(
+      isObject(selectedForecast) ? selectedForecast.model : null,
+      "",
+    );
+    const selectableForecast = isV5Payload()
+      && Array.isArray(week.model_forecasts)
+      && Boolean(selectedModel);
     setText(dom["transition-value"], formatPercent(value));
     setText(
       dom["transition-value-label"],
-      riskByHorizon
-        ? "1주 이탈 확률"
+      selectableForecast
+        ? `1주 이탈 · ${modelForecastLabel(selectedModel)}`
+        : riskByHorizon
+          ? "1주 이탈 확률"
         : "다음 주 국면 변경 확률",
     );
     const fill = dom["transition-meter"].querySelector("span");
     dom["transition-meter"].setAttribute(
       "aria-label",
-      riskByHorizon ? "향후 1주 안에 한 번 이상 현재 국면에서 이탈할 확률" : "다음 주 국면 변경 확률",
+      selectableForecast
+        ? `${modelForecastLabel(selectedModel)} 기준 다음 주 현재 국면 이탈 확률`
+        : riskByHorizon
+          ? "향후 1주 안에 한 번 이상 현재 국면에서 이탈할 확률"
+          : "다음 주 국면 변경 확률",
     );
     fill.style.width = value === null ? "0" : `${(value * 100).toFixed(2)}%`;
     if (value === null) {
@@ -2702,7 +3094,7 @@
       const row = createElement("div", "transition-horizon-row");
       const heading = createElement("div", "transition-horizon-heading");
       heading.append(
-        createElement("span", null, `${horizon}주 이내`),
+        createElement("span", null, `${horizon}주 이내 · 별도 이탈 모델`),
         createElement("strong", null, formatPercent(value)),
       );
       const meter = createElement("span", "transition-horizon-meter");
@@ -2799,10 +3191,11 @@
   function renderChartReadout(date) {
     const index = chartIndexForDate(date);
     const week = index >= 0 ? state.chartHistory[index] : null;
+    const historyMeta = historySeriesMeta();
     setText(dom["chart-readout-date"], week ? formatDate(week.date) : "—");
     for (const code of STATE_ORDER) {
       const readout = dom[`chart-readout-${code.replaceAll("_", "-")}`];
-      if (readout) setText(readout, week ? formatPercent(getCurrentMeasure(week.current, code)) : "—");
+      if (readout) setText(readout, week ? formatPercent(historySeriesMeasure(week, code)) : "—");
     }
     if (week) updateChartCursor(index);
     for (const point of dom["probability-chart"].querySelectorAll(".chart-point")) {
@@ -2811,7 +3204,7 @@
 
     if (dom["chart-selection-readout"]) {
       const summary = week
-        ? `${formatDate(week.date)}. Risk-on ${formatPercent(getCurrentMeasure(week.current, "risk_on"))}, Transition ${formatPercent(getCurrentMeasure(week.current, "transition"))}, Risk-off ${formatPercent(getCurrentMeasure(week.current, "risk_off"))}.`
+        ? `${formatDate(week.date)} 관측 기준 ${historyMeta.measure}. Risk-on ${formatPercent(historySeriesMeasure(week, "risk_on"))}, Transition ${formatPercent(historySeriesMeasure(week, "transition"))}, Risk-off ${formatPercent(historySeriesMeasure(week, "risk_off"))}.`
         : "선택된 차트 날짜가 없습니다.";
       dom["chart-selection-readout"].setAttribute("aria-label", summary);
     }
@@ -2819,7 +3212,8 @@
 
   function showChartTooltipForWeek(event, week) {
     const tooltip = dom["chart-tooltip"];
-    tooltip.textContent = `${formatDate(week.date)} · Risk-on ${formatPercent(getCurrentMeasure(week.current, "risk_on"))} · Transition ${formatPercent(getCurrentMeasure(week.current, "transition"))} · Risk-off ${formatPercent(getCurrentMeasure(week.current, "risk_off"))}`;
+    const historyMeta = historySeriesMeta();
+    tooltip.textContent = `${formatDate(week.date)} 관측 · ${historyMeta.measure} · Risk-on ${formatPercent(historySeriesMeasure(week, "risk_on"))} · Transition ${formatPercent(historySeriesMeasure(week, "transition"))} · Risk-off ${formatPercent(historySeriesMeasure(week, "risk_off"))}`;
     tooltip.hidden = false;
     const wrapRect = dom["probability-chart-wrap"].getBoundingClientRect();
     const left = finiteNumber(event.clientX) === null ? 8 : event.clientX - wrapRect.left + 10;
@@ -2895,6 +3289,7 @@
 
   function renderHistory() {
     const history = selectedHistory();
+    const historyMeta = historySeriesMeta();
     state.chartHistory = history;
     state.chartPreviewDate = null;
     renderHistoryTable(history);
@@ -2911,7 +3306,7 @@
         "text-anchor": "middle",
         class: "chart-axis-label",
       });
-      empty.textContent = `표시할 ${isV5Payload() ? "소속도" : "확률"} 히스토리가 없습니다.`;
+      empty.textContent = `표시할 ${historyMeta.emptyMeasure} 히스토리가 없습니다.`;
       svg.append(empty);
       return;
     }
@@ -2959,7 +3354,7 @@
     let validPointCount = 0;
     for (const code of STATE_ORDER) {
       const points = history.map((week, index) => {
-        const value = getCurrentMeasure(week.current, code);
+        const value = historySeriesMeasure(week, code);
         return { week, value, x: x(index), y: value === null ? null : y(value), index };
       });
       const pathData = makeLinePath(points);
@@ -2985,12 +3380,14 @@
 
     if (!validPointCount) {
       const empty = createSvg("text", { x: width / 2, y: height / 2, "text-anchor": "middle", class: "chart-axis-label" });
-      empty.textContent = `이 기간에는 유효한 ${isV5Payload() ? "소속도" : "확률"} 값이 없습니다.`;
+      empty.textContent = `이 기간에는 유효한 ${historyMeta.emptyMeasure} 값이 없습니다.`;
       svg.append(empty);
     }
 
     const range = `${formatDate(history[0].date)}–${formatDate(history[history.length - 1].date)}`;
-    dom["history-caption"].textContent = `${range} · ${history.length}주 관측 · 현재 국면 ${isV5Payload() ? "소속도" : "확률"} · 0–100% 축`;
+    dom["history-caption"].textContent = historyUsesForecast()
+      ? `${range} · 과거 OOS·최신 1주 예측 · 관측일 기준 t+1 ${modelForecastLabel(state.comparisonModel)} 예측확률 · 0–100% 축`
+      : `${range} · ${history.length}주 관측 · 현재 국면 ${historyMeta.measure} · 0–100% 축`;
     renderChartReadout(state.chartPinnedDate);
     requestAnimationFrame(() => scrollChartDateIntoView(state.chartPinnedDate));
   }
@@ -3012,7 +3409,7 @@
     for (const week of history) {
       const row = createElement("tr");
       row.append(createElement("td", null, week.date));
-      for (const code of STATE_ORDER) row.append(createElement("td", null, formatPercent(getCurrentMeasure(week.current, code))));
+      for (const code of STATE_ORDER) row.append(createElement("td", null, formatPercent(historySeriesMeasure(week, code))));
       dom["history-data-body"].append(row);
     }
   }
@@ -3073,13 +3470,14 @@
     }
 
     for (const week of history) {
-      const code = isObject(week.current) ? week.current.state : null;
+      const code = historySeriesState(week);
       const meta = stateMeta(code);
       const button = createElement("button", `timeline-cell ${STATE_ORDER.includes(code) ? code : "unknown"}`, week.date);
       button.type = "button";
       button.dataset.date = week.date;
-      button.setAttribute("aria-label", `${formatDate(week.date)} 현재 국면 ${meta.ko}`);
-      button.title = `${week.date} · ${meta.ko}`;
+      const seriesLabel = historyUsesForecast() ? "관측 기준 다음 주 예측 국면" : "관측 국면";
+      button.setAttribute("aria-label", `${formatDate(week.date)} ${seriesLabel} ${meta.ko}`);
+      button.title = `${week.date} · ${seriesLabel} · ${meta.ko}`;
       const isSelected = week.date === selectedWeek().date;
       button.tabIndex = isSelected ? 0 : -1;
       if (isSelected) button.setAttribute("aria-current", "date");
@@ -3318,12 +3716,72 @@
     card.hidden = false;
   }
 
+  function modelConditionedAssetRows(payload, requestedModel) {
+    const research = isObject(payload) && isObject(payload.research) ? payload.research : null;
+    const stats = research && isObject(research.model_conditioned_asset_stats)
+      ? research.model_conditioned_asset_stats
+      : null;
+    if (!stats || !Array.isArray(stats.rows) || typeof requestedModel !== "string" || !requestedModel) return [];
+    return stats.rows.filter(
+      (row) => isObject(row) && row.conditioning_model === requestedModel,
+    );
+  }
+
+  function modelConditionedAssetRowsComplete(payload, requestedModel) {
+    if (!forecastComparisonModels(payload).includes(requestedModel)) return false;
+    const rows = modelConditionedAssetRows(payload, requestedModel);
+    const expectedCount = OUTCOME_ASSETS.length * STATE_ORDER.length * TRANSITION_HORIZONS.length;
+    if (rows.length !== expectedCount) return false;
+    const combinations = new Set();
+    for (const row of rows) {
+      if (
+        !OUTCOME_ASSETS.includes(row.asset)
+        || !STATE_ORDER.includes(row.state)
+        || !TRANSITION_HORIZONS.includes(row.horizon_weeks)
+      ) return false;
+      combinations.add(`${row.asset}|${row.state}|${row.horizon_weeks}`);
+    }
+    return combinations.size === expectedCount;
+  }
+
+  function conditionalStatsRowsForBasis(payload, basis = "observed", requestedModel = null) {
+    const research = isObject(payload) && isObject(payload.research) ? payload.research : null;
+    if (basis === "forecast") return modelConditionedAssetRows(payload, requestedModel);
+    const stats = research && isObject(research.conditional_asset_stats)
+      ? research.conditional_asset_stats
+      : null;
+    return stats && Array.isArray(stats.rows) ? stats.rows : [];
+  }
+
   function conditionalStatsRows() {
-    const research = isObject(state.raw && state.raw.research) ? state.raw.research : null;
-    const stats = research && isObject(research.conditional_asset_stats) ? research.conditional_asset_stats : null;
-    return stats && Array.isArray(stats.rows)
-      ? stats.rows
-      : [];
+    return conditionalStatsRowsForBasis(
+      state.raw,
+      state.outcomeBasis,
+      state.comparisonModel,
+    );
+  }
+
+  function conditionalBasisLabel() {
+    return state.outcomeBasis === "forecast"
+      && modelConditionedAssetRowsComplete(state.raw, state.comparisonModel)
+      ? `${modelForecastLabel(state.comparisonModel)} OOS 예측 국면 기준`
+      : "관측 국면 기준";
+  }
+
+  function syncConditionalBasisControl() {
+    const field = dom["conditional-basis-field"];
+    const select = dom["conditional-basis-select"];
+    if (!field || !select) {
+      state.outcomeBasis = "observed";
+      return;
+    }
+    const supported = modelConditionedAssetRowsComplete(state.raw, state.comparisonModel);
+    const forecastOption = [...select.options].find((option) => option.value === "forecast");
+    if (forecastOption) forecastOption.disabled = !supported;
+    if (!supported && state.outcomeBasis === "forecast") state.outcomeBasis = "observed";
+    field.hidden = !supported;
+    select.value = state.outcomeBasis;
+    select.setAttribute("aria-label", `국면 기준 · ${conditionalBasisLabel()}`);
   }
 
   function conditionalDetailRows() {
@@ -3359,8 +3817,14 @@
       .map((row) => displayValue(row.mean_return))
       .filter((value) => value !== null);
     const comparisonScale = Math.max(0.001, ...comparisonValues.map((value) => Math.abs(value)));
+    const basisLabel = conditionalBasisLabel();
     dom["conditional-stat-grid"].replaceChildren();
-    setText(dom["conditional-comparison-caption"], `${state.outcomeHorizon}주 보유 · 동일 축 · 0 기준`);
+    dom["conditional-stat-grid"].setAttribute("aria-label", `${basisLabel} 자산군 평균 수익률 비교`);
+    setText(
+      dom["conditional-stats-caption"],
+      `${basisLabel} · 자산군별 과거 평균 수익률 · USD · ${publicationSnapshotLabel()}`,
+    );
+    setText(dom["conditional-comparison-caption"], `${basisLabel} · ${state.outcomeHorizon}주 보유 · 동일 축 · 0 기준`);
     for (const asset of OUTCOME_ASSETS) {
       const card = createElement("article", "conditional-asset-card");
       const heading = createElement("div", "conditional-asset-heading");
@@ -3412,12 +3876,12 @@
         );
         regimeRow.setAttribute(
           "aria-label",
-          `${STATE_META[code].label}, ${asset} ${OUTCOME_ASSET_LABELS[asset]}, ${state.outcomeHorizon}주 평균 수익률 ${formatted}, 표본 ${sample}개${statusLabel ? `, ${statusLabel}` : ""}`,
+          `${basisLabel}, ${STATE_META[code].label}, ${asset} ${OUTCOME_ASSET_LABELS[asset]}, ${state.outcomeHorizon}주 평균 수익률 ${formatted}, 표본 ${sample}개${statusLabel ? `, ${statusLabel}` : ""}`,
         );
         regimeRow.append(label, track, output);
         regimeList.append(regimeRow);
       }
-      card.setAttribute("aria-label", `${asset} ${OUTCOME_ASSET_LABELS[asset]} 국면별 ${state.outcomeHorizon}주 평균 수익률`);
+      card.setAttribute("aria-label", `${basisLabel}, ${asset} ${OUTCOME_ASSET_LABELS[asset]} 국면별 ${state.outcomeHorizon}주 평균 수익률`);
       card.append(heading, regimeList);
       dom["conditional-stat-grid"].append(card);
     }
@@ -3448,7 +3912,14 @@
       );
       dom["conditional-stat-body"].append(tableRow);
     }
-    setText(dom["conditional-stat-table-caption"], `${state.outcomeAsset} ${state.outcomeHorizon}주 국면별 조건부 성과`);
+    const basisLabel = conditionalBasisLabel();
+    setText(dom["conditional-stat-table-caption"], `${basisLabel} · ${state.outcomeAsset} ${state.outcomeHorizon}주 국면별 조건부 성과`);
+    if (dom["conditional-stat-scroll"]) {
+      dom["conditional-stat-scroll"].setAttribute(
+        "aria-label",
+        `${basisLabel} · 선택 자산과 보유 기간의 국면별 조건부 성과 표 · 가로 스크롤 가능`,
+      );
+    }
   }
 
   function renderConditionalStats() {
@@ -3459,9 +3930,10 @@
       return;
     }
     dom["conditional-stats-nav"].hidden = false;
+    syncConditionalBasisControl();
     setText(
       dom["conditional-stats-caption"],
-      `국면 이후 자산군별 과거 평균 수익률 · USD · ${publicationSnapshotLabel()}`,
+      `${conditionalBasisLabel()} · 자산군별 과거 평균 수익률 · USD · ${publicationSnapshotLabel()}`,
     );
     renderConditionalComparison();
     renderConditionalDetail();
@@ -3475,9 +3947,10 @@
         unit: firstValue(raw, ["unit", "units"]),
         format: firstValue(raw, ["format", "display_format"]),
         label: firstValue(raw, ["label", "name"]) || MARKET_LABELS[key] || humanizeKey(key),
+        percentile: probability(firstValue(raw, ["percentile_52w"])),
       };
     }
-    return { value: raw, unit: null, format: null, label: MARKET_LABELS[key] || humanizeKey(key) };
+    return { value: raw, unit: null, format: null, label: MARKET_LABELS[key] || humanizeKey(key), percentile: null };
   }
 
   function formatMetric(key, raw) {
@@ -3486,12 +3959,51 @@
     if (number === null) return textValue(metric.value);
     const format = String(metric.format || "").toLowerCase();
     const unit = String(metric.unit || "");
+    if (format === "signed_percent") return formatSignedPercent(number);
+    if (format === "plain_percent") return formatPercent(number);
+    if (format === "signed_number") return `${number > 0 ? "+" : ""}${formatNumber(number, 3)}`;
     if (format === "percent") return formatSignedPercent(number);
     if (format === "probability") return formatPercent(number);
     if (unit === "%") return `${formatNumber(number, 2)}%`;
     if (format === "currency" || ["USD", "$"].includes(unit)) return `$${formatCompactNumber(number, 2)}`;
     if (/(^|_)(return|drawdown|vol|volatility)(_|$)/i.test(key) && Math.abs(number) <= 1) return formatSignedPercent(number);
     return `${formatCompactNumber(number, 3)}${unit ? ` ${unit}` : ""}`;
+  }
+
+  function legacySpyClose(index) {
+    const week = state.weekly[index];
+    if (!week || !isObject(week.market)) return null;
+    return finiteNumber(metricParts("spy_close", week.market.spy_close).value);
+  }
+
+  function legacyMarketContext(market) {
+    const currentClose = legacySpyClose(state.selectedIndex);
+    const halfYearClose = legacySpyClose(state.selectedIndex - 26);
+    const returnFromCloses = (prior) => (
+      currentClose === null || prior === null || prior <= 0
+        ? null
+        : currentClose / prior - 1
+    );
+    return [
+      ["spy_trend_26w", { value: returnFromCloses(halfYearClose), format: "signed_percent" }],
+      ["spy_realized_vol_13w", { value: metricParts("realized_vol_13w", market.realized_vol_13w).value, format: "plain_percent" }],
+      ["spy_drawdown_52w", { value: metricParts("drawdown_52w", market.drawdown_52w).value, format: "signed_percent" }],
+    ];
+  }
+
+  function marketContextEntries(market) {
+    const keys = [
+      "spy_trend_26w",
+      "spy_realized_vol_13w",
+      "spy_drawdown_52w",
+      "gics_sector_breadth_4w",
+      "hyg_lqd_relative_13w",
+      "anfci_change_4w",
+    ];
+    if (keys.some((key) => Object.hasOwn(market, key))) {
+      return keys.filter((key) => Object.hasOwn(market, key)).map((key) => [key, market[key]]);
+    }
+    return legacyMarketContext(market);
   }
 
   function renderMarket(market) {
@@ -3502,11 +4014,14 @@
       dom["market-context"].append(empty);
       return;
     }
-    const entries = Object.entries(market).filter(([, value]) => !Array.isArray(value)).slice(0, 8);
+    const entries = marketContextEntries(market);
     for (const [key, raw] of entries) {
       const parts = metricParts(key, raw);
       const wrapper = createElement("div");
       wrapper.append(createElement("dt", null, parts.label), createElement("dd", null, formatMetric(key, raw)));
+      if (parts.percentile !== null) {
+        wrapper.append(createElement("small", "metric-percentile", `52주 ${Math.round(parts.percentile * 100)}백분위`));
+      }
       dom["market-context"].append(wrapper);
     }
   }
@@ -3732,6 +4247,7 @@
       causal_dynamic_ensemble: "동적 앙상블",
       causal_multiscale_ensemble: "멀티스케일 앙상블",
       recency_weighted_xgboost_208w: "XGBoost · 최근 가중",
+      recency_weighted_ridge_logistic_208w: "Ridge Logistic · 최근 가중",
       pca_ridge_logistic: "PCA · Ridge Logistic",
       discounted_markov_208w: "Markov · 최근 가중",
     }[name] || textValue(name, "모델");
@@ -3761,10 +4277,7 @@
 
   function renderModelForecast() {
     const model = state.raw && isObject(state.raw.model) ? state.raw.model : {};
-    const comparison = isObject(model.forecast_comparison) ? model.forecast_comparison : null;
-    const models = comparison && Array.isArray(comparison.models)
-      ? comparison.models
-      : [];
+    const models = forecastComparisonModels(state.raw);
     const week = selectedWeek() || state.weekly[state.weekly.length - 1] || null;
     const forecasts = week && Array.isArray(week.model_forecasts)
       ? week.model_forecasts
@@ -3803,8 +4316,9 @@
       select.dataset.models = optionSignature;
     }
     select.value = state.comparisonModel;
+    select.setAttribute("aria-label", "1주 예측 모델");
 
-    const forecast = forecasts.find((row) => isObject(row) && row.model === state.comparisonModel);
+    const forecast = forecastForWeek(week, state.comparisonModel);
     if (!forecast) {
       dom["model-forecast-explorer"].hidden = true;
       return;
@@ -4186,6 +4700,12 @@
       state.weekly = validation.weekly;
       state.validationWarnings = validation.warnings;
       state.comparisonModel = modelName(payload.model && payload.model.champion);
+      state.outcomeBasis = "observed";
+      state.historySeries = dom["history-series-select"]
+        && dom["history-series-select"].value === "forecast"
+        && forecastHistorySupported(payload, state.comparisonModel)
+        ? "forecast"
+        : "observed";
       state.preferredHistoryWindow = dom["history-window"].value === "all"
         ? "all"
         : Number(dom["history-window"].value);
@@ -4251,6 +4771,14 @@
     currentMeasureKind,
     getCurrentMeasure,
     extractCurrentStrength,
+    forecastComparisonModels,
+    forecastForWeek,
+    oneWeekDepartureProbability,
+    historyMeasureForWeek,
+    historyStateForWeek,
+    modelConditionedAssetRows,
+    modelConditionedAssetRowsComplete,
+    conditionalStatsRowsForBasis,
   });
 
   if (typeof window !== "undefined") window.__REGIME_DASHBOARD__ = dashboardApi;

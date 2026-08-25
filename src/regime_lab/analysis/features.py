@@ -63,6 +63,13 @@ _MARKET_SPREAD_PAIRS = (
     ("long_short_treasury", "tlt_close", "shy_close"),
 )
 
+_CROSS_ASSET_CORRELATION_PAIRS = (
+    ("equity_duration", "spy_close", "tlt_close"),
+    ("equity_credit", "spy_close", "hyg_close"),
+    ("equity_usd", "spy_close", "uup_close"),
+    ("credit_duration", "hyg_close", "tlt_close"),
+)
+
 
 def _validate_frame(frame: pd.DataFrame) -> pd.DataFrame:
     if not isinstance(frame, pd.DataFrame):
@@ -143,6 +150,42 @@ def _average_pairwise_correlation(
         return pd.Series(np.nan, index=returns.index, dtype=float)
     pairwise = pd.concat(correlations, axis=1)
     return _row_mean_with_minimum(pairwise, 1).clip(-1.0, 1.0)
+
+
+def build_cross_asset_correlation_features(
+    frame: pd.DataFrame,
+    *,
+    windows: Iterable[int] = (13, 26),
+) -> pd.DataFrame:
+    """Build fixed, scale-free correlations from already-approved ETF inputs."""
+
+    validated = _validate_frame(frame)
+    raw_windows = tuple(windows)
+    if (
+        not raw_windows
+        or any(
+            isinstance(window, (bool, np.bool_))
+            or not isinstance(window, (int, np.integer))
+            or int(window) < 2
+            for window in raw_windows
+        )
+    ):
+        raise ValueError("correlation windows must contain integers of at least two")
+    resolved_windows = tuple(dict.fromkeys(int(window) for window in raw_windows))
+    output: dict[str, pd.Series] = {}
+    for label, left_name, right_name in _CROSS_ASSET_CORRELATION_PAIRS:
+        if left_name not in validated or right_name not in validated:
+            continue
+        left_return = _positive_log(validated[left_name]).diff(1)
+        right_return = _positive_log(validated[right_name]).diff(1)
+        for window in resolved_windows:
+            output[f"cross_asset__{label}__correlation_{window}w"] = (
+                left_return.rolling(
+                    window,
+                    min_periods=_rolling_min_periods(window),
+                ).corr(right_return).clip(-1.0, 1.0)
+            )
+    return pd.DataFrame(output, index=validated.index, dtype=float)
 
 
 def build_weekly_features(
@@ -394,4 +437,8 @@ def build_weekly_features(
     return result.replace([np.inf, -np.inf], np.nan)
 
 
-__all__ = ["FeatureConfig", "build_weekly_features"]
+__all__ = [
+    "FeatureConfig",
+    "build_cross_asset_correlation_features",
+    "build_weekly_features",
+]

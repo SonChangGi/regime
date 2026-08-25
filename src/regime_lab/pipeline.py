@@ -154,41 +154,107 @@ def _current_estimate(
     return estimate
 
 
-def _market_context(canonical: pd.DataFrame, at: pd.Timestamp) -> dict[str, Any]:
+def _market_context(
+    canonical: pd.DataFrame,
+    features: pd.DataFrame,
+    at: pd.Timestamp,
+) -> dict[str, Any]:
     spy = canonical["spy_close"].astype(float)
     log_return = np.log(spy.where(spy > 0)).diff()
+    simple_return_26w = spy.div(spy.shift(26)).sub(1.0)
     realized = log_return.rolling(13, min_periods=7).std(ddof=0) * np.sqrt(52.0)
-    downside = log_return.clip(upper=0).pow(2).rolling(13, min_periods=7).mean().pow(0.5) * np.sqrt(52.0)
     drawdown = spy / spy.rolling(52, min_periods=26).max() - 1.0
 
-    def relative(symbol: str) -> float | None:
-        if f"{symbol}_close" not in canonical:
+    def feature(name: str) -> pd.Series:
+        if name not in features:
+            return pd.Series(np.nan, index=canonical.index, dtype=float)
+        return pd.to_numeric(features[name], errors="coerce").reindex(
+            canonical.index
+        )
+
+    sector_breadth = feature(
+        "market_group__gics_sector__positive_return_share_4w"
+    )
+    credit_relative_log = feature(
+        "market_spread__high_yield_investment_grade__relative_return_13w"
+    )
+    credit_relative = np.expm1(credit_relative_log)
+    anfci_change = feature("anfci__change_4w")
+
+    def percentile(series: pd.Series) -> float | None:
+        current_value = pd.to_numeric(
+            series.reindex(pd.DatetimeIndex([at])), errors="coerce"
+        ).iloc[0]
+        if not np.isfinite(current_value):
             return None
-        other = canonical[f"{symbol}_close"].astype(float)
-        value = (np.log(other.where(other > 0)) - np.log(spy.where(spy > 0))).diff(13)
-        return _json_number(value.loc[at])
+        numeric = pd.to_numeric(series, errors="coerce").loc[:at].tail(52).dropna()
+        if len(numeric) < 26:
+            return None
+        return _json_number(float((numeric <= float(current_value)).mean()))
+
+    def metric(
+        *,
+        label: str,
+        series: pd.Series,
+        display_format: str,
+        method: str,
+        window_weeks: int,
+    ) -> dict[str, Any]:
+        current_value = pd.to_numeric(
+            series.reindex(pd.DatetimeIndex([at])), errors="coerce"
+        ).iloc[0]
+        return {
+            "label": label,
+            "value": _json_number(current_value),
+            "format": display_format,
+            "method": method,
+            "window_weeks": window_weeks,
+            "percentile_52w": percentile(series),
+        }
 
     return {
-        "spy_close": {"value": _json_number(spy.loc[at], 4), "unit": "USD"},
-        "return_1w": _json_number(log_return.loc[at]),
-        "realized_vol_13w": _json_number(realized.loc[at]),
-        "downside_vol_13w": _json_number(downside.loc[at]),
-        "drawdown_52w": _json_number(drawdown.loc[at]),
-        "rsp_spy": {
-            "label": "RSP-SPY 13주 상대수익",
-            "value": relative("rsp"),
-            "format": "percent",
-        },
-        "iwm_spy": {
-            "label": "IWM-SPY 13주 상대수익",
-            "value": relative("iwm"),
-            "format": "percent",
-        },
-        "hyg_spy": {
-            "label": "HYG-SPY 13주 상대수익",
-            "value": relative("hyg"),
-            "format": "percent",
-        },
+        "spy_trend_26w": metric(
+            label="SPY 26주 추세",
+            series=simple_return_26w,
+            display_format="signed_percent",
+            method="simple_total_return",
+            window_weeks=26,
+        ),
+        "spy_realized_vol_13w": metric(
+            label="SPY 13주 변동성",
+            series=realized,
+            display_format="plain_percent",
+            method="weekly_log_return_std_annualized",
+            window_weeks=13,
+        ),
+        "spy_drawdown_52w": metric(
+            label="SPY 52주 고점 대비",
+            series=drawdown,
+            display_format="signed_percent",
+            method="price_over_trailing_high_minus_one",
+            window_weeks=52,
+        ),
+        "gics_sector_breadth_4w": metric(
+            label="섹터 상승 비중 · 4주",
+            series=sector_breadth,
+            display_format="plain_percent",
+            method="positive_return_share",
+            window_weeks=4,
+        ),
+        "hyg_lqd_relative_13w": metric(
+            label="HYG − LQD · 13주",
+            series=credit_relative,
+            display_format="signed_percent",
+            method="relative_simple_total_return",
+            window_weeks=13,
+        ),
+        "anfci_change_4w": metric(
+            label="ANFCI 변화 · 4주",
+            series=anfci_change,
+            display_format="signed_number",
+            method="index_point_change",
+            window_weeks=4,
+        ),
     }
 
 
@@ -1031,7 +1097,7 @@ def build_dashboard_result(
                 name: _json_number(scores.loc[origin, name]) or 0.0
                 for name in ("trend", "stress", "macro", "financial_conditions")
             },
-            "market": _market_context(canonical, origin),
+            "market": _market_context(canonical, dataset.features, origin),
             "top_drivers": evidence_drivers(features, origin),
             "health": {
                 "status": result_health,
@@ -1327,6 +1393,28 @@ def build_dashboard_result(
             "conditional_asset_statistics",
             conditional_outcomes.statistics,
         )
+        model_conditioned_outcomes = getattr(
+            conditional_outcomes,
+            "model_conditioned_outcomes",
+            None,
+        )
+        model_conditioned_statistics = getattr(
+            conditional_outcomes,
+            "model_conditioned_statistics",
+            None,
+        )
+        if model_conditioned_outcomes is not None:
+            object.__setattr__(
+                benchmark,
+                "model_conditioned_asset_outcomes",
+                model_conditioned_outcomes,
+            )
+        if model_conditioned_statistics is not None:
+            object.__setattr__(
+                benchmark,
+                "model_conditioned_asset_statistics",
+                model_conditioned_statistics,
+            )
         object.__setattr__(
             benchmark,
             "state_membership_history",

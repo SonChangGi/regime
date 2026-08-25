@@ -12,7 +12,11 @@ from regime_lab.contract_v5 import (
     validate_v5_payload,
 )
 from regime_lab.frozen_v4 import FROZEN_V4_BASELINE
-from regime_lab.v5 import build_v5_payload, run_v5_directional_benchmark
+from regime_lab.v5 import (
+    _model_conditioned_research,
+    build_v5_payload,
+    run_v5_directional_benchmark,
+)
 
 
 def _inputs(rows: int = 700):
@@ -339,3 +343,49 @@ def test_v5_composer_changes_semantics_without_allocation_output() -> None:
         **payload["weekly"][-1]["next_week"],
         "method": "model_comparison_walk_forward_probability",
     }
+
+
+def test_model_conditioned_asset_statistics_use_completed_oos_forecasts() -> None:
+    index, _, _, canonical = _inputs(rows=120)
+    models = ("markov", "xgboost")
+    weekly: list[dict[str, object]] = []
+    forecast_states = {
+        "markov": ("risk_on", "transition", "risk_off"),
+        "xgboost": ("risk_off", "transition", "risk_on"),
+    }
+    for position, origin in enumerate(index[-80:]):
+        weekly.append(
+            {
+                "date": origin.date().isoformat(),
+                "model_forecasts": [
+                    {
+                        "model": name,
+                        "state": forecast_states[name][position % 3],
+                    }
+                    for name in models
+                ],
+            }
+        )
+
+    research, outcomes, statistics = _model_conditioned_research(
+        canonical,
+        weekly,
+        models,
+        bootstrap_resamples=0,
+    )
+
+    expected_statistics = len(models) * 6 * 3 * 3
+    assert len(statistics) == expected_statistics
+    assert set(statistics["conditioning_model"]) == set(models)
+    assert len(research["model_conditioned_asset_stats"]["rows"]) == (
+        expected_statistics
+    )
+    first_origin = index[-80]
+    first_rows = outcomes.loc[
+        (outcomes["conditioning_model"] == "markov")
+        & (outcomes["origin_date"] == first_origin)
+        & (outcomes["horizon_weeks"] == 1)
+    ]
+    assert set(first_rows["state"]) == {"risk_on"}
+    assert set(first_rows["entry_date"]) == {index[-79]}
+    assert set(first_rows["exit_date"]) == {index[-78]}

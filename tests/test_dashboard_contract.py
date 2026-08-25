@@ -283,6 +283,8 @@ def _valid_v5_browser_payload() -> dict:
         "directional_forecasts": "directional-forecasts.csv",
         "conditional_asset_outcomes": "conditional-asset-outcomes.csv",
         "conditional_asset_statistics": "conditional-asset-statistics.csv",
+        "model_conditioned_asset_outcomes": "model-conditioned-asset-outcomes.csv",
+        "model_conditioned_asset_statistics": "model-conditioned-asset-statistics.csv",
         "fx_features": "fx-features.csv",
         "fx_coverage": "fx-coverage.csv",
         "fx_ablation_oos": "fx-ablation-oos.csv",
@@ -295,6 +297,8 @@ def _valid_v5_browser_payload() -> dict:
         "directional_forecasts": 3,
         "conditional_asset_outcomes": 100,
         "conditional_asset_statistics": 54,
+        "model_conditioned_asset_outcomes": 500,
+        "model_conditioned_asset_statistics": 270,
         "fx_features": 50,
         "fx_coverage": 50,
         "fx_ablation_oos": 0,
@@ -391,6 +395,22 @@ def _valid_v5_browser_payload() -> dict:
             row[f"{metric}_ci95_lower"] = value - 0.02
             row[f"{metric}_ci95_upper"] = value + 0.02
         return row
+
+    conditional_rows = [
+        outcome_row(asset, state, horizon, mean)
+        for asset in ("SPY", "QQQ", "IWM", "TLT", "HYG", "UUP")
+        for state, mean in (
+            ("risk_on", 0.08),
+            ("transition", 0.02),
+            ("risk_off", -0.05),
+        )
+        for horizon in (1, 4, 13)
+    ]
+    model_conditioned_rows = [
+        {"conditioning_model": model, **deepcopy(row)}
+        for model in V5_FORECAST_COMPARISON_MODELS
+        for row in conditional_rows
+    ]
 
     transition_risk = {
         "1w": {"probability": 0.20, "target_end": "2026-08-14"},
@@ -640,17 +660,20 @@ def _valid_v5_browser_payload() -> dict:
                 "horizons_weeks": [1, 4, 13],
                 "assets": ["SPY", "QQQ", "IWM", "TLT", "HYG", "UUP"],
                 "return_currency": "USD",
-                "rows": [
-                    outcome_row(asset, state, horizon, mean)
-                    for asset in ("SPY", "QQQ", "IWM", "TLT", "HYG", "UUP")
-                    for state, mean in (
-                        ("risk_on", 0.08),
-                        ("transition", 0.02),
-                        ("risk_off", -0.05),
-                    )
-                    for horizon in (1, 4, 13)
-                ],
-            }
+                "rows": conditional_rows,
+            },
+            "model_conditioned_asset_stats": {
+                "method": "oos_one_week_forecast_conditioned_forward_total_return",
+                "role": "retrospective_model_diagnostic",
+                "conditioning": "hard_argmax_oos_forecast",
+                "forecast_horizon_weeks": 1,
+                "execution_lag_weeks": 1,
+                "horizons_weeks": [1, 4, 13],
+                "assets": ["SPY", "QQQ", "IWM", "TLT", "HYG", "UUP"],
+                "models": V5_FORECAST_COMPARISON_MODELS,
+                "return_currency": "USD",
+                "rows": model_conditioned_rows,
+            },
         },
     }
 
@@ -747,7 +770,7 @@ def test_dashboard_assets_are_local_and_present() -> None:
         ]
     }
     assert len(asset_versions) == 1
-    assert asset_versions == {"20260824-v5-9"}
+    assert asset_versions == {"20260826-v5-10"}
 
     assert all(not str(script.get("src", "")).startswith(("http://", "https://", "//")) for script in parser.scripts)
     assert all(not str(link.get("href", "")).startswith(("http://", "https://", "//")) for link in parser.links)
@@ -911,25 +934,36 @@ def test_model_results_remain_visible_without_generalization_warning_surface() -
     assert "진단 주의" not in script
 
 
-def test_model_forecast_selector_is_labeled_and_scoped_to_comparison() -> None:
+def test_model_forecast_selector_controls_the_one_week_forecast_layer() -> None:
     document = HTML_PATH.read_text(encoding="utf-8")
     script = JS_PATH.read_text(encoding="utf-8")
     styles = CSS_PATH.read_text(encoding="utf-8")
-    assert '<label for="model-forecast-select">예측 비교 모델</label>' in document
+    assert '<label for="model-forecast-select">1주 예측 모델</label>' in document
     assert 'id="model-forecast-select"' in document
-    assert 'aria-controls="model-forecast-explorer"' in document
+    assert (
+        'aria-controls="next-regime-card history transition-card '
+        'model-forecast-explorer conditional-stats"'
+    ) in document
     assert 'aria-describedby="model-forecast-scope"' in document
     assert (
         'id="model-forecast-scope" class="sr-only">'
-        "공식 선정 모델은 변경하지 않고 비교 예측만 전환합니다."
+        "선택 모델의 1주 예측 레이어"
     ) in document
+    assert '<label for="history-series-select">히스토리 기준</label>' in document
+    assert '<option value="observed" selected>관측 소속도</option>' in document
+    assert '<option value="forecast">선택 모델 1주 예측</option>' in document
     assert 'id="model-forecast-explorer"' in document
     assert 'aria-labelledby="model-forecast-title"' in document
     assert 'id="model-forecast-probabilities"' in document
     assert "V5_FORECAST_COMPARISON_MODELS" in script
     assert "function renderModelForecast()" in script
+    assert "function renderForecastSurfaces()" in script
+    assert "function forecastForWeek(" in script
+    assert "function oneWeekDepartureProbability(" in script
     assert 'dom["model-forecast-select"].addEventListener("change"' in script
+    assert 'dom["history-series-select"].addEventListener("change"' in script
     assert "recency_weighted_xgboost_208w" in script
+    assert "recency_weighted_ridge_logistic_208w" in script
     assert "pca_ridge_logistic" in script
     assert "discounted_markov_208w" in script
     assert 'selectionLogLoss === null' in script
@@ -1426,6 +1460,111 @@ def test_v5_browser_rejects_research_artifact_manifest_drift() -> None:
         for error in _browser_validation_errors(wrong_fx_oos_count)
     )
 
+    incomplete_model_conditioned_pair = _valid_v5_browser_payload()
+    incomplete_model_conditioned_pair["model"]["research_artifacts"].pop(
+        "model_conditioned_asset_outcomes"
+    )
+    assert any(
+        "research_artifacts manifest" in error
+        for error in _browser_validation_errors(incomplete_model_conditioned_pair)
+    )
+
+    wrong_model_conditioned_count = _valid_v5_browser_payload()
+    wrong_model_conditioned_count["model"]["research_artifacts"][
+        "model_conditioned_asset_statistics"
+    ]["row_count"] = 269
+    assert any(
+        "model-conditioned asset statistics artifact" in error
+        for error in _browser_validation_errors(wrong_model_conditioned_count)
+    )
+
+
+def test_v5_browser_accepts_model_conditioned_stats_as_an_optional_complete_pair() -> None:
+    complete_pair = _valid_v5_browser_payload()
+    assert _browser_validation_errors(complete_pair) == []
+
+    legacy_without_pair = _valid_v5_browser_payload()
+    legacy_without_pair["research"].pop("model_conditioned_asset_stats")
+    legacy_without_pair["model"]["research_artifacts"].pop(
+        "model_conditioned_asset_outcomes"
+    )
+    legacy_without_pair["model"]["research_artifacts"].pop(
+        "model_conditioned_asset_statistics"
+    )
+    assert _browser_validation_errors(legacy_without_pair) == []
+
+    artifacts_without_stats = _valid_v5_browser_payload()
+    artifacts_without_stats["research"].pop("model_conditioned_asset_stats")
+    assert any(
+        "공개 파생 통계" in error
+        for error in _browser_validation_errors(artifacts_without_stats)
+    )
+
+    stats_without_artifacts = _valid_v5_browser_payload()
+    stats_without_artifacts["model"]["research_artifacts"].pop(
+        "model_conditioned_asset_outcomes"
+    )
+    stats_without_artifacts["model"]["research_artifacts"].pop(
+        "model_conditioned_asset_statistics"
+    )
+    assert any(
+        "완전한 pair" in error
+        for error in _browser_validation_errors(stats_without_artifacts)
+    )
+
+
+def test_v5_browser_rejects_model_conditioned_metadata_row_and_metric_drift() -> None:
+    metadata_cases = (
+        (
+            "method",
+            lambda value: value["research"]["model_conditioned_asset_stats"].__setitem__(
+                "method", "state_conditioned_forward_total_return"
+            ),
+        ),
+        (
+            "role",
+            lambda value: value["research"]["model_conditioned_asset_stats"].__setitem__(
+                "role", "descriptive_only"
+            ),
+        ),
+        (
+            "models",
+            lambda value: value["research"]["model_conditioned_asset_stats"].__setitem__(
+                "models", list(reversed(V5_FORECAST_COMPARISON_MODELS))
+            ),
+        ),
+    )
+    for expected_error, mutate in metadata_cases:
+        payload = _valid_v5_browser_payload()
+        mutate(payload)
+        assert any(
+            expected_error in error for error in _browser_validation_errors(payload)
+        ), f"browser validator accepted model-conditioned {expected_error} drift"
+
+    incomplete_rows = _valid_v5_browser_payload()
+    incomplete_rows["research"]["model_conditioned_asset_stats"]["rows"].pop()
+    incomplete_errors = _browser_validation_errors(incomplete_rows)
+    assert any("rows 행 수" in error for error in incomplete_errors)
+    assert any("모든 model/asset/state/horizon" in error for error in incomplete_errors)
+
+    invalid_metric = _valid_v5_browser_payload()
+    invalid_metric["research"]["model_conditioned_asset_stats"]["rows"][0][
+        "mean_return"
+    ] = "not-a-number"
+    assert any(
+        "model_conditioned_asset_stats.rows[0].mean_return" in error
+        for error in _browser_validation_errors(invalid_metric)
+    )
+
+    reversed_interval = _valid_v5_browser_payload()
+    row = reversed_interval["research"]["model_conditioned_asset_stats"]["rows"][0]
+    row["mean_return_ci95_lower"] = 0.2
+    row["mean_return_ci95_upper"] = 0.1
+    assert any(
+        "model_conditioned_asset_stats.rows[0].mean_return CI 순서" in error
+        for error in _browser_validation_errors(reversed_interval)
+    )
+
 
 def test_v5_rejects_allocation_semantics_in_conditional_statistics() -> None:
     payload = _valid_v5_browser_payload()
@@ -1445,6 +1584,177 @@ process.stdout.write(JSON.stringify([
 """
     completed = subprocess.run(["node", "-e", program], text=True, capture_output=True, check=True)
     assert json.loads(completed.stdout) == ["probability", "membership", 0.25, 0.75]
+
+
+def test_exported_forecast_helpers_keep_observed_and_selected_model_series_separate() -> None:
+    program = f"""
+const api = require({json.dumps(str(JS_PATH))});
+const payload = {{
+  model: {{
+    champion: "markov",
+    forecast_comparison: {{models: ["markov", "xgboost"]}}
+  }}
+}};
+const week = {{
+  current: {{
+    state: "transition",
+    memberships: {{risk_on: 0.2, transition: 0.7, risk_off: 0.1}}
+  }},
+  next_week: {{
+    state: "transition",
+    model: "markov",
+    probabilities: {{risk_on: 0.1, transition: 0.8, risk_off: 0.1}}
+  }},
+  model_forecasts: [
+    {{
+      state: "transition",
+      model: "markov",
+      probabilities: {{risk_on: 0.1, transition: 0.8, risk_off: 0.1}}
+    }},
+    {{
+      state: "risk_on",
+      model: "xgboost",
+      probabilities: {{risk_on: 0.6, transition: 0.3, risk_off: 0.1}}
+    }}
+  ]
+}};
+const selected = api.forecastForWeek(week, "xgboost", payload);
+process.stdout.write(JSON.stringify({{
+  models: api.forecastComparisonModels(payload),
+  model: selected.model,
+  state: selected.state,
+  departure: api.oneWeekDepartureProbability(week, selected),
+  observedTransition: api.historyMeasureForWeek(
+    week, "transition", "observed", "xgboost", payload, "weekly-regime-result-v5"
+  ),
+  forecastRiskOn: api.historyMeasureForWeek(
+    week, "risk_on", "forecast", "xgboost", payload, "weekly-regime-result-v5"
+  ),
+  observedState: api.historyStateForWeek(week, "observed", "xgboost", payload),
+  forecastState: api.historyStateForWeek(week, "forecast", "xgboost", payload),
+  invalidModelFallback: api.forecastForWeek(week, "missing", payload).model,
+  legacyFallback: api.forecastForWeek(
+    {{next_week: {{model: "legacy"}}}}, "missing", {{}}
+  ).model
+}}));
+"""
+    completed = subprocess.run(
+        ["node", "-e", program], text=True, capture_output=True, check=True
+    )
+    assert json.loads(completed.stdout) == {
+        "models": ["markov", "xgboost"],
+        "model": "xgboost",
+        "state": "risk_on",
+        "departure": 0.7,
+        "observedTransition": 0.7,
+        "forecastRiskOn": 0.6,
+        "observedState": "transition",
+        "forecastState": "risk_on",
+        "invalidModelFallback": "markov",
+        "legacyFallback": "legacy",
+    }
+
+
+def test_model_conditioned_asset_stats_are_complete_per_model_and_fail_closed() -> None:
+    assets = ["SPY", "QQQ", "IWM", "TLT", "HYG", "UUP"]
+    states = ["risk_on", "transition", "risk_off"]
+    horizons = [1, 4, 13]
+    forecast_rows = [
+        {
+            "conditioning_model": model,
+            "asset": asset,
+            "state": state,
+            "horizon_weeks": horizon,
+            "mean_return": 0.01,
+        }
+        for model in ("markov", "xgboost")
+        for asset in assets
+        for state in states
+        for horizon in horizons
+    ]
+    payload = {
+        "model": {
+            "forecast_comparison": {"models": ["markov", "xgboost"]},
+        },
+        "research": {
+            "conditional_asset_stats": {"rows": [{"source": "observed"}]},
+            "model_conditioned_asset_stats": {"rows": forecast_rows},
+        },
+    }
+    program = (
+        f"const api = require({json.dumps(str(JS_PATH))});\n"
+        f"const payload = {json.dumps(payload)};\n"
+        + """
+const incomplete = JSON.parse(JSON.stringify(payload));
+incomplete.research.model_conditioned_asset_stats.rows.pop();
+const legacy = {
+  model: {forecast_comparison: {models: ["markov"]}},
+  research: {conditional_asset_stats: {rows: [{source: "legacy-observed"}]}}
+};
+const xgboostRows = api.conditionalStatsRowsForBasis(payload, "forecast", "xgboost");
+process.stdout.write(JSON.stringify({
+  markovComplete: api.modelConditionedAssetRowsComplete(payload, "markov"),
+  xgboostComplete: api.modelConditionedAssetRowsComplete(payload, "xgboost"),
+  incompleteXgboost: api.modelConditionedAssetRowsComplete(incomplete, "xgboost"),
+  unsupportedModel: api.modelConditionedAssetRowsComplete(payload, "missing"),
+  observedSource: api.conditionalStatsRowsForBasis(payload, "observed", "xgboost")[0].source,
+  forecastCount: xgboostRows.length,
+  forecastOnlySelected: xgboostRows.every((row) => row.conditioning_model === "xgboost"),
+  legacyObserved: api.conditionalStatsRowsForBasis(legacy, "observed", "markov")[0].source,
+  legacyForecastCount: api.conditionalStatsRowsForBasis(legacy, "forecast", "markov").length
+}));
+"""
+    )
+    completed = subprocess.run(
+        ["node", "-e", program], text=True, capture_output=True, check=True
+    )
+    assert json.loads(completed.stdout) == {
+        "markovComplete": True,
+        "xgboostComplete": True,
+        "incompleteXgboost": False,
+        "unsupportedModel": False,
+        "observedSource": "observed",
+        "forecastCount": 54,
+        "forecastOnlySelected": True,
+        "legacyObserved": "legacy-observed",
+        "legacyForecastCount": 0,
+    }
+
+
+def test_forecast_rerender_does_not_touch_observed_context_surfaces() -> None:
+    script = JS_PATH.read_text(encoding="utf-8")
+    start = script.index("  function renderForecastSurfaces()")
+    end = script.index("\n  function renderSelectedWeek()", start)
+    body = script[start:end]
+    for expected in (
+        "renderNextForecastSurface(week)",
+        "renderTransition(week, forecast)",
+        "renderModelForecast()",
+        "renderHistory()",
+        "renderTimeline()",
+        "syncConditionalBasisControl()",
+        "renderConditionalComparison()",
+        "renderConditionalDetail()",
+    ):
+        assert expected in body
+    for fixed_surface in (
+        "renderRegime(\"current\"",
+        "renderMarket(",
+        "renderDurationContext(",
+        "renderFxContext(",
+        "renderConditionalStats(",
+    ):
+        assert fixed_surface not in body
+
+    transition_start = script.index("  function renderTransition(week, forecast = null)")
+    horizon_start = script.index("\n  function renderTransitionHorizons(week)", transition_start)
+    transition_body = script[transition_start:horizon_start]
+    next_function = script.index("\n  function ", horizon_start + 2)
+    horizon_body = script[horizon_start:next_function]
+    assert "oneWeekDepartureProbability(week, selectedForecast)" in transition_body
+    assert "renderTransitionHorizons(week)" in transition_body
+    assert "for (const horizon of [4, 13])" in horizon_body
+    assert "forecastForWeek" not in horizon_body
 
 
 def test_v3_browser_contract_requires_nonempty_generation_id() -> None:
@@ -1662,7 +1972,12 @@ def test_conditional_performance_leads_with_asset_class_mean_comparison() -> Non
     section_start = document.index('id="conditional-stats"')
     details_start = document.index('class="compact-table-details"', section_start)
     assert document.index('id="conditional-horizon-select"', section_start) < details_start
+    assert document.index('id="conditional-basis-select"', section_start) < details_start
     assert document.index('id="conditional-asset-select"', section_start) > details_start
+    assert 'id="conditional-basis-field" class="field-group inline-field" hidden' in document
+    assert '<label for="conditional-basis-select">국면 기준</label>' in document
+    assert '<option value="observed" selected>관측 국면</option>' in document
+    assert '<option value="forecast">선택 모델 예측</option>' in document
     assert '<label for="conditional-asset-select">상세 자산</label>' in document
     assert "자산군별 평균 수익률" in document
     assert "평균 95% CI" in document
@@ -1670,6 +1985,12 @@ def test_conditional_performance_leads_with_asset_class_mean_comparison() -> Non
     assert 'id="conditional-comparison-caption"' in document
     assert "const OUTCOME_ASSET_LABELS" in script
     assert "function conditionalStatsRows()" in script
+    assert "function modelConditionedAssetRowsComplete(" in script
+    assert "function conditionalStatsRowsForBasis(" in script
+    assert "function syncConditionalBasisControl()" in script
+    assert 'state.outcomeBasis = "observed"' in script
+    assert '`${modelForecastLabel(state.comparisonModel)} OOS 예측 국면 기준`' in script
+    assert '"관측 국면 기준"' in script
     assert "function conditionalDetailRows()" in script
     assert "function conditionalComparisonRows()" in script
     assert "function renderConditionalComparison()" in script

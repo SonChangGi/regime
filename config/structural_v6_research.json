@@ -1,11 +1,12 @@
 {
   "schema_version": 2,
   "research_version": "weekly-regime-research-v6",
+  "feature_set_version": "weekly-pit-structural-v6-research",
   "status": "research_planned",
   "designed_at": "2026-08-24",
   "implementation_state": {
     "collection": "not_started",
-    "training": "not_started",
+    "training": "candidate_implemented_unevaluated",
     "evaluation": "not_started",
     "publication": "not_started"
   },
@@ -25,12 +26,28 @@
     "prospective_registry_role": "future_observation_only_not_evidence_yet",
     "prospective_evidence_eligible": false
   },
+  "selection_policy": {
+    "id": "selection-policy-v2",
+    "effective_date": "2026-08-25",
+    "application": "prospective_v6_runs_only",
+    "retroactive_reselection": false,
+    "minimum_log_loss_improvement": 0.01,
+    "unchanged_gates": {
+      "holm_alpha": 0.05,
+      "maximum_brier_degradation": 0.01,
+      "fallback_count_required": 0
+    },
+    "frozen_prior_contracts": {
+      "v4_v5_minimum_log_loss_improvement": 0.05,
+      "v4_v5_reselection": false
+    }
+  },
   "evaluation": {
     "minimum_train_weeks": 520,
     "gap_weeks": 1,
     "primary_metric": "multiclass_log_loss",
     "secondary_metric": "multiclass_brier",
-    "minimum_log_loss_improvement": 0.05,
+    "minimum_log_loss_improvement": 0.01,
     "maximum_brier_degradation": 0.01,
     "bootstrap_method": "paired_moving_block_bootstrap_holm",
     "bootstrap_block_weeks": 13,
@@ -44,7 +61,7 @@
         "status": "blocked_until_alpha_historical_pit_and_philadelphia_parsers_are_verified"
       },
       "archive_certification_candidates": {
-        "sources": ["board_h41", "board_h8"],
+        "sources": ["board_h41", "board_h8", "board_sloos"],
         "promotion_condition": "dated_release_archive_parser_and_520_common_weeks_verified"
       },
       "retrospective_sensitivity_only": {
@@ -270,7 +287,12 @@
         "revision_policy": "later_official_release_preserved_as_new_vintage"
       },
       "series": [
-        {"output_id": "WALCL", "source_series_name": "RESPPA_N.WW", "source_label": "Assets: Total Assets: Total assets: Wednesday level", "domain": "liquidity", "frequency": "weekly", "unit_multiplier": 1000000}
+        {"output_id": "WALCL", "source_series_name": "RESPPA_N.WW", "source_label": "Assets: Total Assets: Total Assets (Less Eliminations from Consolidation): Wednesday Level", "domain": "balance_sheet_assets", "frequency": "weekly", "observation_basis": "as_of_wednesday", "units": "millions_usd_not_seasonally_adjusted", "unit_multiplier": 1000000},
+        {"output_id": "WRESBAL", "source_label": "Liabilities and Capital: Other Factors Draining Reserve Balances: Reserve Balances with Federal Reserve Banks: Week Average", "domain": "reserve_balances", "frequency": "weekly", "observation_basis": "week_average_ending_wednesday", "units": "millions_usd_not_seasonally_adjusted", "unit_multiplier": 1000000},
+        {"output_id": "WDTGAL", "source_label": "Liabilities and Capital: Liabilities: Deposits with F.R. Banks, Other Than Reserve Balances: U.S. Treasury, General Account: Wednesday Level", "domain": "liquidity_absorption", "frequency": "weekly", "observation_basis": "as_of_wednesday", "units": "millions_usd_not_seasonally_adjusted", "unit_multiplier": 1000000},
+        {"output_id": "WLRRAL", "source_label": "Liabilities and Capital: Liabilities: Reverse Repurchase Agreements: Wednesday Level", "domain": "liquidity_absorption", "frequency": "weekly", "observation_basis": "as_of_wednesday", "units": "millions_usd_not_seasonally_adjusted", "unit_multiplier": 1000000},
+        {"output_id": "WPC", "source_label": "Assets: Liquidity and Credit Facilities: Loans: Primary Credit: Week Average", "domain": "emergency_liquidity", "frequency": "weekly", "observation_basis": "week_average_ending_wednesday", "units": "millions_usd_not_seasonally_adjusted", "unit_multiplier": 1000000},
+        {"output_id": "SWPT", "source_label": "Assets: Central Bank Liquidity Swaps: Central Bank Liquidity Swaps: Wednesday Level", "domain": "global_usd_liquidity", "frequency": "weekly", "observation_basis": "as_of_wednesday", "units": "millions_usd_not_seasonally_adjusted", "unit_multiplier": 1000000}
       ]
     },
     "board_h8": {
@@ -301,6 +323,39 @@
         {"output_id": "TOTCI", "source_series_name": "B1023NCBA", "source_item": "1023", "source_label": "Commercial and industrial loans", "domain": "bank_credit", "frequency": "weekly", "seasonal_adjustment": "seasonally_adjusted", "bank_group": "all_commercial_banks", "unit_multiplier": 1000000},
         {"output_id": "DPSACBW027SBOG", "source_series_name": "B1058NCBA", "source_item": "1058", "source_label": "Deposits", "domain": "bank_credit", "frequency": "weekly", "seasonal_adjustment": "seasonally_adjusted", "bank_group": "all_commercial_banks", "unit_multiplier": 1000000},
         {"output_id": "H8B3094NCBA", "source_series_name": "B3094NCBA", "source_item": "3094", "source_label": "Borrowings", "domain": "bank_credit", "frequency": "weekly", "seasonal_adjustment": "seasonally_adjusted", "bank_group": "all_commercial_banks", "unit_multiplier": 1000000}
+      ]
+    },
+    "board_sloos": {
+      "status": "research_planned",
+      "role": "archive_certification_candidate",
+      "promotion_eligible": false,
+      "rights_profile": "board_public_domain",
+      "official_page_url": "https://www.federalreserve.gov/data/sloos.htm",
+      "about_url": "https://www.federalreserve.gov/data/sloos/about.htm",
+      "download_url": "https://www.federalreserve.gov/releases/sloos/data/FRB_SLOOS_xml.zip",
+      "archive_url_template": "https://www.federalreserve.gov/data/sloos/sloos-{YYYYMM}.htm",
+      "format": "sdmx_xml_zip_and_dated_release_archive",
+      "release_schedule": {
+        "frequency": "quarterly_typically_four_times_per_year",
+        "date_source": "official_release_archive",
+        "time": null,
+        "additional_surveys_possible": true
+      },
+      "cutoff_rule": {
+        "dated_release_with_unknown_time": "next_day",
+        "availability": "official_release_timestamp_or_conservative_next_day"
+      },
+      "pit": {
+        "historical_input": "dated_official_release_page_and_attached_chart_data",
+        "current_full_history": "research_only_until_release_vintages_reconcile",
+        "revision_policy": "preserve_each_release_and_later_correction_as_distinct_vintages",
+        "live_input": "freeze_each_official_release_with_retrieved_at_and_sha256"
+      },
+      "series": [
+        {"output_id": "DRTSCILM", "source_label": "Net Percentage of Domestic Banks Tightening Standards for Commercial and Industrial Loans to Large and Middle-Market Firms", "domain": "bank_lending_standards", "frequency": "quarterly", "units": "percent_not_seasonally_adjusted", "sign": "higher_is_tighter_credit"},
+        {"output_id": "DRTSCIS", "source_label": "Net Percentage of Domestic Banks Tightening Standards for Commercial and Industrial Loans to Small Firms", "domain": "bank_lending_standards", "frequency": "quarterly", "units": "percent_not_seasonally_adjusted", "sign": "higher_is_tighter_credit"},
+        {"output_id": "DRSDCILM", "source_label": "Net Percentage of Domestic Banks Reporting Stronger Demand for Commercial and Industrial Loans From Large and Middle-Market Firms", "domain": "bank_loan_demand", "frequency": "quarterly", "units": "percent_not_seasonally_adjusted", "sign": "higher_is_stronger_demand"},
+        {"output_id": "DRSDCIS", "source_label": "Net Percentage of Domestic Banks Reporting Stronger Demand for Commercial and Industrial Loans From Small Firms", "domain": "bank_loan_demand", "frequency": "quarterly", "units": "percent_not_seasonally_adjusted", "sign": "higher_is_stronger_demand"}
       ]
     },
     "ofr_fsi": {
@@ -517,8 +572,10 @@
     {"id": "rates_curve", "role": "retrospective_sensitivity", "required_series": ["DGS3MO", "DGS1", "DGS2", "DGS5", "DGS7", "DGS10", "DGS20", "DGS30"], "features": ["nelson_siegel_level", "nelson_siegel_slope", "nelson_siegel_curvature"]},
     {"id": "rates_and_inflation", "role": "retrospective_sensitivity", "required_series": ["DFII10", "T10Y2Y", "T10YIE", "FEDFUNDS"], "lookbacks_weeks": [1, 4, 13]},
     {"id": "fx", "role": "prospective_shadow", "required_series": ["DTWEXBGS"], "lookbacks_weeks": [1, 4, 13]},
-    {"id": "central_bank_liquidity", "role": "archive_certification_candidate", "required_series": ["WALCL"], "lookbacks_weeks": [1, 4, 13]},
+    {"id": "cross_asset_correlations", "role": "retrospective_sensitivity_only", "source": "market_label_source", "required_symbols": ["SPY", "TLT", "HYG", "LQD", "UUP"], "pairs": ["SPY_TLT", "SPY_HYG", "SPY_UUP", "HYG_TLT"], "windows_weeks": [13, 26], "input": "weekly_adjusted_close_log_returns", "minimum_observations": "ceiling_half_window", "historical_pit_certified": false},
+    {"id": "central_bank_liquidity", "role": "archive_certification_candidate", "required_series": ["WALCL", "WRESBAL", "WDTGAL", "WLRRAL"], "optional_series": ["WPC", "SWPT"], "lookbacks_weeks": [1, 4, 13], "features": ["component_level", "component_change", "component_z_52w", "component_active_indicator"], "aggregation_policy": "no_unvalidated_net_liquidity_composite_or_component_double_counting"},
     {"id": "bank_credit", "role": "archive_certification_candidate", "required_series": ["TOTBKCR", "TOTCI", "DPSACBW027SBOG", "H8B3094NCBA"], "lookbacks_weeks": [1, 4, 13]},
+    {"id": "bank_lending_standards", "role": "archive_certification_candidate_research_planned", "required_series": ["DRTSCILM", "DRTSCIS", "DRSDCILM", "DRSDCIS"], "features": ["release_level", "release_change", "large_small_firm_spread", "standards_demand_wedge", "weeks_since_release"], "weekly_alignment": "release_date_step_function_without_backfill_before_publication"},
     {"id": "financial_stress", "role": "retrospective_sensitivity_then_prospective_shadow", "required_series": ["OFR_FSI"], "optional_series": ["OFR_FSI_CREDIT", "OFR_FSI_EQUITY", "OFR_FSI_SAFE_ASSETS", "OFR_FSI_FUNDING", "OFR_FSI_VOLATILITY", "OFR_FSI_US"], "lookbacks_weeks": [1, 4, 13]},
     {"id": "macro_activity", "role": "historical_pit_candidate_core", "required_series": ["ADS"], "lookbacks_weeks": [1, 4, 13]},
     {"id": "macro_vintages", "role": "historical_pit_candidate_core", "required_series": ["RUC", "PCPI", "HSTARTS"], "features": ["level", "first_difference", "release_innovation"]},
@@ -526,10 +583,11 @@
   ],
   "model_candidates": [
     {"name": "recency_weighted_xgboost_208w", "role": "primary_research_candidate", "half_life_weeks": 208},
+    {"name": "recency_weighted_ridge_logistic_208w", "role": "low_variance_drift_robust_research_candidate", "half_life_weeks": 208, "C": 0.1},
     {"name": "pca_ridge_logistic", "role": "low_variance_research_candidate"},
     {"name": "discounted_markov_208w", "role": "drift_sensitivity_shadow", "half_life_weeks": 208, "alpha": 1.0}
   ],
-  "comparison_models": ["majority", "persistence", "markov", "ridge_logistic", "xgboost", "recency_weighted_xgboost_208w", "pca_ridge_logistic", "discounted_markov_208w"],
+  "comparison_models": ["majority", "persistence", "markov", "ridge_logistic", "xgboost", "recency_weighted_xgboost_208w", "recency_weighted_ridge_logistic_208w", "pca_ridge_logistic", "discounted_markov_208w"],
   "promotion": {
     "automatic": false,
     "public_payload": false,

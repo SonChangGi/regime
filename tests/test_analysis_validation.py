@@ -517,6 +517,45 @@ def test_time_split_leaderboard_is_holdout_and_default_track_is_holdout_only() -
     assert (result.leaderboard["evaluation_split"] == "holdout").all()
 
 
+def test_run_benchmark_uses_run_level_log_loss_materiality_threshold() -> None:
+    features, states = _model_inputs()
+    cutoff = features.index[105]
+    result = run_benchmark(
+        features,
+        states,
+        profile=BenchmarkProfile.quick().with_overrides(
+            max_origins=20,
+            minimum_train_weeks=52,
+        ),
+        models=("majority", "persistence", "markov"),
+        selection_end=cutoff,
+        minimum_selection_predictions=5,
+        minimum_holdout_predictions=5,
+        minimum_log_loss_improvement=0.01,
+    )
+
+    assert result.minimum_log_loss_improvement == 0.01
+    assert result.selection_diagnostics is not None
+    assert set(result.selection_diagnostics["minimum_log_loss_improvement"]) == {
+        0.01
+    }
+
+    for invalid in (-0.01, float("nan"), float("inf")):
+        with np.testing.assert_raises_regex(
+            ValueError,
+            "minimum_log_loss_improvement",
+        ):
+            run_benchmark(
+                features,
+                states,
+                profile=BenchmarkProfile.quick().with_overrides(
+                    minimum_train_weeks=52
+                ),
+                models=("majority",),
+                minimum_log_loss_improvement=invalid,
+            )
+
+
 def test_time_split_fails_loudly_when_holdout_is_too_short() -> None:
     features, states = _model_inputs()
     cutoff = features.index[-2]

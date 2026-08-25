@@ -5,9 +5,11 @@ from itertools import combinations
 import numpy as np
 import pandas as pd
 from pandas.testing import assert_frame_equal, assert_series_equal
+import pytest
 
 from regime_lab.analysis import CausalRegimeLabeler, FeatureConfig
 from regime_lab.analysis import build_weekly_features
+from regime_lab.analysis.features import build_cross_asset_correlation_features
 from regime_lab.schema import STATE_ORDER
 
 
@@ -161,6 +163,71 @@ def test_new_feature_groups_are_compact_and_optional_pairs_are_skipped() -> None
         expected_macro,
         check_names=False,
     )
+
+
+def test_cross_asset_correlations_are_past_only_fixed_pair_features() -> None:
+    index = pd.date_range("2020-01-03", periods=40, freq="W-FRI")
+    position = np.arange(40, dtype=float)
+    equity_returns = 0.002 + 0.01 * np.sin(position / 4.0)
+    duration_returns = -0.4 * equity_returns + 0.003 * np.cos(position / 3.0)
+    credit_returns = 0.7 * equity_returns + 0.002 * np.sin(position / 5.0)
+    frame = pd.DataFrame(
+        {
+            "spy_close": 100.0 * np.exp(np.cumsum(equity_returns)),
+            "tlt_close": 100.0 * np.exp(np.cumsum(duration_returns)),
+            "hyg_close": 100.0 * np.exp(np.cumsum(credit_returns)),
+            "uup_close": 100.0 * np.exp(np.cumsum(-0.2 * equity_returns)),
+        },
+        index=index,
+    )
+
+    correlations = build_cross_asset_correlation_features(frame, windows=(13, 26))
+    prefix = build_cross_asset_correlation_features(frame.iloc[:30], windows=(13, 26))
+
+    assert set(correlations) == {
+        "cross_asset__equity_duration__correlation_13w",
+        "cross_asset__equity_duration__correlation_26w",
+        "cross_asset__equity_credit__correlation_13w",
+        "cross_asset__equity_credit__correlation_26w",
+        "cross_asset__equity_usd__correlation_13w",
+        "cross_asset__equity_usd__correlation_26w",
+        "cross_asset__credit_duration__correlation_13w",
+        "cross_asset__credit_duration__correlation_26w",
+    }
+    assert_frame_equal(correlations.iloc[:30], prefix)
+    assert correlations.max().max() <= 1.0
+    assert correlations.min().min() >= -1.0
+
+
+def test_shared_feature_builder_does_not_opt_in_v6_cross_asset_block() -> None:
+    index = pd.date_range("2020-01-03", periods=40, freq="W-FRI")
+    position = np.arange(40, dtype=float)
+    frame = pd.DataFrame(
+        {
+            "spy_close": 100.0 * np.exp(np.cumsum(0.002 + 0.01 * np.sin(position))),
+            "tlt_close": 100.0 * np.exp(np.cumsum(0.001 + 0.01 * np.cos(position))),
+            "hyg_close": 100.0 * np.exp(np.cumsum(0.002 + 0.008 * np.sin(position / 2))),
+            "uup_close": 100.0 * np.exp(np.cumsum(0.001 - 0.004 * np.sin(position))),
+        },
+        index=index,
+    )
+
+    features = build_weekly_features(
+        frame,
+        FeatureConfig(
+            price_columns=tuple(frame.columns),
+            volume_columns=(),
+        ),
+    )
+
+    assert not any(name.startswith("cross_asset__") for name in features)
+
+
+@pytest.mark.parametrize("windows", [(), (1,), (13.5,), (True,)])
+def test_cross_asset_correlations_reject_invalid_windows(windows: tuple[object, ...]) -> None:
+    frame = _canonical_market_frame()
+    with pytest.raises(ValueError, match="integers of at least two"):
+        build_cross_asset_correlation_features(frame, windows=windows)
 
 
 def test_feature_builder_preserves_missingness_in_new_feature_groups() -> None:

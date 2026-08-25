@@ -73,6 +73,16 @@ V5_RESEARCH_ARTIFACTS = (
     ("conditional_asset_outcomes", "conditional-asset-outcomes.csv"),
     ("conditional_asset_statistics", "conditional-asset-statistics.csv"),
 )
+V5_MODEL_CONDITIONED_ARTIFACTS = (
+    (
+        "model_conditioned_asset_outcomes",
+        "model-conditioned-asset-outcomes.csv",
+    ),
+    (
+        "model_conditioned_asset_statistics",
+        "model-conditioned-asset-statistics.csv",
+    ),
+)
 V5_FX_ARTIFACTS = (
     ("fx_features", "fx-features.csv"),
     ("fx_coverage", "fx-coverage.csv"),
@@ -122,6 +132,30 @@ V5_OUTCOME_POINT_METRICS = (
     "downside_volatility",
     "cvar_5",
     "mean_max_drawdown",
+)
+V5_CONDITIONAL_STATISTIC_FIELDS = (
+    "execution_lag_weeks",
+    "return_currency",
+    "sample_start",
+    "sample_end",
+    "n",
+    "unique_episodes",
+    "status",
+    "minimum_observations",
+    "minimum_unique_episodes",
+    "bootstrap_method",
+    "bootstrap_block_weeks",
+    "bootstrap_resamples",
+    "bootstrap_seed",
+    *V5_OUTCOME_POINT_METRICS,
+    *tuple(
+        field
+        for metric in V5_OUTCOME_POINT_METRICS
+        for field in (
+            f"{metric}_ci95_lower",
+            f"{metric}_ci95_upper",
+        )
+    ),
 )
 V4_PREREGISTRATION_SHA256 = (
     "2f53ada564efca770261f16ce6eb16ec9c9782bde014de7a7d85b7b24dbe407b"
@@ -3644,9 +3678,28 @@ def _audit_v5_file_contracts(
 
 
 def _calendar_days(series: pd.Series, *, context: str) -> pd.Series:
-    parsed = pd.to_datetime(series, utc=True, errors="raise")
-    require(parsed.notna().all(), f"{context} contains a missing date")
-    return parsed.dt.tz_convert("America/New_York").dt.tz_localize(None).dt.normalize()
+    text = series.astype("string").str.strip()
+    date_only = text.str.fullmatch(r"\d{4}-\d{2}-\d{2}").fillna(False)
+    normalized = pd.Series(pd.NaT, index=series.index, dtype="datetime64[ns]")
+
+    if date_only.any():
+        normalized.loc[date_only] = pd.to_datetime(
+            text.loc[date_only],
+            format="%Y-%m-%d",
+            errors="raise",
+        ).dt.normalize()
+
+    timestamped = ~date_only
+    if timestamped.any():
+        parsed = pd.to_datetime(series.loc[timestamped], utc=True, errors="raise")
+        normalized.loc[timestamped] = (
+            parsed.dt.tz_convert("America/New_York")
+            .dt.tz_localize(None)
+            .dt.normalize()
+        )
+
+    require(normalized.notna().all(), f"{context} contains a missing date")
+    return normalized
 
 
 def _market_date(value: object) -> str:
@@ -3757,6 +3810,7 @@ def _audit_v5_embedded_records(
         tuple(str(row[key]) for key in keys): row
         for _, row in frame.iterrows()
     }
+    embedded_identities: list[tuple[str, ...]] = []
     for position, expected in enumerate(records):
         require(
             isinstance(expected, dict),
@@ -3767,7 +3821,12 @@ def _audit_v5_embedded_records(
             set(expected),
             f"{context} payload row {position}",
         )
+        require(
+            set(keys).issubset(expected),
+            f"{context} payload row {position} keys are incomplete",
+        )
         identity = tuple(str(expected[key]) for key in keys)
+        embedded_identities.append(identity)
         require(identity in lookup, f"{context} payload/CSV keys differ")
         actual = lookup[identity]
         for field, expected_value in expected.items():
@@ -3801,6 +3860,14 @@ def _audit_v5_embedded_records(
                     not actual_missing and str(actual_value) == str(expected_value),
                     f"{context} {identity} {field} mismatch",
                 )
+    require(
+        len(set(embedded_identities)) == len(embedded_identities),
+        f"{context} payload keys duplicate",
+    )
+    require(
+        set(embedded_identities) == set(lookup),
+        f"{context} payload/CSV keys differ",
+    )
 
 
 def _v5_missing(value: object) -> bool:
@@ -5615,8 +5682,8 @@ def _recompute_v5_conditional_statistics(
         for row in outcomes.loc[:, list(keys)].drop_duplicates().itertuples(index=False)
     }
     require(
-        statistic_keys == outcome_keys,
-        "v5 conditional statistics/outcome group keys differ",
+        outcome_keys.issubset(statistic_keys),
+        "v5 conditional outcomes contain an unreported group",
     )
     state_positions = {state: index for index, state in enumerate(STATE_ORDER)}
     asset_positions = {
@@ -5645,12 +5712,23 @@ def _recompute_v5_conditional_statistics(
         supported = (
             count >= minimum_observations and unique_episodes >= minimum_episodes
         )
-        metrics = _v5_conditional_point_metrics(
-            group["forward_return"].to_numpy(dtype=float),
-            group["max_drawdown"].to_numpy(dtype=float),
-            horizon_weeks=horizon,
+        metrics = (
+            _v5_conditional_point_metrics(
+                group["forward_return"].to_numpy(dtype=float),
+                group["max_drawdown"].to_numpy(dtype=float),
+                horizon_weeks=horizon,
+            )
+            if count
+            else {
+                metric: float("nan") for metric in V5_OUTCOME_POINT_METRICS
+            }
         )
-        seed = 17 + state_positions[state] * 10_000 + asset_positions[asset] * 100 + horizon
+        seed = (
+            17
+            + state_positions[state] * 10_000
+            + asset_positions[asset] * 100
+            + horizon
+        )
         intervals = (
             _v5_conditional_bootstrap_intervals(
                 group,
@@ -5669,10 +5747,22 @@ def _recompute_v5_conditional_statistics(
             "state": state,
             "asset": asset,
             "horizon_weeks": horizon,
-            "execution_lag_weeks": int(group["execution_lag_weeks"].iloc[0]),
-            "return_currency": str(group["return_currency"].iloc[0]),
-            "sample_start": pd.Timestamp(group["origin_date"].min()).date().isoformat(),
-            "sample_end": pd.Timestamp(group["origin_date"].max()).date().isoformat(),
+            "execution_lag_weeks": (
+                int(group["execution_lag_weeks"].iloc[0]) if count else 1
+            ),
+            "return_currency": (
+                str(group["return_currency"].iloc[0]) if count else "USD"
+            ),
+            "sample_start": (
+                pd.Timestamp(group["origin_date"].min()).date().isoformat()
+                if count
+                else None
+            ),
+            "sample_end": (
+                pd.Timestamp(group["origin_date"].max()).date().isoformat()
+                if count
+                else None
+            ),
             "n": count,
             "unique_episodes": unique_episodes,
             "status": "ok" if supported else "insufficient_support",
@@ -5772,38 +5862,363 @@ def _audit_v5_conditional(
         statistics,
         expected_resamples=expected_resamples,
     )
-    statistic_fields = (
-        "execution_lag_weeks",
-        "return_currency",
-        "sample_start",
-        "sample_end",
-        "n",
-        "unique_episodes",
-        "status",
-        "minimum_observations",
-        "minimum_unique_episodes",
-        "bootstrap_method",
-        "bootstrap_block_weeks",
-        "bootstrap_resamples",
-        "bootstrap_seed",
-        *V5_OUTCOME_POINT_METRICS,
-        *tuple(
-            field
-            for metric in V5_OUTCOME_POINT_METRICS
-            for field in (
-                f"{metric}_ci95_lower",
-                f"{metric}_ci95_upper",
-            )
-        ),
-    )
     _audit_v5_recomputed_records(
         recomputed,
         statistics,
         keys=("state", "asset", "horizon_weeks"),
-        fields=statistic_fields,
+        fields=V5_CONDITIONAL_STATISTIC_FIELDS,
         context="v5 conditional asset statistics",
     )
     return {
+        "outcome_rows": len(outcomes),
+        "statistics_rows": len(statistics),
+        "bootstrap_resamples": expected_resamples,
+    }
+
+
+def _audit_v5_model_conditioned(
+    payload: Mapping[str, Any],
+    frames: Mapping[str, pd.DataFrame],
+) -> dict[str, Any]:
+    """Bind model-conditioned outcomes to OOS forecasts and recompute statistics."""
+
+    outcome_path = "model-conditioned-asset-outcomes.csv"
+    statistics_path = "model-conditioned-asset-statistics.csv"
+    present = {path for path in (outcome_path, statistics_path) if path in frames}
+    research = payload.get("research")
+    require(isinstance(research, Mapping), "v5 research payload is invalid")
+    embedded_metadata = research.get("model_conditioned_asset_stats")
+    if not present:
+        require(
+            embedded_metadata is None,
+            "v5 model-conditioned payload requires its artifact pair",
+        )
+        return {
+            "status": "legacy_absent",
+            "models": 0,
+            "outcome_rows": 0,
+            "statistics_rows": 0,
+        }
+    require(
+        present == {outcome_path, statistics_path},
+        "v5 model-conditioned artifacts must be a complete pair",
+    )
+    require(
+        isinstance(embedded_metadata, Mapping),
+        "v5 model-conditioned payload statistics are missing",
+    )
+
+    model_metadata = payload.get("model")
+    require(
+        isinstance(model_metadata, Mapping),
+        "v5 model-conditioned model metadata is invalid",
+    )
+    comparison = model_metadata.get("forecast_comparison")
+    require(
+        isinstance(comparison, Mapping),
+        "v5 model-conditioned outcomes require forecast comparison metadata",
+    )
+    raw_models = comparison.get("models")
+    require(
+        isinstance(raw_models, list) and bool(raw_models),
+        "v5 model-conditioned forecast models are invalid",
+    )
+    models = tuple(str(name) for name in raw_models)
+    require(
+        len(models) == len(set(models)),
+        "v5 model-conditioned forecast models duplicate",
+    )
+    require(
+        embedded_metadata.get("method")
+        == "oos_one_week_forecast_conditioned_forward_total_return"
+        and embedded_metadata.get("role") == "retrospective_model_diagnostic"
+        and embedded_metadata.get("conditioning") == "hard_argmax_oos_forecast"
+        and embedded_metadata.get("forecast_horizon_weeks") == 1
+        and embedded_metadata.get("execution_lag_weeks") == 1
+        and tuple(embedded_metadata.get("horizons_weeks", ()))
+        == V5_OUTCOME_HORIZONS
+        and tuple(embedded_metadata.get("assets", ())) == V5_OUTCOME_ASSETS
+        and tuple(str(name) for name in embedded_metadata.get("models", ()))
+        == models
+        and embedded_metadata.get("return_currency") == "USD",
+        "v5 model-conditioned metadata contract mismatch",
+    )
+
+    statistics = frames[statistics_path]
+    outcomes = frames[outcome_path].copy()
+    _audit_v5_embedded_records(
+        embedded_metadata.get("rows"),
+        statistics,
+        keys=("conditioning_model", "state", "asset", "horizon_weeks"),
+        context="v5 model-conditioned asset statistics",
+    )
+    require_columns(
+        outcomes,
+        {
+            "conditioning_model",
+            "origin_position",
+            "origin_date",
+            "entry_date",
+            "exit_date",
+            "state",
+            "episode_id",
+            "asset",
+            "horizon_weeks",
+            "execution_lag_weeks",
+            "return_currency",
+            "forward_return",
+            "max_drawdown",
+        },
+        "v5 model-conditioned asset outcomes",
+    )
+    require_columns(
+        statistics,
+        {
+            "conditioning_model",
+            "state",
+            "asset",
+            "horizon_weeks",
+            *V5_CONDITIONAL_STATISTIC_FIELDS,
+        },
+        "v5 model-conditioned asset statistics",
+    )
+    require(
+        set(statistics["conditioning_model"].astype(str)) == set(models)
+        and len(statistics)
+        == len(models)
+        * len(STATE_ORDER)
+        * len(V5_OUTCOME_ASSETS)
+        * len(V5_OUTCOME_HORIZONS),
+        "v5 model-conditioned statistics model/row coverage is invalid",
+    )
+
+    origin = _calendar_days(
+        outcomes["origin_date"],
+        context="v5 model-conditioned outcomes.origin_date",
+    )
+    entry = _calendar_days(
+        outcomes["entry_date"],
+        context="v5 model-conditioned outcomes.entry_date",
+    )
+    exit_date = _calendar_days(
+        outcomes["exit_date"],
+        context="v5 model-conditioned outcomes.exit_date",
+    )
+    horizon = pd.to_numeric(outcomes["horizon_weeks"], errors="raise")
+    positions = pd.to_numeric(outcomes["origin_position"], errors="raise")
+    episodes = pd.to_numeric(outcomes["episode_id"], errors="raise")
+    require(
+        np.isfinite(horizon.to_numpy(dtype=float)).all()
+        and np.isfinite(positions.to_numpy(dtype=float)).all()
+        and np.isfinite(episodes.to_numpy(dtype=float)).all()
+        and np.equal(horizon, np.floor(horizon)).all()
+        and np.equal(positions, np.floor(positions)).all()
+        and np.equal(episodes, np.floor(episodes)).all()
+        and (positions >= 0).all()
+        and (episodes >= 0).all(),
+        "v5 model-conditioned outcome indexes are invalid",
+    )
+    horizon = horizon.astype(int)
+    outcomes["_origin_position"] = positions.astype(int)
+    outcomes["_episode_id"] = episodes.astype(int)
+    outcomes["_origin_day"] = origin.dt.strftime("%Y-%m-%d")
+    outcomes["_entry_day"] = entry.dt.strftime("%Y-%m-%d")
+    outcomes["_exit_day"] = exit_date.dt.strftime("%Y-%m-%d")
+    outcomes["_horizon"] = horizon
+    require(
+        ((entry - origin).dt.days == 7).all(),
+        "v5 model-conditioned outcomes entry is not t+1 week",
+    )
+    require(
+        ((exit_date - entry).dt.days == 7 * horizon).all(),
+        "v5 model-conditioned outcomes exit is not t+1+h weeks",
+    )
+    require(
+        outcomes["execution_lag_weeks"].astype(int).eq(1).all()
+        and outcomes["return_currency"].astype(str).eq("USD").all(),
+        "v5 model-conditioned outcomes execution/currency contract mismatch",
+    )
+    require(
+        set(outcomes["conditioning_model"].astype(str)) == set(models)
+        and outcomes["state"].astype(str).isin(STATE_ORDER).all()
+        and set(outcomes["asset"].astype(str)) == set(V5_OUTCOME_ASSETS)
+        and set(horizon) == set(V5_OUTCOME_HORIZONS),
+        "v5 model-conditioned outcomes model/state/asset/horizon is invalid",
+    )
+    require(
+        not outcomes.duplicated(
+            [
+                "conditioning_model",
+                "_origin_position",
+                "_horizon",
+                "asset",
+            ]
+        ).any(),
+        "v5 model-conditioned outcomes duplicate a model/origin/horizon/asset",
+    )
+    numeric_outcomes = outcomes.loc[:, ["forward_return", "max_drawdown"]].apply(
+        pd.to_numeric,
+        errors="raise",
+    )
+    require(
+        np.isfinite(numeric_outcomes.to_numpy(dtype=float)).all(),
+        "v5 model-conditioned outcomes contain non-finite values",
+    )
+
+    weekly = payload.get("weekly")
+    require(
+        isinstance(weekly, list) and bool(weekly),
+        "v5 model-conditioned weekly forecasts are missing",
+    )
+    forecast_lookup: dict[tuple[str, str], tuple[int, str, int]] = {}
+    episode_by_model = {name: -1 for name in models}
+    prior_state_by_model: dict[str, str | None] = {name: None for name in models}
+    weekly_days: set[str] = set()
+    for position, week in enumerate(weekly):
+        require(
+            isinstance(week, Mapping),
+            f"v5 model-conditioned weekly[{position}] is invalid",
+        )
+        origin_day = _market_date(week.get("date"))
+        require(
+            origin_day not in weekly_days,
+            "v5 model-conditioned weekly origin dates duplicate",
+        )
+        weekly_days.add(origin_day)
+        published = week.get("model_forecasts")
+        require(
+            isinstance(published, list) and len(published) == len(models),
+            f"v5 model-conditioned weekly[{position}] forecasts are incomplete",
+        )
+        target_day = (
+            pd.Timestamp(origin_day) + timedelta(weeks=1)
+        ).date().isoformat()
+        for model_position, name in enumerate(models):
+            forecast = published[model_position]
+            require(
+                isinstance(forecast, Mapping) and forecast.get("model") == name,
+                f"v5 model-conditioned weekly[{position}] model/order mismatch",
+            )
+            state = str(forecast.get("state"))
+            require(
+                state in STATE_ORDER,
+                f"v5 model-conditioned weekly[{position}] state is invalid",
+            )
+            require(
+                forecast.get("date") is not None
+                and _market_date(forecast.get("date")) == target_day,
+                f"v5 model-conditioned weekly[{position}] target is not t+1 week",
+            )
+            if prior_state_by_model[name] != state:
+                episode_by_model[name] += 1
+            prior_state_by_model[name] = state
+            forecast_lookup[(origin_day, name)] = (
+                position,
+                state,
+                episode_by_model[name],
+            )
+
+    for _, row in outcomes.iterrows():
+        name = str(row["conditioning_model"])
+        origin_day = str(row["_origin_day"])
+        binding = forecast_lookup.get((origin_day, name))
+        require(
+            binding is not None,
+            "v5 model-conditioned outcome has no weekly OOS forecast",
+        )
+        expected_position, expected_state, expected_episode = binding
+        require(
+            int(row["_origin_position"]) == expected_position,
+            "v5 model-conditioned outcome origin position/weekly forecast mismatch",
+        )
+        require(
+            str(row["state"]) == expected_state,
+            "v5 model-conditioned outcome state/weekly OOS forecast mismatch",
+        )
+        require(
+            int(row["_episode_id"]) == expected_episode,
+            "v5 model-conditioned outcome episode/forecast sequence mismatch",
+        )
+
+    signature_columns = (
+        "_origin_position",
+        "_origin_day",
+        "_entry_day",
+        "_exit_day",
+        "asset",
+        "_horizon",
+    )
+    reference_signature: set[tuple[str, ...]] | None = None
+    for name in models:
+        selected = outcomes.loc[
+            outcomes["conditioning_model"].astype(str).eq(name),
+            list(signature_columns),
+        ]
+        signature = {
+            tuple(str(row[field]) for field in signature_columns)
+            for _, row in selected.iterrows()
+        }
+        if reference_signature is None:
+            reference_signature = signature
+        else:
+            require(
+                signature == reference_signature,
+                "v5 model-conditioned outcome coverage differs by model",
+            )
+
+    expected_groups = {
+        (state, asset, horizon_value)
+        for state in STATE_ORDER
+        for asset in V5_OUTCOME_ASSETS
+        for horizon_value in V5_OUTCOME_HORIZONS
+    }
+    expected_resamples = int(
+        _audit_v5_execution_parameters(payload)[
+            "conditional_outcome_bootstrap_resamples"
+        ]
+    )
+    for name in models:
+        model_statistics = statistics.loc[
+            statistics["conditioning_model"].astype(str).eq(name)
+        ].drop(columns="conditioning_model")
+        actual_groups = {
+            (str(row.state), str(row.asset), int(row.horizon_weeks))
+            for row in model_statistics.itertuples(index=False)
+        }
+        require(
+            len(model_statistics) == len(expected_groups)
+            and actual_groups == expected_groups,
+            f"v5 model-conditioned statistics coverage is incomplete for {name}",
+        )
+        model_outcomes = outcomes.loc[
+            outcomes["conditioning_model"].astype(str).eq(name)
+        ].drop(
+            columns=[
+                "conditioning_model",
+                "_origin_position",
+                "_episode_id",
+                "_origin_day",
+                "_entry_day",
+                "_exit_day",
+                "_horizon",
+            ]
+        )
+        recomputed = _recompute_v5_conditional_statistics(
+            model_outcomes,
+            model_statistics,
+            expected_resamples=expected_resamples,
+        )
+        _audit_v5_recomputed_records(
+            recomputed,
+            model_statistics,
+            keys=("state", "asset", "horizon_weeks"),
+            fields=V5_CONDITIONAL_STATISTIC_FIELDS,
+            context=f"v5 model-conditioned asset statistics {name}",
+        )
+
+    return {
+        "status": "verified",
+        "models": len(models),
         "outcome_rows": len(outcomes),
         "statistics_rows": len(statistics),
         "bootstrap_resamples": expected_resamples,
@@ -7417,6 +7832,39 @@ def audit_v5_artifact_inventory(artifacts: Path) -> dict[str, Any]:
         raise AuditFailure(f"v5 artifact inventory failed: {exc}") from exc
 
 
+def _v5_expected_research_artifacts(
+    research_contract: object,
+) -> tuple[tuple[str, str], ...]:
+    require(
+        isinstance(research_contract, Mapping),
+        "v5 research artifact manifest must be an object",
+    )
+    optional_keys = tuple(key for key, _ in V5_MODEL_CONDITIONED_ARTIFACTS)
+    optional_present = tuple(
+        key for key in optional_keys if key in research_contract
+    )
+    require(
+        not optional_present or optional_present == optional_keys,
+        "v5 model-conditioned artifacts must be a complete pair",
+    )
+    fx_keys = tuple(key for key, _ in V5_FX_ARTIFACTS)
+    fx_present = tuple(key for key in fx_keys if key in research_contract)
+    require(
+        not fx_present or fx_present == fx_keys,
+        "v5 FX artifacts must be a complete set",
+    )
+    expected = list(V5_RESEARCH_ARTIFACTS)
+    if optional_present:
+        expected.extend(V5_MODEL_CONDITIONED_ARTIFACTS)
+    if fx_present:
+        expected.extend(V5_FX_ARTIFACTS)
+    require(
+        list(research_contract) == [key for key, _ in expected],
+        "v5 research artifact key/order contract mismatch",
+    )
+    return tuple(expected)
+
+
 def audit_v5(
     payload: Mapping[str, Any],
     payload_path: Path,
@@ -7467,17 +7915,11 @@ def audit_v5(
     )
 
     research_contract = payload["model"].get("research_artifacts")
+    expected_contracts = _v5_expected_research_artifacts(research_contract)
     frames = _audit_v5_file_contracts(
         research_contract,
         artifacts,
         context="payload.model.research_artifacts",
-    )
-    expected_contracts = list(V5_RESEARCH_ARTIFACTS)
-    if any(key in research_contract for key, _ in V5_FX_ARTIFACTS):
-        expected_contracts.extend(V5_FX_ARTIFACTS)
-    require(
-        list(research_contract) == [key for key, _ in expected_contracts],
-        "v5 research artifact key/order contract mismatch",
     )
     require(
         [str(research_contract[key]["path"]) for key, _ in expected_contracts]
@@ -7516,6 +7958,7 @@ def audit_v5(
         membership,
     )
     conditional = _audit_v5_conditional(payload, frames)
+    model_conditioned = _audit_v5_model_conditioned(payload, frames)
     duration = _audit_v5_duration(payload, membership, execution)
     fx = _audit_v5_fx(
         payload,
@@ -7539,6 +7982,7 @@ def audit_v5(
         "weeks": len(payload["weekly"]),
         "directional": directional,
         "conditional": conditional,
+        "model_conditioned": model_conditioned,
         "duration": duration,
         "execution_parameters_sha256": execution["sha256"],
         "core": core,

@@ -5501,3 +5501,211 @@ tr.is-holdout-best td,
   }
 
 }
+
+/* Forecast layer controls and balanced context cards. */
+
+.forecast-layer-field {
+  width: min(100%, 320px);
+  margin: 0 0 12px auto;
+  padding: 10px 12px;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.forecast-layer-field label {
+  color: var(--ink-strong);
+  white-space: nowrap;
+}
+
+.forecast-layer-field select {
+  width: 100%;
+  min-height: 40px;
+}
+
+.history-heading-controls {
+  display: flex;
+  min-width: 0;
+  align-items: end;
+  gap: 10px;
+}
+
+.history-heading-controls select {
+  width: 100%;
+}
+
+.history-series-field {
+  min-width: 210px;
+}
+
+#evidence.detail-grid {
+  grid-template-columns: repeat(10, minmax(0, 1fr));
+  align-items: stretch;
+}
+
+#evidence > .evidence-drivers-card {
+  grid-column: span 6;
+}
+
+#evidence > .market-context-card {
+  grid-column: span 4;
+}
+
+#evidence > #duration-context-card,
+#evidence > #fx-context-card {
+  grid-column: span 5;
+}
+
+#duration-context-card,
+#fx-context-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+
+#duration-context-card .metric-list,
+#fx-context-card .metric-list {
+  margin-top: 16px;
+  gap: 8px;
+}
+
+#duration-context-card .metric-list > div,
+#fx-context-card .metric-list > div,
+#duration-context-card .duration-baseline {
+  display: flex;
+  min-height: 72px;
+  padding: 11px 12px;
+  flex-direction: column;
+  justify-content: center;
+}
+
+#duration-context-card .metric-list dt,
+#fx-context-card .metric-list dt,
+#duration-context-card .duration-baseline span {
+  min-height: 2.7em;
+  overflow: visible;
+  line-height: 1.35;
+  text-overflow: clip;
+  white-space: normal;
+}
+
+#duration-context-card .duration-baselines {
+  margin-top: 8px;
+}
+
+#fx-context-card .context-status-row {
+  position: absolute;
+  top: 20px;
+  right: 20px;
+  margin: 0;
+}
+
+#fx-coverage > :first-child {
+  display: none;
+}
+
+#market-context dt {
+  overflow: visible;
+  line-height: 1.35;
+  text-overflow: clip;
+  white-space: normal;
+}
+
+#market-context .metric-percentile {
+  display: block;
+  margin-top: 5px;
+  color: var(--ink-faint);
+  font-size: 9px;
+}
+
+@media (max-width: 760px) {
+  .forecast-layer-field {
+    width: 100%;
+    margin-left: 0;
+  }
+
+  #history .card-heading {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
+  }
+
+  .history-heading-controls {
+    display: grid;
+    grid-template-columns: minmax(0, 1.55fr) minmax(92px, 0.7fr);
+    align-items: end;
+    gap: 8px;
+  }
+
+  .history-series-field {
+    min-width: 0;
+  }
+
+  #evidence.detail-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  #evidence > .evidence-drivers-card,
+  #evidence > .market-context-card,
+  #evidence > #duration-context-card,
+  #evidence > #fx-context-card {
+    grid-column: 1;
+  }
+
+  #fx-context-card .context-status-row {
+    top: 16px;
+    right: 16px;
+  }
+}
+
+@media (max-width: 460px) {
+  #market-context,
+  #duration-context,
+  #fx-context,
+  #duration-context-card .duration-baselines {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  #market-context > div,
+  #duration-context-card .metric-list > div,
+  #fx-context-card .metric-list > div,
+  #duration-context-card .duration-baseline {
+    min-height: 76px;
+    padding: 10px;
+  }
+}
+
+@media (max-width: 360px) {
+  #market-context,
+  #duration-context,
+  #fx-context,
+  #duration-context-card .duration-baselines {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .history-heading-controls {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 760px) {
+  .conditional-stat-controls {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .conditional-stat-controls .inline-field {
+    min-width: 0;
+  }
+}
+
+@media (max-width: 360px) {
+  .conditional-stat-controls {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

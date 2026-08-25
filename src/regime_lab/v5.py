@@ -372,6 +372,113 @@ def _conditional_research(
     )
 
 
+def _model_conditioned_research(
+    canonical: pd.DataFrame,
+    weekly: Sequence[Mapping[str, Any]],
+    model_names: Sequence[str],
+    *,
+    bootstrap_resamples: int,
+) -> tuple[dict[str, Any], pd.DataFrame, pd.DataFrame]:
+    """Condition forward outcomes on each model's completed OOS forecast.
+
+    Forecasts made at origin ``t`` describe the state expected at ``t+1``.
+    The outcome study therefore enters at the completed ``t+1`` close, which
+    is the same one-week execution lag used by the observed-state study.
+    """
+
+    resolved_models = tuple(str(name) for name in model_names)
+    if not resolved_models or len(resolved_models) != len(set(resolved_models)):
+        raise ValueError("model-conditioned outcomes require unique model names")
+
+    index_by_date = {
+        pd.Timestamp(index).date().isoformat(): index for index in canonical.index
+    }
+    origin_index: list[pd.Timestamp] = []
+    states_by_model: dict[str, list[str]] = {
+        name: [] for name in resolved_models
+    }
+    for week in weekly:
+        date_value = str(week.get("date", ""))
+        index = index_by_date.get(date_value)
+        if index is None:
+            raise ValueError(
+                f"model-conditioned outcome origin is absent from canonical data: {date_value}"
+            )
+        raw_forecasts = week.get("model_forecasts")
+        if not isinstance(raw_forecasts, Sequence) or isinstance(
+            raw_forecasts, (str, bytes)
+        ):
+            raise ValueError(
+                f"model-conditioned forecasts are missing for {date_value}"
+            )
+        by_name = {
+            str(row.get("model")): row
+            for row in raw_forecasts
+            if isinstance(row, Mapping)
+        }
+        if set(by_name) != set(resolved_models):
+            raise ValueError(
+                f"model-conditioned forecast suite is incomplete for {date_value}"
+            )
+        origin_index.append(index)
+        for name in resolved_models:
+            forecast_state = str(by_name[name].get("state", ""))
+            if forecast_state not in STATE_ORDER:
+                raise ValueError(
+                    f"model-conditioned forecast state is invalid for {name}: {forecast_state}"
+                )
+            states_by_model[name].append(forecast_state)
+
+    if not origin_index:
+        raise ValueError("model-conditioned outcomes require OOS forecasts")
+    if pd.DatetimeIndex(origin_index).has_duplicates:
+        raise ValueError("model-conditioned outcome origins must be unique")
+
+    prices = canonical.loc[origin_index]
+    statistics_frames: list[pd.DataFrame] = []
+    outcome_frames: list[pd.DataFrame] = []
+    for name in resolved_models:
+        predicted_states = pd.Series(
+            states_by_model[name],
+            index=prices.index,
+            dtype="object",
+            name="state",
+        )
+        result = build_conditional_asset_statistics(
+            prices,
+            predicted_states,
+            bootstrap_resamples=bootstrap_resamples,
+            bootstrap_seed=17,
+        )
+        statistics = result.statistics.copy()
+        statistics.insert(0, "conditioning_model", name)
+        outcomes = result.outcomes.copy()
+        outcomes.insert(0, "conditioning_model", name)
+        statistics_frames.append(statistics)
+        outcome_frames.append(outcomes)
+
+    combined_statistics = pd.concat(statistics_frames, ignore_index=True)
+    combined_outcomes = pd.concat(outcome_frames, ignore_index=True)
+    return (
+        {
+            "model_conditioned_asset_stats": {
+                "method": "oos_one_week_forecast_conditioned_forward_total_return",
+                "role": "retrospective_model_diagnostic",
+                "conditioning": "hard_argmax_oos_forecast",
+                "forecast_horizon_weeks": 1,
+                "execution_lag_weeks": 1,
+                "horizons_weeks": list(HORIZONS),
+                "assets": list(ASSETS),
+                "models": list(resolved_models),
+                "return_currency": "USD",
+                "rows": _records(combined_statistics),
+            }
+        },
+        combined_outcomes,
+        combined_statistics,
+    )
+
+
 def build_v5_payload(
     payload_v4: Mapping[str, Any],
     *,
@@ -537,6 +644,24 @@ def build_v5_payload(
         states,
         bootstrap_resamples=outcome_bootstrap_resamples,
     )
+    forecast_comparison = model.get("forecast_comparison", {})
+    comparison_models = (
+        tuple(forecast_comparison.get("models", ()))
+        if isinstance(forecast_comparison, Mapping)
+        else ()
+    )
+    if comparison_models:
+        (
+            model_conditioned_research,
+            model_conditioned_outcomes,
+            model_conditioned_statistics,
+        ) = _model_conditioned_research(
+            canonical,
+            weekly,
+            comparison_models,
+            bootstrap_resamples=outcome_bootstrap_resamples,
+        )
+        research.update(model_conditioned_research)
     research_frames = {
         "directional_oos_predictions": directional.predictions,
         "directional_model_leaderboard": directional.leaderboard,
@@ -546,6 +671,13 @@ def build_v5_payload(
         "conditional_asset_outcomes": conditional_result.outcomes,
         "conditional_asset_statistics": conditional_result.statistics,
     }
+    if comparison_models:
+        research_frames.update(
+            {
+                "model_conditioned_asset_outcomes": model_conditioned_outcomes,
+                "model_conditioned_asset_statistics": model_conditioned_statistics,
+            }
+        )
     if fx_result is not None:
         research_frames.update(
             {
@@ -583,6 +715,17 @@ def build_v5_payload(
         "feature_catalog": feature_catalog,
         "research": research,
     }
+    if comparison_models:
+        object.__setattr__(
+            conditional_result,
+            "model_conditioned_outcomes",
+            model_conditioned_outcomes,
+        )
+        object.__setattr__(
+            conditional_result,
+            "model_conditioned_statistics",
+            model_conditioned_statistics,
+        )
     if fx_result is not None and fx_ablation_evidence_sink is not None:
         fx_ablation_evidence_sink(fx_ablation_oos.copy())
     return result_payload, conditional_result

@@ -385,6 +385,12 @@ def _write_supporting_results(
     conditional_statistics = getattr(
         benchmark, "conditional_asset_statistics", None
     )
+    model_conditioned_outcomes = getattr(
+        benchmark, "model_conditioned_asset_outcomes", None
+    )
+    model_conditioned_statistics = getattr(
+        benchmark, "model_conditioned_asset_statistics", None
+    )
     fx_features = getattr(benchmark, "fx_features", None)
     fx_coverage = getattr(benchmark, "fx_coverage", None)
     fx_ablation_oos = getattr(benchmark, "fx_ablation_oos", None)
@@ -455,6 +461,14 @@ def _write_supporting_results(
             frames["conditional-asset-outcomes.csv"] = conditional_outcomes
         if conditional_statistics is not None:
             frames["conditional-asset-statistics.csv"] = conditional_statistics
+        if model_conditioned_outcomes is not None:
+            frames["model-conditioned-asset-outcomes.csv"] = (
+                model_conditioned_outcomes
+            )
+        if model_conditioned_statistics is not None:
+            frames["model-conditioned-asset-statistics.csv"] = (
+                model_conditioned_statistics
+            )
         if fx_features is not None:
             frames["fx-features.csv"] = fx_features
         if fx_coverage is not None:

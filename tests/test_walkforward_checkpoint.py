@@ -96,6 +96,7 @@ def test_checkpoint_identity_accepts_opt_in_direct_candidates() -> None:
             "discounted_markov_208w",
             "pca_ridge_logistic",
             "recency_weighted_xgboost_208w",
+            "recency_weighted_ridge_logistic_208w",
         )
     )
 
@@ -104,6 +105,7 @@ def test_checkpoint_identity_accepts_opt_in_direct_candidates() -> None:
         "discounted_markov_208w",
         "pca_ridge_logistic",
         "recency_weighted_xgboost_208w",
+        "recency_weighted_ridge_logistic_208w",
     )
 
 
@@ -223,6 +225,9 @@ def test_identity_is_deterministic_and_binds_every_material_input() -> None:
     changed_state = states.copy()
     changed_state.iloc[2] = "risk_on"
     changed_parameter = _parameters(model_workers=1)
+    changed_selection_policy = _parameters(
+        minimum_log_loss_improvement=0.01
+    )
     changed_source = "b" * 64
 
     signatures = {
@@ -236,11 +241,18 @@ def test_identity_is_deterministic_and_binds_every_material_input() -> None:
             features, states, changed_parameter, source_fingerprint_sha256="a" * 64
         ).run_signature,
         BenchmarkCheckpointIdentity.build(
+            features,
+            states,
+            changed_selection_policy,
+            source_fingerprint_sha256="a" * 64,
+        ).run_signature,
+        BenchmarkCheckpointIdentity.build(
             features, states, parameters, source_fingerprint_sha256=changed_source
         ).run_signature,
     }
-    assert len(signatures) == 4
+    assert len(signatures) == 5
     assert first.run_signature not in signatures
+    assert first.parameter_manifest["minimum_log_loss_improvement"] == 0.05
 
 
 def test_origin_resolver_matches_run_benchmark_split_contract() -> None:
@@ -260,6 +272,7 @@ def test_origin_resolver_matches_run_benchmark_split_contract() -> None:
         model_workers=parameters.model_workers,
         minimum_selection_predictions=parameters.minimum_selection_predictions,
         minimum_holdout_predictions=parameters.minimum_holdout_predictions,
+        minimum_log_loss_improvement=parameters.minimum_log_loss_improvement,
     )
 
     expected = [

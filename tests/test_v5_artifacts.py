@@ -12,6 +12,7 @@ from regime_lab.analysis import BenchmarkProfile
 from regime_lab.v5_artifacts import (
     FX_ABLATION_OOS_COLUMNS,
     FX_RESEARCH_ARTIFACT_KEYS,
+    OPTIONAL_RESEARCH_ARTIFACT_KEYS,
     REQUIRED_RESEARCH_ARTIFACT_KEYS,
     V5_CORE_ARTIFACT_PATHS,
     V5_RESEARCH_ARTIFACTS,
@@ -150,6 +151,22 @@ def test_manifest_requires_complete_core_and_fx_set() -> None:
     frames["fx_features"] = _empty_frame("fx_features")
     with pytest.raises(ValueError, match="complete set"):
         build_v5_research_artifact_manifest(frames)
+
+    frames = _frames()
+    frames["model_conditioned_asset_statistics"] = _empty_frame(
+        "model_conditioned_asset_statistics"
+    )
+    with pytest.raises(ValueError, match="model-conditioned.*complete set"):
+        build_v5_research_artifact_manifest(frames)
+
+
+def test_manifest_accepts_complete_optional_model_conditioned_pair() -> None:
+    frames = _frames()
+    frames.update({key: _empty_frame(key) for key in OPTIONAL_RESEARCH_ARTIFACT_KEYS})
+
+    manifest = build_v5_research_artifact_manifest(frames)
+
+    assert OPTIONAL_RESEARCH_ARTIFACT_KEYS.issubset(manifest)
 
 
 def test_manifest_hashes_are_verified_against_staged_bytes(tmp_path) -> None:

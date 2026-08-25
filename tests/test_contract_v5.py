@@ -87,6 +87,8 @@ def _conditional_rows() -> list[dict[str, object]]:
                     "horizon_weeks": horizon,
                     "execution_lag_weeks": 1,
                     "return_currency": "USD",
+                    "sample_start": None,
+                    "sample_end": None,
                     "n": 0,
                     "unique_episodes": 0,
                     "status": "insufficient_support",
@@ -128,6 +130,40 @@ def _research_artifacts() -> dict[str, dict[str, object]]:
         key: {"path": path, "row_count": counts[key], "sha256": "f" * 64}
         for key, path in paths.items()
     }
+
+
+def _add_model_conditioned_stats(payload: dict[str, object]) -> None:
+    rows = [
+        {"conditioning_model": model, **deepcopy(row)}
+        for model in V5_FORECAST_COMPARISON_MODELS
+        for row in _conditional_rows()
+    ]
+    payload["research"]["model_conditioned_asset_stats"] = {
+        "method": "oos_one_week_forecast_conditioned_forward_total_return",
+        "role": "retrospective_model_diagnostic",
+        "conditioning": "hard_argmax_oos_forecast",
+        "forecast_horizon_weeks": 1,
+        "execution_lag_weeks": 1,
+        "horizons_weeks": [1, 4, 13],
+        "assets": ["SPY", "QQQ", "IWM", "TLT", "HYG", "UUP"],
+        "models": list(V5_FORECAST_COMPARISON_MODELS),
+        "return_currency": "USD",
+        "rows": rows,
+    }
+    payload["model"]["research_artifacts"].update(
+        {
+            "model_conditioned_asset_outcomes": {
+                "path": "model-conditioned-asset-outcomes.csv",
+                "row_count": 100,
+                "sha256": "e" * 64,
+            },
+            "model_conditioned_asset_statistics": {
+                "path": "model-conditioned-asset-statistics.csv",
+                "row_count": len(rows),
+                "sha256": "d" * 64,
+            },
+        }
+    )
 
 
 def _core_artifacts() -> dict[str, dict[str, object]]:
@@ -533,6 +569,20 @@ def test_valid_v5_payload() -> None:
     validate_dashboard_payload(payload)
 
 
+def test_valid_v5_payload_with_model_conditioned_stats() -> None:
+    payload = valid_payload()
+    _add_model_conditioned_stats(payload)
+
+    validate_v5_payload(payload)
+
+
+def test_tracked_public_v5_snapshot_still_validates() -> None:
+    path = Path(__file__).parents[1] / "publication" / "live" / "regime-results.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+
+    validate_v5_payload(payload)
+
+
 def test_v5_forecast_comparison_remains_optional_for_older_payloads() -> None:
     payload = valid_payload()
     payload["model"].pop("forecast_comparison")
@@ -882,6 +932,34 @@ def test_conditional_stats_reject_allocation_fields() -> None:
         }
     ]
     with pytest.raises(V5ContractError, match="allocation field"):
+        validate_v5_payload(value)
+
+
+@pytest.mark.parametrize(
+    "stats_key",
+    ("conditional_asset_stats", "model_conditioned_asset_stats"),
+)
+def test_conditional_stats_reject_raw_like_extra_row_fields(stats_key: str) -> None:
+    value = valid_payload()
+    if stats_key == "model_conditioned_asset_stats":
+        _add_model_conditioned_stats(value)
+    value["research"][stats_key]["rows"][0]["spy_close"] = 640.25
+
+    with pytest.raises(V5ContractError, match=r"rows\[0\] fields are invalid"):
+        validate_v5_payload(value)
+
+
+@pytest.mark.parametrize(
+    "stats_key",
+    ("conditional_asset_stats", "model_conditioned_asset_stats"),
+)
+def test_conditional_stats_reject_extra_top_level_metadata(stats_key: str) -> None:
+    value = valid_payload()
+    if stats_key == "model_conditioned_asset_stats":
+        _add_model_conditioned_stats(value)
+    value["research"][stats_key]["raw_fields"] = ["spy_close"]
+
+    with pytest.raises(V5ContractError, match=rf"{stats_key} fields are invalid"):
         validate_v5_payload(value)
 
 

@@ -478,6 +478,7 @@ class ResolvedBenchmarkParameters:
     model_workers: int
     minimum_selection_predictions: int
     minimum_holdout_predictions: int
+    minimum_log_loss_improvement: float
 
     @classmethod
     def from_arguments(
@@ -493,6 +494,7 @@ class ResolvedBenchmarkParameters:
         model_workers: int = 1,
         minimum_selection_predictions: int = 12,
         minimum_holdout_predictions: int = 12,
+        minimum_log_loss_improvement: float = 0.05,
     ) -> "ResolvedBenchmarkParameters":
         if not isinstance(profile, BenchmarkProfile):
             raise TypeError("profile must be an already resolved BenchmarkProfile")
@@ -523,6 +525,9 @@ class ResolvedBenchmarkParameters:
             model_workers=int(model_workers),
             minimum_selection_predictions=int(minimum_selection_predictions),
             minimum_holdout_predictions=int(minimum_holdout_predictions),
+            minimum_log_loss_improvement=float(
+                minimum_log_loss_improvement
+            ),
         )
         result.validate()
         return result
@@ -538,6 +543,13 @@ class ResolvedBenchmarkParameters:
             raise ValueError("profile minimum_train_weeks must be at least 12")
         if self.minimum_selection_predictions < 1 or self.minimum_holdout_predictions < 1:
             raise ValueError("minimum split prediction counts must be positive")
+        if (
+            not math.isfinite(self.minimum_log_loss_improvement)
+            or self.minimum_log_loss_improvement < 0.0
+        ):
+            raise ValueError(
+                "minimum_log_loss_improvement must be non-negative and finite"
+            )
         if self.selection_max_origins is not None and self.selection_max_origins < 1:
             raise ValueError("selection_max_origins must be positive or None")
 
@@ -555,6 +567,7 @@ class ResolvedBenchmarkParameters:
             "model_workers": self.model_workers,
             "minimum_selection_predictions": self.minimum_selection_predictions,
             "minimum_holdout_predictions": self.minimum_holdout_predictions,
+            "minimum_log_loss_improvement": self.minimum_log_loss_improvement,
             "model_manifest_sha256": model_manifest_sha256(
                 self.profile,
                 random_state=self.random_state,

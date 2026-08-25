@@ -64,6 +64,9 @@ class BenchmarkResult:
     profile: BenchmarkProfile
     state_order: tuple[str, ...] = STATE_ORDER
     selection_end: pd.Timestamp | None = None
+    minimum_log_loss_improvement: float = (
+        SELECTION_MINIMUM_LOG_LOSS_IMPROVEMENT
+    )
     selection_leaderboard: pd.DataFrame | None = None
     holdout_leaderboard: pd.DataFrame | None = None
     selection_diagnostics: pd.DataFrame | None = None
@@ -683,7 +686,12 @@ def select_champion_with_diagnostics(
     post-selection/holdout row is accepted by this function.
     """
 
-    if minimum_log_loss_improvement < 0 or brier_tolerance < 0:
+    if (
+        not np.isfinite(float(minimum_log_loss_improvement))
+        or not np.isfinite(float(brier_tolerance))
+        or minimum_log_loss_improvement < 0
+        or brier_tolerance < 0
+    ):
         raise ValueError("selection materiality thresholds must be non-negative")
     if not 0 < alpha < 1:
         raise ValueError("selection alpha must be between zero and one")
@@ -897,6 +905,9 @@ def run_benchmark(
     model_workers: int = 1,
     minimum_selection_predictions: int = 12,
     minimum_holdout_predictions: int = 12,
+    minimum_log_loss_improvement: float = (
+        SELECTION_MINIMUM_LOG_LOSS_IMPROVEMENT
+    ),
     progress: Callable[[str], None] | None = None,
     checkpoint_directory: str | Path | None = None,
     source_fingerprint_sha256: str | None = None,
@@ -926,6 +937,14 @@ def run_benchmark(
         raise ValueError("gap must be non-negative")
     if model_workers < 1:
         raise ValueError("model_workers must be positive")
+    if (
+        not np.isfinite(float(minimum_log_loss_improvement))
+        or float(minimum_log_loss_improvement) < 0.0
+    ):
+        raise ValueError(
+            "minimum_log_loss_improvement must be a non-negative finite number"
+        )
+    minimum_log_loss_improvement = float(minimum_log_loss_improvement)
     cfg = resolve_profile(profile)
     if minimum_train_weeks is not None:
         if minimum_train_weeks < 12:
@@ -1001,6 +1020,7 @@ def run_benchmark(
             model_workers=model_workers,
             minimum_selection_predictions=minimum_selection_predictions,
             minimum_holdout_predictions=minimum_holdout_predictions,
+            minimum_log_loss_improvement=minimum_log_loss_improvement,
         )
         checkpoint_identity = BenchmarkCheckpointIdentity.build(
             features,
@@ -1194,6 +1214,7 @@ def run_benchmark(
         champion, selection_diagnostics = select_champion_with_diagnostics(
             selection_leaderboard,
             selection_predictions,
+            minimum_log_loss_improvement=minimum_log_loss_improvement,
             random_state=random_state,
         )
         selection_leaderboard.insert(
@@ -1226,6 +1247,7 @@ def run_benchmark(
         split_audit=split_audit,
         profile=cfg,
         selection_end=cutoff,
+        minimum_log_loss_improvement=minimum_log_loss_improvement,
         selection_leaderboard=selection_leaderboard,
         holdout_leaderboard=holdout_leaderboard,
         selection_diagnostics=selection_diagnostics,
