@@ -12,6 +12,23 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from regime_lab.analysis.labels import STATE_ORDER
+from regime_lab.analysis.models import (
+    MODEL_NAMES,
+    model_manifest,
+    model_manifest_sha256,
+)
+from regime_lab.analysis.structural_models import (
+    DEFAULT_ENSEMBLE_EXPERTS,
+    ENSEMBLE_MODEL_NAME,
+    JOINT_MODEL_NAME,
+    PROBABILITY_COLUMNS,
+    causal_dynamic_ensemble,
+)
+from regime_lab.analysis.validation import (
+    evaluate_predictions,
+    select_champion_with_diagnostics,
+)
 from regime_lab.feature_quality import (
     canonical_feature_quality_json_bytes,
     feature_quality_artifact_manifest,
@@ -84,11 +101,139 @@ def test_v5_serialized_probability_tolerance_rejects_material_tampering() -> Non
     assert not audit_outputs._v5_serialized_probability_rows_are_valid(tampered)
 
 
-def _frozen_v4_core_fixture() -> tuple[dict, Path]:
-    artifacts = ROOT / "artifacts" / "baselines" / "v4-20260821"
-    payload = json.loads(
-        (artifacts / "regime-results.json").read_text(encoding="utf-8")
+def _self_contained_v4_core_fixture(tmp_path: Path) -> tuple[dict, Path]:
+    artifacts = tmp_path / "v4-core"
+    artifacts.mkdir()
+    model_names = (*MODEL_NAMES, JOINT_MODEL_NAME, ENSEMBLE_MODEL_NAME)
+    manifest_body = model_manifest("quick", names=model_names)
+    manifest_hash = model_manifest_sha256("quick", names=model_names)
+    (artifacts / "candidate-manifest.json").write_text(
+        json.dumps({**manifest_body, "sha256": manifest_hash}, sort_keys=True),
+        encoding="utf-8",
     )
+    origins = [
+        *zip(
+            pd.date_range("2022-10-07T20:00:00Z", periods=3, freq="7D"),
+            ["selection"] * 3,
+        ),
+        *zip(
+            pd.date_range("2023-01-06T21:00:00Z", periods=3, freq="7D"),
+            ["holdout"] * 3,
+        ),
+    ]
+    prediction_rows: list[dict[str, object]] = []
+    split_rows: list[dict[str, object]] = []
+    for position, (origin, split) in enumerate(origins):
+        origin = pd.Timestamp(origin)
+        target = origin + timedelta(weeks=1)
+        actual = STATE_ORDER[position % len(STATE_ORDER)]
+        current = STATE_ORDER[(position - 1) % len(STATE_ORDER)]
+        for name in model_names:
+            if name == ENSEMBLE_MODEL_NAME:
+                continue
+            if name == "majority":
+                probability = np.asarray([0.40, 0.30, 0.30], dtype=float)
+            elif name == "persistence":
+                probability = np.asarray([0.34, 0.33, 0.33], dtype=float)
+            else:
+                probability = np.full(len(STATE_ORDER), 0.10, dtype=float)
+                probability[STATE_ORDER.index(actual)] = 0.80
+            prediction_rows.append(
+                {
+                    "origin_date": origin,
+                    "target_date": target,
+                    "model": name,
+                    "evaluation_split": split,
+                    "current_state": current,
+                    "actual": actual,
+                    "predicted": STATE_ORDER[int(probability.argmax())],
+                    "train_size": 520 + position,
+                    "gap": 1,
+                    "fallback": False,
+                    "fallback_reason": "none",
+                    **{
+                        column: float(probability[index])
+                        for index, column in enumerate(PROBABILITY_COLUMNS)
+                    },
+                }
+            )
+        split_rows.append(
+            {
+                "origin_date": origin,
+                "target_date": target,
+                "evaluation_split": split,
+                "train_start": origin - timedelta(weeks=521),
+                "last_train_origin": origin - timedelta(weeks=2),
+                "last_train_target": origin - timedelta(weeks=1),
+                "first_purged_origin": origin - timedelta(weeks=1),
+                "purged_origin_count": 1,
+                "train_size": 520 + position,
+                "gap": 1,
+            }
+        )
+
+    base_predictions = pd.DataFrame(prediction_rows)
+    ensemble = causal_dynamic_ensemble(
+        base_predictions.loc[
+            base_predictions["model"].isin(DEFAULT_ENSEMBLE_EXPERTS)
+        ]
+    )
+    predictions = pd.concat(
+        [base_predictions, ensemble.predictions],
+        ignore_index=True,
+        sort=False,
+    )
+    splits = pd.DataFrame(split_rows)
+    selection = predictions.loc[predictions["evaluation_split"].eq("selection")]
+    holdout = predictions.loc[predictions["evaluation_split"].eq("holdout")]
+    selection_metrics = evaluate_predictions(selection)
+    holdout_metrics = evaluate_predictions(holdout)
+    champion, diagnostics = select_champion_with_diagnostics(
+        selection_metrics,
+        selection,
+    )
+    assert champion == "markov"
+
+    selection_metrics = selection_metrics.set_index("model")
+    leaderboard = holdout_metrics.copy()
+    leaderboard["selected"] = leaderboard["model"].eq(champion)
+    for field in selection_metrics.columns:
+        leaderboard[f"selection_{field}"] = leaderboard["model"].map(
+            selection_metrics[field]
+        )
+    ranked = leaderboard.sort_values(["log_loss", "model"], ignore_index=True)
+    embedded_leaderboard = [
+        {
+            "rank": rank,
+            "name": str(row.model),
+            "selected": bool(row.selected),
+            "is_champion": str(row.model) == champion,
+            "log_loss": float(row.log_loss),
+        }
+        for rank, row in enumerate(ranked.itertuples(index=False), start=1)
+    ]
+
+    predictions.to_csv(artifacts / "oos-predictions.csv", index=False)
+    splits.to_csv(artifacts / "walk-forward-splits.csv", index=False)
+    leaderboard.to_csv(artifacts / "model-leaderboard.csv", index=False)
+    diagnostics.to_csv(artifacts / "selection-diagnostics.csv", index=False)
+    ensemble.weights.to_csv(artifacts / "stacking-weights.csv", index=False)
+
+    payload = {
+        "meta": {
+            "mode": "demo",
+            "result_version": audit_outputs.V4_RESULT_VERSION,
+        },
+        "model": {
+            "profile": "quick",
+            "champion": champion,
+            "selection_end": "2023-01-01",
+            "candidate_manifest_sha256": manifest_hash,
+            "candidate_manifest": manifest_body,
+            "leaderboard": embedded_leaderboard,
+            "selection_diagnostics": _v5_frame_records(diagnostics),
+        },
+    }
     return payload, artifacts
 
 
@@ -1205,30 +1350,32 @@ def test_v5_audit_runs_all_inherited_structural_audits(
     }
 
 
-def test_v5_core_audit_recomputes_frozen_champion_and_metrics() -> None:
-    payload, artifacts = _frozen_v4_core_fixture()
+def test_v5_core_audit_recomputes_champion_and_metrics(tmp_path: Path) -> None:
+    payload, artifacts = _self_contained_v4_core_fixture(tmp_path)
 
     summary = audit_outputs._audit_v5_core_model(payload, artifacts)
 
     assert summary == {
-        "profile": "standard",
+        "profile": "quick",
         "champion": "markov",
         "models": 16,
-        "selection_origins": 365,
-        "holdout_origins": 187,
-        "fallback_rows": 20,
+        "selection_origins": 3,
+        "holdout_origins": 3,
+        "fallback_rows": 0,
         "stacking": {
-            "origins": 552,
+            "origins": 6,
             "experts": ["markov", "xgboost", "xgb_hazard_destination"],
-            "rows": 1_656,
+            "rows": 18,
         },
         "multiscale": None,
         "core_artifacts": None,
     }
 
 
-def test_v5_core_audit_rejects_forged_embedded_leaderboard() -> None:
-    source, artifacts = _frozen_v4_core_fixture()
+def test_v5_core_audit_rejects_forged_embedded_leaderboard(
+    tmp_path: Path,
+) -> None:
+    source, artifacts = _self_contained_v4_core_fixture(tmp_path)
     payload = deepcopy(source)
     payload["model"]["leaderboard"][0]["log_loss"] += 0.1
 
@@ -1239,7 +1386,9 @@ def test_v5_core_audit_rejects_forged_embedded_leaderboard() -> None:
 def test_v5_core_audit_rejects_forged_stacking_weight(
     tmp_path: Path,
 ) -> None:
-    payload, artifacts = _frozen_v4_core_fixture()
+    payload, artifacts = _self_contained_v4_core_fixture(tmp_path)
+    mutated = tmp_path / "mutated"
+    mutated.mkdir()
     for name in (
         "candidate-manifest.json",
         "oos-predictions.csv",
@@ -1248,13 +1397,13 @@ def test_v5_core_audit_rejects_forged_stacking_weight(
         "selection-diagnostics.csv",
         "stacking-weights.csv",
     ):
-        (tmp_path / name).write_bytes((artifacts / name).read_bytes())
-    stacking = pd.read_csv(tmp_path / "stacking-weights.csv")
+        (mutated / name).write_bytes((artifacts / name).read_bytes())
+    stacking = pd.read_csv(mutated / "stacking-weights.csv")
     stacking.loc[0, "weight"] = float(stacking.loc[0, "weight"]) + 0.1
-    stacking.to_csv(tmp_path / "stacking-weights.csv", index=False)
+    stacking.to_csv(mutated / "stacking-weights.csv", index=False)
 
     with pytest.raises(audit_outputs.AuditFailure, match="weight mismatch"):
-        audit_outputs._audit_v5_core_model(payload, tmp_path)
+        audit_outputs._audit_v5_core_model(payload, mutated)
 
 
 def _v5_model_forecast_record(

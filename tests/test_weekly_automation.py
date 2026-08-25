@@ -239,8 +239,20 @@ def test_failure_status_preserves_exact_failed_stage(tmp_path: Path) -> None:
     assert ready is True
 
 
-def test_project_automation_config_and_launch_agent_are_secret_free() -> None:
-    settings = automation.AutomationSettings.load(ROOT / "config/automation.json")
+def test_project_automation_config_and_launch_agent_are_secret_free(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checkout = tmp_path / "checkout"
+    config_path = checkout / "config/automation.json"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_bytes((ROOT / "config/automation.json").read_bytes())
+    python = checkout / ".venv/bin/python"
+    python.parent.mkdir(parents=True)
+    python.write_text("fixture\n", encoding="utf-8")
+    monkeypatch.setattr(automation, "project_root", lambda: checkout)
+
+    settings = automation.AutomationSettings.load(config_path)
     document = automation.launch_agent_document(settings)
     rendered = json.dumps(document)
 
@@ -248,8 +260,8 @@ def test_project_automation_config_and_launch_agent_are_secret_free() -> None:
     assert settings.contract == "v5"
     assert settings.payload.is_relative_to(settings.state_directory)
     assert settings.artifacts.is_relative_to(settings.state_directory)
-    assert settings.payload != ROOT / "web/data/regime-results.json"
-    assert settings.artifacts != ROOT / "artifacts/latest"
+    assert settings.payload != checkout / "web/data/regime-results.json"
+    assert settings.artifacts != checkout / "artifacts/latest"
     assert settings.schedule_hour == 21
     assert settings.schedule_minute == 17
     assert document["RunAtLoad"] is True
@@ -264,11 +276,37 @@ def test_project_automation_config_and_launch_agent_are_secret_free() -> None:
     assert document["ExitTimeOut"] == 120
     assert "LowPriorityIO" not in document
     assert document["ProgramArguments"][:2] == ["/usr/bin/caffeinate", "-s"]
+    assert document["ProgramArguments"][2] == str(python)
     assert "regime_lab" in document["ProgramArguments"]
     assert "automation" in document["ProgramArguments"]
     assert "ALPHA_VANTAGE_API_KEY" not in rendered
     assert "FRED_API_KEY" not in rendered
     assert "secrets" not in rendered.lower()
+
+
+def test_launch_agent_document_requires_project_virtualenv(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+
+    with pytest.raises(automation.AutomationError, match="virtualenv Python is missing"):
+        automation.launch_agent_document(settings)
+
+
+def test_launch_agent_installation_remains_macos_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings(tmp_path)
+    monkeypatch.setattr(automation.sys, "platform", "linux")
+
+    with pytest.raises(automation.AutomationError, match="requires macOS"):
+        automation.install_launch_agent(
+            settings,
+            alfred_rights_confirmed=True,
+            personal_noncommercial_publication_acknowledged=True,
+        )
+
+    assert not settings.authorization.exists()
+    assert not settings.install_lock_path.exists()
 
 
 def test_process_lock_rejects_overlapping_run(tmp_path: Path) -> None:
@@ -1244,6 +1282,7 @@ def test_launch_agent_bootstrap_happens_after_weekly_lock_release(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     settings = _settings(tmp_path)
+    monkeypatch.setattr(automation.sys, "platform", "darwin")
     plist = tmp_path / "LaunchAgents" / "regime.plist"
     observed = {"bootstrap_with_weekly_lock_free": False}
     loaded = {"value": False}
