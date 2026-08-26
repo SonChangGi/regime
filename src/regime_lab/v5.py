@@ -29,10 +29,12 @@ from regime_lab.analysis.fx_ablation import (
     run_fx_shadow_ablation,
 )
 from regime_lab.analysis.outcomes import ASSETS, HORIZONS, build_conditional_asset_statistics
+from regime_lab.analysis.label_spec import load_label_spec
+from regime_lab.operating_contract import load_operating_contract
 from regime_lab.v5_artifacts import build_v5_research_artifact_manifest
 
 
-V5_SCHEMA_VERSION = "2.0.0"
+V5_SCHEMA_VERSION = "2.1.0"
 V5_RESULT_VERSION = "weekly-regime-result-v5"
 V5_MODEL_VERSION = "weekly-nondl-structural-v5"
 V5_FEATURE_SET_VERSION = "weekly-pit-structural-v5"
@@ -45,6 +47,7 @@ STATE_LABELS_KO = {
 MATERIAL_CALIBRATION_DRIFT = 0.05
 MINIMUM_TRANSITION_EVENTS_FOR_HEALTH = 12
 LOW_TRANSITION_RECALL = 0.20
+_OPERATING_CONTRACT = load_operating_contract()
 
 
 def _json_value(value: Any, *, digits: int = 8) -> Any:
@@ -67,6 +70,106 @@ def _records(frame: pd.DataFrame) -> list[dict[str, Any]]:
         {str(key): _json_value(value) for key, value in row.items()}
         for row in frame.to_dict(orient="records")
     ]
+
+
+def _selection_contract(model: Mapping[str, Any]) -> dict[str, Any]:
+    policy = _OPERATING_CONTRACT.selection_policy
+    diagnostics = [
+        dict(row)
+        for row in model.get("selection_diagnostics", ())
+        if isinstance(row, Mapping)
+    ]
+    champion = str(model["champion"])
+    candidate_set = [str(row.get("model")) for row in diagnostics]
+    passing = [
+        row
+        for row in diagnostics
+        if row.get("gate_passed") is True and str(row.get("model")) != champion
+        and row.get("is_reference") is not True
+    ]
+    passing.sort(
+        key=lambda row: (
+            float(row.get("log_loss", float("inf"))),
+            float(row.get("brier", float("inf"))),
+            str(row.get("model")),
+        )
+    )
+    runner_up = str(passing[0]["model"]) if passing else None
+    champion_row = next(
+        (row for row in diagnostics if str(row.get("model")) == champion),
+        None,
+    )
+    best_gate_loss = min(
+        (
+            float(row["log_loss"])
+            for row in diagnostics
+            if row.get("gate_passed") is True
+            and row.get("log_loss") is not None
+        ),
+        default=None,
+    )
+    champion_loss = (
+        None
+        if champion_row is None or champion_row.get("log_loss") is None
+        else float(champion_row["log_loss"])
+    )
+    if champion_row is None or champion_row.get("gate_passed") is not True:
+        reason = "reference_fallback_no_challenger_passed"
+    elif (
+        best_gate_loss is not None
+        and champion_loss is not None
+        and champion_loss > best_gate_loss + 1e-12
+    ):
+        reason = "simplicity_tiebreak_within_tolerance"
+    else:
+        reason = "best_gate_passing_log_loss"
+    return {
+        "schema_version": "regime-selection-evidence/1",
+        "status": "selected_by_gate",
+        "policy_sha256": _OPERATING_CONTRACT.selection_policy_sha256,
+        "complexity_registry_sha256": (
+            _OPERATING_CONTRACT.complexity_registry_sha256
+        ),
+        "candidate_set": candidate_set,
+        "runner_up": runner_up,
+        "selection_reason": reason,
+        "simplicity_tolerance": float(policy["simplicity_tolerance"]),
+        "tie_break_order": list(policy["tie_break_order"]),
+        "operating_champion": str(
+            _OPERATING_CONTRACT.document["models"]["official_champion"]
+        ),
+    }
+
+
+def _forecast_contract(
+    latest_week: Mapping[str, Any],
+    *,
+    generated_at: datetime,
+    mode: str,
+    evidence_track: str,
+) -> dict[str, Any]:
+    origin = pd.Timestamp(f"{latest_week['date']} 16:00:00", tz="America/New_York")
+    target = pd.Timestamp(
+        f"{latest_week['next_week']['date']} 16:00:00",
+        tz="America/New_York",
+    )
+    decision = origin if mode == "demo" else pd.Timestamp(generated_at)
+    if decision.tzinfo is None:
+        decision = decision.tz_localize("UTC")
+    decision = decision.tz_convert("UTC")
+    origin = origin.tz_convert("UTC")
+    target = target.tz_convert("UTC")
+    active = decision < target
+    return {
+        "status": "active" if active else "expired",
+        "origin_at": origin.isoformat(),
+        "decision_at": decision.isoformat() if active else None,
+        "target_at": target.isoformat(),
+        "remaining_horizon": (
+            int((target - decision).total_seconds()) if active else 0
+        ),
+        "evidence_track": str(evidence_track),
+    }
 
 
 def _aware_cutoff(value: object) -> pd.Timestamp:
@@ -488,6 +591,10 @@ def build_v5_payload(
     directional: DirectionalBenchmarkResult,
     baseline_v4: Mapping[str, Any],
     structural_preregistration_sha256: str,
+    label_fit_start: str | pd.Timestamp | None = None,
+    label_fit_end: str | pd.Timestamp | None = None,
+    label_fit_weeks: int = 520,
+    evidence_track: str = "reconstructed_oos",
     fx_result: FXFeatureResult | None = None,
     latest_fx_context: Mapping[str, Any] | None = None,
     h10_source: Mapping[str, Any] | None = None,
@@ -520,7 +627,7 @@ def build_v5_payload(
                 "P(first departure from the origin regime within h weeks)"
             ),
             "current_membership_definition": (
-                "soft anchor membership around the causal hard-state rule"
+                "distance-to-threshold-anchor observational membership; not posterior"
             ),
         }
     )
@@ -585,6 +692,7 @@ def build_v5_payload(
             "model_health": health,
             "fx_role": "context_and_preregistered_shadow_ablation",
             "fx_ablation": fx_ablation,
+            "selection_status": "selected_by_gate",
         }
     )
     structural_models = deepcopy(dict(model.get("structural_models", {})))
@@ -628,11 +736,12 @@ def build_v5_payload(
         )
         cutoff = _aware_cutoff(week.get("data_as_of", week["date"]))
         week["fx_context"] = (
-            deepcopy(dict(latest_fx_context))
-            if str(week["date"]) == latest_date and latest_fx_context is not None
+            fx_context_at(fx_result, cutoff=cutoff)
+            if fx_result is not None
             else (
-                fx_context_at(fx_result, cutoff=cutoff)
-                if fx_result is not None
+                deepcopy(dict(latest_fx_context))
+                if str(week["date"]) == latest_date
+                and latest_fx_context is not None
                 else unavailable_fx_context()
             )
         )
@@ -706,9 +815,49 @@ def build_v5_payload(
         }
     )
 
+    label_spec = load_label_spec()
+    if label_fit_weeks < 1 or label_fit_weeks > len(canonical):
+        raise ValueError("label_fit_weeks is outside the canonical history")
+    resolved_fit_start = pd.Timestamp(
+        canonical.index[0] if label_fit_start is None else label_fit_start
+    )
+    resolved_fit_end = pd.Timestamp(
+        canonical.index[label_fit_weeks - 1]
+        if label_fit_end is None
+        else label_fit_end
+    )
+    if resolved_fit_end < resolved_fit_start:
+        raise ValueError("label fit period is reversed")
+    selection = _selection_contract(model)
+    lifecycle = {
+        "selection": {"status": "selected_by_gate"},
+        "deployment": {"status": "candidate"},
+        "publication": {"status": "unpublished"},
+    }
+    model["lifecycle"] = lifecycle
+    meta["publication_status"] = "unpublished"
     result_payload = {
         "meta": meta,
-        "states": payload["states"],
+        "states": [dict(row) for row in _OPERATING_CONTRACT.state_definitions],
+        "label": {
+            "spec_id": label_spec.spec_id,
+            "spec_version": label_spec.version,
+            "spec_sha256": label_spec.spec_sha256,
+            "fit_period": {
+                "start": resolved_fit_start.date().isoformat(),
+                "end": resolved_fit_end.date().isoformat(),
+                "weeks": int(label_fit_weeks),
+            },
+            "input_scope": "SPY adjusted close only",
+            "membership_semantics": label_spec.membership.semantics,
+        },
+        "forecast": _forecast_contract(
+            weekly[-1],
+            generated_at=generated_at,
+            mode=str(meta["mode"]),
+            evidence_track=evidence_track,
+        ),
+        "selection": selection,
         "model": model,
         "weekly": weekly,
         "sources": sources,

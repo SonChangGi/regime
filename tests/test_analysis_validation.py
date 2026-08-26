@@ -225,7 +225,7 @@ def test_next_week_forecast_returns_exact_shared_state_order() -> None:
     assert probabilities.attrs["as_of"] == features.index[-1].isoformat()
 
 
-def test_explicit_direct_models_run_without_changing_default_suite() -> None:
+def test_operating_direct_models_run_on_explicit_matched_origins() -> None:
     features, states = _model_inputs()
     requested = (
         "markov",
@@ -242,7 +242,7 @@ def test_explicit_direct_models_run_without_changing_default_suite() -> None:
     )
 
     assert set(result.predictions["model"]) == set(requested)
-    assert all(name not in MODEL_NAMES for name in DIRECT_NEXT_STATE_MODEL_NAMES)
+    assert set(DIRECT_NEXT_STATE_MODEL_NAMES).issubset(MODEL_NAMES)
     np.testing.assert_allclose(
         result.predictions[list(PROBABILITY_COLUMNS)].sum(axis=1),
         1.0,

@@ -47,9 +47,12 @@ CREATE TABLE IF NOT EXISTS observations (
     series_id TEXT NOT NULL,
     observed_period_end TEXT NOT NULL,
     released_at TEXT,
+    source_released_at TEXT,
     available_at TEXT NOT NULL,
+    provider_first_seen_at TEXT,
     vintage_date TEXT NOT NULL,
     retrieved_at TEXT NOT NULL,
+    system_retrieved_at TEXT,
     revision_seq INTEGER NOT NULL,
     value REAL,
     units TEXT NOT NULL,
@@ -128,6 +131,44 @@ class SQLiteSnapshotStore:
         if not self.read_only:
             with self._connection:
                 self._connection.executescript(_SCHEMA)
+                self._ensure_bitemporal_observation_columns()
+
+    def _ensure_bitemporal_observation_columns(self) -> None:
+        """Add explicit clocks while preserving existing snapshot databases.
+
+        SQLite cannot add several columns in one statement.  Each nullable
+        column is therefore added independently and legacy values are copied
+        from the original release/retrieval fields.  Read-only databases use
+        row-level fallbacks instead and are never migrated.
+        """
+
+        columns = {
+            str(row[1])
+            for row in self._connection.execute(
+                "PRAGMA table_info(observations)"
+            ).fetchall()
+        }
+        additions = {
+            "source_released_at": "TEXT",
+            "provider_first_seen_at": "TEXT",
+            "system_retrieved_at": "TEXT",
+        }
+        for name, sql_type in additions.items():
+            if name not in columns:
+                self._connection.execute(
+                    f"ALTER TABLE observations ADD COLUMN {name} {sql_type}"
+                )
+        self._connection.execute(
+            """
+            UPDATE observations
+            SET source_released_at = COALESCE(source_released_at, released_at),
+                provider_first_seen_at = COALESCE(provider_first_seen_at, retrieved_at),
+                system_retrieved_at = COALESCE(system_retrieved_at, retrieved_at)
+            WHERE source_released_at IS NULL
+               OR provider_first_seen_at IS NULL
+               OR system_retrieved_at IS NULL
+            """
+        )
 
     def close(self) -> None:
         with self._lock:
@@ -168,9 +209,16 @@ class SQLiteSnapshotStore:
                 record.series_id,
                 record.observed_period_end.isoformat(),
                 record.released_at.isoformat() if record.released_at else None,
+                (
+                    record.source_released_at.isoformat()
+                    if record.source_released_at
+                    else None
+                ),
                 record.available_at.isoformat(),
+                record.provider_first_seen_at.isoformat(),
                 record.vintage_date.isoformat(),
                 record.retrieved_at.isoformat(),
+                record.system_retrieved_at.isoformat(),
                 record.revision_seq,
                 record.value,
                 record.units,
@@ -202,10 +250,11 @@ class SQLiteSnapshotStore:
                 """
                 INSERT INTO observations(
                     snapshot_id, source, series_id, observed_period_end,
-                    released_at, available_at, vintage_date, retrieved_at,
-                    revision_seq, value, units, adjustment, license_class,
-                    quality_status, raw_sha256, metadata_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    released_at, source_released_at, available_at,
+                    provider_first_seen_at, vintage_date, retrieved_at,
+                    system_retrieved_at, revision_seq, value, units, adjustment,
+                    license_class, quality_status, raw_sha256, metadata_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 observation_values,
             )
@@ -450,6 +499,25 @@ class SQLiteSnapshotStore:
 
     @staticmethod
     def _row_to_observation(row: sqlite3.Row) -> Observation:
+        columns = set(row.keys())
+        source_released_raw = (
+            row["source_released_at"]
+            if "source_released_at" in columns
+            and row["source_released_at"] is not None
+            else row["released_at"]
+        )
+        provider_first_seen_raw = (
+            row["provider_first_seen_at"]
+            if "provider_first_seen_at" in columns
+            and row["provider_first_seen_at"] is not None
+            else row["retrieved_at"]
+        )
+        system_retrieved_raw = (
+            row["system_retrieved_at"]
+            if "system_retrieved_at" in columns
+            and row["system_retrieved_at"] is not None
+            else row["retrieved_at"]
+        )
         return Observation(
             source=row["source"],
             series_id=row["series_id"],
@@ -459,9 +527,16 @@ class SQLiteSnapshotStore:
                 if row["released_at"] is not None
                 else None
             ),
+            source_released_at=(
+                datetime.fromisoformat(source_released_raw)
+                if source_released_raw is not None
+                else None
+            ),
             available_at=datetime.fromisoformat(row["available_at"]),
+            provider_first_seen_at=datetime.fromisoformat(provider_first_seen_raw),
             vintage_date=datetime.fromisoformat(row["vintage_date"]).date(),
             retrieved_at=datetime.fromisoformat(row["retrieved_at"]),
+            system_retrieved_at=datetime.fromisoformat(system_retrieved_raw),
             revision_seq=int(row["revision_seq"]),
             value=float(row["value"]) if row["value"] is not None else None,
             units=row["units"],

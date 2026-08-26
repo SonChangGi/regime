@@ -17,16 +17,27 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from scripts.package_public_demo import (  # noqa: E402
+    GENERATION_MANIFEST_DESTINATION,
     MANIFEST_DESTINATION,
     PAYLOAD_DESTINATION,
     PUBLICATION_MODE_DEMO,
     PUBLICATION_MODE_LIVE_DERIVED,
+    SELECTION_FAMILY_DESTINATION,
     STATIC_ALLOWLIST,
     V5_COMPARISON_DESTINATION,
     V5_RESULT_VERSION,
     PackagingError,
     validate_public_payload,
     validate_v5_comparison_sidecar,
+)
+from regime_lab.integrity import (  # noqa: E402
+    GENERATION_MANIFEST_SCHEMA_VERSION,
+    canonical_comparison_contract_sha256_v1,
+    canonical_json_sha256_v1,
+    canonical_json_sha256_v1_without_generation_binding,
+)
+from regime_lab.selection_family_audit import (  # noqa: E402
+    validate_selection_family_payload_binding,
 )
 
 
@@ -99,8 +110,28 @@ def verify_public_package(directory: str | Path) -> dict[str, Any]:
     payload = _load_json(payload_path, label="dashboard payload")
     result_version = payload.get("meta", {}).get("result_version")
     expected_files = set(BASE_EXPECTED_FILES)
+    generation_document: dict[str, Any] | None = None
     if result_version == V5_RESULT_VERSION:
         expected_files.add(V5_COMPARISON_DESTINATION)
+        if payload.get("meta", {}).get("generation_manifest_sha256") is not None:
+            expected_files.add(GENERATION_MANIFEST_DESTINATION)
+            generation_document = _load_json(
+                package_root / GENERATION_MANIFEST_DESTINATION,
+                label="V5 generation manifest",
+            )
+            selection_record = generation_document.get(
+                "selection_family_sidecar"
+            )
+            if (
+                generation_document.get("schema_version")
+                == GENERATION_MANIFEST_SCHEMA_VERSION
+                and selection_record is None
+            ):
+                raise VerificationError(
+                    "current generation manifest is missing selection-family audit"
+                )
+            if selection_record is not None:
+                expected_files.add(SELECTION_FAMILY_DESTINATION)
     if actual_files != expected_files:
         missing = sorted(expected_files - actual_files)
         extra = sorted(actual_files - expected_files)
@@ -173,7 +204,62 @@ def verify_public_package(directory: str | Path) -> dict[str, Any]:
                 payload=payload,
                 payload_raw=payload_raw,
             )
-    except PackagingError as exc:
+            if payload.get("meta", {}).get("generation_manifest_sha256") is not None:
+                generation = generation_document
+                if generation is None:
+                    raise VerificationError("V5 generation manifest is unavailable")
+                if canonical_json_sha256_v1(generation) != payload["meta"][
+                    "generation_manifest_sha256"
+                ]:
+                    raise VerificationError(
+                        "generation manifest hash differs from the payload"
+                    )
+                if generation.get("generation_id") != payload["meta"].get(
+                    "generation_id"
+                ):
+                    raise VerificationError(
+                        "generation manifest generation_id differs from the payload"
+                    )
+                if generation.get("payload", {}).get(
+                    "payload_contract_sha256"
+                ) != canonical_json_sha256_v1_without_generation_binding(payload):
+                    raise VerificationError(
+                        "generation manifest payload contract hash mismatch"
+                    )
+                if generation.get("comparison_sidecar", {}).get(
+                    "comparison_contract_sha256"
+                ) != canonical_comparison_contract_sha256_v1(comparison):
+                    raise VerificationError(
+                        "generation manifest comparison contract hash mismatch"
+                    )
+                selection_record = generation.get("selection_family_sidecar")
+                if selection_record is not None:
+                    if not isinstance(selection_record, dict) or set(
+                        selection_record
+                    ) != {"path", "selection_family_contract_sha256"}:
+                        raise VerificationError(
+                            "generation manifest selection-family record is invalid"
+                        )
+                    selection_family = _load_json(
+                        package_root / SELECTION_FAMILY_DESTINATION,
+                        label="V5 selection-family audit",
+                    )
+                    try:
+                        validate_selection_family_payload_binding(
+                            selection_family,
+                            payload,
+                        )
+                    except (TypeError, ValueError) as exc:
+                        raise VerificationError(
+                            f"selection-family audit is invalid: {exc}"
+                        ) from exc
+                    if selection_record.get(
+                        "selection_family_contract_sha256"
+                    ) != canonical_json_sha256_v1(selection_family):
+                        raise VerificationError(
+                            "generation manifest selection-family contract hash mismatch"
+                        )
+    except (PackagingError, TypeError, ValueError) as exc:
         raise VerificationError(str(exc)) from exc
     payload_source_ids = sorted(
         source["id"]
@@ -191,6 +277,9 @@ def verify_public_package(directory: str | Path) -> dict[str, Any]:
         "payload_mode": manifest["payload_mode"],
         "payload_data_as_of": manifest.get("payload_data_as_of"),
         "comparison_included": result_version == V5_RESULT_VERSION,
+        "selection_family_included": (
+            SELECTION_FAMILY_DESTINATION in expected_files
+        ),
         "files": sorted(actual_files),
     }
 

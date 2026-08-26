@@ -36,6 +36,13 @@ from regime_lab.collection import (
 )
 from regime_lab.config import project_root
 from regime_lab.io import write_json_atomic
+from regime_lab.integrity import (
+    GENERATION_MANIFEST_SCHEMA_VERSION,
+    LEGACY_GENERATION_MANIFEST_SCHEMA_VERSION,
+    canonical_comparison_contract_sha256_v1,
+    canonical_json_sha256_v1,
+    canonical_json_sha256_v1_without_generation_binding,
+)
 from regime_lab.keychain import KEYCHAIN_SERVICES
 from regime_lab.path_safety import confined_mutable_path
 from regime_lab.provider_rights import (
@@ -45,23 +52,37 @@ from regime_lab.provider_rights import (
 )
 from regime_lab.publication_contract import (
     PublicContractError,
+    rewrite_index_asset_versions,
     validate_v5_comparison_sidecar,
 )
 from regime_lab.schema import ContractError, validate_dashboard_payload
+from regime_lab.selection_family_audit import (
+    validate_selection_family_audit,
+    validate_selection_family_payload_binding,
+)
 from regime_lab.data import DailyRequestBudget, SQLiteSnapshotStore
 
 
 UTC = timezone.utc
 PUBLICATION_PATH = "publication/live/regime-results.json"
 PUBLICATION_COMPARISON_PATH = "publication/live/v5-vs-v4-comparison.json"
+PUBLICATION_GENERATION_MANIFEST_PATH = "publication/live/generation-manifest.json"
+PUBLICATION_SELECTION_FAMILY_PATH = "publication/live/selection-family-audit.json"
 PUBLIC_PAYLOAD_PATH = "data/regime-results.json"
 PUBLIC_COMPARISON_PATH = "data/v5-vs-v4-comparison.json"
+PUBLIC_GENERATION_MANIFEST_PATH = "data/generation-manifest.json"
+PUBLIC_SELECTION_FAMILY_PATH = "data/selection-family-audit.json"
 PUBLIC_MANIFEST_PATH = "publication-manifest.json"
 PUBLIC_STATIC_ASSET_PATHS = ("index.html", "styles.css", "app.js")
 AUTOMATION_LABEL = "com.sonchanggi.regime.weekly-release"
 AUTOMATION_TRAILER = "Regime-Automation: weekly-release-v1"
 ALLOWED_REMOTE_DRIFT = frozenset(
-    {PUBLICATION_PATH, PUBLICATION_COMPARISON_PATH}
+    {
+        PUBLICATION_PATH,
+        PUBLICATION_COMPARISON_PATH,
+        PUBLICATION_GENERATION_MANIFEST_PATH,
+        PUBLICATION_SELECTION_FAMILY_PATH,
+    }
 )
 DEFAULT_RETRY_HOURS = (3, 9, 15, 21)
 HEALTH_SCHEMA_VERSION = 4
@@ -255,12 +276,36 @@ class AutomationSettings:
         return self.state_directory / "candidate" / "v5-vs-v4-comparison.json"
 
     @property
+    def unreviewed_comparison_path(self) -> Path:
+        return self.payload.with_name("candidate-v5-vs-v4-comparison.json")
+
+    @property
     def reviewed_payload_path(self) -> Path:
-        return self.payload.with_name("reviewed-regime-results.json")
+        return self.candidate_path
 
     @property
     def comparison_path(self) -> Path:
-        return self.payload.with_name("v5-vs-v4-comparison.json")
+        return self.candidate_comparison_path
+
+    @property
+    def build_generation_manifest_path(self) -> Path:
+        return self.payload.with_name("generation-manifest.json")
+
+    @property
+    def candidate_generation_manifest_path(self) -> Path:
+        return self.state_directory / "candidate" / "generation-manifest.json"
+
+    @property
+    def reviewed_generation_manifest_path(self) -> Path:
+        return self.candidate_generation_manifest_path
+
+    @property
+    def candidate_selection_family_path(self) -> Path:
+        return self.state_directory / "candidate" / "selection-family-audit.json"
+
+    @property
+    def reviewed_selection_family_path(self) -> Path:
+        return self.candidate_selection_family_path
 
     @property
     def collection_report_path(self) -> Path:
@@ -277,6 +322,8 @@ class RemotePublication:
     payload_bytes: bytes
     data_as_of: datetime
     comparison_bytes: bytes | None = None
+    generation_manifest_bytes: bytes | None = None
+    selection_family_bytes: bytes | None = None
 
     @property
     def sha256(self) -> str:
@@ -331,6 +378,115 @@ def _validate_v5_comparison_bytes(
         )
     except (PublicContractError, KeyError, TypeError, ValueError) as exc:
         raise AutomationError(f"{label} comparison contract failed: {exc}") from exc
+
+
+def _validate_generation_manifest_bytes(
+    payload_raw: bytes,
+    comparison_raw: bytes,
+    generation_manifest_raw: bytes,
+    *,
+    label: str,
+    selection_family_raw: bytes | None = None,
+) -> None:
+    """Validate the public-safe semantic edges without private artifact paths."""
+
+    payload = _json_object(payload_raw, label=f"{label} payload")
+    comparison = _json_object(comparison_raw, label=f"{label} comparison")
+    manifest = _json_object(
+        generation_manifest_raw,
+        label=f"{label} generation manifest",
+    )
+    schema_version = manifest.get("schema_version")
+    if schema_version not in {
+        LEGACY_GENERATION_MANIFEST_SCHEMA_VERSION,
+        GENERATION_MANIFEST_SCHEMA_VERSION,
+    }:
+        raise AutomationError(f"{label} generation manifest schema is invalid")
+    meta = payload.get("meta", {})
+    if canonical_json_sha256_v1(manifest) != meta.get(
+        "generation_manifest_sha256"
+    ):
+        raise AutomationError(f"{label} generation manifest hash mismatch")
+    if manifest.get("generation_id") != meta.get("generation_id"):
+        raise AutomationError(f"{label} generation manifest generation_id mismatch")
+    if manifest.get("payload", {}).get("path") != PUBLICATION_PATH:
+        raise AutomationError(f"{label} generation payload path is invalid")
+    if manifest.get("payload", {}).get(
+        "payload_contract_sha256"
+    ) != canonical_json_sha256_v1_without_generation_binding(payload):
+        raise AutomationError(f"{label} generation payload contract hash mismatch")
+    if manifest.get("comparison_sidecar", {}).get(
+        "comparison_contract_sha256"
+    ) != canonical_comparison_contract_sha256_v1(comparison):
+        raise AutomationError(f"{label} generation comparison contract hash mismatch")
+    if manifest.get("comparison_sidecar", {}).get(
+        "path"
+    ) != PUBLICATION_COMPARISON_PATH:
+        raise AutomationError(f"{label} generation comparison path is invalid")
+    selection_record = manifest.get("selection_family_sidecar")
+    if schema_version == GENERATION_MANIFEST_SCHEMA_VERSION:
+        if not isinstance(selection_record, Mapping):
+            raise AutomationError(
+                f"{label} generation selection-family sidecar is missing"
+            )
+        if selection_record.get("path") != PUBLICATION_SELECTION_FAMILY_PATH:
+            raise AutomationError(
+                f"{label} generation selection-family path is invalid"
+            )
+        if selection_family_raw is None:
+            raise AutomationError(
+                f"{label} generation requires selection-family bytes"
+            )
+        selection_family = _json_object(
+            selection_family_raw,
+            label=f"{label} selection-family audit",
+        )
+        if selection_record.get(
+            "selection_family_contract_sha256"
+        ) != canonical_json_sha256_v1(selection_family):
+            raise AutomationError(
+                f"{label} generation selection-family hash mismatch"
+            )
+        try:
+            validate_selection_family_audit(
+                selection_family,
+                expected_generation_id=str(meta.get("generation_id")),
+            )
+            validate_selection_family_payload_binding(selection_family, payload)
+        except (TypeError, ValueError) as exc:
+            raise AutomationError(
+                f"{label} selection-family contract failed: {exc}"
+            ) from exc
+    elif selection_family_raw is not None or selection_record is not None:
+        raise AutomationError(
+            f"{label} legacy generation cannot carry selection-family bytes"
+        )
+
+
+def _requires_generation_contract_upgrade(
+    settings: "AutomationSettings",
+    remote: "RemotePublication",
+) -> bool:
+    """Return whether a current-cutoff V5 publication still uses legacy packaging.
+
+    Data freshness alone cannot complete a schema migration.  In particular,
+    a same-cutoff ``generation-manifest/1`` publication must still be rebuilt
+    and atomically replaced by the manifest/2 four-file generation instead of
+    being treated as ``already_current`` forever.
+    """
+
+    if settings.contract != "v5":
+        return False
+    if remote.generation_manifest_bytes is None:
+        return True
+    manifest = _json_object(
+        remote.generation_manifest_bytes,
+        label="remote generation manifest",
+    )
+    return bool(
+        manifest.get("schema_version") != GENERATION_MANIFEST_SCHEMA_VERSION
+        or remote.selection_family_bytes is None
+    )
 
 
 def _validate_v5_champion_evidence(
@@ -868,6 +1024,9 @@ def _recovery_fingerprint(settings: AutomationSettings) -> str:
         settings.artifacts / "build-generation.json",
         settings.candidate_path,
         settings.candidate_metadata_path,
+        settings.candidate_comparison_path,
+        settings.candidate_generation_manifest_path,
+        settings.candidate_selection_family_path,
     ):
         digest.update(str(path).encode("utf-8"))
         try:
@@ -1265,6 +1424,8 @@ def _git_preflight(settings: AutomationSettings) -> RemotePublication:
         expected_contract=settings.contract,
     )
     comparison_bytes = None
+    generation_manifest_bytes = None
+    selection_family_bytes = None
     if validated.get("meta", {}).get("result_version") == "weekly-regime-result-v5":
         comparison_bytes = _run(
             [
@@ -1280,11 +1441,47 @@ def _git_preflight(settings: AutomationSettings) -> RemotePublication:
             comparison_bytes,
             label="remote publication",
         )
+        if validated.get("meta", {}).get("generation_manifest_sha256") is not None:
+            generation_manifest_bytes = _run(
+                [
+                    "git",
+                    "show",
+                    f"{remote_ref}:{PUBLICATION_GENERATION_MANIFEST_PATH}",
+                ],
+                cwd=settings.root,
+                capture=True,
+            )
+            manifest_document = _json_object(
+                generation_manifest_bytes,
+                label="remote generation manifest",
+            )
+            if (
+                manifest_document.get("schema_version")
+                == GENERATION_MANIFEST_SCHEMA_VERSION
+            ):
+                selection_family_bytes = _run(
+                    [
+                        "git",
+                        "show",
+                        f"{remote_ref}:{PUBLICATION_SELECTION_FAMILY_PATH}",
+                    ],
+                    cwd=settings.root,
+                    capture=True,
+                )
+            _validate_generation_manifest_bytes(
+                payload_bytes,
+                comparison_bytes,
+                generation_manifest_bytes,
+                label="remote publication",
+                selection_family_raw=selection_family_bytes,
+            )
     return RemotePublication(
-        head_sha,
-        payload_bytes,
-        data_as_of,
-        comparison_bytes,
+        head_sha=head_sha,
+        payload_bytes=payload_bytes,
+        data_as_of=data_as_of,
+        comparison_bytes=comparison_bytes,
+        generation_manifest_bytes=generation_manifest_bytes,
+        selection_family_bytes=selection_family_bytes,
     )
 
 
@@ -1401,6 +1598,8 @@ def _verify_candidate_package(
     settings: AutomationSettings,
     candidate_path: Path,
     comparison_path: Path | None,
+    generation_manifest_path: Path | None,
+    selection_family_path: Path | None = None,
 ) -> None:
     settings.state_directory.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(
@@ -1420,6 +1619,17 @@ def _verify_candidate_package(
         ]
         if comparison_path is not None:
             command.extend(["--comparison", str(comparison_path)])
+        if generation_manifest_path is not None:
+            command.extend(["--manifest", str(generation_manifest_path)])
+        if selection_family_path is not None:
+            command.extend(["--selection-family", str(selection_family_path)])
+        if generation_manifest_path is not None:
+            command.extend(
+                [
+                    "--staged-generation-contract-directory",
+                    "publication/live",
+                ]
+            )
         _run(
             command,
             cwd=settings.root,
@@ -1435,6 +1645,12 @@ def _verify_candidate_package(
         ).read_bytes() != comparison_path.read_bytes():
             raise AutomationError(
                 "verified package comparison bytes differ from the candidate"
+            )
+        if selection_family_path is not None and (
+            output / PUBLIC_SELECTION_FAMILY_PATH
+        ).read_bytes() != selection_family_path.read_bytes():
+            raise AutomationError(
+                "verified package selection-family bytes differ from the candidate"
             )
 
 
@@ -1500,6 +1716,8 @@ def _cache_candidate(
     settings: AutomationSettings,
     raw: bytes,
     comparison_raw: bytes | None = None,
+    generation_manifest_raw: bytes | None = None,
+    selection_family_raw: bytes | None = None,
     *,
     target: datetime,
     context: Mapping[str, str],
@@ -1512,13 +1730,33 @@ def _cache_candidate(
     generation_id = str(payload.get("meta", {}).get("generation_id", ""))
     if not generation_id:
         raise AutomationError("candidate generation_id is missing")
+    if settings.contract == "v5" and (
+        comparison_raw is None or generation_manifest_raw is None
+    ):
+        raise AutomationError("V5 candidate comparison/generation manifest is missing")
+    if comparison_raw is not None:
+        _validate_v5_comparison_bytes(
+            raw,
+            comparison_raw,
+            label="cached candidate",
+        )
+    if generation_manifest_raw is not None:
+        if comparison_raw is None:
+            raise AutomationError(
+                "candidate generation manifest requires a comparison"
+            )
+        _validate_generation_manifest_bytes(
+            raw,
+            comparison_raw,
+            generation_manifest_raw,
+            label="cached candidate",
+            selection_family_raw=selection_family_raw,
+        )
     settings.candidate_path.parent.mkdir(parents=True, exist_ok=True)
     temporary = settings.candidate_path.with_name(".regime-results.json.tmp")
     temporary.write_bytes(raw)
     os.chmod(temporary, 0o600)
     os.replace(temporary, settings.candidate_path)
-    if settings.contract == "v5" and comparison_raw is None:
-        raise AutomationError("V5 candidate comparison is missing")
     if comparison_raw is not None:
         comparison_temporary = settings.candidate_comparison_path.with_name(
             ".v5-vs-v4-comparison.json.tmp"
@@ -1526,16 +1764,48 @@ def _cache_candidate(
         comparison_temporary.write_bytes(comparison_raw)
         os.chmod(comparison_temporary, 0o600)
         os.replace(comparison_temporary, settings.candidate_comparison_path)
+    if generation_manifest_raw is not None:
+        manifest_temporary = settings.candidate_generation_manifest_path.with_name(
+            ".generation-manifest.json.tmp"
+        )
+        manifest_temporary.write_bytes(generation_manifest_raw)
+        os.chmod(manifest_temporary, 0o600)
+        os.replace(
+            manifest_temporary,
+            settings.candidate_generation_manifest_path,
+        )
+    if selection_family_raw is not None:
+        selection_temporary = settings.candidate_selection_family_path.with_name(
+            ".selection-family-audit.json.tmp"
+        )
+        selection_temporary.write_bytes(selection_family_raw)
+        os.chmod(selection_temporary, 0o600)
+        os.replace(
+            selection_temporary,
+            settings.candidate_selection_family_path,
+        )
+    else:
+        settings.candidate_selection_family_path.unlink(missing_ok=True)
     write_json_atomic(
         settings.candidate_metadata_path,
         {
-            "schema_version": 2,
+            "schema_version": 4,
             "automation_id": settings.automation_id,
             "data_as_of": target.astimezone(UTC).isoformat(),
             "sha256": hashlib.sha256(raw).hexdigest(),
             "comparison_sha256": (
                 hashlib.sha256(comparison_raw).hexdigest()
                 if comparison_raw is not None
+                else None
+            ),
+            "generation_manifest_sha256": (
+                hashlib.sha256(generation_manifest_raw).hexdigest()
+                if generation_manifest_raw is not None
+                else None
+            ),
+            "selection_family_sha256": (
+                hashlib.sha256(selection_family_raw).hexdigest()
+                if selection_family_raw is not None
                 else None
             ),
             "generation_id": generation_id,
@@ -1561,9 +1831,19 @@ def _load_cached_candidate(
             if metadata.get("comparison_sha256") is not None
             else None
         )
+        generation_manifest_raw = (
+            settings.candidate_generation_manifest_path.read_bytes()
+            if metadata.get("generation_manifest_sha256") is not None
+            else None
+        )
+        selection_family_raw = (
+            settings.candidate_selection_family_path.read_bytes()
+            if metadata.get("selection_family_sha256") is not None
+            else None
+        )
     except (OSError, json.JSONDecodeError):
         return None
-    if not isinstance(metadata, dict) or metadata.get("schema_version") != 2:
+    if not isinstance(metadata, dict) or metadata.get("schema_version") != 4:
         return None
     if metadata.get("automation_id") != settings.automation_id:
         return None
@@ -1577,6 +1857,16 @@ def _load_cached_candidate(
         return None
     if settings.contract == "v5" and comparison_raw is None:
         return None
+    if settings.contract == "v5" and generation_manifest_raw is None:
+        return None
+    if generation_manifest_raw is not None and metadata.get(
+        "generation_manifest_sha256"
+    ) != hashlib.sha256(generation_manifest_raw).hexdigest():
+        return None
+    if selection_family_raw is not None and metadata.get(
+        "selection_family_sha256"
+    ) != hashlib.sha256(selection_family_raw).hexdigest():
+        return None
     if any(metadata.get(key) != value for key, value in context.items()):
         return None
     payload = validate_automation_candidate(
@@ -1586,10 +1876,33 @@ def _load_cached_candidate(
     )
     if metadata.get("generation_id") != payload.get("meta", {}).get("generation_id"):
         return None
+    if generation_manifest_raw is not None:
+        if comparison_raw is None:
+            return None
+        try:
+            _validate_generation_manifest_bytes(
+                raw,
+                comparison_raw,
+                generation_manifest_raw,
+                label="cached candidate",
+                selection_family_raw=selection_family_raw,
+            )
+        except AutomationError:
+            return None
     _verify_candidate_package(
         settings,
         settings.candidate_path,
         settings.candidate_comparison_path if comparison_raw is not None else None,
+        (
+            settings.candidate_generation_manifest_path
+            if generation_manifest_raw is not None
+            else None
+        ),
+        (
+            settings.candidate_selection_family_path
+            if selection_family_raw is not None
+            else None
+        ),
     )
     return raw
 
@@ -1683,6 +1996,10 @@ def _build_candidate(
     settings.collection_report_path.unlink(missing_ok=True)
     settings.reviewed_payload_path.unlink(missing_ok=True)
     settings.comparison_path.unlink(missing_ok=True)
+    settings.candidate_comparison_path.unlink(missing_ok=True)
+    settings.unreviewed_comparison_path.unlink(missing_ok=True)
+    settings.reviewed_generation_manifest_path.unlink(missing_ok=True)
+    settings.reviewed_selection_family_path.unlink(missing_ok=True)
 
     def heartbeat() -> None:
         report = _load_collection_report(settings, target=target)
@@ -1755,12 +2072,10 @@ def _build_candidate(
         [
             sys.executable,
             "scripts/audit_outputs.py",
-            "--payload",
-            str(settings.payload),
-            "--artifacts",
-            str(settings.artifacts),
-            "--mode",
-            "live",
+            "--target",
+            "local-generation",
+            "--manifest",
+            str(settings.build_generation_manifest_path),
         ],
         cwd=settings.root,
     )
@@ -1774,7 +2089,7 @@ def _build_candidate(
                 "--v5-payload",
                 str(settings.payload),
                 "--output",
-                str(settings.comparison_path),
+                str(settings.unreviewed_comparison_path),
             ],
             cwd=settings.root,
         )
@@ -1787,28 +2102,30 @@ def _build_candidate(
                 "--v5-artifacts",
                 str(settings.artifacts),
                 "--comparison",
-                str(settings.comparison_path),
+                str(settings.unreviewed_comparison_path),
+                "--manifest",
+                str(settings.build_generation_manifest_path),
                 "--output",
                 str(settings.reviewed_payload_path),
-            ],
-            cwd=settings.root,
-        )
-        settings.comparison_path.unlink(missing_ok=True)
-        _run(
-            [
-                sys.executable,
-                "scripts/compare_v5_to_frozen_v4.py",
-                "--v5-artifacts",
-                str(settings.artifacts),
-                "--v5-payload",
-                str(settings.reviewed_payload_path),
-                "--output",
+                "--output-comparison",
                 str(settings.comparison_path),
+                "--output-manifest",
+                str(settings.reviewed_generation_manifest_path),
+                "--output-selection-family",
+                str(settings.reviewed_selection_family_path),
+                "--publication-contract-directory",
+                "publication/live",
             ],
             cwd=settings.root,
         )
         candidate_path = settings.reviewed_payload_path
         comparison_path: Path | None = settings.comparison_path
+        generation_manifest_path: Path | None = (
+            settings.reviewed_generation_manifest_path
+        )
+        selection_family_path: Path | None = (
+            settings.reviewed_selection_family_path
+        )
         _run(
             [sys.executable, "-m", "regime_lab", "validate", str(candidate_path)],
             cwd=settings.root,
@@ -1817,32 +2134,58 @@ def _build_candidate(
             [
                 sys.executable,
                 "scripts/audit_outputs.py",
+                "--target",
+                "local-generation",
+                "--manifest",
+                str(generation_manifest_path),
                 "--payload",
                 str(candidate_path),
+                "--comparison",
+                str(comparison_path),
+                "--selection-family",
+                str(selection_family_path),
                 "--artifacts",
                 str(settings.artifacts),
-                "--mode",
-                "live",
             ],
             cwd=settings.root,
         )
     else:
         candidate_path = settings.payload
         comparison_path = None
+        generation_manifest_path = None
+        selection_family_path = None
     raw = candidate_path.read_bytes()
     validate_automation_candidate(
         raw,
         target=target,
         expected_contract=settings.contract,
     )
-    _verify_candidate_package(settings, candidate_path, comparison_path)
+    _verify_candidate_package(
+        settings,
+        candidate_path,
+        comparison_path,
+        generation_manifest_path,
+        selection_family_path,
+    )
     if _candidate_context(settings) != dict(context):
         raise AutomationError("tracked source or config changed during live audit")
     comparison_raw = comparison_path.read_bytes() if comparison_path is not None else None
+    generation_manifest_raw = (
+        generation_manifest_path.read_bytes()
+        if generation_manifest_path is not None
+        else None
+    )
+    selection_family_raw = (
+        selection_family_path.read_bytes()
+        if selection_family_path is not None
+        else None
+    )
     _cache_candidate(
         settings,
         raw,
         comparison_raw,
+        generation_manifest_raw,
+        selection_family_raw,
         target=target,
         context=context,
     )
@@ -1854,6 +2197,8 @@ def _publish_candidate(
     *,
     candidate: bytes,
     comparison: bytes | None = None,
+    generation_manifest: bytes | None = None,
+    selection_family: bytes | None = None,
     target: datetime,
     expected_head_sha: str,
     force_pages_rebuild: bool = False,
@@ -1902,6 +2247,10 @@ def _publish_candidate(
         target_path.write_bytes(candidate)
         os.chmod(target_path, 0o644)
         comparison_target = checkout / PUBLICATION_COMPARISON_PATH
+        if selection_family is not None and generation_manifest is None:
+            raise AutomationError(
+                "publication selection-family requires a generation manifest"
+            )
         if comparison is not None:
             if comparison_target.is_symlink() or not comparison_target.is_file():
                 raise AutomationError(
@@ -1909,9 +2258,44 @@ def _publish_candidate(
                 )
             comparison_target.write_bytes(comparison)
             os.chmod(comparison_target, 0o644)
+        generation_manifest_target = checkout / PUBLICATION_GENERATION_MANIFEST_PATH
+        selection_family_target = checkout / PUBLICATION_SELECTION_FAMILY_PATH
+        selection_family_existed = selection_family_target.is_file()
+        if selection_family_target.is_symlink():
+            raise AutomationError(
+                "publication selection-family target must not be a symlink"
+            )
+        if selection_family is not None:
+            if selection_family_target.exists() and not selection_family_target.is_file():
+                raise AutomationError(
+                    "publication selection-family target must be a regular file"
+                )
+            selection_family_target.write_bytes(selection_family)
+            os.chmod(selection_family_target, 0o644)
+        if generation_manifest is not None:
+            if (
+                generation_manifest_target.is_symlink()
+                or not generation_manifest_target.is_file()
+            ):
+                raise AutomationError(
+                    "publication generation manifest target must be an existing regular file"
+                )
+            if comparison is None:
+                raise AutomationError(
+                    "publication generation manifest requires the V5 comparison"
+                )
+            _validate_generation_manifest_bytes(
+                candidate,
+                comparison,
+                generation_manifest,
+                label="candidate publication",
+                selection_family_raw=selection_family,
+            )
+            generation_manifest_target.write_bytes(generation_manifest)
+            os.chmod(generation_manifest_target, 0o644)
         changed = set(
             _run(
-                ["git", "status", "--porcelain", "--untracked-files=no"],
+                ["git", "status", "--porcelain", "--untracked-files=all"],
                 cwd=checkout,
                 capture=True,
             ).decode().splitlines()
@@ -1919,6 +2303,14 @@ def _publish_candidate(
         expected = {f" M {PUBLICATION_PATH}"}
         if comparison is not None:
             expected.add(f" M {PUBLICATION_COMPARISON_PATH}")
+        if generation_manifest is not None:
+            expected.add(f" M {PUBLICATION_GENERATION_MANIFEST_PATH}")
+        if selection_family is not None:
+            expected.add(
+                f" M {PUBLICATION_SELECTION_FAMILY_PATH}"
+                if selection_family_existed
+                else f"?? {PUBLICATION_SELECTION_FAMILY_PATH}"
+            )
         if changed != expected:
             if (
                 not changed
@@ -1926,6 +2318,15 @@ def _publish_candidate(
                 and (
                     comparison is None
                     or comparison_target.read_bytes() == comparison
+                )
+                and (
+                    generation_manifest is None
+                    or generation_manifest_target.read_bytes()
+                    == generation_manifest
+                )
+                and (
+                    selection_family is None
+                    or selection_family_target.read_bytes() == selection_family
                 )
             ):
                 if not force_pages_rebuild:
@@ -1962,6 +2363,10 @@ def _publish_candidate(
         staged_paths = [PUBLICATION_PATH]
         if comparison is not None:
             staged_paths.append(PUBLICATION_COMPARISON_PATH)
+        if generation_manifest is not None:
+            staged_paths.append(PUBLICATION_GENERATION_MANIFEST_PATH)
+        if selection_family is not None:
+            staged_paths.append(PUBLICATION_SELECTION_FAMILY_PATH)
         _run(["git", "add", "--", *staged_paths], cwd=checkout)
         staged = set(
             _run(
@@ -2030,6 +2435,14 @@ def _expected_static_assets(settings: AutomationSettings) -> dict[str, bytes]:
                 f"expected dashboard asset is unavailable: web/{relative_path}"
             )
         assets[relative_path] = source.read_bytes()
+    try:
+        assets["index.html"] = rewrite_index_asset_versions(
+            assets["index.html"],
+            styles_raw=assets["styles.css"],
+            app_raw=assets["app.js"],
+        )
+    except PublicContractError as exc:
+        raise AutomationError(f"expected dashboard assets are invalid: {exc}") from exc
     return assets
 
 
@@ -2038,6 +2451,8 @@ def verify_public_readback(
     *,
     expected_payload: bytes,
     expected_comparison: bytes | None = None,
+    expected_generation_manifest: bytes | None = None,
+    expected_selection_family: bytes | None = None,
     expected_assets: Mapping[str, bytes] | None = None,
     fetch: Callable[[str], bytes] = _fetch_url,
 ) -> None:
@@ -2053,6 +2468,30 @@ def verify_public_readback(
             expected_payload,
             expected_comparison,
             label="expected publication",
+        )
+    if expected.get("meta", {}).get("generation_manifest_sha256") is not None:
+        if expected_comparison is None or expected_generation_manifest is None:
+            raise AutomationError(
+                "V5 public readback requires an expected generation manifest"
+            )
+        manifest_document = _json_object(
+            expected_generation_manifest,
+            label="expected generation manifest",
+        )
+        if (
+            manifest_document.get("schema_version")
+            == GENERATION_MANIFEST_SCHEMA_VERSION
+            and expected_selection_family is None
+        ):
+            raise AutomationError(
+                "V5 manifest/2 readback requires an expected selection-family audit"
+            )
+        _validate_generation_manifest_bytes(
+            expected_payload,
+            expected_comparison,
+            expected_generation_manifest,
+            label="expected publication",
+            selection_family_raw=expected_selection_family,
         )
     checkout_assets = (
         _expected_static_assets(settings)
@@ -2073,6 +2512,10 @@ def verify_public_readback(
     expected_files = {*PUBLIC_STATIC_ASSET_PATHS, PUBLIC_PAYLOAD_PATH}
     if expected_comparison is not None:
         expected_files.add(PUBLIC_COMPARISON_PATH)
+    if expected_generation_manifest is not None:
+        expected_files.add(PUBLIC_GENERATION_MANIFEST_PATH)
+    if expected_selection_family is not None:
+        expected_files.add(PUBLIC_SELECTION_FAMILY_PATH)
     if not isinstance(manifest_files, dict) or set(manifest_files) != expected_files:
         raise AutomationError("public manifest file inventory is not exact")
     record = manifest_files.get(PUBLIC_PAYLOAD_PATH, {})
@@ -2106,6 +2549,59 @@ def verify_public_readback(
             public_comparison,
             label="public publication",
         )
+    if expected_generation_manifest is not None:
+        public_generation_manifest = fetch(
+            urljoin(settings.public_root, PUBLIC_GENERATION_MANIFEST_PATH)
+        )
+        generation_hash = hashlib.sha256(expected_generation_manifest).hexdigest()
+        if hashlib.sha256(public_generation_manifest).hexdigest() != generation_hash:
+            raise AutomationError(
+                "public generation manifest SHA-256 does not match the promoted result"
+            )
+        generation_record = manifest_files.get(
+            PUBLIC_GENERATION_MANIFEST_PATH,
+            {},
+        )
+        if generation_record.get("sha256") != generation_hash:
+            raise AutomationError(
+                "public package manifest does not identify the generation manifest"
+            )
+        if generation_record.get("bytes") != len(public_generation_manifest):
+            raise AutomationError(
+                "public generation manifest byte count is incorrect"
+            )
+        fetched_files[PUBLIC_GENERATION_MANIFEST_PATH] = public_generation_manifest
+        if expected_comparison is None:
+            raise AutomationError(
+                "public generation manifest requires a comparison sidecar"
+            )
+    if expected_selection_family is not None:
+        public_selection_family = fetch(
+            urljoin(settings.public_root, PUBLIC_SELECTION_FAMILY_PATH)
+        )
+        selection_hash = hashlib.sha256(expected_selection_family).hexdigest()
+        if hashlib.sha256(public_selection_family).hexdigest() != selection_hash:
+            raise AutomationError(
+                "public selection-family SHA-256 does not match the promoted result"
+            )
+        selection_record = manifest_files.get(PUBLIC_SELECTION_FAMILY_PATH, {})
+        if selection_record.get("sha256") != selection_hash:
+            raise AutomationError(
+                "public package manifest does not identify the selection-family audit"
+            )
+        if selection_record.get("bytes") != len(public_selection_family):
+            raise AutomationError(
+                "public selection-family byte count is incorrect"
+            )
+        fetched_files[PUBLIC_SELECTION_FAMILY_PATH] = public_selection_family
+    if expected_generation_manifest is not None:
+        _validate_generation_manifest_bytes(
+            public_payload,
+            fetched_files[PUBLIC_COMPARISON_PATH],
+            fetched_files[PUBLIC_GENERATION_MANIFEST_PATH],
+            label="public publication",
+            selection_family_raw=expected_selection_family,
+        )
     if manifest.get("payload_data_as_of") != expected.get("meta", {}).get("data_as_of"):
         raise AutomationError("public manifest data_as_of does not match the payload")
     for relative_path in PUBLIC_STATIC_ASSET_PATHS:
@@ -2133,6 +2629,8 @@ def _wait_for_public_readback(
     *,
     expected_payload: bytes,
     expected_comparison: bytes | None = None,
+    expected_generation_manifest: bytes | None = None,
+    expected_selection_family: bytes | None = None,
     sleep: Callable[[float], None] = time.sleep,
     heartbeat: Callable[[], None] | None = None,
 ) -> None:
@@ -2148,6 +2646,8 @@ def _wait_for_public_readback(
                 settings,
                 expected_payload=expected_payload,
                 expected_comparison=expected_comparison,
+                expected_generation_manifest=expected_generation_manifest,
+                expected_selection_family=expected_selection_family,
             )
             return
         except (AutomationError, OSError) as exc:
@@ -2265,7 +2765,9 @@ def run_weekly_release(
             remote = _git_preflight(settings)
             if remote.data_as_of > target:
                 raise AutomationError("remote publication is ahead of the due cutoff")
-            if remote.data_as_of == target:
+            if remote.data_as_of == target and not _requires_generation_contract_upgrade(
+                settings, remote
+            ):
                 _write_status(
                     settings,
                     status="running",
@@ -2276,11 +2778,18 @@ def run_weekly_release(
                     run_id=run_id,
                 )
                 try:
-                    verify_public_readback(
-                        settings,
-                        expected_payload=remote.payload_bytes,
-                        expected_comparison=remote.comparison_bytes,
-                    )
+                    readback_kwargs: dict[str, Any] = {
+                        "expected_payload": remote.payload_bytes,
+                        "expected_comparison": remote.comparison_bytes,
+                        "expected_generation_manifest": (
+                            remote.generation_manifest_bytes
+                        ),
+                    }
+                    if remote.selection_family_bytes is not None:
+                        readback_kwargs["expected_selection_family"] = (
+                            remote.selection_family_bytes
+                        )
+                    verify_public_readback(settings, **readback_kwargs)
                     workflow_url = None
                 except (AutomationError, OSError):
                     # A Pages rebuild is a new publication event.  Revalidate
@@ -2291,6 +2800,8 @@ def run_weekly_release(
                         settings,
                         candidate=remote.payload_bytes,
                         comparison=remote.comparison_bytes,
+                        generation_manifest=remote.generation_manifest_bytes,
+                        selection_family=remote.selection_family_bytes,
                         target=target,
                         expected_head_sha=remote.head_sha,
                         force_pages_rebuild=True,
@@ -2300,15 +2811,21 @@ def run_weekly_release(
                         settings,
                         expected_payload=remote.payload_bytes,
                         expected_comparison=remote.comparison_bytes,
+                        expected_generation_manifest=(
+                            remote.generation_manifest_bytes
+                        ),
+                        expected_selection_family=remote.selection_family_bytes,
                         heartbeat=lambda: _heartbeat_status(
                             settings, stage="deployment_recovery"
                         ),
                     )
                     remote = RemotePublication(
-                        recovery_sha,
-                        remote.payload_bytes,
-                        remote.data_as_of,
-                        remote.comparison_bytes,
+                        head_sha=recovery_sha,
+                        payload_bytes=remote.payload_bytes,
+                        data_as_of=remote.data_as_of,
+                        comparison_bytes=remote.comparison_bytes,
+                        generation_manifest_bytes=remote.generation_manifest_bytes,
+                        selection_family_bytes=remote.selection_family_bytes,
                     )
                 result = _write_status(
                     settings,
@@ -2365,14 +2882,28 @@ def run_weekly_release(
                 if settings.contract == "v5"
                 else None
             )
+            candidate_generation_manifest = (
+                settings.candidate_generation_manifest_path.read_bytes()
+                if settings.contract == "v5"
+                else None
+            )
+            candidate_selection_family = (
+                settings.candidate_selection_family_path.read_bytes()
+                if settings.contract == "v5"
+                else None
+            )
 
             remote = _git_preflight(settings)
             if remote.data_as_of > target:
                 raise AutomationError("remote publication is ahead of the due cutoff")
-            if remote.data_as_of == target:
+            if remote.data_as_of == target and not _requires_generation_contract_upgrade(
+                settings, remote
+            ):
                 if remote.payload_bytes != candidate:
                     candidate = remote.payload_bytes
                 candidate_comparison = remote.comparison_bytes
+                candidate_generation_manifest = remote.generation_manifest_bytes
+                candidate_selection_family = remote.selection_family_bytes
                 commit_sha = remote.head_sha
             else:
                 _write_status(
@@ -2387,6 +2918,8 @@ def run_weekly_release(
                     settings,
                     candidate=candidate,
                     comparison=candidate_comparison,
+                    generation_manifest=candidate_generation_manifest,
+                    selection_family=candidate_selection_family,
                     target=target,
                     expected_head_sha=remote.head_sha,
                 )
@@ -2405,6 +2938,8 @@ def run_weekly_release(
                 settings,
                 expected_payload=candidate,
                 expected_comparison=candidate_comparison,
+                expected_generation_manifest=candidate_generation_manifest,
+                expected_selection_family=candidate_selection_family,
                 heartbeat=lambda: _heartbeat_status(
                     settings, stage="wait_for_pages"
                 ),

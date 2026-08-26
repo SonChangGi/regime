@@ -2,6 +2,7 @@
 
 from copy import deepcopy
 from html.parser import HTMLParser
+import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -447,7 +448,7 @@ def _valid_v5_browser_payload() -> dict:
     }
     return {
         "meta": {
-            "schema_version": "2.0.0",
+            "schema_version": "2.1.0",
             "result_version": "weekly-regime-result-v5",
             "generation_id": "20260812T000000Z-v5-example",
             "generated_at": "2026-08-12T00:00:00Z",
@@ -455,6 +456,7 @@ def _valid_v5_browser_payload() -> dict:
             "mode": "demo",
             "timezone": "America/New_York",
             "warnings": [],
+            "publication_status": "unpublished",
             "freshness": {
                 "cadence": "weekly",
                 "maximum_age_days": 10,
@@ -463,10 +465,68 @@ def _valid_v5_browser_payload() -> dict:
                 "data_as_of": "2026-08-07T21:00:00-04:00",
             },
         },
-        "states": [{"id": state} for state in ("risk_on", "transition", "risk_off")],
+        "states": [
+            {
+                "id": "risk_on",
+                "label": "Risk-on",
+                "label_ko": "위험선호",
+                "description": "추세가 우호적이고 스트레스가 제한적인 상태",
+                "color": "#2764d8",
+                "symbol": "●",
+            },
+            {
+                "id": "transition",
+                "label": "Transition",
+                "label_ko": "전환",
+                "description": "방향과 스트레스 신호가 엇갈리는 경계 상태",
+                "color": "#b87713",
+                "symbol": "◆",
+            },
+            {
+                "id": "risk_off",
+                "label": "Risk-off",
+                "label_ko": "위험회피",
+                "description": "하락 추세 또는 강한 하방 스트레스 상태",
+                "color": "#b54869",
+                "symbol": "▲",
+            },
+        ],
+        "label": {
+            "spec_id": "v1_spy_hysteresis",
+            "spec_version": "market-causal-3state-v1",
+            "spec_sha256": "1" * 64,
+            "fit_period": {"start": "2012-01-06", "end": "2021-12-31", "weeks": 520},
+            "input_scope": "SPY adjusted close only",
+            "membership_semantics": "distance_to_anchor_not_posterior",
+        },
+        "forecast": {
+            "status": "active",
+            "origin_at": "2026-08-07T20:00:00+00:00",
+            "decision_at": "2026-08-07T20:00:00+00:00",
+            "target_at": "2026-08-14T20:00:00+00:00",
+            "remaining_horizon": 604800,
+            "evidence_track": "reconstructed_oos",
+        },
+        "selection": {
+            "schema_version": "regime-selection-evidence/1",
+            "status": "selected_by_gate",
+            "policy_sha256": "2" * 64,
+            "complexity_registry_sha256": "3" * 64,
+            "candidate_set": candidate_names,
+            "runner_up": "xgboost",
+            "selection_reason": "best_gate_passing_log_loss",
+            "simplicity_tolerance": 0.01,
+            "tie_break_order": ["complexity_rank", "calibration_error", "log_loss", "model"],
+            "operating_champion": "causal_dynamic_ensemble",
+        },
         "model": {
             "champion": "markov",
-            "selection_status": "provisional_predeployment",
+            "selection_status": "selected_by_gate",
+            "lifecycle": {
+                "selection": {"status": "selected_by_gate"},
+                "deployment": {"status": "candidate"},
+                "publication": {"status": "unpublished"},
+            },
             "leaderboard": leaderboard,
             "selection_diagnostics": [
                 {
@@ -474,7 +534,7 @@ def _valid_v5_browser_payload() -> dict:
                     "selected": name == "markov",
                     "gate_passed": name == "markov",
                 }
-                for name in V5_FORECAST_COMPARISON_MODELS
+                for name in candidate_names
             ],
             "forecast_comparison": {
                 "role": "research_comparison",
@@ -688,6 +748,140 @@ def _valid_v5_browser_payload() -> dict:
     }
 
 
+def _canonical_json_sha256(value: object) -> str:
+    encoded = json.dumps(
+        value,
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _valid_selection_family_sidecar(payload: dict) -> dict:
+    candidates = list(payload["selection"]["candidate_set"])
+    registry = {name: index for index, name in enumerate(candidates)}
+    payload["selection"]["complexity_registry_sha256"] = _canonical_json_sha256(registry)
+    origin = "2022-12-16T00:00:00+00:00"
+    target = "2022-12-23T00:00:00+00:00"
+    common_origin = {
+        "status": "matched",
+        "columns": [
+            "origin_date", "target_date", "evaluation_split", "current_state",
+            "actual", "train_size", "gap",
+        ],
+        "origin_count": 1,
+        "first_origin_at": origin,
+        "last_origin_at": origin,
+        "origins_sha256": "4" * 64,
+    }
+    supplemental_body = {
+        "schema_version": "regime-selection-evaluation/1",
+        "status": "completed",
+        "evidence_status": "synthetic_fixture",
+        "role": "supplemental_not_selection_gate",
+        "evaluation_split": "selection",
+        "holdout_rows_used": 0,
+        "selection_effect": "none",
+        "selected_champion_unchanged": payload["model"]["champion"],
+        "candidate_set": candidates,
+        "common_origin_contract": {
+            "status": "matched",
+            "columns": common_origin["columns"],
+            "origin_count": 1,
+            "first_origin_at": origin,
+            "last_origin_at": origin,
+            "origins_sha256": "5" * 64,
+        },
+        "primary_metric_crosscheck": {
+            "status": "matched",
+            "metric_tolerance": 1e-9,
+            "metrics": ["multiclass_log_loss", "multiclass_brier"],
+            "changes_holm_gate": False,
+            "changes_champion": False,
+        },
+        "model_metrics": [],
+        "state_recall": [],
+        "transition_diagnostics": [],
+        "transition_events": [],
+        "model_confidence_set": {},
+    }
+    supplemental = {
+        **supplemental_body,
+        "sha256": _canonical_json_sha256(supplemental_body),
+    }
+    runner_up = payload["selection"]["runner_up"]
+    champion = payload["model"]["champion"]
+    rows = [
+        {
+            "candidate_order": index + 1,
+            "model": name,
+            "selected": name == champion,
+            "runner_up": name == runner_up,
+            "is_reference": name == "markov",
+            "complexity_rank": registry[name],
+            "gate": {
+                "passed_all": name in {champion, runner_up},
+                "reason": "passed" if name in {champion, runner_up} else "minimum_improvement",
+                "failed_checks": [] if name in {champion, runner_up} else ["minimum_improvement"],
+                "fallback_count": 0,
+                "raw_p_value": None,
+                "holm_adjusted_p_value": None,
+            },
+            "metrics": {
+                "log_loss": 0.6 + index / 100,
+                "brier": 0.4 + index / 100,
+                "calibration_error": 0.05,
+                "n_predictions": 10,
+            },
+        }
+        for index, name in enumerate(candidates)
+    ]
+    body = {
+        "schema_version": "selection-family-audit/v2",
+        "status": "completed",
+        "generation_id": payload["meta"]["generation_id"],
+        "evidence_track": payload["forecast"]["evidence_track"],
+        "evidence_status": "synthetic_fixture",
+        "candidate_manifest_sha256": payload["model"]["candidate_manifest_sha256"],
+        "selection_period": {
+            "role": "predeployment_selection_only",
+            "declared": payload["model"].get("selection_period", "2016-01-08–2022-12-30"),
+            "selection_end_at": "2023-01-01T00:00:00+00:00",
+            "first_origin_at": origin,
+            "last_origin_at": origin,
+            "first_target_at": target,
+            "last_target_at": target,
+        },
+        "source_artifacts": {
+            key: {
+                "path": payload["model"]["core_artifacts"][key]["path"],
+                "sha256": payload["model"]["core_artifacts"][key]["sha256"],
+                "row_count": len(candidates) if key == "selection_diagnostics" else len(candidates),
+            }
+            for key in ("selection_diagnostics", "oos_predictions")
+        },
+        "candidate_count": len(candidates),
+        "candidate_set": candidates,
+        "champion": champion,
+        "runner_up": runner_up,
+        "selection_reason": payload["selection"]["selection_reason"],
+        "policy_sha256": payload["selection"]["policy_sha256"],
+        "complexity_registry": registry,
+        "complexity_registry_sha256": payload["selection"]["complexity_registry_sha256"],
+        "fallback": {
+            "model": "markov",
+            "trigger": "no_challenger_passes_gate",
+            "reason": "official_probability_reference_fallback",
+        },
+        "common_origin_contract": common_origin,
+        "candidates": rows,
+        "supplemental_evaluation": supplemental,
+    }
+    return {**body, "sha256": _canonical_json_sha256(body)}
+
+
 def _browser_validation_errors(payload: dict) -> list[str]:
     program = """
 const api = require(process.argv[1]);
@@ -771,16 +965,18 @@ def test_dashboard_assets_are_local_and_present() -> None:
     assert JS_PATH.is_file()
     assert any(str(script.get("src", "")).startswith("./app.js?") and "defer" in script for script in parser.scripts)
     assert any(str(link.get("href", "")).startswith("./styles.css?") for link in parser.links)
-    asset_versions = {
-        str(asset.get(attribute)).split("?v=", 1)[1]
-        for asset, attribute in [
-            (script, "src") for script in parser.scripts if str(script.get("src", "")).startswith("./app.js?v=")
-        ] + [
-            (link, "href") for link in parser.links if str(link.get("href", "")).startswith("./styles.css?v=")
-        ]
-    }
-    assert len(asset_versions) == 1
-    assert asset_versions == {"20260826-v5-12"}
+    app_version = next(
+        str(script["src"]).split("?v=", 1)[1]
+        for script in parser.scripts
+        if str(script.get("src", "")).startswith("./app.js?v=")
+    )
+    styles_version = next(
+        str(link["href"]).split("?v=", 1)[1]
+        for link in parser.links
+        if str(link.get("href", "")).startswith("./styles.css?v=")
+    )
+    assert app_version == hashlib.sha256(JS_PATH.read_bytes()).hexdigest()
+    assert styles_version == hashlib.sha256(CSS_PATH.read_bytes()).hexdigest()
 
     assert all(not str(script.get("src", "")).startswith(("http://", "https://", "//")) for script in parser.scripts)
     assert all(not str(link.get("href", "")).startswith(("http://", "https://", "//")) for link in parser.links)
@@ -822,6 +1018,14 @@ def test_required_result_surfaces_exist() -> None:
         "latest-week",
         "current-regime-card",
         "next-regime-card",
+        "label-definition-card",
+        "label-spec-identity",
+        "forecast-window-card",
+        "forecast-origin-at",
+        "forecast-decision-at",
+        "forecast-target-at",
+        "forecast-remaining-horizon",
+        "forecast-expired-notice",
         "current-probabilities",
         "next-probabilities",
         "header-model-health",
@@ -866,6 +1070,11 @@ def test_required_result_surfaces_exist() -> None:
         "model-forecast-brier",
         "model-forecast-calibration",
         "model-evidence-summary",
+        "model-role-grid",
+        "operating-model-name",
+        "frozen-baseline-name",
+        "research-selector-summary",
+        "research-selection-status",
         "transition-horizon-bars",
         "transition-model-section",
         "transition-horizon-select",
@@ -975,7 +1184,8 @@ def test_model_forecast_selector_controls_the_one_week_forecast_layer() -> None:
     assert 'id="model-forecast-explorer"' in document
     assert 'aria-labelledby="model-forecast-title"' in document
     assert 'id="model-forecast-probabilities"' in document
-    assert "V5_FORECAST_COMPARISON_MODELS" in script
+    assert "function forecastComparisonModels(" in script
+    assert "V5_FORECAST_COMPARISON_MODELS" not in script
     assert "function renderModelForecast()" in script
     assert "function renderForecastSurfaces()" in script
     assert "function forecastForWeek(" in script
@@ -1008,6 +1218,36 @@ def test_current_membership_and_forecast_probability_are_separate_surfaces() -> 
     assert 'metricValue(row, ["selection_log_loss"])' in script
     assert 'metricValue(row, ["log_loss", "multiclass_log_loss"])' in script
     assert 'dom["model-loss-axis"].replaceChildren' in script
+
+
+def test_label_forecast_and_model_role_cards_preserve_semantic_separation() -> None:
+    document = HTML_PATH.read_text(encoding="utf-8")
+    script = JS_PATH.read_text(encoding="utf-8")
+    styles = CSS_PATH.read_text(encoding="utf-8")
+    assert 'id="label-definition-card"' in document
+    assert "SPY 조정종가의 13·26주 추세, 4·13주 변동성, 13·52주 낙폭" in document
+    assert "예측 피처 또는 연구 challenger" in document
+    assert "posterior가 아닙니다" in document
+    for element_id in (
+        "forecast-origin-at",
+        "forecast-decision-at",
+        "forecast-target-at",
+        "forecast-remaining-horizon",
+    ):
+        assert f'id="{element_id}"' in document
+    assert "function renderContractOverview()" in script
+    assert "function forecastAvailability(" in script
+    assert 'dom["next-regime-card"].hidden = suppressed' in script
+    assert 'dom["transition-card"].hidden = suppressed' in script
+    assert 'id="model-role-grid"' in document
+    assert "공식 운영 모델" in document
+    assert "V4 동결 기준선" in document
+    assert "연구 모델 선택기" in document
+    assert "현재 연구 상태" in document
+    assert document.index('id="conditional-stats"') < document.index('id="models"')
+    assert ".contract-overview-grid" in styles
+    assert "@media (max-width: 1024px)" in styles
+    assert "@media (max-width: 760px)" in styles
 
 
 def test_results_first_layout_keeps_equal_cards_and_wide_history() -> None:
@@ -1129,6 +1369,99 @@ def test_browser_validator_executes_valid_v4_semantic_contract() -> None:
 def test_browser_validator_accepts_valid_v5_without_changing_v4() -> None:
     assert _browser_validation_errors(_valid_v4_browser_payload()) == []
     assert _browser_validation_errors(_valid_v5_browser_payload()) == []
+
+
+def test_v5_lifecycle_rejects_reviewed_publication_before_operating() -> None:
+    payload = _valid_v5_browser_payload()
+    payload["meta"]["publication_status"] = "reviewed_publication"
+    payload["model"]["lifecycle"]["publication"]["status"] = "reviewed_publication"
+    payload["model"]["lifecycle"]["deployment"]["status"] = "reviewed"
+    errors = _browser_validation_errors(payload)
+    assert any("lifecycle 조합" in error for error in errors)
+
+
+def test_forecast_availability_expires_by_target_clock_without_mutating_history() -> None:
+    program = f"""
+const api = require({json.dumps(str(JS_PATH))});
+const payload = {{forecast: {{status: "active", target_at: "2026-08-14T20:00:00Z"}}}};
+process.stdout.write(JSON.stringify({{
+  active: api.forecastAvailability(payload, Date.parse("2026-08-14T19:00:00Z")),
+  elapsed: api.forecastAvailability(payload, Date.parse("2026-08-14T20:00:00Z"))
+}}));
+"""
+    completed = subprocess.run(["node", "-e", program], text=True, capture_output=True, check=True)
+    result = json.loads(completed.stdout)
+    assert result["active"] == {"status": "active", "current": True, "remaining_seconds": 3600}
+    assert result["elapsed"] == {"status": "elapsed", "current": False, "remaining_seconds": 0}
+
+
+def test_expired_latest_forecast_hides_current_dom_surfaces_but_preserves_history() -> None:
+    program = f"""
+const api = require({json.dumps(str(JS_PATH))});
+const payload = {{
+  meta: {{result_version: "weekly-regime-result-v5"}},
+  forecast: {{status: "active", target_at: "2026-08-21T20:00:00Z"}}
+}};
+function surfaces() {{
+  return {{
+    "next-regime-card": {{hidden: false}},
+    "transition-card": {{hidden: false}},
+    "model-forecast-field": {{hidden: false}},
+    "model-forecast-explorer": {{hidden: false}},
+    history: {{hidden: false}}
+  }};
+}}
+const latest = surfaces();
+const expiredPolicy = api.forecastSurfacePolicy(
+  payload, 1, 2, Date.parse("2026-08-21T20:00:00Z")
+);
+api.applyExpiredForecastDomState(latest, expiredPolicy);
+const historical = surfaces();
+const historicalPolicy = api.forecastSurfacePolicy(
+  payload, 0, 2, Date.parse("2026-08-21T20:00:00Z")
+);
+api.applyExpiredForecastDomState(historical, historicalPolicy);
+process.stdout.write(JSON.stringify({{expiredPolicy, latest, historicalPolicy, historical}}));
+"""
+    completed = subprocess.run(["node", "-e", program], text=True, capture_output=True, check=True)
+    result = json.loads(completed.stdout)
+    assert result["expiredPolicy"] == {
+        "expiredLatest": True,
+        "showCurrentForecast": False,
+        "preserveHistory": True,
+    }
+    assert all(
+        result["latest"][surface]["hidden"]
+        for surface in (
+            "next-regime-card",
+            "transition-card",
+            "model-forecast-field",
+            "model-forecast-explorer",
+        )
+    )
+    assert result["latest"]["history"]["hidden"] is False
+    assert result["historicalPolicy"]["expiredLatest"] is False
+    assert all(not node["hidden"] for node in result["historical"].values())
+
+
+def test_payload_state_metadata_and_forecast_models_are_runtime_driven() -> None:
+    program = f"""
+const api = require({json.dumps(str(JS_PATH))});
+const payload = {{
+  states: [{{id: "risk_on", label: "Custom on", label_ko: "사용자 정의", symbol: "◎", color: "#123456"}}],
+  model: {{forecast_comparison: {{models: ["markov", "new_shadow_model"]}}}}
+}};
+process.stdout.write(JSON.stringify({{
+  meta: api.stateMeta("risk_on", payload),
+  models: api.forecastComparisonModels(payload)
+}}));
+"""
+    completed = subprocess.run(["node", "-e", program], text=True, capture_output=True, check=True)
+    result = json.loads(completed.stdout)
+    assert result["meta"]["label"] == "Custom on"
+    assert result["meta"]["ko"] == "사용자 정의"
+    assert result["meta"]["symbol"] == "◎"
+    assert result["models"] == ["markov", "new_shadow_model"]
 
 
 def test_v5_browser_binds_model_comparison_order_inventory_and_official_parity() -> None:
@@ -1383,8 +1716,8 @@ process.stdout.write(JSON.stringify({{
     api.resultIdentity({{meta: {{mode: "demo"}}, model: {{execution_parameters: {{profile: "quick"}}}}}}).label,
     api.resultIdentity({{meta: {{mode: "live"}}, model: {{execution_parameters: {{profile: "standard"}}}}}}).label,
     api.resultIdentity({{meta: {{mode: "live"}}, model: {{profile: "full"}}}}).label,
-    api.resultIdentity({{meta: {{mode: "live"}}, model: {{profile: "standard", selection_status: "provisional_predeployment"}}}}).label,
-    api.resultIdentity({{meta: {{mode: "live", publication_status: "reviewed_publication"}}, model: {{profile: "standard", selection_status: "provisional_predeployment"}}}}).label
+    api.resultIdentity({{meta: {{mode: "live"}}, model: {{profile: "standard", selection_status: "selected_by_gate", lifecycle: {{deployment: {{status: "candidate"}}}}}}}}).label,
+    api.resultIdentity({{meta: {{mode: "live", publication_status: "reviewed_publication"}}, model: {{profile: "standard", selection_status: "selected_by_gate", lifecycle: {{deployment: {{status: "operating"}}}}}}}}).label
   ],
   fxStatuses: [
     api.fxStatusLabel("unavailable"),
@@ -1401,8 +1734,8 @@ process.stdout.write(JSON.stringify({{
         "모의자료 · QUICK · 파이프라인 검증",
         "실데이터 · STANDARD",
         "실데이터 · FULL",
-        "실데이터 · STANDARD · 배포 전 잠정",
-        "실데이터 · STANDARD · 공개 검토 완료",
+        "실데이터 · STANDARD · 연구 후보 · 미배포",
+        "실데이터 · STANDARD · 공개 운영",
     ]
     assert result["fxStatuses"] == ["사용 불가", "표본 축적 중", "완료"]
     assert result["current"] == {
@@ -1965,14 +2298,14 @@ def test_v3_transition_models_have_horizon_specific_diagnostic_surface() -> None
     assert "#transition-leaderboard-table" in styles
 
 
-def test_browser_contract_requires_provisional_predeployment_selection_status() -> None:
+def test_browser_contract_requires_explicit_consistent_lifecycle() -> None:
     script = JS_PATH.read_text(encoding="utf-8")
-    assert 'payload.model.selection_status !== "provisional_predeployment"' in script
-    assert "model.selection_status는 provisional_predeployment여야 합니다" in script
-    assert 'createElement("span", null, "선정 모델")' in script
-    assert 'labels.push("공개 검토 완료")' in script
-    assert 'labels.push("배포 전 잠정")' in script
-    assert 'meta.publication_status !== V5_PUBLICATION_STATUS' in script
+    assert 'const expectedSelectionStatus = isV5 ? "selected_by_gate" : "provisional_predeployment"' in script
+    assert "function validateV5Lifecycle(" in script
+    assert 'publication.status === V5_PUBLICATION_STATUS && deployment.status === "operating"' in script
+    assert 'deployment === "operating" ? "공식 운영 모델" : "로컬 선정 모델"' in script
+    assert 'labels.push("공개 운영")' in script
+    assert 'labels.push("연구 후보 · 미배포")' in script
 
 
 def test_v5_comparison_sidecar_requires_current_payload_and_frozen_v4_identity() -> None:
@@ -2068,6 +2401,83 @@ process.stdout.write(JSON.stringify([
     assert mismatched_role is None
     assert accepted_legacy == accepted
     assert mismatched_new_role is None
+
+
+def test_generic_selection_family_sidecar_is_hash_bound_and_payload_fallback_is_safe() -> None:
+    payload = _valid_v5_browser_payload()
+    sidecar = _valid_selection_family_sidecar(payload)
+    sidecar_source = json.dumps(
+        sidecar,
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        indent=2,
+    )
+    wrong_generation = deepcopy(sidecar)
+    wrong_generation["generation_id"] = "different-generation"
+    wrong_policy = deepcopy(sidecar)
+    wrong_policy["policy_sha256"] = "f" * 64
+    stale_hash = deepcopy(sidecar)
+    stale_hash["candidates"][0]["metrics"]["log_loss"] += 0.001
+    stale_hash_source = json.dumps(
+        stale_hash,
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        indent=2,
+    )
+    program = f"""
+const api = require({json.dumps(str(JS_PATH))});
+const payload = {json.dumps(payload)};
+const sidecar = {json.dumps(sidecar)};
+const sidecarSource = {json.dumps(sidecar_source)};
+const wrongGeneration = {json.dumps(wrong_generation)};
+const wrongPolicy = {json.dumps(wrong_policy)};
+const staleHash = {json.dumps(stale_hash)};
+const staleHashSource = {json.dumps(stale_hash_source)};
+(async () => {{
+  const accepted = await api.validateSelectionFamilyAudit(sidecar, payload, sidecarSource);
+  const rejectedGeneration = await api.validateSelectionFamilyAudit(wrongGeneration, payload);
+  const rejectedPolicy = await api.validateSelectionFamilyAudit(wrongPolicy, payload);
+  const rejectedStaleHash = await api.validateSelectionFamilyAudit(staleHash, payload, staleHashSource);
+  global.fetch = async (url) => ({{
+    ok: url === api.V5_SELECTION_FAMILY_AUDIT_URL,
+    status: 200,
+    text: async () => sidecarSource
+  }});
+  const loaded = await api.loadSelectionFamilyAudit(payload);
+  global.fetch = async () => ({{ok: false, status: 404}});
+  const absent = await api.loadSelectionFamilyAudit(payload);
+  const fallback = api.selectionEvidenceForDisplay(payload, absent);
+  const preferred = api.selectionEvidenceForDisplay(payload, accepted);
+  process.stdout.write(JSON.stringify({{
+    accepted,
+    rejectedGeneration,
+    rejectedPolicy,
+    rejectedStaleHash,
+    loaded,
+    absent,
+    fallback,
+    preferred
+  }}));
+}})().catch((error) => {{
+  process.stderr.write(String(error && error.stack || error));
+  process.exitCode = 1;
+}});
+"""
+    completed = subprocess.run(["node", "-e", program], text=True, capture_output=True, check=True)
+    result = json.loads(completed.stdout)
+    assert result["accepted"]["source"] == "selection-family-audit/v2"
+    assert result["accepted"]["candidateCount"] == len(payload["selection"]["candidate_set"])
+    assert result["accepted"]["originCount"] == 1
+    assert result["rejectedGeneration"] is None
+    assert result["rejectedPolicy"] is None
+    assert result["rejectedStaleHash"] is None
+    assert result["loaded"]["source"] == "selection-family-audit/v2"
+    assert result["absent"] is None
+    assert result["fallback"]["source"] == "payload"
+    assert result["fallback"]["candidates"] == payload["selection"]["candidate_set"]
+    assert result["preferred"]["source"] == "selection-family-audit/v2"
 
 
 def test_v5_decision_evidence_is_collapsed_at_the_bottom_and_semantically_distinct() -> None:

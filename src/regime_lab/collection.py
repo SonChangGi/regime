@@ -67,11 +67,15 @@ def alpha_market_week_is_current(
     coverage_end: date,
     cutoff: datetime,
 ) -> bool:
-    """Accept the latest trading day in the cutoff's market week.
+    """Accept provider coverage for the cutoff's market week.
 
     Alpha's weekly timestamp is normally Friday, but U.S. market holidays such
-    as Good Friday legitimately produce a Thursday period.  The cutoff remains
-    Friday 16:00 ET; a prior market week is never accepted.
+    as Good Friday legitimately produce a Thursday period.  ``available_at``
+    is an evidence clock, not the model cutoff: an official 16:15 finalization
+    or a later first observation may prove that the provider reached the week,
+    while the operational as-of join still excludes that row from a 16:00
+    forecast.  A prior market week or a pre-close same-day timestamp is never
+    accepted.
     """
 
     available_local = _aware_utc(
@@ -79,12 +83,15 @@ def alpha_market_week_is_current(
     ).astimezone(EASTERN)
     cutoff_local = _aware_utc(cutoff, label="cutoff").astimezone(EASTERN)
     week_start = cutoff_local.date() - timedelta(days=cutoff_local.weekday())
+    available_day = available_local.date()
+    available_time = available_local.time().replace(tzinfo=None)
+    period_has_closed = available_day > coverage_end or (
+        available_day == coverage_end and available_time >= time(16, 0)
+    )
     return bool(
         week_start <= coverage_end <= cutoff_local.date()
-        and available_local.date() == coverage_end
-        and available_local.time().replace(tzinfo=None)
-        == cutoff_local.time().replace(tzinfo=None)
-        and available_local <= cutoff_local
+        and available_day >= coverage_end
+        and period_has_closed
     )
 
 
@@ -602,15 +609,16 @@ def _validate_initial_alpha_baseline(
         outside_window = (
             record.observed_period_end < history_start
             or record.observed_period_end > cutoff_date
-            or record.available_at > cutoff
         )
         if invalid_contract or (strict_response and outside_window):
             invalid_records += 1
             continue
         if outside_window:
             # Existing append-only chains can legitimately include older rows,
-            # future partial periods, and prospective revisions not yet
-            # available at the baseline's own cutoff.
+            # future partial periods and prospective revisions outside the
+            # requested observation window.  Availability later than the
+            # model cutoff is retained as bitemporal evidence and is filtered
+            # by the operational as-of join, not by response completeness.
             continue
         periods = periods_by_series[record.series_id]
         if record.observed_period_end in periods:
@@ -889,7 +897,7 @@ def collect_live_data(
         alpha_all_existing = tuple(
             item for item in existing_records if item.source == "alpha_vantage"
         )
-        alpha_fields = tuple(
+        alpha_feature_fields = tuple(
             dict.fromkeys(
                 str(item).strip()
                 for item in alpha_cfg.get(
@@ -899,8 +907,26 @@ def collect_live_data(
                 if str(item).strip()
             )
         )
-        if not alpha_fields:
+        if not alpha_feature_fields:
             raise ValueError("alpha_vantage fields must be non-empty")
+        alpha_research_fields = tuple(
+            dict.fromkeys(
+                str(item).strip()
+                for item in alpha_cfg.get("research_fields", ())
+                if str(item).strip()
+            )
+        )
+        unsupported_research_fields = set(alpha_research_fields).difference(
+            {"dividend_amount"}
+        )
+        if unsupported_research_fields:
+            raise ValueError(
+                "alpha_vantage research_fields are unsupported: "
+                f"{sorted(unsupported_research_fields)}"
+            )
+        alpha_fields = tuple(
+            dict.fromkeys((*alpha_feature_fields, *alpha_research_fields))
+        )
         expected_alpha_series = {
             f"{symbol}.{field}"
             for symbol in alpha_symbols
@@ -1024,7 +1050,6 @@ def collect_live_data(
             alpha_client_config = AlphaVantageConfig.from_env(
                 base_url=str(alpha_cfg["base_url"]),
                 timeout_seconds=alpha_timeout,
-                market_available_time_et=time(16, 0),
                 request_spacing_seconds=0.8,
             )
             alpha_budget: DailyRequestBudget | None = None
@@ -1218,6 +1243,8 @@ def collect_live_data(
                     "symbols": list(alpha_symbols),
                     "requested_symbols": list(alpha_requested_symbols),
                     "fields": list(alpha_fields),
+                    "feature_fields": list(alpha_feature_fields),
+                    "research_fields": list(alpha_research_fields),
                     "history_start_by_symbol": {
                         symbol: start.isoformat()
                         for symbol, start in alpha_history_start_by_symbol.items()
@@ -1257,7 +1284,12 @@ def collect_live_data(
                 name="Alpha Vantage ETF weekly adjusted",
                 result=alpha_result,
                 records=tuple(alpha_effective_records),
-                as_of=model_cutoff,
+                # Provider coverage and model eligibility are distinct.  A
+                # weekly bar finalized at 16:15 or first observed later still
+                # proves that Alpha reached the requested market week; the
+                # downstream reconstructed/operational joins decide whether
+                # that row may enter a particular forecast.
+                as_of=current,
                 frequency="weekly",
                 license_class="private_noncommercial",
             )

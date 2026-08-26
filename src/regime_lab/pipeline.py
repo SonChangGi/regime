@@ -823,7 +823,17 @@ def build_dashboard_result(
     )
     latest_date = pd.Timestamp(features.index[-1])
     latest_base_probabilities: dict[str, pd.Series] = {}
-    for base_name in ("markov", "xgboost"):
+    structural_comparison_models = {
+        "xgb_hazard_destination",
+        "causal_dynamic_ensemble",
+        "causal_multiscale_ensemble",
+    }
+    latest_base_model_names = tuple(
+        name
+        for name in V5_FORECAST_COMPARISON_MODELS
+        if name not in structural_comparison_models
+    )
+    for base_name in latest_base_model_names:
         latest_base_probabilities[base_name] = forecast_next_regime(
             features,
             states,
@@ -982,6 +992,37 @@ def build_dashboard_result(
     structural_forecasts["p_change"] = float(binary_latest["p_change"])
     for expert in ("markov", "xgboost", "xgb_hazard_destination"):
         structural_forecasts[f"weight_{expert}"] = latest_weight_map[expert]
+    existing_structural_models = set(
+        structural_forecasts["model"].astype(str).tolist()
+    )
+    base_forecast_rows: list[dict[str, Any]] = []
+    for name, probability in latest_base_probabilities.items():
+        if name in existing_structural_models:
+            continue
+        base_forecast_rows.append(
+            {
+                "origin_date": latest_date,
+                "target_date": latest_date + timedelta(days=7),
+                "model": name,
+                "current_state": str(states.loc[latest_date]),
+                **{
+                    f"p_{state}": float(probability[state])
+                    for state in STATE_ORDER
+                },
+                "predicted": str(probability.astype(float).idxmax()),
+                "fallback": bool(probability.attrs.get("fallback", False)),
+                "fallback_reason": str(
+                    probability.attrs.get("fallback_reason", "")
+                ),
+                "source_role": "weekly_core_model_comparison",
+            }
+        )
+    if base_forecast_rows:
+        structural_forecasts = pd.concat(
+            [structural_forecasts, pd.DataFrame(base_forecast_rows)],
+            ignore_index=True,
+            sort=False,
+        )
     binary_forecast_row = {
         "origin_date": latest_date,
         "target_date": latest_date + timedelta(days=7),
@@ -1348,6 +1389,14 @@ def build_dashboard_result(
             baseline_v4=FROZEN_V5_BASELINE_V4,
             structural_preregistration_sha256=(
                 STRUCTURAL_V5_PREREGISTRATION_SHA256
+            ),
+            label_fit_start=canonical.index[0],
+            label_fit_end=labeler.train_end_,
+            label_fit_weeks=label_fit_weeks,
+            evidence_track=(
+                "operational_oos"
+                if mode == "live" and collection is not None
+                else "reconstructed_oos"
             ),
             fx_result=fx_result,
             latest_fx_context=latest_fx_context,

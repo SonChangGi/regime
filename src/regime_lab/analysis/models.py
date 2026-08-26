@@ -25,6 +25,8 @@ from sklearn.preprocessing import SplineTransformer, StandardScaler
 from sklearn.svm import LinearSVC
 from sklearn.utils.validation import check_X_y, check_array, check_is_fitted
 
+from regime_lab.operating_contract import load_operating_contract
+
 from .labels import STATE_ORDER
 
 
@@ -978,7 +980,7 @@ def _factory_for(name: str) -> ModelFactory:
     return factory
 
 
-_MODEL_SPECS: tuple[ModelSpec, ...] = (
+_MODEL_SPECS_RAW: tuple[ModelSpec, ...] = (
     ModelSpec("majority", "baseline", 0, ("quick", "standard", "full")),
     ModelSpec("persistence", "baseline", 1, ("quick", "standard", "full")),
     ModelSpec("markov", "baseline", 2, ("quick", "standard", "full")),
@@ -1070,6 +1072,26 @@ _MODEL_SPECS: tuple[ModelSpec, ...] = (
         # Fitting is handled by the validation layer because the estimator
         # receives the known current state and an origin-specific causal
         # duration rather than an ordinary shared feature matrix.
+        factory=None,
+    ),
+    ModelSpec(
+        "direct_jump_tvtp_hurdle",
+        "learned",
+        17,
+        ("quick", "standard", "full"),
+        default=False,
+        requires_current_state=True,
+        feature_design=(
+            "duration_aware_stay_switch_hurdle_with_unconstrained_destination"
+        ),
+        search_space=MappingProxyType(
+            {
+                "hazard_C": (0.05,),
+                "destination_C": (0.05,),
+                "smoothing": (1.0,),
+                "adjacent_only": (False,),
+            }
+        ),
         factory=None,
     ),
     ModelSpec(
@@ -1225,17 +1247,41 @@ _MODEL_SPECS: tuple[ModelSpec, ...] = (
     ),
 )
 
+_OPERATING_CONTRACT = load_operating_contract()
+_OPERATING_COMPLEXITY = {
+    str(name): int(rank)
+    for name, rank in _OPERATING_CONTRACT.selection_policy[
+        "complexity_registry"
+    ].items()
+}
+_OPERATING_WEEKLY_BASE_MODELS = frozenset(
+    _OPERATING_CONTRACT.weekly_base_models
+)
+_MODEL_SPECS: tuple[ModelSpec, ...] = tuple(
+    replace(
+        spec,
+        complexity_rank=_OPERATING_COMPLEXITY.get(
+            spec.name, spec.complexity_rank
+        ),
+        default=spec.name in _OPERATING_WEEKLY_BASE_MODELS,
+    )
+    for spec in _MODEL_SPECS_RAW
+)
+
 MODEL_REGISTRY: Mapping[str, ModelSpec] = MappingProxyType(
     {spec.name: spec for spec in _MODEL_SPECS}
 )
-MODEL_NAMES: tuple[str, ...] = tuple(
-    spec.name for spec in _MODEL_SPECS if spec.default
-)
+MODEL_NAMES: tuple[str, ...] = _OPERATING_CONTRACT.weekly_base_models
+if any(name not in MODEL_REGISTRY for name in MODEL_NAMES):
+    raise RuntimeError("operating contract references an unknown weekly model")
 DIRECT_NEXT_STATE_MODEL_NAMES: tuple[str, ...] = (
     "recency_weighted_xgboost_208w",
     "recency_weighted_ridge_logistic_208w",
     "pca_ridge_logistic",
     "discounted_markov_208w",
+)
+SHADOW_NEXT_STATE_MODEL_NAMES: tuple[str, ...] = (
+    "direct_jump_tvtp_hurdle",
 )
 
 
@@ -1405,6 +1451,7 @@ __all__ = [
     "DIRECT_NEXT_STATE_MODEL_NAMES",
     "MODEL_NAMES",
     "MODEL_REGISTRY",
+    "SHADOW_NEXT_STATE_MODEL_NAMES",
     "AdaptivePCA",
     "BenchmarkProfile",
     "DiscountedMarkovClassifier",

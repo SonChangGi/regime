@@ -1,0 +1,34 @@
+{
+  "schema_version": "regime-generation-manifest/2",
+  "generation_id": "20260826T184946.198911Z",
+  "payload": {
+    "path": "publication/live/regime-results.json",
+    "payload_contract_sha256": "ecd89093ed249f24cd0ae855530b11450b5a5abee72d902b749587cdacec4fd7"
+  },
+  "comparison_sidecar": {
+    "path": "publication/live/v5-vs-v4-comparison.json",
+    "comparison_contract_sha256": "89774021653c88fb2a201e9645ec4ff76af649bfb830a59bb65e52f50517dae4"
+  },
+  "selection_family_sidecar": {
+    "path": "publication/live/selection-family-audit.json",
+    "selection_family_contract_sha256": "1758b0da29874ad6fcf40f2b02b91e853883c6525a85662f39329672555b18d4"
+  },
+  "artifact_inventory": {
+    "sha256": "a152a3a54b722002dbda5039196264149e13521883058b6f101e4f546a721168",
+    "file_count": 39
+  },
+  "input_snapshot": {
+    "data_as_of": "2026-08-21T20:00:00+00:00",
+    "sha256": "52373b551fcdc194af233d6c29a7da2930efb9b8077cae468254b3ab70582028"
+  },
+  "label_spec": {
+    "path": "config/label-spec.json",
+    "registry_sha256": "0e83f00cf9c5a9b776d5d40130167ec5531e20d20245a8027c095c1357470d7a",
+    "spec_id": "v1_spy_hysteresis",
+    "version": "market-causal-3state-v1",
+    "spec_sha256": "bec1600aea104985405d0d5c2b3706088b885ef7aa788c57c9575aa884c5f3a7"
+  },
+  "execution_spec": {
+    "sha256": "28d9695f0d0a04d660803165e89012af0d15225d26291f7f5944f0d6e088f011"
+  }
+}

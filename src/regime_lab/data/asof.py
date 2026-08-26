@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from bisect import bisect_right
 from dataclasses import asdict, dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 from heapq import heappop, heappush
-from typing import Iterable, Mapping, Sequence
+from typing import Iterable, Literal, Mapping, Sequence
+from zoneinfo import ZoneInfo
 
 from .contracts import HealthStatus, Observation, combine_health, ensure_utc
 
@@ -19,9 +20,13 @@ class AsOfValue:
     value: float | None
     observed_period_end: date | None
     released_at: datetime | None
+    source_released_at: datetime | None
     available_at: datetime | None
+    provider_first_seen_at: datetime | None
+    system_retrieved_at: datetime | None
     vintage_date: date | None
     revision_seq: int | None
+    raw_sha256: str | None
     age_days: int | None
     release_lag_days: int | None
     is_filled: bool
@@ -35,6 +40,19 @@ class AsOfValue:
             if available > self.cutoff:
                 raise ValueError("as-of value leaks a future available_at")
             object.__setattr__(self, "available_at", available)
+        for field_name in (
+            "released_at",
+            "source_released_at",
+            "provider_first_seen_at",
+            "system_retrieved_at",
+        ):
+            value = getattr(self, field_name)
+            if value is not None:
+                object.__setattr__(
+                    self,
+                    field_name,
+                    ensure_utc(value, field_name=field_name),
+                )
 
 
 def weekly_asof_join(
@@ -44,17 +62,55 @@ def weekly_asof_join(
     required_series: Sequence[tuple[str, str]] | None = None,
     max_age_by_series: Mapping[tuple[str, str] | str, timedelta] | None = None,
     include_missing_values: bool = False,
+    availability_basis: Literal[
+        "source", "operational", "reconstructed_market"
+    ] = "source",
 ) -> tuple[AsOfValue, ...]:
     """Select the latest eligible vintage for every series and weekly cutoff.
 
-    Selection order is latest observation period, then latest ``available_at``,
-    then revision sequence.  The eligibility predicate is always
-    ``available_at <= cutoff`` and is applied before any ordering.
+    Selection order is latest observation period, then latest eligibility
+    timestamp, then revision sequence.  ``source`` preserves the legacy
+    ``available_at <= cutoff`` research contract.  ``operational`` instead uses
+    ``max(source_released_at, provider_first_seen_at) <= cutoff`` so a value
+    cannot be replayed before the provider was actually observed.
+    ``reconstructed_market`` is the explicitly retrospective research basis:
+    Alpha Vantage weekly bars are aligned to their market-period end while all
+    other sources retain their source availability clock.  It exists to avoid
+    silently shifting the frozen market label by one week when the provider's
+    weekly endpoint is first finalized or observed after the Friday close.
     Tombstones participate in per-period revision ordering regardless.  The
     default then selects the latest non-null period (preserving forward-fill
     across holidays); ``include_missing_values`` instead exposes the newest
     period's tombstone metadata for audit.
     """
+
+    if availability_basis not in {
+        "source",
+        "operational",
+        "reconstructed_market",
+    }:
+        raise ValueError(
+            "availability_basis must be source, operational, or reconstructed_market"
+        )
+
+    eastern = ZoneInfo("America/New_York")
+
+    def reconstructed_market_time(record: Observation) -> datetime:
+        local = datetime.combine(
+            record.observed_period_end,
+            time(16, 0),
+            tzinfo=eastern,
+        )
+        return local.astimezone(timezone.utc)
+
+    def eligibility_time(record: Observation) -> datetime:
+        if availability_basis == "source":
+            return record.available_at
+        if availability_basis == "operational":
+            return record.operating_available_at
+        if record.source == "alpha_vantage":
+            return reconstructed_market_time(record)
+        return record.available_at
 
     normalized_cutoffs = tuple(sorted({ensure_utc(item, field_name="cutoff") for item in cutoffs}))
     records = tuple(observations)
@@ -67,7 +123,7 @@ def weekly_asof_join(
     for group in grouped.values():
         group.sort(
             key=lambda item: (
-                item.available_at,
+                eligibility_time(item),
                 item.observed_period_end,
                 item.revision_seq,
                 item.retrieved_at,
@@ -77,7 +133,7 @@ def weekly_asof_join(
     keys = tuple(dict.fromkeys(required_series or tuple(sorted(grouped))))
     max_ages = max_age_by_series or {}
     available_times = {
-        key: tuple(record.available_at for record in grouped.get(key, ()))
+        key: tuple(eligibility_time(record) for record in grouped.get(key, ()))
         for key in keys
     }
     positions = {key: 0 for key in keys}
@@ -97,7 +153,7 @@ def weekly_asof_join(
 
     def revision_key(record: Observation) -> tuple[datetime, date, int, datetime, str]:
         return (
-            record.available_at,
+            eligibility_time(record),
             record.vintage_date,
             record.revision_seq,
             record.retrieved_at,
@@ -136,7 +192,7 @@ def weekly_asof_join(
                         pending[key],
                         (
                             record.observed_period_end.toordinal(),
-                            record.available_at,
+                            eligibility_time(record),
                             serial,
                             record,
                         ),
@@ -169,9 +225,13 @@ def weekly_asof_join(
                         value=None,
                         observed_period_end=None,
                         released_at=None,
+                        source_released_at=None,
                         available_at=None,
+                        provider_first_seen_at=None,
+                        system_retrieved_at=None,
                         vintage_date=None,
                         revision_seq=None,
+                        raw_sha256=None,
                         age_days=None,
                         release_lag_days=None,
                         is_filled=False,
@@ -180,14 +240,15 @@ def weekly_asof_join(
                 )
                 continue
             age_days = (cutoff.date() - selected.observed_period_end).days
+            selected_available_at = eligibility_time(selected)
             release_lag_days = (
-                selected.available_at.date() - selected.observed_period_end
+                selected_available_at.date() - selected.observed_period_end
             ).days
             status = selected.quality_status
             if selected.value is None:
                 status = combine_health((status, HealthStatus.UNAVAILABLE))
             max_age = max_ages.get((source, series_id), max_ages.get(series_id))
-            if max_age is not None and cutoff - selected.available_at > max_age:
+            if max_age is not None and cutoff - selected_available_at > max_age:
                 status = combine_health((status, HealthStatus.STALE))
             output.append(
                 AsOfValue(
@@ -197,9 +258,13 @@ def weekly_asof_join(
                     value=selected.value,
                     observed_period_end=selected.observed_period_end,
                     released_at=selected.released_at,
-                    available_at=selected.available_at,
+                    source_released_at=selected.source_released_at,
+                    available_at=selected_available_at,
+                    provider_first_seen_at=selected.provider_first_seen_at,
+                    system_retrieved_at=selected.system_retrieved_at,
                     vintage_date=selected.vintage_date,
                     revision_seq=selected.revision_seq,
+                    raw_sha256=selected.raw_sha256,
                     age_days=age_days,
                     release_lag_days=release_lag_days,
                     is_filled=selected.observed_period_end < cutoff.date(),

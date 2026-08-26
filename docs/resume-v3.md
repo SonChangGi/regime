@@ -27,7 +27,7 @@ dashboard/artifact output.
   --alfred-rights-confirmed
 
 .venv/bin/regime-lab validate web/data/regime-results.json
-.venv/bin/python scripts/audit_outputs.py --mode live
+# Legacy --mode audit entrypoint was removed; current audits require --target.
 .venv/bin/pytest -q
 node --check web/app.js
 ```

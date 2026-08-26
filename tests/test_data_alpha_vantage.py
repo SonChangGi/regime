@@ -77,7 +77,7 @@ def test_alpha_budget_counts_actual_calls_and_fails_closed_at_cap() -> None:
     result = client.fetch_weekly_adjusted(
         ["SPY", "QQQ"],
         cutoff=NOW,
-        fields=("adjusted_close", "volume"),
+        fields=("adjusted_close", "volume", "dividend_amount"),
     )
 
     assert result.health is HealthStatus.QUOTA_EXHAUSTED
@@ -87,10 +87,20 @@ def test_alpha_budget_counts_actual_calls_and_fails_closed_at_cap() -> None:
     assert {record.series_id for record in result.records} == {
         "SPY.adjusted_close",
         "SPY.volume",
+        "SPY.dividend_amount",
     }
     assert all(
         record.metadata["pit_revision_policy"] == "prospective_on_later_diff"
         for record in result.records
+    )
+    by_series = {record.series_id: record for record in result.records}
+    assert (
+        by_series["SPY.dividend_amount"].metadata["research_role"]
+        == "pit_corporate_action_input"
+    )
+    assert (
+        by_series["SPY.adjusted_close"].metadata["research_role"]
+        == "operating_feature_input"
     )
     assert "secret" not in repr(client.config)
 

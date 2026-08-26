@@ -101,20 +101,21 @@ MODEL_PARAMETERS = [
 ]
 
 
-def test_registry_keeps_existing_eight_and_adds_versioned_models() -> None:
+def test_registry_uses_operating_weekly_roster_and_preserves_frozen_models() -> None:
     assert MODEL_NAMES == (
         "majority",
         "persistence",
         "markov",
-        "elastic_net_logistic",
-        "calibrated_linear_svm",
-        "random_forest",
-        "extra_trees",
-        "hist_gradient_boosting",
-        *NEW_MODELS,
+        "xgboost",
+        "pca_ridge_logistic",
+        "recency_weighted_xgboost_208w",
+        "recency_weighted_ridge_logistic_208w",
+        "discounted_markov_208w",
     )
     assert set(MODEL_NAMES) < set(MODEL_REGISTRY)
     assert "gaussian_hmm" in MODEL_REGISTRY
+    assert "direct_jump_tvtp_hurdle" in MODEL_REGISTRY
+    assert MODEL_REGISTRY["random_forest"].default is False
     assert MODEL_REGISTRY["transition_logistic"].requires_current_state is True
     assert MODEL_REGISTRY["transition_logistic"].feature_design == (
         "pooled_current_state_dummies_shared_feature_slopes"
@@ -135,18 +136,14 @@ def test_model_manifest_is_json_stable_and_hashes_exact_serialization() -> None:
     assert parsed == model_manifest(_small_profile(), random_state=31)
     assert parsed["profile"] == "quick"
     assert [row["name"] for row in parsed["models"]] == list(MODEL_NAMES)
-    transition = next(
-        row for row in parsed["models"] if row["name"] == "transition_logistic"
+    pca_ridge = next(
+        row for row in parsed["models"] if row["name"] == "pca_ridge_logistic"
     )
-    assert transition["feature_design"] == (
-        "pooled_current_state_dummies_shared_feature_slopes"
+    assert pca_ridge["feature_design"] == (
+        "fold_local_imputer_scaler_adaptive_pca_ridge_multinomial"
     )
-    hurdle = next(
-        row for row in parsed["models"] if row["name"] == "duration_tvtp_hurdle"
-    )
-    assert hurdle["task"] == "multiclass_next_state"
-    assert hurdle["horizons_weeks"] == [1]
-    assert hurdle["search_space"]["hazard_C"] == [0.05, 0.1]
+    assert pca_ridge["task"] == "multiclass_next_state"
+    assert pca_ridge["horizons_weeks"] == [1]
     assert parsed["transition_research"]["horizons_weeks"] == [1, 4, 13]
     assert model_manifest_sha256(_small_profile(), random_state=31) == hashlib.sha256(
         serialized.encode("utf-8")
@@ -154,7 +151,7 @@ def test_model_manifest_is_json_stable_and_hashes_exact_serialization() -> None:
     assert serialize_model_manifest(_small_profile(), random_state=31) == serialized
 
 
-def test_optional_direct_model_manifest_has_fixed_search_spaces() -> None:
+def test_operating_direct_model_manifest_has_fixed_search_spaces() -> None:
     serialized = serialize_model_manifest(
         _small_profile(),
         random_state=31,
@@ -164,7 +161,7 @@ def test_optional_direct_model_manifest_has_fixed_search_spaces() -> None:
     indexed = {row["name"]: row for row in parsed["models"]}
 
     assert tuple(indexed) == DIRECT_NEXT_STATE_MODEL_NAMES
-    assert all(row["default"] is False for row in indexed.values())
+    assert all(row["default"] is True for row in indexed.values())
     assert indexed["recency_weighted_xgboost_208w"]["search_space"] == {
         "half_life_weeks": [208.0],
         "sample_weight_normalization": ["mean_one"],

@@ -45,6 +45,7 @@ jobs:
           python scripts/package_public_demo.py \
             --payload publication/live/regime-results.json \
             --comparison publication/live/v5-vs-v4-comparison.json \
+            --manifest publication/live/generation-manifest.json \
             --publication-mode live-derived \
             --acknowledge-personal-noncommercial-publication \
             --output dist/public-dashboard

@@ -609,6 +609,90 @@ def test_public_readback_requires_exact_payload_manifest_and_consumer(
         )
 
 
+def test_public_readback_expects_packaged_content_hash_index(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    web = settings.root / "web"
+    web.mkdir()
+    styles = b"body { color: black; }\n"
+    app = b"console.log('regime');\n"
+    source_index = (
+        b'<title>US Market Regime Lab</title>'
+        b'<link rel="stylesheet" href="./styles.css?v=manual">'
+        b'<script src="./app.js?v=manual"></script>'
+    )
+    (web / "index.html").write_bytes(source_index)
+    (web / "styles.css").write_bytes(styles)
+    (web / "app.js").write_bytes(app)
+    packaged_index = (
+        '<title>US Market Regime Lab</title>'
+        '<link rel="stylesheet" '
+        f'href="./styles.css?v={hashlib.sha256(styles).hexdigest()}">'
+        f'<script src="./app.js?v={hashlib.sha256(app).hexdigest()}"></script>'
+    ).encode()
+    public_assets = {
+        "index.html": packaged_index,
+        "styles.css": styles,
+        "app.js": app,
+    }
+    payload_sha256 = hashlib.sha256(LIVE_PAYLOAD).hexdigest()
+    manifest = json.dumps(
+        {
+            "payload_data_as_of": "2026-08-07T20:00:00+00:00",
+            "files": {
+                automation.PUBLIC_PAYLOAD_PATH: {
+                    "sha256": payload_sha256,
+                    "bytes": len(LIVE_PAYLOAD),
+                },
+                **{
+                    path: {
+                        "sha256": hashlib.sha256(raw).hexdigest(),
+                        "bytes": len(raw),
+                    }
+                    for path, raw in public_assets.items()
+                },
+            },
+        }
+    ).encode()
+
+    def fetch(url: str) -> bytes:
+        if url.endswith(automation.PUBLIC_PAYLOAD_PATH):
+            return LIVE_PAYLOAD
+        if url.endswith(automation.PUBLIC_MANIFEST_PATH):
+            return manifest
+        for path, raw in public_assets.items():
+            if url.endswith(path):
+                return raw
+        raise AssertionError(url)
+
+    assert source_index != packaged_index
+    assert automation._expected_static_assets(settings) == public_assets
+    automation.verify_public_readback(
+        settings,
+        expected_payload=LIVE_PAYLOAD,
+        fetch=fetch,
+    )
+
+
+def test_expected_static_assets_reject_one_sided_application_shell(
+    tmp_path: Path,
+) -> None:
+    settings = _settings(tmp_path)
+    web = settings.root / "web"
+    web.mkdir()
+    (web / "index.html").write_bytes(
+        b'<title>US Market Regime Lab</title>'
+        b'<link rel="stylesheet" href="./styles.css?v=manual">'
+    )
+    (web / "styles.css").write_bytes(b"body {}\n")
+    (web / "app.js").write_bytes(b"console.log('regime');\n")
+
+    with pytest.raises(
+        automation.AutomationError,
+        match="exactly one styles.css and one app.js reference",
+    ):
+        automation._expected_static_assets(settings)
+
+
 def test_public_readback_rejects_invalid_v5_pair_despite_matching_manifest(
     tmp_path: Path,
 ) -> None:
@@ -675,6 +759,142 @@ def test_public_readback_rejects_missing_v5_comparison_before_fetch(
             expected_payload=payload,
             fetch=lambda _url: pytest.fail("public fetch must not start"),
         )
+
+
+def test_manifest_v2_requires_and_binds_selection_family_bytes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    generation_id = "20260826T000000.000000Z"
+    payload = {"meta": {"generation_id": generation_id}}
+    comparison = {
+        "inputs": {
+            "v5": {
+                "regime_results": {
+                    "path": "regime-results.json",
+                    "sha256": "0" * 64,
+                }
+            }
+        }
+    }
+    selection = {"generation_id": generation_id, "sha256": "a" * 64}
+    manifest = {
+        "schema_version": automation.GENERATION_MANIFEST_SCHEMA_VERSION,
+        "generation_id": generation_id,
+        "payload": {
+            "path": automation.PUBLICATION_PATH,
+            "payload_contract_sha256": (
+                automation.canonical_json_sha256_v1_without_generation_binding(
+                    payload
+                )
+            ),
+        },
+        "comparison_sidecar": {
+            "path": automation.PUBLICATION_COMPARISON_PATH,
+            "comparison_contract_sha256": (
+                automation.canonical_comparison_contract_sha256_v1(comparison)
+            ),
+        },
+        "selection_family_sidecar": {
+            "path": automation.PUBLICATION_SELECTION_FAMILY_PATH,
+            "selection_family_contract_sha256": (
+                automation.canonical_json_sha256_v1(selection)
+            ),
+        },
+    }
+    payload["meta"]["generation_manifest_sha256"] = (
+        automation.canonical_json_sha256_v1(manifest)
+    )
+    raw = lambda value: (json.dumps(value) + "\n").encode()
+    monkeypatch.setattr(
+        automation,
+        "validate_selection_family_audit",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        automation,
+        "validate_selection_family_payload_binding",
+        lambda *_args, **_kwargs: None,
+    )
+
+    with pytest.raises(
+        automation.AutomationError,
+        match="requires selection-family bytes",
+    ):
+        automation._validate_generation_manifest_bytes(
+            raw(payload), raw(comparison), raw(manifest), label="candidate"
+        )
+
+    automation._validate_generation_manifest_bytes(
+        raw(payload),
+        raw(comparison),
+        raw(manifest),
+        label="candidate",
+        selection_family_raw=raw(selection),
+    )
+    manifest["selection_family_sidecar"]["path"] = "build/stale.json"
+    payload["meta"]["generation_manifest_sha256"] = (
+        automation.canonical_json_sha256_v1(manifest)
+    )
+    with pytest.raises(automation.AutomationError, match="path is invalid"):
+        automation._validate_generation_manifest_bytes(
+            raw(payload),
+            raw(comparison),
+            raw(manifest),
+            label="candidate",
+            selection_family_raw=raw(selection),
+        )
+
+
+def test_cached_v5_candidate_schema4_binds_selection_family(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = replace(_settings(tmp_path), contract="v5")
+    payload = b'{"meta":{"generation_id":"generation-v2"}}\n'
+    comparison = b'{"comparison":true}\n'
+    manifest = b'{"schema_version":"regime-generation-manifest/2"}\n'
+    selection = b'{"selection":true}\n'
+    monkeypatch.setattr(
+        automation,
+        "validate_automation_candidate",
+        lambda *_args, **_kwargs: {
+            "meta": {"generation_id": "generation-v2"}
+        },
+    )
+    monkeypatch.setattr(automation, "_validate_v5_comparison_bytes", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        automation,
+        "_validate_generation_manifest_bytes",
+        lambda *_a, **_k: None,
+    )
+    monkeypatch.setattr(automation, "_verify_candidate_package", lambda *_a, **_k: None)
+
+    automation._cache_candidate(
+        settings,
+        payload,
+        comparison,
+        manifest,
+        selection,
+        target=LIVE_TARGET,
+        context=CANDIDATE_CONTEXT,
+    )
+
+    metadata = json.loads(settings.candidate_metadata_path.read_text())
+    assert metadata["schema_version"] == 4
+    assert metadata["selection_family_sha256"] == hashlib.sha256(
+        selection
+    ).hexdigest()
+    assert automation._load_cached_candidate(
+        settings,
+        target=LIVE_TARGET,
+        context=CANDIDATE_CONTEXT,
+    ) == payload
+    settings.candidate_selection_family_path.write_bytes(selection + b" ")
+    assert automation._load_cached_candidate(
+        settings,
+        target=LIVE_TARGET,
+        context=CANDIDATE_CONTEXT,
+    ) is None
 
 
 def test_git_preflight_rejects_invalid_remote_v5_comparison(
@@ -751,6 +971,8 @@ def test_installed_preflight_validates_v5_pair_outside_checkout(
 ) -> None:
     payload = ROOT / automation.PUBLICATION_PATH
     comparison = ROOT / automation.PUBLICATION_COMPARISON_PATH
+    generation_manifest = ROOT / automation.PUBLICATION_GENERATION_MANIFEST_PATH
+    selection_family = ROOT / automation.PUBLICATION_SELECTION_FAMILY_PATH
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     fake_git = fake_bin / "git"
@@ -776,6 +998,10 @@ elif args == ["show", "origin/main:{automation.PUBLICATION_PATH}"]:
     sys.stdout.buffer.write(Path({str(payload)!r}).read_bytes())
 elif args == ["show", "origin/main:{automation.PUBLICATION_COMPARISON_PATH}"]:
     sys.stdout.buffer.write(Path({str(comparison)!r}).read_bytes())
+elif args == ["show", "origin/main:{automation.PUBLICATION_GENERATION_MANIFEST_PATH}"]:
+    sys.stdout.buffer.write(Path({str(generation_manifest)!r}).read_bytes())
+elif args == ["show", "origin/main:{automation.PUBLICATION_SELECTION_FAMILY_PATH}"]:
+    sys.stdout.buffer.write(Path({str(selection_family)!r}).read_bytes())
 else:
     raise SystemExit(f"unexpected fake git command: {{args!r}}")
 """,
@@ -1027,7 +1253,8 @@ def test_already_current_run_never_builds_or_publishes(
     monkeypatch.setattr(
         automation,
         "verify_public_readback",
-        lambda _settings, *, expected_payload, expected_comparison=None: None,
+        lambda _settings, *, expected_payload, expected_comparison=None,
+        expected_generation_manifest=None: None,
     )
     monkeypatch.setattr(
         automation,
@@ -1049,6 +1276,90 @@ def test_already_current_run_never_builds_or_publishes(
     assert result["stage"] == "already_current"
     persisted = json.loads(settings.status_path.read_text(encoding="utf-8"))
     assert persisted["commit_sha"] == "a" * 40
+
+
+def test_same_cutoff_legacy_v5_generation_is_rebuilt_and_published(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = replace(_settings(tmp_path), contract="v5")
+    automation._write_local_authorization(
+        settings,
+        alfred_rights_confirmed=True,
+        personal_noncommercial_publication_acknowledged=True,
+        now=LIVE_TARGET,
+    )
+    legacy_remote = automation.RemotePublication(
+        head_sha="a" * 40,
+        payload_bytes=b'{"legacy":true}\n',
+        data_as_of=LIVE_TARGET,
+        comparison_bytes=b'{"comparison":true}\n',
+        generation_manifest_bytes=(
+            b'{"schema_version":"regime-generation-manifest/1"}\n'
+        ),
+        selection_family_bytes=None,
+    )
+    calls = {"build": 0, "publish": 0}
+    monkeypatch.setattr(automation, "_ensure_ac_power", lambda _settings: None)
+    monkeypatch.setattr(automation, "_git_preflight", lambda _settings: legacy_remote)
+    monkeypatch.setattr(
+        automation,
+        "_candidate_context",
+        lambda _settings: CANDIDATE_CONTEXT,
+    )
+    monkeypatch.setattr(
+        automation,
+        "_load_cached_candidate",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(automation, "_alpha_quota_preflight", lambda *_a, **_k: None)
+
+    candidate = b'{"candidate":true}\n'
+    comparison = b'{"comparison":"v2"}\n'
+    manifest = b'{"schema_version":"regime-generation-manifest/2"}\n'
+    selection = b'{"schema_version":"selection-family-audit/v2"}\n'
+
+    def build(*_args, **_kwargs) -> bytes:
+        calls["build"] += 1
+        for path, raw in (
+            (settings.candidate_comparison_path, comparison),
+            (settings.candidate_generation_manifest_path, manifest),
+            (settings.candidate_selection_family_path, selection),
+        ):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(raw)
+        return candidate
+
+    def publish(*_args, **kwargs) -> str:
+        calls["publish"] += 1
+        assert kwargs["candidate"] == candidate
+        assert kwargs["comparison"] == comparison
+        assert kwargs["generation_manifest"] == manifest
+        assert kwargs["selection_family"] == selection
+        return "c" * 40
+
+    monkeypatch.setattr(automation, "_build_candidate", build)
+    monkeypatch.setattr(automation, "_publish_candidate", publish)
+    monkeypatch.setattr(
+        automation,
+        "_wait_for_public_readback",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        automation,
+        "_notify_status_best_effort",
+        lambda *_args, **_kwargs: None,
+    )
+
+    result = automation.run_weekly_release(
+        settings,
+        now=datetime.fromisoformat("2026-08-10T00:00:00+00:00"),
+    )
+
+    assert calls == {"build": 1, "publish": 1}
+    assert result["status"] == "succeeded"
+    assert result["stage"] == "public_readback_verified"
+    assert result["commit_sha"] == "c" * 40
 
 
 def test_push_failure_retry_reuses_cached_candidate_without_provider_or_build(

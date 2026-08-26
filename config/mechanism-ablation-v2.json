@@ -1,0 +1,68 @@
+{
+  "schema_version": "regime-mechanism-ablation/2",
+  "track_order": [
+    "state_only",
+    "label_mechanics",
+    "market_ex_label",
+    "macro_rates_credit",
+    "full"
+  ],
+  "feature_roles": [
+    "label_mechanics",
+    "market_ex_label_components",
+    "macro_rates_credit",
+    "full_only_control"
+  ],
+  "role_assignment": "caller_supplied_exact_once_manifest",
+  "tracks": {
+    "state_only": {
+      "feature_roles": [],
+      "benchmark_models": ["persistence", "markov"],
+      "reported_models": ["persistence", "markov"],
+      "comparison_family": "state_history_baselines",
+      "interpretation": "Current state and causal transition history only; no measured covariates."
+    },
+    "label_mechanics": {
+      "feature_roles": ["label_mechanics"],
+      "benchmark_models": ["majority", "xgboost"],
+      "reported_models": ["xgboost"],
+      "comparison_family": "fixed_xgboost_feature_tracks",
+      "interpretation": "Label score, train-fitted boundary distance, and causal state duration only."
+    },
+    "market_ex_label": {
+      "feature_roles": ["market_ex_label_components"],
+      "benchmark_models": ["majority", "xgboost"],
+      "reported_models": ["xgboost"],
+      "comparison_family": "fixed_xgboost_feature_tracks",
+      "interpretation": "Breadth and cross-asset market evidence with all direct label-mechanics columns excluded."
+    },
+    "macro_rates_credit": {
+      "feature_roles": ["macro_rates_credit"],
+      "benchmark_models": ["majority", "xgboost"],
+      "reported_models": ["xgboost"],
+      "comparison_family": "fixed_xgboost_feature_tracks",
+      "interpretation": "Macro, rates, liquidity, and credit evidence only."
+    },
+    "full": {
+      "feature_roles": [
+        "label_mechanics",
+        "market_ex_label_components",
+        "macro_rates_credit",
+        "full_only_control"
+      ],
+      "benchmark_models": ["majority", "xgboost"],
+      "reported_models": ["xgboost"],
+      "comparison_family": "fixed_xgboost_feature_tracks",
+      "interpretation": "Every declared model feature exactly once."
+    }
+  },
+  "evaluation": {
+    "forecast_horizon_weeks": 1,
+    "gap_weeks": 1,
+    "origin_contract": "exact_origin_target_actual_and_split_match",
+    "primary_metric": "multiclass_log_loss",
+    "secondary_metric": "multiclass_brier",
+    "ranking": "selection_rows_only_within_comparison_family",
+    "cross_family_ranking": false
+  }
+}

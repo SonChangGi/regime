@@ -1,0 +1,33 @@
+{
+  "schema_version": "regime-pit-replay-fixture/1",
+  "observed_period_end": "2026-08-14",
+  "forecast_cutoff_at": "2026-08-14T20:00:00+00:00",
+  "source_released_at": "2026-08-14T20:15:00+00:00",
+  "provider_first_seen_at": "2026-08-20T01:33:35+00:00",
+  "system_retrieved_at": "2026-08-20T01:33:35+00:00",
+  "replays": {
+    "pre_first_seen_generation": {
+      "source_payload_sha256": "dcb38d75df5a9b250d3c9e6ef2cb3a2e3fc7a4623c3798b291351eec0469d591",
+      "generation_id": "20260820T000515.069437Z",
+      "current_state": "transition",
+      "display_membership_semantics": "legacy_current_probability",
+      "risk_on_membership": 0.4706825,
+      "transition_membership": 0.49338227,
+      "target_at": "2026-08-21T20:00:00+00:00",
+      "forecast_model": "markov",
+      "forecast_risk_on_probability": 0.12432432
+    },
+    "post_first_seen_reconstruction": {
+      "source_payload_sha256": "ef52b966adef5c5a741e9cf073ab7282e9d0069ffa39ab346fa9e19c2ea34df7",
+      "generation_id": "20260825T120621.014677Z",
+      "current_state": "risk_on",
+      "display_membership_semantics": "risk_score_anchor_membership",
+      "risk_on_membership": 0.49743635,
+      "transition_membership": 0.47150918,
+      "target_at": "2026-08-21T20:00:00+00:00",
+      "forecast_model": "markov",
+      "forecast_risk_on_probability": 0.88674699
+    }
+  },
+  "interpretation": "unfavorable_fixed_evidence_of_vintage_sensitive_pseudo_oos_not_metric_identity"
+}

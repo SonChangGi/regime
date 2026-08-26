@@ -9,22 +9,21 @@ import pytest
 
 from regime_lab.contract_v5 import (
     V5_FORECAST_COMPARISON_MODELS,
+    V5_STANDARD_CORE_MODELS,
     V5ContractError,
     _validate_publication_review,
     validate_v5_payload,
 )
 from regime_lab.frozen_v4 import FROZEN_V4_BASELINE
+from regime_lab.analysis.label_spec import load_label_spec
+from regime_lab.operating_contract import load_operating_contract
 from regime_lab.pipeline import STRUCTURAL_V5_PREREGISTRATION_SHA256
 from regime_lab.schema import validate_dashboard_payload
 from regime_lab.v5 import _execution_parameters
 
 
 def _states() -> list[dict[str, str]]:
-    return [
-        {"id": "risk_on"},
-        {"id": "transition"},
-        {"id": "risk_off"},
-    ]
+    return [dict(row) for row in load_operating_contract().state_definitions]
 
 
 def _model_forecasts(official: dict[str, object]) -> list[dict[str, object]]:
@@ -51,7 +50,10 @@ def _model_forecasts(official: dict[str, object]) -> list[dict[str, object]]:
         if model == "markov":
             row = deepcopy(official)
         else:
-            row_probabilities = probabilities[model]
+            row_probabilities = probabilities.get(
+                model,
+                {"risk_on": 0.22, "transition": 0.68, "risk_off": 0.1},
+            )
             row = {
                 "state": "transition",
                 "probabilities": row_probabilities,
@@ -182,25 +184,7 @@ def _core_artifacts() -> dict[str, dict[str, object]]:
 
 
 def _candidate_manifest() -> tuple[dict[str, object], str]:
-    names = (
-        "majority",
-        "persistence",
-        "markov",
-        "elastic_net_logistic",
-        "calibrated_linear_svm",
-        "random_forest",
-        "extra_trees",
-        "hist_gradient_boosting",
-        "ridge_logistic",
-        "transition_logistic",
-        "duration_tvtp_hurdle",
-        "shrinkage_lda",
-        "spline_logistic",
-        "xgboost",
-        "xgb_hazard_destination",
-        "causal_dynamic_ensemble",
-        "causal_multiscale_ensemble",
-    )
+    names = tuple(sorted(V5_STANDARD_CORE_MODELS))
     manifest: dict[str, object] = {
         "schema_version": "1.0.0",
         "profile": "standard",
@@ -314,6 +298,8 @@ def _unavailable_fx_ablation() -> dict[str, object]:
 
 def valid_payload() -> dict[str, object]:
     candidate_manifest, candidate_manifest_sha256 = _candidate_manifest()
+    operating = load_operating_contract()
+    label_spec = load_label_spec()
     transition_risk = {
         horizon: {
             "probability": probability,
@@ -365,7 +351,7 @@ def valid_payload() -> dict[str, object]:
     }
     payload = {
         "meta": {
-            "schema_version": "2.0.0",
+            "schema_version": "2.1.0",
             "result_version": "weekly-regime-result-v5",
             "generated_at": "2026-08-08T01:00:00+00:00",
             "data_as_of": "2026-08-07T20:00:00+00:00",
@@ -379,7 +365,10 @@ def valid_payload() -> dict[str, object]:
             "transition_probability_definition": "one-week first departure",
             "transition_risk_definition": "first departure within horizon",
             "supported_date_range": "2026-08-07–2026-08-07",
-            "current_membership_definition": "soft causal membership",
+            "current_membership_definition": (
+                "distance-to-threshold-anchor observational membership; not posterior"
+            ),
+            "publication_status": "unpublished",
             "freshness": {
                 "cadence": "weekly",
                 "maximum_age_days": 10,
@@ -389,12 +378,49 @@ def valid_payload() -> dict[str, object]:
             },
         },
         "states": _states(),
+        "label": {
+            "spec_id": label_spec.spec_id,
+            "spec_version": label_spec.version,
+            "spec_sha256": label_spec.spec_sha256,
+            "fit_period": {
+                "start": "2012-01-06",
+                "end": "2021-12-31",
+                "weeks": 520,
+            },
+            "input_scope": "SPY adjusted close only",
+            "membership_semantics": "distance_to_anchor_not_posterior",
+        },
+        "forecast": {
+            "status": "active",
+            "origin_at": "2026-08-07T20:00:00+00:00",
+            "decision_at": "2026-08-07T20:00:00+00:00",
+            "target_at": "2026-08-14T20:00:00+00:00",
+            "remaining_horizon": 604800,
+            "evidence_track": "reconstructed_oos",
+        },
+        "selection": {
+            "schema_version": "regime-selection-evidence/1",
+            "status": "selected_by_gate",
+            "policy_sha256": operating.selection_policy_sha256,
+            "complexity_registry_sha256": operating.complexity_registry_sha256,
+            "candidate_set": list(V5_FORECAST_COMPARISON_MODELS),
+            "runner_up": None,
+            "selection_reason": "best_gate_passing_log_loss",
+            "simplicity_tolerance": 0.01,
+            "tie_break_order": list(operating.selection_policy["tie_break_order"]),
+            "operating_champion": operating.document["models"]["official_champion"],
+        },
         "model": {
             "champion": "markov",
             "version": "weekly-nondl-structural-v5",
             "label_version": "market-causal-3state-v1",
             "feature_set_version": "weekly-pit-structural-v5",
-            "selection_status": "provisional_predeployment",
+            "selection_status": "selected_by_gate",
+            "lifecycle": {
+                "selection": {"status": "selected_by_gate"},
+                "deployment": {"status": "candidate"},
+                "publication": {"status": "unpublished"},
+            },
             "profile": "standard",
             "candidate_manifest": candidate_manifest,
             "candidate_manifest_sha256": candidate_manifest_sha256,
@@ -615,6 +641,7 @@ def test_legacy_reviewed_005_exception_is_bound_to_exact_public_snapshot() -> No
         if row["selected"] and row["model"] != row["reference_model"]:
             row["log_loss"] = row["reference_log_loss"] - 0.06
             row["absolute_log_loss_improvement"] = 0.06
+    payload["selection"]["selection_reason"] = "best_gate_passing_log_loss"
 
     with pytest.raises(
         V5ContractError,
@@ -660,9 +687,11 @@ def test_v5_forecast_comparison_is_required() -> None:
             "probabilities must sum to one",
         ),
         (
-            lambda value: value["weekly"][0]["model_forecasts"][0].update(
-                {"fallback": True, "fallback_reason": "test"}
-            ),
+            lambda value: next(
+                row
+                for row in value["weekly"][0]["model_forecasts"]
+                if row["model"] == value["model"]["champion"]
+            ).update({"fallback": True, "fallback_reason": "test"}),
             "champion forecast differs from next_week",
         ),
     ),
@@ -1036,7 +1065,7 @@ def test_v5_contract_rejects_unreviewed_champion_evidence_drift() -> None:
     value["model"]["champion"] = "xgboost"
     with pytest.raises(
         V5ContractError,
-        match="leaderboard must select exactly the declared champion",
+        match="payload.selection.runner_up differs from gate evidence",
     ):
         validate_v5_payload(value)
 

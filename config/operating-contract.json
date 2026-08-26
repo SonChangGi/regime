@@ -1,0 +1,177 @@
+{
+  "schema_version": "regime-operating-contract/1",
+  "contract_version": "weekly-us-equity-regime-v5-operating/1",
+  "purpose": "three-state US equity market regime observation and one-week-ahead forecasting",
+  "state_order": ["risk_on", "transition", "risk_off"],
+  "state_meta": {
+    "risk_on": {
+      "label": "Risk-on",
+      "label_ko": "위험선호",
+      "description": "추세가 우호적이고 스트레스가 제한적인 상태",
+      "color": "#2764d8",
+      "symbol": "●"
+    },
+    "transition": {
+      "label": "Transition",
+      "label_ko": "전환",
+      "description": "방향과 스트레스 신호가 엇갈리는 경계 상태",
+      "color": "#b87713",
+      "symbol": "◆"
+    },
+    "risk_off": {
+      "label": "Risk-off",
+      "label_ko": "위험회피",
+      "description": "하락 추세 또는 강한 하방 스트레스 상태",
+      "color": "#b54869",
+      "symbol": "▲"
+    }
+  },
+  "preregistration": {
+    "path": "config/structural_v5.json",
+    "sha256": "a8c72cb0dd90ee6de7c7300521f476a7e82ea4ead1ef666014714ccc8808ca24",
+    "immutable": true
+  },
+  "label": {
+    "canonical_id": "v1_spy_hysteresis",
+    "version": "market-causal-3state-v1",
+    "spec_path": "config/label-spec.json",
+    "membership_semantics": "distance_to_threshold_anchors_not_posterior",
+    "challenger_promotion": "manual_after_matched_origin_and_independent_audit"
+  },
+  "forecast": {
+    "horizon_weeks": 1,
+    "official_gap_weeks": 1,
+    "gap_zero_role": "sensitivity_only_after_current_state_finalization",
+    "transition_horizons_weeks": [1, 4, 13],
+    "decision_timezone": "America/New_York",
+    "control_decision_time": "16:00:00",
+    "market_finalization_sensitivity_time": "16:15:00",
+    "evidence_tracks": ["operational_oos", "reconstructed_oos"],
+    "operational_input_rule": "provider_first_seen_at_lte_decision_at"
+  },
+  "models": {
+    "official_champion": "causal_dynamic_ensemble",
+    "frozen_regression_baseline": "markov",
+    "weekly_base_models": [
+      "majority",
+      "persistence",
+      "markov",
+      "xgboost",
+      "pca_ridge_logistic",
+      "recency_weighted_xgboost_208w",
+      "recency_weighted_ridge_logistic_208w",
+      "discounted_markov_208w"
+    ],
+    "core_candidates": [
+      "causal_dynamic_ensemble",
+      "causal_multiscale_ensemble",
+      "xgboost",
+      "pca_ridge_logistic",
+      "recency_weighted_xgboost_208w",
+      "recency_weighted_ridge_logistic_208w",
+      "discounted_markov_208w"
+    ],
+    "ensemble_components": [
+      "xgb_hazard_destination"
+    ],
+    "shadow_models": [
+      "direct_jump_tvtp_hurdle",
+      "filtered_hsmm",
+      "dynamic_factor_tvtp",
+      "bayesian_online_changepoint"
+    ],
+    "frozen_reproduction_only": [
+      "ridge_logistic",
+      "random_forest",
+      "extra_trees",
+      "hist_gradient_boosting",
+      "spline_logistic",
+      "calibrated_linear_svm",
+      "elastic_net_logistic",
+      "shrinkage_lda",
+      "duration_tvtp_hurdle",
+      "transition_logistic"
+    ],
+    "historical_reviewed_rosters": {
+      "reviewed-20260825-v1": {
+        "role": "immutable_reproduction_of_reviewed_generation",
+        "candidate_manifest_sha256": "98359e1c6c245b46bbdb91d5e46ee23de04ed083aaf7c561ef4e4b2582662052",
+        "candidate_models": [
+          "calibrated_linear_svm",
+          "causal_dynamic_ensemble",
+          "causal_multiscale_ensemble",
+          "duration_tvtp_hurdle",
+          "elastic_net_logistic",
+          "extra_trees",
+          "hist_gradient_boosting",
+          "majority",
+          "markov",
+          "persistence",
+          "random_forest",
+          "ridge_logistic",
+          "shrinkage_lda",
+          "spline_logistic",
+          "transition_logistic",
+          "xgb_hazard_destination",
+          "xgboost"
+        ],
+        "forecast_comparison_models": [
+          "markov",
+          "xgboost",
+          "xgb_hazard_destination",
+          "causal_dynamic_ensemble",
+          "causal_multiscale_ensemble"
+        ]
+      }
+    }
+  },
+  "selection_policy": {
+    "schema_version": "regime-selection-policy/1",
+    "primary_metric": "multiclass_log_loss",
+    "secondary_metrics": [
+      "multiclass_brier",
+      "calibration_error",
+      "sharpness",
+      "state_recall",
+      "transition_delay",
+      "false_alarms_per_year"
+    ],
+    "minimum_log_loss_improvement": 0.01,
+    "maximum_brier_degradation": 0.01,
+    "holm_alpha": 0.05,
+    "simplicity_tolerance": 0.01,
+    "tie_break_order": ["complexity_rank", "calibration_error", "log_loss", "model"],
+    "multiplicity": "paired_moving_block_bootstrap_holm_with_mcs_supplement",
+    "complexity_registry": {
+      "majority": 0,
+      "persistence": 1,
+      "markov": 2,
+      "discounted_markov_208w": 3,
+      "recency_weighted_ridge_logistic_208w": 3,
+      "pca_ridge_logistic": 4,
+      "xgboost": 13,
+      "recency_weighted_xgboost_208w": 14,
+      "xgb_hazard_destination": 14,
+      "causal_dynamic_ensemble": 15,
+      "causal_multiscale_ensemble": 16,
+      "direct_jump_tvtp_hurdle": 17
+    }
+  },
+  "lifecycle": {
+    "selection_statuses": ["selected_by_gate"],
+    "deployment_statuses": ["candidate", "reviewed", "operating"],
+    "publication_statuses": ["unpublished", "reviewed_publication"],
+    "allowed_combinations": [
+      ["selected_by_gate", "candidate", "unpublished"],
+      ["selected_by_gate", "reviewed", "unpublished"],
+      ["selected_by_gate", "operating", "reviewed_publication"]
+    ]
+  },
+  "ablation_tracks": [
+    "state_only",
+    "label_mechanics",
+    "market_ex_label_components",
+    "macro_rates_credit",
+    "full"
+  ]
+}

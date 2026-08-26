@@ -1,0 +1,218 @@
+{
+  "schema_version": "1.1.0",
+  "default_spec": "v1_spy_hysteresis",
+  "state_order": ["risk_on", "transition", "risk_off"],
+  "specs": {
+    "v1_spy_hysteresis": {
+      "version": "market-causal-3state-v1",
+      "status": "official_frozen",
+      "series": [
+        {
+          "symbol": "SPY",
+          "column": "spy_close",
+          "adjustment": "provider_current_adjusted_close",
+          "blocks": ["direction", "stress"]
+        }
+      ],
+      "windows": {
+        "direction": [13, 26],
+        "volatility": [4, 13],
+        "drawdown": [13, 52],
+        "breadth_return": [],
+        "breadth_trend": []
+      },
+      "min_periods": {
+        "direction": {"13": 6, "26": 13},
+        "volatility": {"4": 2, "13": 6},
+        "drawdown": {"13": 6, "52": 26},
+        "breadth_return": {},
+        "breadth_trend": {}
+      },
+      "fit_period": {
+        "mode": "caller_supplied_prefix",
+        "reference_fit_weeks": 520,
+        "minimum_finite_observations": 26,
+        "production_minimum_finite_observations": 260,
+        "rolling_window_weeks": null
+      },
+      "scaling": {
+        "method": "median_iqr_then_mad",
+        "iqr_normalizer": 1.349,
+        "mad_normalizer": 1.4826,
+        "scale_floor": 1e-12,
+        "constant_fallback_scale": 1.0,
+        "fit_scope": "train_only"
+      },
+      "component_weights": {
+        "direction": 1.0,
+        "breadth": 0.0,
+        "stress": -1.0
+      },
+      "quantiles": {"lower": 0.30, "upper": 0.70},
+      "hysteresis": {"fraction_of_threshold_width": 0.15},
+      "initial_state": "transition",
+      "membership": {
+        "method": "squared_distance_to_anchor_softmax",
+        "semantics": "distance_to_anchor_not_posterior",
+        "anchors": {
+          "risk_on": {"reference": "upper", "width_multiplier": 0.5},
+          "transition": {"reference": "midpoint", "width_multiplier": 0.0},
+          "risk_off": {"reference": "lower", "width_multiplier": -0.5}
+        },
+        "temperature": 0.75,
+        "missing_state": "transition",
+        "missing_logit_floor": -20.0
+      }
+    },
+    "v2_spy_pit_total_return": {
+      "version": "market-causal-3state-v2-spy-pit-total-return",
+      "status": "research_challenger",
+      "series": [
+        {
+          "symbol": "SPY",
+          "column": "spy_pit_total_return",
+          "adjustment": "point_in_time_total_return_index",
+          "blocks": ["direction", "stress"]
+        }
+      ],
+      "windows": {
+        "direction": [13, 26],
+        "volatility": [4, 13],
+        "drawdown": [13, 52],
+        "breadth_return": [],
+        "breadth_trend": []
+      },
+      "min_periods": {
+        "direction": {"13": 6, "26": 13},
+        "volatility": {"4": 2, "13": 6},
+        "drawdown": {"13": 6, "52": 26},
+        "breadth_return": {},
+        "breadth_trend": {}
+      },
+      "fit_period": {
+        "mode": "fixed_initial_prefix_then_frozen",
+        "reference_fit_weeks": 520,
+        "minimum_finite_observations": 260,
+        "production_minimum_finite_observations": 260,
+        "rolling_window_weeks": null
+      },
+      "scaling": {
+        "method": "median_iqr_then_mad",
+        "iqr_normalizer": 1.349,
+        "mad_normalizer": 1.4826,
+        "scale_floor": 1e-12,
+        "constant_fallback_scale": 1.0,
+        "fit_scope": "train_only"
+      },
+      "component_weights": {
+        "direction": 1.0,
+        "breadth": 0.0,
+        "stress": -1.0
+      },
+      "quantiles": {"lower": 0.30, "upper": 0.70},
+      "hysteresis": {"fraction_of_threshold_width": 0.15},
+      "initial_state": "transition",
+      "membership": {
+        "method": "squared_distance_to_anchor_softmax",
+        "semantics": "distance_to_anchor_not_posterior",
+        "anchors": {
+          "risk_on": {"reference": "upper", "width_multiplier": 0.5},
+          "transition": {"reference": "midpoint", "width_multiplier": 0.0},
+          "risk_off": {"reference": "lower", "width_multiplier": -0.5}
+        },
+        "temperature": 0.75,
+        "missing_state": "transition",
+        "missing_logit_floor": -20.0
+      }
+    },
+    "v2_broad_equity": {
+      "version": "market-causal-3state-v2-broad-equity",
+      "status": "research_challenger",
+      "series": [
+        {"symbol": "SPY", "column": "spy_pit_total_return", "adjustment": "point_in_time_total_return_index", "blocks": ["direction", "stress"]},
+        {"symbol": "RSP", "column": "rsp_pit_total_return", "adjustment": "point_in_time_total_return_index", "blocks": ["direction", "breadth"]},
+        {"symbol": "IWM", "column": "iwm_pit_total_return", "adjustment": "point_in_time_total_return_index", "blocks": ["direction", "breadth"]},
+        {"symbol": "XLB", "column": "xlb_pit_total_return", "adjustment": "point_in_time_total_return_index", "blocks": ["breadth"]},
+        {"symbol": "XLE", "column": "xle_pit_total_return", "adjustment": "point_in_time_total_return_index", "blocks": ["breadth"]},
+        {"symbol": "XLF", "column": "xlf_pit_total_return", "adjustment": "point_in_time_total_return_index", "blocks": ["breadth"]},
+        {"symbol": "XLI", "column": "xli_pit_total_return", "adjustment": "point_in_time_total_return_index", "blocks": ["breadth"]},
+        {"symbol": "XLK", "column": "xlk_pit_total_return", "adjustment": "point_in_time_total_return_index", "blocks": ["breadth"]},
+        {"symbol": "XLP", "column": "xlp_pit_total_return", "adjustment": "point_in_time_total_return_index", "blocks": ["breadth"]},
+        {"symbol": "XLU", "column": "xlu_pit_total_return", "adjustment": "point_in_time_total_return_index", "blocks": ["breadth"]},
+        {"symbol": "XLV", "column": "xlv_pit_total_return", "adjustment": "point_in_time_total_return_index", "blocks": ["breadth"]},
+        {"symbol": "XLY", "column": "xly_pit_total_return", "adjustment": "point_in_time_total_return_index", "blocks": ["breadth"]}
+      ],
+      "windows": {
+        "direction": [13, 26],
+        "volatility": [4, 13],
+        "drawdown": [13, 52],
+        "breadth_return": [1],
+        "breadth_trend": [13]
+      },
+      "min_periods": {
+        "direction": {"13": 6, "26": 13},
+        "volatility": {"4": 2, "13": 6},
+        "drawdown": {"13": 6, "52": 26},
+        "breadth_return": {"1": 1},
+        "breadth_trend": {"13": 6}
+      },
+      "fit_period": {
+        "mode": "fixed_initial_prefix_then_frozen",
+        "reference_fit_weeks": 520,
+        "minimum_finite_observations": 260,
+        "production_minimum_finite_observations": 260,
+        "rolling_window_weeks": null
+      },
+      "scaling": {
+        "method": "median_iqr_then_mad",
+        "iqr_normalizer": 1.349,
+        "mad_normalizer": 1.4826,
+        "scale_floor": 1e-12,
+        "constant_fallback_scale": 1.0,
+        "fit_scope": "train_only"
+      },
+      "component_weights": {
+        "direction": 1.0,
+        "breadth": 1.0,
+        "stress": -1.0
+      },
+      "quantiles": {"lower": 0.30, "upper": 0.70},
+      "hysteresis": {"fraction_of_threshold_width": 0.15},
+      "initial_state": "transition",
+      "membership": {
+        "method": "squared_distance_to_anchor_softmax",
+        "semantics": "distance_to_anchor_not_posterior",
+        "anchors": {
+          "risk_on": {"reference": "upper", "width_multiplier": 0.5},
+          "transition": {"reference": "midpoint", "width_multiplier": 0.0},
+          "risk_off": {"reference": "lower", "width_multiplier": -0.5}
+        },
+        "temperature": 0.75,
+        "missing_state": "transition",
+        "missing_logit_floor": -20.0
+      }
+    }
+  },
+  "shadow_methods": {
+    "hsmm_explicit_duration": {
+      "version": "hsmm-explicit-duration-shadow-v1",
+      "status": "registered_shadow_unrun",
+      "role": "prospective_shadow_only",
+      "configuration": {},
+      "results": null
+    },
+    "pagan_sossounov_bull_bear": {
+      "version": "pagan-sossounov-ex-post-v1",
+      "status": "implemented_ex_post_unrun",
+      "role": "retrospective_ex_post_sensitivity_only",
+      "configuration": {
+        "window_months": 8,
+        "censor_margin_months": 6,
+        "minimum_phase_months": 4,
+        "minimum_cycle_months": 16,
+        "large_move_threshold": 0.20
+      },
+      "results": null
+    }
+  }
+}

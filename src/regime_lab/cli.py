@@ -13,7 +13,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from regime_lab.artifact_inventory import (
     verify_artifact_inventory,
@@ -43,14 +43,31 @@ from regime_lab.feature_quality import (
     canonical_feature_quality_json_bytes,
     verify_feature_quality_artifact,
 )
+from regime_lab.forecast_ledger import (
+    ForecastLedger,
+    ForecastLedgerEntry,
+    OperationalInput,
+    operational_input_manifest_sha256,
+)
 from regime_lab.keychain import provider_environment_from_keychain
 from regime_lab.payload import write_dashboard_payload
 from regime_lab.io import write_json_atomic
+from regime_lab.integrity import (
+    bind_payload_to_generation_manifest,
+    build_generation_manifest,
+    canonical_json_sha256_v1,
+    validate_generation_manifest,
+)
+from regime_lab.analysis.label_spec import default_label_spec_path
 from regime_lab.path_safety import confined_mutable_path
 from regime_lab.provider_rights import (
     ProviderRightsError,
     providers_for_live_config,
     verify_provider_rights,
+)
+from regime_lab.run_registry import append_run_event, current_run_status
+from regime_lab.selection_family_audit import (
+    build_selection_family_audit_from_artifacts,
 )
 from regime_lab.publication_contract import (
     V5_RESULT_VERSION,
@@ -71,6 +88,113 @@ from regime_lab.v5_preflight import (
     require_v5_analysis_source_unchanged,
     verify_v5_preflight,
 )
+
+
+def _operational_inputs_for_generation(
+    dataset: object,
+    *,
+    additional_records: tuple[object, ...] = (),
+    origin_at: datetime,
+    decision_at: datetime,
+) -> tuple[OperationalInput, ...]:
+    """Bind the exact inputs used by a real forecast decision.
+
+    Historical walk-forward rows can only be classified as reconstructed OOS
+    when the provider supplied a current-adjusted backfill.  Requiring an
+    ``operational`` as-of join for every historical row would therefore erase
+    the training history rather than make it prospective.  The operational
+    claim belongs to the *current decision*: every revision used anywhere in
+    the assembled training/forecast matrix must have been retrieved by that
+    decision, and no observation period may extend beyond the forecast origin.
+    The append-only ledger enforces the same clocks independently on append.
+    """
+
+    if getattr(dataset, "availability_basis", None) not in {
+        "source",
+        "operational",
+        "reconstructed_market",
+    }:
+        raise ValueError("forecast ledger dataset has an invalid availability basis")
+    if origin_at.tzinfo is None or origin_at.utcoffset() is None:
+        raise ValueError("forecast origin must include a timezone")
+    if decision_at.tzinfo is None or decision_at.utcoffset() is None:
+        raise ValueError("forecast decision must include a timezone")
+    origin = origin_at.astimezone(timezone.utc)
+    decision = decision_at.astimezone(timezone.utc)
+    if origin > decision:
+        raise ValueError("forecast origin must not follow the decision")
+    values = tuple(getattr(dataset, "input_vintages", ()))
+    inputs = [OperationalInput.from_asof_value(value) for value in values]
+    for item in inputs:
+        if item.observed_period_end > origin.date():
+            raise ValueError("forecast input period exceeds the forecast origin")
+        if item.operating_available_at > decision:
+            raise ValueError("forecast input was first seen after the decision")
+        if item.system_retrieved_at > decision:
+            raise ValueError("forecast input was retrieved after the decision")
+    for record in additional_records:
+        if (
+            record.observed_period_end > origin.date()
+            or record.operating_available_at > decision
+            or record.system_retrieved_at > decision
+        ):
+            continue
+        inputs.append(OperationalInput.from_observation(record))
+    unique = {
+        (
+            item.source,
+            item.series_id,
+            item.observed_period_end,
+            item.revision_seq,
+            item.raw_sha256,
+        ): item
+        for item in inputs
+    }
+    if not unique:
+        raise ValueError("operational generation has no bound input vintages")
+    return tuple(unique.values())
+
+
+def _forecast_ledger_entry(
+    payload: Mapping[str, Any],
+    *,
+    operational_inputs: tuple[OperationalInput, ...],
+    published_at: datetime,
+) -> ForecastLedgerEntry:
+    forecast_contract = payload.get("forecast")
+    if not isinstance(forecast_contract, Mapping):
+        raise ValueError("operational forecast ledger requires payload.forecast")
+    if forecast_contract.get("status") != "active":
+        raise ValueError("expired forecast cannot enter the operational ledger")
+    decision_at = datetime.fromisoformat(str(forecast_contract["decision_at"]))
+    target_at = datetime.fromisoformat(str(forecast_contract["target_at"]))
+    latest = payload["weekly"][-1]
+    model = payload["model"]
+    label = payload["label"]
+    input_snapshot_sha256 = operational_input_manifest_sha256(operational_inputs)
+    publication_at = published_at.astimezone(timezone.utc)
+    return ForecastLedgerEntry(
+        origin_week=date.fromisoformat(str(latest["date"])),
+        decision_at=decision_at,
+        target_at=target_at,
+        label_spec_sha256=str(label["spec_sha256"]),
+        model_manifest_sha256=str(model["candidate_manifest_sha256"]),
+        input_snapshot_sha256=input_snapshot_sha256,
+        operational_inputs=operational_inputs,
+        forecast={
+            "schema_version": "regime-operational-forecast-ledger/1",
+            "evidence_track": "operational_oos",
+            "generation_id": payload["meta"]["generation_id"],
+            "generated_at": payload["meta"]["generated_at"],
+            "local_publication_at": publication_at.isoformat(),
+            "current": latest["current"],
+            "official": latest["next_week"],
+            "model_forecasts": latest.get("model_forecasts", []),
+            "champion": model["champion"],
+            "selection": payload["selection"],
+            "lifecycle": model["lifecycle"],
+        },
+    )
 
 
 def _root_path(value: str) -> Path:
@@ -346,6 +470,7 @@ def _write_supporting_results(
     *,
     generation_id: str | None = None,
     write_inventory: bool = False,
+    selection_context: Mapping[str, Any] | None = None,
 ) -> None:
     """Stage a self-consistent artifact generation before replacing latest.
 
@@ -526,6 +651,21 @@ def _write_supporting_results(
                 staging / "feature-ablation-manifest.json",
                 feature_ablation_manifest_document(feature_ablation.manifest),
             )
+        if selection_context is not None:
+            if selection_diagnostics is None:
+                raise RuntimeError(
+                    "selection-family audit requires selection diagnostics"
+                )
+            if not isinstance(selection_context.get("selection"), Mapping):
+                raise RuntimeError("selection-family audit context is invalid")
+            selection_family = build_selection_family_audit_from_artifacts(
+                selection_context,
+                staging,
+            )
+            write_json_atomic(
+                staging / "selection-family-audit.json",
+                selection_family,
+            )
         if generation_id is not None:
             write_json_atomic(
                 staging / "build-generation.json",
@@ -640,7 +780,9 @@ def _publish_active_generation(
     *,
     output: Path,
     artifacts: Path,
-) -> None:
+    input_snapshot_sha256: str | None = None,
+    finalization: Callable[[dict[str, Any]], None] | None = None,
+) -> dict[str, Any]:
     """Publish one payload/artifact generation with rollback-safe cutover.
 
     Both outputs are fully serialized in private sibling directories before an
@@ -654,6 +796,7 @@ def _publish_active_generation(
 
     output = _mutable_path(output, label="dashboard output")
     artifacts = _mutable_path(artifacts, label="artifact output")
+    manifest_path = output.with_name("generation-manifest.json")
     output_absolute = output.absolute()
     artifacts_absolute = artifacts.absolute()
     if _paths_overlap(output_absolute, artifacts_absolute):
@@ -685,11 +828,15 @@ def _publish_active_generation(
     previous_artifacts = artifact_transaction / "previous"
     staged_payload = payload_transaction / "next.json"
     previous_payload = payload_transaction / "previous.json"
+    staged_manifest = payload_transaction / "generation-manifest.json"
+    previous_manifest = payload_transaction / "previous-generation-manifest.json"
 
     moved_previous_artifacts = False
     moved_previous_payload = False
+    moved_previous_manifest = False
     published_artifacts = False
     published_payload = False
+    published_manifest = False
     preserve_recovery = False
     try:
         is_v5 = (
@@ -702,6 +849,7 @@ def _publish_active_generation(
                 staged_artifacts,
                 generation_id=generation_id,
                 write_inventory=True,
+                selection_context=payload,
             )
             verify_artifact_inventory(staged_artifacts)
         else:
@@ -714,6 +862,43 @@ def _publish_active_generation(
         _verify_staged_research_artifacts(payload, staged_artifacts)
         _verify_staged_core_artifacts(payload, staged_artifacts)
         _verify_staged_feature_quality_artifact(payload, staged_artifacts)
+        if is_v5:
+            snapshot_sha256 = input_snapshot_sha256 or canonical_json_sha256_v1(
+                {
+                    "mode": payload.get("meta", {}).get("mode"),
+                    "data_as_of": payload.get("meta", {}).get("data_as_of"),
+                    "sources": payload.get("sources", ()),
+                }
+            )
+            selection_family_path = staged_artifacts / "selection-family-audit.json"
+            try:
+                selection_family = json.loads(
+                    selection_family_path.read_text(encoding="utf-8")
+                )
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise RuntimeError(
+                    "staged selection-family audit cannot be read"
+                ) from exc
+            if not isinstance(selection_family, Mapping):
+                raise RuntimeError("staged selection-family audit must be an object")
+            generation_manifest = build_generation_manifest(
+                payload=payload,
+                payload_path=output,
+                artifact_directory=staged_artifacts,
+                input_snapshot={
+                    "data_as_of": payload["meta"]["data_as_of"],
+                    "sha256": snapshot_sha256,
+                },
+                label_spec_path=default_label_spec_path(),
+                selection_family=selection_family,
+                selection_family_path=artifacts / "selection-family-audit.json",
+            )
+            payload = bind_payload_to_generation_manifest(
+                payload,
+                generation_manifest,
+            )
+            validate_dashboard_payload(payload)
+            write_json_atomic(staged_manifest, generation_manifest)
         write_dashboard_payload(payload, staged_payload)
 
         # Move both previous outputs away before installing either new output.
@@ -725,13 +910,30 @@ def _publish_active_generation(
         if _path_exists(output):
             os.replace(output, previous_payload)
             moved_previous_payload = True
+        if is_v5 and _path_exists(manifest_path):
+            os.replace(manifest_path, previous_manifest)
+            moved_previous_manifest = True
 
         os.replace(staged_artifacts, artifacts)
         published_artifacts = True
         os.replace(staged_payload, output)
         published_payload = True
+        if is_v5:
+            os.replace(staged_manifest, manifest_path)
+            published_manifest = True
+            validate_generation_manifest(
+                manifest_path,
+                require_comparison=False,
+                require_selection_family=True,
+                require_artifacts=True,
+                artifact_directory=artifacts,
+            )
+        if finalization is not None:
+            finalization(payload)
     except BaseException as publication_error:
         try:
+            if published_manifest and _path_exists(manifest_path):
+                _remove_path(manifest_path)
             if published_payload and _path_exists(output):
                 _remove_path(output)
             if published_artifacts and _path_exists(artifacts):
@@ -742,6 +944,9 @@ def _publish_active_generation(
             if moved_previous_payload and _path_exists(previous_payload):
                 os.replace(previous_payload, output)
                 moved_previous_payload = False
+            if moved_previous_manifest and _path_exists(previous_manifest):
+                os.replace(previous_manifest, manifest_path)
+                moved_previous_manifest = False
         except BaseException as rollback_error:
             preserve_recovery = True
             raise RuntimeError(
@@ -755,6 +960,7 @@ def _publish_active_generation(
         if not preserve_recovery:
             shutil.rmtree(artifact_transaction, ignore_errors=True)
             shutil.rmtree(payload_transaction, ignore_errors=True)
+    return payload
 
 
 def command_collect_h10(args: argparse.Namespace) -> int:
@@ -974,6 +1180,21 @@ def command_build(args: argparse.Namespace) -> int:
         else None
     )
     build_started_at = datetime.now(timezone.utc)
+    run_id = build_started_at.strftime("%Y%m%dT%H%M%S.%fZ-live-build")
+    configured_run_registry = getattr(args, "run_registry", None)
+    run_registry = _mutable_path(
+        output.parent / "run-registry.jsonl"
+        if configured_run_registry is None
+        else configured_run_registry,
+        label="run registry",
+    )
+    append_run_event(
+        run_registry,
+        run_id=run_id,
+        status="started",
+        occurred_at=build_started_at,
+        detail={"contract": contract_version, "profile": args.profile},
+    )
     expected_cutoff = getattr(args, "expected_cutoff", None) or (
         last_completed_week_cutoff(build_started_at)
     )
@@ -993,6 +1214,12 @@ def command_build(args: argparse.Namespace) -> int:
                     f"source={v5_preflight['source_fingerprint_sha256'][:12]}",
                     flush=True,
                 )
+            append_run_event(
+                run_registry,
+                run_id=run_id,
+                status="collecting",
+                detail={"expected_cutoff": expected_cutoff.isoformat()},
+            )
             _backup_database_before_mutation(
                 database,
                 backup_directory=getattr(args, "backup_directory", None),
@@ -1059,6 +1286,7 @@ def command_build(args: argparse.Namespace) -> int:
             fx_result = None
             latest_fx_context = None
             h10_source = None
+            additional_operational_records: tuple[object, ...] = ()
             if contract_version == "v5":
                 from regime_lab.data import H10Client, SQLiteSnapshotStore
                 from regime_lab.h10_store import refresh_h10_store
@@ -1088,6 +1316,13 @@ def command_build(args: argparse.Namespace) -> int:
                         )
                     raise
                 h10_source = h10_refresh.source_row
+                # Older frozen/replay adapters did not expose the bitemporal
+                # record collection.  They remain valid for reproducing those
+                # runs; live refresh results provide the field and therefore
+                # participate in the operational first-seen snapshot.
+                additional_operational_records = tuple(
+                    getattr(h10_refresh, "effective_records", ())
+                )
                 h10_gate_error = _h10_training_gate(h10_source)
                 if collection_report is not None:
                     write_json_atomic(
@@ -1115,12 +1350,25 @@ def command_build(args: argparse.Namespace) -> int:
                     )
             print("Point-in-time weekly frame 조립", flush=True)
             dataset = build_weekly_dataset(
-                config, collection.cutoffs, collection.records
+                config,
+                collection.cutoffs,
+                collection.records,
+                # Historical Alpha Vantage rows are a current-adjusted
+                # backfill, so the walk-forward evidence remains explicitly
+                # reconstructed OOS.  The current live decision is bound to
+                # actual first-seen/retrieval clocks below in ForecastLedger.
+                availability_basis="reconstructed_market",
             )
             print(
                 f"모델 비교 시작: {len(dataset.features):,} weeks × "
                 f"{dataset.features.shape[1]:,} features ({args.profile})",
                 flush=True,
+            )
+            append_run_event(
+                run_registry,
+                run_id=run_id,
+                status="analyzing",
+                detail={"weeks": len(dataset.features)},
             )
             payload, benchmark = build_dashboard_result(
                 dataset,
@@ -1150,13 +1398,63 @@ def command_build(args: argparse.Namespace) -> int:
                     str(v5_preflight["source_fingerprint_sha256"]),
                     config=config,
                 )
-            _publish_active_generation(
+            forecast_contract = payload["forecast"]
+            decision_value = forecast_contract.get("decision_at")
+            if decision_value is None:
+                raise ValueError("expired forecast cannot bind operational inputs")
+            operational_inputs = _operational_inputs_for_generation(
+                dataset,
+                additional_records=additional_operational_records,
+                origin_at=datetime.fromisoformat(
+                    str(forecast_contract["origin_at"])
+                ),
+                decision_at=datetime.fromisoformat(str(decision_value)),
+            )
+            input_snapshot_sha256 = operational_input_manifest_sha256(
+                operational_inputs
+            )
+            configured_forecast_ledger = getattr(args, "forecast_ledger", None)
+            forecast_ledger_path = _mutable_path(
+                output.parent / "forecast-ledger.sqlite3"
+                if configured_forecast_ledger is None
+                else configured_forecast_ledger,
+                label="forecast ledger",
+            )
+
+            def append_forecast_ledger(bound_payload: dict[str, Any]) -> None:
+                entry = _forecast_ledger_entry(
+                    bound_payload,
+                    operational_inputs=operational_inputs,
+                    published_at=datetime.now(timezone.utc),
+                )
+                with ForecastLedger(forecast_ledger_path) as ledger:
+                    ledger.append(entry)
+
+            payload = _publish_active_generation(
                 payload,
                 benchmark,
                 output=output,
                 artifacts=artifacts,
+                input_snapshot_sha256=input_snapshot_sha256,
+                finalization=(
+                    append_forecast_ledger if contract_version == "v5" else None
+                ),
+            )
+            append_run_event(
+                run_registry,
+                run_id=run_id,
+                status="completed",
+                generation_id=str(payload["meta"]["generation_id"]),
+                detail={"data_as_of": str(payload["meta"]["data_as_of"])},
             )
     except AlreadyRunning as exc:
+        if current_run_status(run_registry, run_id) not in {"interrupted", "completed"}:
+            append_run_event(
+                run_registry,
+                run_id=run_id,
+                status="interrupted",
+                detail={"error_type": type(exc).__name__},
+            )
         if collection_report is not None:
             write_json_atomic(
                 collection_report,
@@ -1175,6 +1473,15 @@ def command_build(args: argparse.Namespace) -> int:
         raise SystemExit(
             f"live build refused because another build owns {live_build_lock}: {exc}"
         ) from exc
+    except BaseException as exc:
+        if current_run_status(run_registry, run_id) not in {"interrupted", "completed"}:
+            append_run_event(
+                run_registry,
+                run_id=run_id,
+                status="interrupted",
+                detail={"error_type": type(exc).__name__},
+            )
+        raise
     print(
         json.dumps(
             {
@@ -1326,6 +1633,19 @@ def build_parser() -> argparse.ArgumentParser:
     build.add_argument(
         "--collection-report",
         help="atomically write a secret-free collection health receipt",
+    )
+    build.add_argument(
+        "--run-registry",
+        default=None,
+        help="append-only local run lifecycle registry (default: payload sibling)",
+    )
+    build.add_argument(
+        "--forecast-ledger",
+        default=None,
+        help=(
+            "append-only operational forecast ledger "
+            "(default: payload sibling forecast-ledger.sqlite3)"
+        ),
     )
     build.add_argument(
         "--checkpoint-directory",

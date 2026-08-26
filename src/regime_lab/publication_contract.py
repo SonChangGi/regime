@@ -86,6 +86,82 @@ def _sha256(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
 
 
+def _asset_reference_pattern(*, attribute: str, filename: str) -> re.Pattern[str]:
+    return re.compile(
+        rf"(?P<prefix>\b{attribute}=(?P<quote>[\"'])\./{re.escape(filename)})"
+        rf"(?:\?v=[^\"']*)?(?P=quote)"
+    )
+
+
+def rewrite_index_asset_versions(
+    index_raw: bytes,
+    *,
+    styles_raw: bytes,
+    app_raw: bytes,
+) -> bytes:
+    """Bind dashboard asset query values to the exact packaged bytes."""
+
+    try:
+        document = index_raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise PublicContractError("index.html must be valid UTF-8") from exc
+    assets = (
+        ("href", "styles.css", styles_raw),
+        ("src", "app.js", app_raw),
+    )
+    counts: list[int] = []
+    for attribute, filename, raw in assets:
+        pattern = _asset_reference_pattern(attribute=attribute, filename=filename)
+        digest = _sha256(raw)
+
+        def replacement(match: re.Match[str], *, value: str = digest) -> str:
+            return f"{match.group('prefix')}?v={value}{match.group('quote')}"
+
+        document, count = pattern.subn(replacement, document)
+        counts.append(count)
+    # Tiny synthetic fixtures may intentionally contain no application shell.
+    # A real shell is fail-closed: both references must be singular and bound.
+    if counts != [0, 0] and counts != [1, 1]:
+        raise PublicContractError(
+            "index.html must contain exactly one styles.css and one app.js reference"
+        )
+    rewritten = document.encode("utf-8")
+    if counts == [1, 1]:
+        validate_index_asset_versions(
+            rewritten,
+            styles_raw=styles_raw,
+            app_raw=app_raw,
+        )
+    return rewritten
+
+
+def validate_index_asset_versions(
+    index_raw: bytes,
+    *,
+    styles_raw: bytes,
+    app_raw: bytes,
+) -> None:
+    """Reject a packaged shell whose cache keys are manual or stale."""
+
+    try:
+        document = index_raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise PublicContractError("index.html must be valid UTF-8") from exc
+    for attribute, filename, raw in (
+        ("href", "styles.css", styles_raw),
+        ("src", "app.js", app_raw),
+    ):
+        expected = _sha256(raw)
+        pattern = _asset_reference_pattern(attribute=attribute, filename=filename)
+        matches = list(pattern.finditer(document))
+        if not matches:
+            continue
+        if len(matches) != 1 or f"?v={expected}" not in matches[0].group(0):
+            raise PublicContractError(
+                f"index.html {filename} cache key must equal its content SHA-256"
+            )
+
+
 def _canonical_payload_sha256(payload: dict[str, Any]) -> str:
     try:
         raw = json.dumps(
@@ -1070,5 +1146,7 @@ __all__ = [
     "reject_raw_provider_material",
     "require_object",
     "require_sha256",
+    "rewrite_index_asset_versions",
+    "validate_index_asset_versions",
     "validate_v5_comparison_sidecar",
 ]

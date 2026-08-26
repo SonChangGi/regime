@@ -303,7 +303,7 @@ SHA-256은 `8ef3778cc8c36faff0c80e2bf094f1f11bd6966ab3b7b2d6edb84ba292aff6b9`입
 ```bash
 .venv/bin/regime-lab demo --profile quick
 .venv/bin/regime-lab validate publication/live/regime-results.json
-.venv/bin/python scripts/audit_outputs.py
+.venv/bin/python scripts/audit_outputs.py --target publication-live
 .venv/bin/pytest
 ```
 

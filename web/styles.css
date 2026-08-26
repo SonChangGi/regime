@@ -5652,6 +5652,67 @@ tr.is-holdout-best td,
     top: 16px;
     right: 16px;
   }
+
+  /* Keep the weekly marks visually narrow while each real button remains a
+     WCAG-sized keyboard/touch target on a 390px viewport. */
+  .timeline-track {
+    gap: 0;
+  }
+
+  .timeline-cell {
+    position: relative;
+    min-width: 24px;
+    min-height: 38px;
+    padding: 0;
+    overflow: visible;
+    border-color: transparent;
+    background: transparent;
+    touch-action: manipulation;
+  }
+
+  .timeline-cell::before {
+    position: absolute;
+    z-index: 0;
+    top: 0;
+    bottom: 0;
+    left: 50%;
+    width: 8px;
+    border: 1px solid transparent;
+    border-radius: 3px;
+    content: "";
+    transform: translateX(-50%);
+  }
+
+  .timeline-cell::after {
+    position: relative;
+    z-index: 1;
+  }
+
+  .timeline-cell.risk_on::before {
+    border-color: var(--risk-on);
+    background: var(--risk-on-soft);
+  }
+
+  .timeline-cell.transition::before {
+    border-color: var(--transition);
+    border-style: dashed;
+    background: var(--transition-soft);
+  }
+
+  .timeline-cell.risk_off::before {
+    border-color: var(--risk-off);
+    border-style: double;
+    background: var(--risk-off-soft);
+  }
+
+  .timeline-cell[aria-current="date"] {
+    outline: 0;
+  }
+
+  .timeline-cell[aria-current="date"]::before {
+    outline: 3px solid var(--ink-strong);
+    outline-offset: 2px;
+  }
 }
 
 /* Shared-origin comparison: observed membership above, selected forecast below. */
@@ -5940,5 +6001,188 @@ tr.is-holdout-best td,
 @media (max-width: 360px) {
   .conditional-stat-controls {
     grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* Payload-driven label, forecast-clock, and model-role contracts. */
+
+.contract-overview-grid {
+  display: grid;
+  margin-top: 12px;
+  grid-template-columns: minmax(0, 1.35fr) minmax(360px, 0.65fr);
+  gap: 12px;
+}
+
+.definition-card,
+.forecast-window-card {
+  min-width: 0;
+  padding: 18px;
+}
+
+.compact-card-heading {
+  align-items: flex-start;
+}
+
+.compact-card-heading h2 {
+  margin: 3px 0 0;
+  color: var(--ink-strong);
+  font-size: 17px;
+  letter-spacing: -0.02em;
+}
+
+.compact-card-heading .card-kicker {
+  display: block;
+  color: var(--ink-faint);
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 780;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.contract-chip {
+  display: inline-flex;
+  min-height: 28px;
+  padding: 5px 8px;
+  align-items: center;
+  border: 1px solid color-mix(in srgb, var(--brand) 32%, var(--line));
+  border-radius: 999px;
+  background: var(--brand-soft);
+  color: var(--brand-dark);
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 760;
+  line-height: 1.35;
+  text-align: center;
+}
+
+.contract-chip.is-expired {
+  border-color: color-mix(in srgb, var(--transition) 45%, var(--line));
+  background: var(--transition-soft);
+  color: var(--status-review-text);
+}
+
+.definition-facts,
+.forecast-timing {
+  display: grid;
+  margin: 14px 0 0;
+  gap: 8px;
+}
+
+.definition-facts {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.definition-facts > div,
+.forecast-timing > div {
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-soft);
+}
+
+.definition-facts dt,
+.forecast-timing dt {
+  color: var(--ink-faint);
+  font-size: 9px;
+  font-weight: 760;
+}
+
+.definition-facts dd,
+.forecast-timing dd {
+  margin: 4px 0 0;
+  color: var(--ink-soft);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.forecast-timing {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.forecast-timing dd {
+  overflow-wrap: anywhere;
+  font-family: var(--mono);
+  font-size: 10px;
+}
+
+.forecast-expired-notice {
+  margin: 10px 0 0;
+  padding: 9px 10px;
+  border-left: 3px solid var(--transition);
+  background: var(--transition-soft);
+  color: var(--status-review-text);
+  font-size: 10px;
+  line-height: 1.55;
+}
+
+.hero-grid.has-expired-current-forecast > #current-regime-card {
+  grid-column: 1 / -1;
+}
+
+.model-role-grid {
+  display: grid;
+  margin: 0 0 14px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.model-role-grid > article {
+  display: grid;
+  min-width: 0;
+  min-height: 92px;
+  padding: 11px 12px;
+  align-content: start;
+  gap: 4px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-soft);
+}
+
+.model-role-grid span {
+  color: var(--ink-faint);
+  font-size: 9px;
+  font-weight: 760;
+}
+
+.model-role-grid strong {
+  overflow-wrap: anywhere;
+  color: var(--ink-strong);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.model-role-grid small {
+  overflow-wrap: anywhere;
+  color: var(--ink-soft);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+@media (max-width: 1024px) {
+  .contract-overview-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .model-role-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 760px) {
+  .definition-facts,
+  .forecast-timing,
+  .model-role-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .definition-card,
+  .forecast-window-card {
+    padding: 15px;
+  }
+
+  .model-role-grid > article {
+    min-height: 0;
   }
 }

@@ -26,6 +26,8 @@ from regime_lab.analysis.labels import STATE_ORDER
 from regime_lab.analysis.models import (
     DIRECT_NEXT_STATE_MODEL_NAMES,
     MODEL_NAMES,
+    MODEL_REGISTRY,
+    SHADOW_NEXT_STATE_MODEL_NAMES,
     BenchmarkProfile,
 )
 from regime_lab.analysis.models import model_manifest_sha256
@@ -502,8 +504,17 @@ class ResolvedBenchmarkParameters:
         if include_hmm and "gaussian_hmm" not in names:
             names.append("gaussian_hmm")
         names = list(dict.fromkeys(names))
-        supported = set(MODEL_NAMES).union(
+        # MODEL_NAMES is the intentionally small weekly operating roster.
+        # Explicit callers may still request frozen/research models so old
+        # checkpoints remain reproducible after a model is removed from the
+        # weekly retraining set.
+        supported = {
+            name
+            for name, spec in MODEL_REGISTRY.items()
+            if spec.task == "multiclass_next_state" and spec.kind != "synthetic"
+        }.union(
             DIRECT_NEXT_STATE_MODEL_NAMES,
+            SHADOW_NEXT_STATE_MODEL_NAMES,
             {"gaussian_hmm"},
         )
         unknown = sorted(set(names).difference(supported))

@@ -9,6 +9,7 @@ import pandas as pd
 
 from regime_lab.contract_v5 import (
     V5_FORECAST_COMPARISON_MODELS,
+    V5_STANDARD_CORE_MODELS,
     validate_v5_payload,
 )
 from regime_lab.frozen_v4 import FROZEN_V4_BASELINE
@@ -90,7 +91,10 @@ def _model_forecasts(official: dict[str, object]) -> list[dict[str, object]]:
         if model == "markov":
             row = dict(official)
         else:
-            row_probabilities = probabilities[model]
+            row_probabilities = probabilities.get(
+                model,
+                {"risk_on": 0.22, "transition": 0.68, "risk_off": 0.1},
+            )
             row = {
                 "state": "transition",
                 "probabilities": row_probabilities,
@@ -269,25 +273,7 @@ def test_v5_composer_changes_semantics_without_allocation_output() -> None:
     ] = dict(
         payload["model"]["core_artifacts"]["multiscale_ensemble_scales"]
     )
-    candidate_names = (
-        "majority",
-        "persistence",
-        "markov",
-        "elastic_net_logistic",
-        "calibrated_linear_svm",
-        "random_forest",
-        "extra_trees",
-        "hist_gradient_boosting",
-        "ridge_logistic",
-        "transition_logistic",
-        "duration_tvtp_hurdle",
-        "shrinkage_lda",
-        "spline_logistic",
-        "xgboost",
-        "xgb_hazard_destination",
-        "causal_dynamic_ensemble",
-        "causal_multiscale_ensemble",
-    )
+    candidate_names = tuple(sorted(V5_STANDARD_CORE_MODELS))
     candidate_manifest = {
         "schema_version": "1.0.0",
         "profile": "quick",
@@ -352,9 +338,12 @@ def test_v5_composer_changes_semantics_without_allocation_output() -> None:
             "brier_tolerance": 0.01,
         }
     ]
+    payload["selection"]["candidate_set"] = ["markov"]
+    payload["selection"]["runner_up"] = None
+    payload["selection"]["selection_reason"] = "best_gate_passing_log_loss"
 
     validate_v5_payload(payload)
-    assert payload["meta"]["schema_version"] == "2.0.0"
+    assert payload["meta"]["schema_version"] == "2.1.0"
     assert "probabilities" not in payload["weekly"][-1]["current"]
     assert "memberships" in payload["weekly"][-1]["current"]
     assert "scores" not in payload["weekly"][-1]
@@ -369,7 +358,12 @@ def test_v5_composer_changes_semantics_without_allocation_output() -> None:
     assert [
         row["model"] for row in payload["weekly"][-1]["model_forecasts"]
     ] == list(V5_FORECAST_COMPARISON_MODELS)
-    assert payload["weekly"][-1]["model_forecasts"][0] == {
+    champion_forecast = next(
+        row
+        for row in payload["weekly"][-1]["model_forecasts"]
+        if row["model"] == payload["model"]["champion"]
+    )
+    assert champion_forecast == {
         **payload["weekly"][-1]["next_week"],
         "method": "model_comparison_walk_forward_probability",
     }

@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from regime_lab import publication_contract
+from regime_lab.integrity import reviewed_candidate_sha256_v1
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -95,13 +96,8 @@ def test_live_package_rejects_new_reviewed_v5_with_legacy_005_policy(
         if row["selected"] and row["model"] != row["reference_model"]:
             row["log_loss"] = row["reference_log_loss"] - 0.06
             row["absolute_log_loss_improvement"] = 0.06
-    candidate = dict(payload)
-    candidate_meta = dict(payload["meta"])
-    candidate_meta.pop("publication_status")
-    candidate_meta.pop("publication_review")
-    candidate["meta"] = candidate_meta
     payload["meta"]["publication_review"]["reviewed_candidate_sha256"] = (
-        hashlib.sha256(_json_bytes(candidate)).hexdigest()
+        reviewed_candidate_sha256_v1(payload)
     )
     payload_path = tmp_path / "forged-reviewed-v5.json"
     payload_path.write_bytes(_json_bytes(payload))
@@ -123,7 +119,11 @@ def test_live_package_rejects_new_reviewed_v5_with_legacy_005_policy(
 def _web_root(tmp_path: Path) -> Path:
     root = tmp_path / "web"
     root.mkdir()
-    (root / "index.html").write_text("<main>demo</main>\n", encoding="utf-8")
+    (root / "index.html").write_text(
+        '<link rel="stylesheet" href="./styles.css?v=manual">\n'
+        '<main>demo</main><script src="./app.js?v=manual"></script>\n',
+        encoding="utf-8",
+    )
     (root / "styles.css").write_text("main { color: black; }\n", encoding="utf-8")
     (root / "app.js").write_text("console.log('demo');\n", encoding="utf-8")
     return root
@@ -211,6 +211,12 @@ def _minimal_live_payload(tmp_path: Path, *, result_version: str) -> Path:
     if result_version == package_public_demo.V5_RESULT_VERSION:
         payload["model"].update(
             {
+                "selection_status": "selected_by_gate",
+                "lifecycle": {
+                    "selection": {"status": "selected_by_gate"},
+                    "deployment": {"status": "operating"},
+                    "publication": {"status": "reviewed_publication"},
+                },
                 "baseline_v4": dict(package_public_demo.FROZEN_V4_BASELINE),
                 "core_artifacts": {
                     "oos_predictions": _artifact_record(
@@ -274,10 +280,9 @@ def _minimal_live_payload(tmp_path: Path, *, result_version: str) -> Path:
                 "fx_ablation": _minimal_fx_ablation(),
             }
         )
-        candidate_raw = _json_bytes(payload)
         payload["meta"]["publication_status"] = "reviewed_publication"
         payload["meta"]["publication_review"] = {
-            "reviewed_candidate_sha256": hashlib.sha256(candidate_raw).hexdigest()
+            "reviewed_candidate_sha256": reviewed_candidate_sha256_v1(payload)
         }
     path = tmp_path / f"{result_version}.json"
     path.write_bytes(_json_bytes(payload))
@@ -746,6 +751,14 @@ def test_package_copies_only_allowlisted_assets_and_synthetic_payload(tmp_path: 
     assert manifest["files"]["data/regime-results.json"]["sha256"] == hashlib.sha256(
         copied_payload
     ).hexdigest()
+    packaged_index = (output / "index.html").read_text(encoding="utf-8")
+    assert "?v=manual" not in packaged_index
+    assert hashlib.sha256((output / "styles.css").read_bytes()).hexdigest() in (
+        packaged_index
+    )
+    assert hashlib.sha256((output / "app.js").read_bytes()).hexdigest() in (
+        packaged_index
+    )
 
 
 def test_package_refuses_live_payload_without_creating_output(tmp_path: Path) -> None:
@@ -994,7 +1007,7 @@ def test_v5_live_package_refuses_forged_reviewed_candidate_hash(
     document["meta"]["publication_review"]["reviewed_candidate_sha256"] = "0" * 64
     payload.write_bytes(_json_bytes(document))
 
-    with pytest.raises(package_public_demo.PackagingError, match="reconstructed bytes"):
+    with pytest.raises(package_public_demo.PackagingError, match="canonical hash"):
         package_public_demo.package_public_dashboard(
             web_root=_web_root(tmp_path),
             payload_path=payload,

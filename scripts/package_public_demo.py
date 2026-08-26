@@ -27,6 +27,14 @@ from regime_lab.frozen_v4 import (
     FROZEN_V4_INVENTORY_FILE_COUNT,
     FROZEN_V4_OOS_PREDICTIONS,
 )
+from regime_lab.integrity import (
+    GENERATION_MANIFEST_SCHEMA_VERSION,
+    IntegrityError,
+    validate_generation_manifest,
+    validate_lifecycle_consistency,
+    validate_reviewed_candidate_hash,
+)
+from regime_lab.selection_family_audit import validate_selection_family_audit
 from regime_lab.path_safety import UnsafeMutablePath, confined_mutable_path
 from regime_lab.provider_rights import (
     ProviderRightsError,
@@ -37,8 +45,8 @@ from regime_lab.publication_contract import (
     V5_COMPARISON_SCHEMA_VERSION,
     V5_RESULT_VERSION,
     reject_raw_provider_material as _reject_raw_provider_material,
-    require_object as _require_object,
-    require_sha256 as _require_sha256,
+    rewrite_index_asset_versions,
+    validate_index_asset_versions,
     validate_v5_comparison_sidecar,
 )
 from regime_lab.contract_v5 import V5_PUBLICATION_STATUS
@@ -48,6 +56,10 @@ STATIC_ALLOWLIST = ("index.html", "styles.css", "app.js")
 PAYLOAD_DESTINATION = "data/regime-results.json"
 V5_COMPARISON_FILENAME = "v5-vs-v4-comparison.json"
 V5_COMPARISON_DESTINATION = f"data/{V5_COMPARISON_FILENAME}"
+SELECTION_FAMILY_FILENAME = "selection-family-audit.json"
+SELECTION_FAMILY_DESTINATION = f"data/{SELECTION_FAMILY_FILENAME}"
+GENERATION_MANIFEST_FILENAME = "generation-manifest.json"
+GENERATION_MANIFEST_DESTINATION = f"data/{GENERATION_MANIFEST_FILENAME}"
 MANIFEST_DESTINATION = "publication-manifest.json"
 PUBLICATION_MODE_DEMO = "demo"
 PUBLICATION_MODE_LIVE_DERIVED = "live-derived"
@@ -160,6 +172,14 @@ def validate_public_live_derived_payload(payload: dict[str, Any]) -> None:
             "live-derived V5 publication requires publication_status=reviewed_publication"
         )
     if result_version == V5_RESULT_VERSION:
+        try:
+            lifecycle = validate_lifecycle_consistency(payload)
+        except IntegrityError as exc:
+            raise PackagingError(f"V5 lifecycle is invalid: {exc}") from exc
+        if lifecycle["publication"] != V5_PUBLICATION_STATUS:
+            raise PackagingError(
+                "live-derived V5 lifecycle is not reviewed for publication"
+            )
         _validate_reviewed_candidate_hash(payload)
 
     weekly = payload.get("weekly")
@@ -226,34 +246,12 @@ def _sha256(value: bytes) -> str:
 
 
 def _validate_reviewed_candidate_hash(payload: dict[str, Any]) -> None:
-    meta = _require_object(payload.get("meta"), context="V5 payload.meta")
-    review = _require_object(
-        meta.get("publication_review"),
-        context="V5 payload.meta.publication_review",
-    )
-    expected = _require_sha256(
-        review.get("reviewed_candidate_sha256"),
-        context="V5 payload.meta.publication_review.reviewed_candidate_sha256",
-    )
-    candidate_meta = dict(meta)
-    candidate_meta.pop("publication_status", None)
-    candidate_meta.pop("publication_review", None)
-    candidate = dict(payload)
-    candidate["meta"] = candidate_meta
-    candidate_raw = (
-        json.dumps(
-            candidate,
-            ensure_ascii=False,
-            allow_nan=False,
-            indent=2,
-            sort_keys=False,
-        )
-        + "\n"
-    ).encode("utf-8")
-    if _sha256(candidate_raw) != expected:
+    try:
+        validate_reviewed_candidate_hash(payload)
+    except IntegrityError as exc:
         raise PackagingError(
-            "V5 publication review candidate hash does not match reconstructed bytes"
-        )
+            f"V5 publication review candidate canonical hash is invalid: {exc}"
+        ) from exc
 
 
 def _write_public_file(root: Path, relative_path: str, value: bytes) -> None:
@@ -271,6 +269,9 @@ def package_public_dashboard(
     publication_mode: str = PUBLICATION_MODE_DEMO,
     rights_acknowledged: bool = False,
     comparison_path: str | Path | None = None,
+    generation_manifest_path: str | Path | None = None,
+    selection_family_path: str | Path | None = None,
+    staged_generation_contract_directory: str | Path | None = None,
 ) -> dict[str, Any]:
     """Build a new static directory from an explicit, minimal allowlist."""
 
@@ -293,6 +294,11 @@ def package_public_dashboard(
             web_root / relative_path,
             label=f"allowlisted web asset {relative_path}",
         )
+    files["index.html"] = rewrite_index_asset_versions(
+        files["index.html"],
+        styles_raw=files["styles.css"],
+        app_raw=files["app.js"],
+    )
 
     payload_raw = _read_regular_file(payload_path, label="dashboard payload")
     payload = _decode_payload(payload_raw)
@@ -320,6 +326,154 @@ def package_public_dashboard(
             payload=payload,
             payload_raw=payload_raw,
         )
+        manifest_binding = payload.get("meta", {}).get(
+            "generation_manifest_sha256"
+        )
+        if manifest_binding is not None or generation_manifest_path is not None:
+            resolved_manifest_path = (
+                Path(generation_manifest_path)
+                if generation_manifest_path is not None
+                else payload_path.with_name("generation-manifest.json")
+            )
+            try:
+                manifest_document = _decode_payload(
+                    _read_regular_file(
+                        resolved_manifest_path,
+                        label="reviewed V5 generation manifest",
+                    )
+                )
+            except PackagingError as exc:
+                raise PackagingError(
+                    f"V5 generation manifest is invalid: {exc}"
+                ) from exc
+            has_selection_family = (
+                manifest_document.get("selection_family_sidecar") is not None
+            )
+            resolved_selection_family_path = (
+                Path(selection_family_path)
+                if selection_family_path is not None
+                else payload_path.with_name(SELECTION_FAMILY_FILENAME)
+            )
+            contract_directory = None
+            if staged_generation_contract_directory is not None:
+                contract_directory = Path(staged_generation_contract_directory)
+                if not contract_directory.is_absolute():
+                    contract_directory = project_root() / contract_directory
+            try:
+                generation = validate_generation_manifest(
+                    resolved_manifest_path,
+                    require_comparison=True,
+                    require_artifacts=False,
+                    payload_path_override=(
+                        payload_path if contract_directory is not None else None
+                    ),
+                    comparison_path_override=(
+                        resolved_comparison_path
+                        if contract_directory is not None
+                        else None
+                    ),
+                    selection_family_path_override=(
+                        resolved_selection_family_path
+                        if contract_directory is not None and has_selection_family
+                        else None
+                    ),
+                )
+            except IntegrityError as exc:
+                raise PackagingError(
+                    f"V5 generation manifest is invalid: {exc}"
+                ) from exc
+            if contract_directory is not None:
+                expected_declared = {
+                    "payload": contract_directory / "regime-results.json",
+                    "comparison": (
+                        contract_directory / "v5-vs-v4-comparison.json"
+                    ),
+                    "selection": (
+                        contract_directory / SELECTION_FAMILY_FILENAME
+                    ),
+                }
+                if generation["declared_payload_path"].resolve() != (
+                    expected_declared["payload"].resolve()
+                ):
+                    raise PackagingError(
+                        "staged generation payload contract path is invalid"
+                    )
+                if generation["declared_comparison_path"].resolve() != (
+                    expected_declared["comparison"].resolve()
+                ):
+                    raise PackagingError(
+                        "staged generation comparison contract path is invalid"
+                    )
+                declared_selection = generation.get(
+                    "declared_selection_family_path"
+                )
+                if has_selection_family and (
+                    declared_selection is None
+                    or declared_selection.resolve()
+                    != expected_declared["selection"].resolve()
+                ):
+                    raise PackagingError(
+                        "staged generation selection-family contract path is invalid"
+                    )
+            if generation["payload_path"].resolve() != payload_path.resolve():
+                raise PackagingError(
+                    "V5 generation manifest points to a different payload"
+                )
+            if generation["comparison_path"].resolve() != (
+                resolved_comparison_path.resolve()
+            ):
+                raise PackagingError(
+                    "V5 generation manifest points to a different comparison"
+                )
+            manifest_selection_path = generation.get("selection_family_path")
+            if (
+                generation.get("schema_version")
+                == GENERATION_MANIFEST_SCHEMA_VERSION
+                and manifest_selection_path is None
+            ):
+                raise PackagingError(
+                    "reviewed V5 generation manifest is missing selection-family audit"
+                )
+            if manifest_selection_path is not None:
+                if (
+                    contract_directory is None
+                    and manifest_selection_path.resolve()
+                    != resolved_selection_family_path.resolve()
+                ):
+                    raise PackagingError(
+                        "V5 generation manifest points to a different selection-family audit"
+                    )
+                selection_family_raw = _read_regular_file(
+                    resolved_selection_family_path,
+                    label="reviewed V5 selection-family audit",
+                )
+                selection_family = _decode_payload(selection_family_raw)
+                try:
+                    validate_selection_family_audit(
+                        selection_family,
+                        expected_generation_id=str(payload["meta"]["generation_id"]),
+                    )
+                except (TypeError, ValueError) as exc:
+                    raise PackagingError(
+                        f"V5 selection-family audit is invalid: {exc}"
+                    ) from exc
+                if generation.get("selection_family") != selection_family:
+                    raise PackagingError(
+                        "V5 selection-family audit differs from generation manifest"
+                    )
+                files[SELECTION_FAMILY_DESTINATION] = selection_family_raw
+            elif selection_family_path is not None:
+                raise PackagingError(
+                    "selection-family path is not bound by the generation manifest"
+                )
+            files[GENERATION_MANIFEST_DESTINATION] = _read_regular_file(
+                resolved_manifest_path,
+                label="reviewed V5 generation manifest",
+            )
+        elif selection_family_path is not None:
+            raise PackagingError(
+                "selection-family path requires a bound generation manifest"
+            )
         files[V5_COMPARISON_DESTINATION] = comparison_raw
 
     is_live_derived = publication_mode == PUBLICATION_MODE_LIVE_DERIVED
@@ -366,6 +520,75 @@ def package_public_dashboard(
         for relative_path, value in files.items():
             _write_public_file(staging, relative_path, value)
         _write_public_file(staging, MANIFEST_DESTINATION, manifest_raw)
+        # Read back and revalidate the exact staged package immediately before
+        # the atomic directory cutover.  Any serialization or write drift fails
+        # while the last-good destination remains untouched.
+        staged_payload_raw = _read_regular_file(
+            staging / PAYLOAD_DESTINATION,
+            label="staged dashboard payload",
+        )
+        staged_payload = _decode_payload(staged_payload_raw)
+        validate_public_payload(
+            staged_payload,
+            publication_mode=publication_mode,
+            rights_acknowledged=rights_acknowledged,
+        )
+        if result_version == V5_RESULT_VERSION:
+            staged_comparison_raw = _read_regular_file(
+                staging / V5_COMPARISON_DESTINATION,
+                label="staged V5/V4 comparison sidecar",
+            )
+            validate_v5_comparison_sidecar(
+                _decode_v5_comparison(staged_comparison_raw),
+                payload=staged_payload,
+                payload_raw=staged_payload_raw,
+            )
+            if SELECTION_FAMILY_DESTINATION in files:
+                staged_selection_family = _decode_payload(
+                    _read_regular_file(
+                        staging / SELECTION_FAMILY_DESTINATION,
+                        label="staged V5 selection-family audit",
+                    )
+                )
+                try:
+                    validate_selection_family_audit(
+                        staged_selection_family,
+                        expected_generation_id=str(
+                            staged_payload["meta"]["generation_id"]
+                        ),
+                    )
+                except (TypeError, ValueError) as exc:
+                    raise PackagingError(
+                        f"staged V5 selection-family audit is invalid: {exc}"
+                    ) from exc
+        staged_manifest = _decode_payload(
+            _read_regular_file(
+                staging / MANIFEST_DESTINATION,
+                label="staged publication manifest",
+            )
+        )
+        if staged_manifest != manifest:
+            raise PackagingError("staged publication manifest differs from memory")
+        for relative_path, expected in manifest["files"].items():
+            staged_raw = _read_regular_file(
+                staging / relative_path,
+                label=f"staged publication member {relative_path}",
+            )
+            if expected != {"bytes": len(staged_raw), "sha256": _sha256(staged_raw)}:
+                raise PackagingError(
+                    f"staged publication member hash differs: {relative_path}"
+                )
+        validate_index_asset_versions(
+            _read_regular_file(staging / "index.html", label="staged index.html"),
+            styles_raw=_read_regular_file(
+                staging / "styles.css",
+                label="staged styles.css",
+            ),
+            app_raw=_read_regular_file(
+                staging / "app.js",
+                label="staged app.js",
+            ),
+        )
         if output_directory.exists() or output_directory.is_symlink():
             raise PackagingError(
                 f"output appeared during packaging; refusing overwrite: {output_directory}"
@@ -392,6 +615,9 @@ def package_public_demo(
         publication_mode=PUBLICATION_MODE_DEMO,
         rights_acknowledged=False,
         comparison_path=None,
+        generation_manifest_path=None,
+        selection_family_path=None,
+        staged_generation_contract_directory=None,
     )
 
 
@@ -403,6 +629,25 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--payload", type=Path, required=True)
     parser.add_argument(
         "--output", type=Path, default=Path("dist/public-dashboard")
+    )
+    parser.add_argument(
+        "--manifest",
+        type=Path,
+        default=None,
+        help="Required final generation-manifest.json for live-derived V5",
+    )
+    parser.add_argument(
+        "--selection-family",
+        type=Path,
+        help="Reviewed selection-family-audit.json bound by the generation manifest",
+    )
+    parser.add_argument(
+        "--staged-generation-contract-directory",
+        type=Path,
+        help=(
+            "Validate staging files against the exact final project-relative "
+            "publication directory recorded in their generation manifest"
+        ),
     )
     parser.add_argument(
         "--publication-mode",
@@ -436,6 +681,11 @@ def main(argv: list[str] | None = None) -> int:
             publication_mode=args.publication_mode,
             rights_acknowledged=args.acknowledge_personal_noncommercial_publication,
             comparison_path=args.comparison,
+            generation_manifest_path=args.manifest,
+            selection_family_path=args.selection_family,
+            staged_generation_contract_directory=(
+                args.staged_generation_contract_directory
+            ),
         )
     except (PackagingError, UnsafeMutablePath, OSError) as exc:
         print(f"public dashboard package refused: {exc}", file=sys.stderr)

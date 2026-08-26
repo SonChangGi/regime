@@ -14,7 +14,6 @@ import pytest
 
 from regime_lab.analysis.labels import STATE_ORDER
 from regime_lab.analysis.models import (
-    MODEL_NAMES,
     model_manifest,
     model_manifest_sha256,
 )
@@ -122,7 +121,13 @@ def test_v5_serialized_probability_tolerance_rejects_material_tampering() -> Non
 def _self_contained_v4_core_fixture(tmp_path: Path) -> tuple[dict, Path]:
     artifacts = tmp_path / "v4-core"
     artifacts.mkdir()
-    model_names = (*MODEL_NAMES, JOINT_MODEL_NAME, ENSEMBLE_MODEL_NAME)
+    # This fixture audits the frozen V4 branch.  Keep its historical roster
+    # explicit instead of inheriting the active weekly V5 training roster.
+    model_names = (
+        *sorted(audit_outputs.V4_BASE_MODELS),
+        JOINT_MODEL_NAME,
+        ENSEMBLE_MODEL_NAME,
+    )
     manifest_body = model_manifest("quick", names=model_names)
     manifest_hash = model_manifest_sha256("quick", names=model_names)
     (artifacts / "candidate-manifest.json").write_text(
@@ -1714,7 +1719,10 @@ def _v5_model_forecast_audit_fixture(tmp_path: Path) -> dict[str, object]:
         source_rows: list[dict[str, object]] = []
         published_rows: list[dict[str, object]] = []
         for model_position, model in enumerate(models):
-            probability = probability_by_model[model]
+            probability = probability_by_model.get(
+                model,
+                (0.3, 0.4, 0.3),
+            )
             fallback = model_position == week_position + 2
             fallback_reason = "fixture_fallback" if fallback else ""
             predicted = audit_outputs.STATE_ORDER[int(np.argmax(probability))]
@@ -1777,10 +1785,10 @@ def test_v5_model_forecast_audit_binds_historical_and_latest_sources(
 
     assert summary == {
         "status": "verified",
-        "models": 5,
+        "models": len(audit_outputs.V5_FORECAST_COMPARISON_MODELS),
         "weeks": 2,
-        "historical_rows": 5,
-        "latest_rows": 5,
+        "historical_rows": len(audit_outputs.V5_FORECAST_COMPARISON_MODELS),
+        "latest_rows": len(audit_outputs.V5_FORECAST_COMPARISON_MODELS),
     }
 
 

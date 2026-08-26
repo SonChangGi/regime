@@ -1,0 +1,5141 @@
+{
+  "schema_version": "selection-family-audit/v2",
+  "status": "completed",
+  "generation_id": "20260826T184946.198911Z",
+  "evidence_track": "operational_oos",
+  "evidence_status": "operational_oos",
+  "candidate_manifest_sha256": "c167514c2f5daa8353dc3a2ba951f7a8cc0aca16076ad78c3b77e611258093ca",
+  "selection_period": {
+    "role": "predeployment_selection_only",
+    "declared": "2016-01-08–2022-12-30",
+    "selection_end_at": "2023-01-01T00:00:00+00:00",
+    "first_origin_at": "2016-01-01T21:00:00+00:00",
+    "last_origin_at": "2022-12-23T21:00:00+00:00",
+    "first_target_at": "2016-01-08T21:00:00+00:00",
+    "last_target_at": "2022-12-30T21:00:00+00:00"
+  },
+  "source_artifacts": {
+    "oos_predictions": {
+      "path": "oos-predictions.csv",
+      "sha256": "92fb3ae938404e883062ebb1c0309f605fca886ac1032eebd1054125c80aeec3",
+      "row_count": 6094
+    },
+    "selection_diagnostics": {
+      "path": "selection-diagnostics.csv",
+      "sha256": "464a7dec1edbad64237ef20bc249879b2c0dab0720024e3901b86a668f51bc2b",
+      "row_count": 11
+    }
+  },
+  "candidate_count": 11,
+  "candidate_set": [
+    "xgb_hazard_destination",
+    "causal_multiscale_ensemble",
+    "causal_dynamic_ensemble",
+    "xgboost",
+    "recency_weighted_xgboost_208w",
+    "markov",
+    "discounted_markov_208w",
+    "pca_ridge_logistic",
+    "recency_weighted_ridge_logistic_208w",
+    "persistence",
+    "majority"
+  ],
+  "champion": "causal_dynamic_ensemble",
+  "runner_up": "causal_multiscale_ensemble",
+  "selection_reason": "simplicity_tiebreak_within_tolerance",
+  "policy_sha256": "a495bdf11fe7c8a0f950dec4eb510823073395797ca7aa362e4df958ba6cd406",
+  "complexity_registry": {
+    "xgb_hazard_destination": 14,
+    "causal_multiscale_ensemble": 16,
+    "causal_dynamic_ensemble": 15,
+    "xgboost": 13,
+    "recency_weighted_xgboost_208w": 14,
+    "markov": 2,
+    "discounted_markov_208w": 3,
+    "pca_ridge_logistic": 4,
+    "recency_weighted_ridge_logistic_208w": 3,
+    "persistence": 1,
+    "majority": 0
+  },
+  "complexity_registry_sha256": "d3be756c1b5de94ef4c96828b6646da886f85d632b76b8ccd15a354b2ae9089f",
+  "fallback": {
+    "model": "markov",
+    "trigger": "no_challenger_passes_gate",
+    "reason": "official_probability_reference_fallback"
+  },
+  "common_origin_contract": {
+    "status": "matched",
+    "columns": [
+      "origin_date",
+      "target_date",
+      "evaluation_split",
+      "current_state",
+      "actual",
+      "train_size",
+      "gap"
+    ],
+    "origin_count": 365,
+    "first_origin_at": "2016-01-01T21:00:00+00:00",
+    "last_origin_at": "2022-12-23T21:00:00+00:00",
+    "origins_sha256": "f6282ab158d4362e924562e952e0a8e9f46d2173eb90cb3b849e049e5e7f5fac"
+  },
+  "candidates": [
+    {
+      "candidate_order": 1,
+      "model": "xgb_hazard_destination",
+      "selected": false,
+      "runner_up": false,
+      "is_reference": false,
+      "complexity_rank": 14,
+      "gate": {
+        "passed_all": false,
+        "reason": "fallback_present",
+        "failed_checks": [
+          "fallback_present"
+        ],
+        "fallback_count": 20,
+        "raw_p_value": 0.003,
+        "holm_adjusted_p_value": 0.024
+      },
+      "metrics": {
+        "log_loss": 0.3234907023705357,
+        "brier": 0.1681557359734971,
+        "calibration_error": null,
+        "n_predictions": 365
+      }
+    },
+    {
+      "candidate_order": 2,
+      "model": "causal_multiscale_ensemble",
+      "selected": false,
+      "runner_up": true,
+      "is_reference": false,
+      "complexity_rank": 16,
+      "gate": {
+        "passed_all": true,
+        "reason": "passed",
+        "failed_checks": [],
+        "fallback_count": 0,
+        "raw_p_value": 0.003,
+        "holm_adjusted_p_value": 0.024
+      },
+      "metrics": {
+        "log_loss": 0.3264176725787422,
+        "brier": 0.1692603842222822,
+        "calibration_error": null,
+        "n_predictions": 365
+      }
+    },
+    {
+      "candidate_order": 3,
+      "model": "causal_dynamic_ensemble",
+      "selected": true,
+      "runner_up": false,
+      "is_reference": false,
+      "complexity_rank": 15,
+      "gate": {
+        "passed_all": true,
+        "reason": "passed",
+        "failed_checks": [],
+        "fallback_count": 0,
+        "raw_p_value": 0.0035,
+        "holm_adjusted_p_value": 0.024
+      },
+      "metrics": {
+        "log_loss": 0.326615842106794,
+        "brier": 0.16955456554547,
+        "calibration_error": null,
+        "n_predictions": 365
+      }
+    },
+    {
+      "candidate_order": 4,
+      "model": "xgboost",
+      "selected": false,
+      "runner_up": false,
+      "is_reference": false,
+      "complexity_rank": 13,
+      "gate": {
+        "passed_all": false,
+        "reason": "holm_not_significant",
+        "failed_checks": [
+          "holm_not_significant"
+        ],
+        "fallback_count": 0,
+        "raw_p_value": 0.165,
+        "holm_adjusted_p_value": 0.81
+      },
+      "metrics": {
+        "log_loss": 0.3379739496343511,
+        "brier": 0.1788075940029974,
+        "calibration_error": null,
+        "n_predictions": 365
+      }
+    },
+    {
+      "candidate_order": 5,
+      "model": "recency_weighted_xgboost_208w",
+      "selected": false,
+      "runner_up": false,
+      "is_reference": false,
+      "complexity_rank": 14,
+      "gate": {
+        "passed_all": false,
+        "reason": "holm_not_significant",
+        "failed_checks": [
+          "holm_not_significant"
+        ],
+        "fallback_count": 0,
+        "raw_p_value": 0.162,
+        "holm_adjusted_p_value": 0.81
+      },
+      "metrics": {
+        "log_loss": 0.3398127396456099,
+        "brier": 0.1838896234343018,
+        "calibration_error": null,
+        "n_predictions": 365
+      }
+    },
+    {
+      "candidate_order": 6,
+      "model": "markov",
+      "selected": false,
+      "runner_up": false,
+      "is_reference": true,
+      "complexity_rank": 2,
+      "gate": {
+        "passed_all": true,
+        "reason": "passed",
+        "failed_checks": [],
+        "fallback_count": 0,
+        "raw_p_value": null,
+        "holm_adjusted_p_value": null
+      },
+      "metrics": {
+        "log_loss": 0.3575171372445035,
+        "brier": 0.1789247489473064,
+        "calibration_error": null,
+        "n_predictions": 365
+      }
+    },
+    {
+      "candidate_order": 7,
+      "model": "discounted_markov_208w",
+      "selected": false,
+      "runner_up": false,
+      "is_reference": false,
+      "complexity_rank": 3,
+      "gate": {
+        "passed_all": false,
+        "reason": "insufficient_log_loss_improvement;holm_not_significant",
+        "failed_checks": [
+          "insufficient_log_loss_improvement",
+          "holm_not_significant"
+        ],
+        "fallback_count": 0,
+        "raw_p_value": 0.996,
+        "holm_adjusted_p_value": 1.0
+      },
+      "metrics": {
+        "log_loss": 0.3636669209345449,
+        "brier": 0.180382812851307,
+        "calibration_error": null,
+        "n_predictions": 365
+      }
+    },
+    {
+      "candidate_order": 8,
+      "model": "pca_ridge_logistic",
+      "selected": false,
+      "runner_up": false,
+      "is_reference": false,
+      "complexity_rank": 4,
+      "gate": {
+        "passed_all": false,
+        "reason": "insufficient_log_loss_improvement;holm_not_significant;brier_degradation",
+        "failed_checks": [
+          "insufficient_log_loss_improvement",
+          "holm_not_significant",
+          "brier_degradation"
+        ],
+        "fallback_count": 0,
+        "raw_p_value": 1.0,
+        "holm_adjusted_p_value": 1.0
+      },
+      "metrics": {
+        "log_loss": 0.614130873250327,
+        "brier": 0.3760998813524669,
+        "calibration_error": null,
+        "n_predictions": 365
+      }
+    },
+    {
+      "candidate_order": 9,
+      "model": "recency_weighted_ridge_logistic_208w",
+      "selected": false,
+      "runner_up": false,
+      "is_reference": false,
+      "complexity_rank": 3,
+      "gate": {
+        "passed_all": false,
+        "reason": "insufficient_log_loss_improvement;holm_not_significant;brier_degradation",
+        "failed_checks": [
+          "insufficient_log_loss_improvement",
+          "holm_not_significant",
+          "brier_degradation"
+        ],
+        "fallback_count": 0,
+        "raw_p_value": 1.0,
+        "holm_adjusted_p_value": 1.0
+      },
+      "metrics": {
+        "log_loss": 1.11024786235247,
+        "brier": 0.4141368564940795,
+        "calibration_error": null,
+        "n_predictions": 365
+      }
+    },
+    {
+      "candidate_order": 10,
+      "model": "persistence",
+      "selected": false,
+      "runner_up": false,
+      "is_reference": false,
+      "complexity_rank": 1,
+      "gate": {
+        "passed_all": false,
+        "reason": "non_reference_baseline",
+        "failed_checks": [
+          "non_reference_baseline"
+        ],
+        "fallback_count": 0,
+        "raw_p_value": null,
+        "holm_adjusted_p_value": null
+      },
+      "metrics": {
+        "log_loss": 2.0439385501043037,
+        "brier": 0.1972602733808219,
+        "calibration_error": null,
+        "n_predictions": 365
+      }
+    },
+    {
+      "candidate_order": 11,
+      "model": "majority",
+      "selected": false,
+      "runner_up": false,
+      "is_reference": false,
+      "complexity_rank": 0,
+      "gate": {
+        "passed_all": false,
+        "reason": "non_reference_baseline",
+        "failed_checks": [
+          "non_reference_baseline"
+        ],
+        "fallback_count": 0,
+        "raw_p_value": null,
+        "holm_adjusted_p_value": null
+      },
+      "metrics": {
+        "log_loss": 12.547511644529196,
+        "brier": 1.2109589004767125,
+        "calibration_error": null,
+        "n_predictions": 365
+      }
+    }
+  ],
+  "supplemental_evaluation": {
+    "schema_version": "regime-selection-evaluation/1",
+    "status": "completed",
+    "evidence_status": "operational_oos",
+    "role": "supplemental_not_selection_gate",
+    "evaluation_split": "selection",
+    "holdout_rows_used": 0,
+    "selection_effect": "none",
+    "selected_champion_unchanged": "causal_dynamic_ensemble",
+    "candidate_set": [
+      "xgb_hazard_destination",
+      "causal_multiscale_ensemble",
+      "causal_dynamic_ensemble",
+      "xgboost",
+      "recency_weighted_xgboost_208w",
+      "markov",
+      "discounted_markov_208w",
+      "pca_ridge_logistic",
+      "recency_weighted_ridge_logistic_208w",
+      "persistence",
+      "majority"
+    ],
+    "common_origin_contract": {
+      "status": "matched",
+      "columns": [
+        "origin_date",
+        "target_date",
+        "evaluation_split",
+        "current_state",
+        "actual",
+        "train_size",
+        "gap"
+      ],
+      "origin_count": 365,
+      "first_origin_at": "2016-01-01T21:00:00+00:00",
+      "last_origin_at": "2022-12-23T21:00:00+00:00",
+      "origins_sha256": "6beaf7270bcf01fd81db128c38e545f77724c75ddcf72935c975c1700a685733"
+    },
+    "metric_definitions": {
+      "log_loss": "mean negative log actual-state probability after 1e-9 clipping and row renormalization",
+      "brier": "mean three-state sum squared probability error",
+      "normalized_entropy_sharpness": "one minus mean forecast entropy divided by log(3); zero is uniform and one is degenerate",
+      "state_recall": "argmax true positives divided by actual support for each state",
+      "transition_event": "actual next state differs from current state at the forecast origin",
+      "transition_detection_delay": "matched weekly forecast steps from an actual transition target until the first argmax prediction of its destination, censored at the next actual transition",
+      "false_alarm": "argmax predicts departure from current state while the actual next state remains current",
+      "false_alarms_per_year": "false alarm count divided by n_predictions/52.1775"
+    },
+    "primary_metric_crosscheck": {
+      "status": "matched",
+      "metric_tolerance": 1e-12,
+      "metrics": [
+        "multiclass_log_loss",
+        "multiclass_brier"
+      ],
+      "changes_holm_gate": false,
+      "changes_champion": false
+    },
+    "model_metrics": [
+      {
+        "model": "xgb_hazard_destination",
+        "n_predictions": 365,
+        "log_loss": 0.3234907023705357,
+        "brier": 0.16815573597349714,
+        "normalized_entropy_sharpness": 0.6509974411928945,
+        "mean_max_probability": 0.8896321032963735,
+        "fallback_count": 20,
+        "primary_metric_crosscheck": "matched"
+      },
+      {
+        "model": "causal_multiscale_ensemble",
+        "n_predictions": 365,
+        "log_loss": 0.32641767257874227,
+        "brier": 0.1692603842222822,
+        "normalized_entropy_sharpness": 0.6338956320587004,
+        "mean_max_probability": 0.8776437029194829,
+        "fallback_count": 0,
+        "primary_metric_crosscheck": "matched"
+      },
+      {
+        "model": "causal_dynamic_ensemble",
+        "n_predictions": 365,
+        "log_loss": 0.32661584210679395,
+        "brier": 0.16955456554547,
+        "normalized_entropy_sharpness": 0.6345513962045177,
+        "mean_max_probability": 0.8775678456779055,
+        "fallback_count": 0,
+        "primary_metric_crosscheck": "matched"
+      },
+      {
+        "model": "xgboost",
+        "n_predictions": 365,
+        "log_loss": 0.3379739496343511,
+        "brier": 0.1788075940029974,
+        "normalized_entropy_sharpness": 0.626246058490523,
+        "mean_max_probability": 0.8632904695623628,
+        "fallback_count": 0,
+        "primary_metric_crosscheck": "matched"
+      },
+      {
+        "model": "recency_weighted_xgboost_208w",
+        "n_predictions": 365,
+        "log_loss": 0.3398127396456099,
+        "brier": 0.18388962343430185,
+        "normalized_entropy_sharpness": 0.6513396842735206,
+        "mean_max_probability": 0.873539459409985,
+        "fallback_count": 0,
+        "primary_metric_crosscheck": "matched"
+      },
+      {
+        "model": "markov",
+        "n_predictions": 365,
+        "log_loss": 0.35751713724450346,
+        "brier": 0.17892474894730642,
+        "normalized_entropy_sharpness": 0.6262332252456617,
+        "mean_max_probability": 0.8827338203075579,
+        "fallback_count": 0,
+        "primary_metric_crosscheck": "matched"
+      },
+      {
+        "model": "discounted_markov_208w",
+        "n_predictions": 365,
+        "log_loss": 0.36366692093454484,
+        "brier": 0.18038281285130708,
+        "normalized_entropy_sharpness": 0.6065398267347204,
+        "mean_max_probability": 0.8760210257486851,
+        "fallback_count": 0,
+        "primary_metric_crosscheck": "matched"
+      },
+      {
+        "model": "pca_ridge_logistic",
+        "n_predictions": 365,
+        "log_loss": 0.6141308732503271,
+        "brier": 0.3760998813524669,
+        "normalized_entropy_sharpness": 0.5035013196287501,
+        "mean_max_probability": 0.7544442400549629,
+        "fallback_count": 0,
+        "primary_metric_crosscheck": "matched"
+      },
+      {
+        "model": "recency_weighted_ridge_logistic_208w",
+        "n_predictions": 365,
+        "log_loss": 1.1102478623524723,
+        "brier": 0.41413685649407955,
+        "normalized_entropy_sharpness": 0.8226410381952771,
+        "mean_max_probability": 0.9193746443190002,
+        "fallback_count": 0,
+        "primary_metric_crosscheck": "matched"
+      },
+      {
+        "model": "persistence",
+        "n_predictions": 365,
+        "log_loss": 2.0439385501043037,
+        "brier": 0.19726027338082194,
+        "normalized_entropy_sharpness": 0.9999999604532627,
+        "mean_max_probability": 0.999999998,
+        "fallback_count": 0,
+        "primary_metric_crosscheck": "matched"
+      },
+      {
+        "model": "majority",
+        "n_predictions": 365,
+        "log_loss": 12.547511644529196,
+        "brier": 1.2109589004767125,
+        "normalized_entropy_sharpness": 0.9999999604532627,
+        "mean_max_probability": 0.999999998,
+        "fallback_count": 0,
+        "primary_metric_crosscheck": "matched"
+      }
+    ],
+    "state_recall": [
+      {
+        "model": "xgb_hazard_destination",
+        "state": "risk_on",
+        "support": 155,
+        "true_positive": 142,
+        "recall": 0.9161290322580645,
+        "status": "computed"
+      },
+      {
+        "model": "xgb_hazard_destination",
+        "state": "transition",
+        "support": 107,
+        "true_positive": 90,
+        "recall": 0.8411214953271028,
+        "status": "computed"
+      },
+      {
+        "model": "xgb_hazard_destination",
+        "state": "risk_off",
+        "support": 103,
+        "true_positive": 97,
+        "recall": 0.941747572815534,
+        "status": "computed"
+      },
+      {
+        "model": "causal_multiscale_ensemble",
+        "state": "risk_on",
+        "support": 155,
+        "true_positive": 142,
+        "recall": 0.9161290322580645,
+        "status": "computed"
+      },
+      {
+        "model": "causal_multiscale_ensemble",
+        "state": "transition",
+        "support": 107,
+        "true_positive": 89,
+        "recall": 0.8317757009345794,
+        "status": "computed"
+      },
+      {
+        "model": "causal_multiscale_ensemble",
+        "state": "risk_off",
+        "support": 103,
+        "true_positive": 97,
+        "recall": 0.941747572815534,
+        "status": "computed"
+      },
+      {
+        "model": "causal_dynamic_ensemble",
+        "state": "risk_on",
+        "support": 155,
+        "true_positive": 142,
+        "recall": 0.9161290322580645,
+        "status": "computed"
+      },
+      {
+        "model": "causal_dynamic_ensemble",
+        "state": "transition",
+        "support": 107,
+        "true_positive": 88,
+        "recall": 0.822429906542056,
+        "status": "computed"
+      },
+      {
+        "model": "causal_dynamic_ensemble",
+        "state": "risk_off",
+        "support": 103,
+        "true_positive": 97,
+        "recall": 0.941747572815534,
+        "status": "computed"
+      },
+      {
+        "model": "xgboost",
+        "state": "risk_on",
+        "support": 155,
+        "true_positive": 144,
+        "recall": 0.9290322580645162,
+        "status": "computed"
+      },
+      {
+        "model": "xgboost",
+        "state": "transition",
+        "support": 107,
+        "true_positive": 87,
+        "recall": 0.8130841121495327,
+        "status": "computed"
+      },
+      {
+        "model": "xgboost",
+        "state": "risk_off",
+        "support": 103,
+        "true_positive": 97,
+        "recall": 0.941747572815534,
+        "status": "computed"
+      },
+      {
+        "model": "recency_weighted_xgboost_208w",
+        "state": "risk_on",
+        "support": 155,
+        "true_positive": 142,
+        "recall": 0.9161290322580645,
+        "status": "computed"
+      },
+      {
+        "model": "recency_weighted_xgboost_208w",
+        "state": "transition",
+        "support": 107,
+        "true_positive": 84,
+        "recall": 0.7850467289719626,
+        "status": "computed"
+      },
+      {
+        "model": "recency_weighted_xgboost_208w",
+        "state": "risk_off",
+        "support": 103,
+        "true_positive": 95,
+        "recall": 0.9223300970873787,
+        "status": "computed"
+      },
+      {
+        "model": "markov",
+        "state": "risk_on",
+        "support": 155,
+        "true_positive": 142,
+        "recall": 0.9161290322580645,
+        "status": "computed"
+      },
+      {
+        "model": "markov",
+        "state": "transition",
+        "support": 107,
+        "true_positive": 90,
+        "recall": 0.8411214953271028,
+        "status": "computed"
+      },
+      {
+        "model": "markov",
+        "state": "risk_off",
+        "support": 103,
+        "true_positive": 97,
+        "recall": 0.941747572815534,
+        "status": "computed"
+      },
+      {
+        "model": "discounted_markov_208w",
+        "state": "risk_on",
+        "support": 155,
+        "true_positive": 142,
+        "recall": 0.9161290322580645,
+        "status": "computed"
+      },
+      {
+        "model": "discounted_markov_208w",
+        "state": "transition",
+        "support": 107,
+        "true_positive": 90,
+        "recall": 0.8411214953271028,
+        "status": "computed"
+      },
+      {
+        "model": "discounted_markov_208w",
+        "state": "risk_off",
+        "support": 103,
+        "true_positive": 97,
+        "recall": 0.941747572815534,
+        "status": "computed"
+      },
+      {
+        "model": "pca_ridge_logistic",
+        "state": "risk_on",
+        "support": 155,
+        "true_positive": 119,
+        "recall": 0.7677419354838709,
+        "status": "computed"
+      },
+      {
+        "model": "pca_ridge_logistic",
+        "state": "transition",
+        "support": 107,
+        "true_positive": 67,
+        "recall": 0.6261682242990654,
+        "status": "computed"
+      },
+      {
+        "model": "pca_ridge_logistic",
+        "state": "risk_off",
+        "support": 103,
+        "true_positive": 71,
+        "recall": 0.6893203883495146,
+        "status": "computed"
+      },
+      {
+        "model": "recency_weighted_ridge_logistic_208w",
+        "state": "risk_on",
+        "support": 155,
+        "true_positive": 118,
+        "recall": 0.7612903225806451,
+        "status": "computed"
+      },
+      {
+        "model": "recency_weighted_ridge_logistic_208w",
+        "state": "transition",
+        "support": 107,
+        "true_positive": 69,
+        "recall": 0.6448598130841121,
+        "status": "computed"
+      },
+      {
+        "model": "recency_weighted_ridge_logistic_208w",
+        "state": "risk_off",
+        "support": 103,
+        "true_positive": 87,
+        "recall": 0.8446601941747572,
+        "status": "computed"
+      },
+      {
+        "model": "persistence",
+        "state": "risk_on",
+        "support": 155,
+        "true_positive": 142,
+        "recall": 0.9161290322580645,
+        "status": "computed"
+      },
+      {
+        "model": "persistence",
+        "state": "transition",
+        "support": 107,
+        "true_positive": 90,
+        "recall": 0.8411214953271028,
+        "status": "computed"
+      },
+      {
+        "model": "persistence",
+        "state": "risk_off",
+        "support": 103,
+        "true_positive": 97,
+        "recall": 0.941747572815534,
+        "status": "computed"
+      },
+      {
+        "model": "majority",
+        "state": "risk_on",
+        "support": 155,
+        "true_positive": 122,
+        "recall": 0.7870967741935484,
+        "status": "computed"
+      },
+      {
+        "model": "majority",
+        "state": "transition",
+        "support": 107,
+        "true_positive": 22,
+        "recall": 0.205607476635514,
+        "status": "computed"
+      },
+      {
+        "model": "majority",
+        "state": "risk_off",
+        "support": 103,
+        "true_positive": 0,
+        "recall": 0.0,
+        "status": "computed"
+      }
+    ],
+    "transition_diagnostics": [
+      {
+        "model": "xgb_hazard_destination",
+        "transition_event_count": 36,
+        "detected_event_count": 34,
+        "missed_event_count": 2,
+        "on_time_departure_count": 0,
+        "on_time_destination_count": 0,
+        "destination_detection_rate": 0.9444444444444444,
+        "mean_detection_delay_forecast_weeks": 1.0,
+        "median_detection_delay_forecast_weeks": 1.0,
+        "maximum_detection_delay_forecast_weeks": 1,
+        "false_alarm_count": 0,
+        "exposure_years": 6.995352402855636,
+        "false_alarms_per_year": 0.0
+      },
+      {
+        "model": "causal_multiscale_ensemble",
+        "transition_event_count": 36,
+        "detected_event_count": 34,
+        "missed_event_count": 2,
+        "on_time_departure_count": 0,
+        "on_time_destination_count": 0,
+        "destination_detection_rate": 0.9444444444444444,
+        "mean_detection_delay_forecast_weeks": 1.0,
+        "median_detection_delay_forecast_weeks": 1.0,
+        "maximum_detection_delay_forecast_weeks": 1,
+        "false_alarm_count": 1,
+        "exposure_years": 6.995352402855636,
+        "false_alarms_per_year": 0.14295205479452056
+      },
+      {
+        "model": "causal_dynamic_ensemble",
+        "transition_event_count": 36,
+        "detected_event_count": 34,
+        "missed_event_count": 2,
+        "on_time_departure_count": 0,
+        "on_time_destination_count": 0,
+        "destination_detection_rate": 0.9444444444444444,
+        "mean_detection_delay_forecast_weeks": 1.0,
+        "median_detection_delay_forecast_weeks": 1.0,
+        "maximum_detection_delay_forecast_weeks": 1,
+        "false_alarm_count": 2,
+        "exposure_years": 6.995352402855636,
+        "false_alarms_per_year": 0.2859041095890411
+      },
+      {
+        "model": "xgboost",
+        "transition_event_count": 36,
+        "detected_event_count": 34,
+        "missed_event_count": 2,
+        "on_time_departure_count": 8,
+        "on_time_destination_count": 8,
+        "destination_detection_rate": 0.9444444444444444,
+        "mean_detection_delay_forecast_weeks": 0.8529411764705882,
+        "median_detection_delay_forecast_weeks": 1.0,
+        "maximum_detection_delay_forecast_weeks": 2,
+        "false_alarm_count": 9,
+        "exposure_years": 6.995352402855636,
+        "false_alarms_per_year": 1.286568493150685
+      },
+      {
+        "model": "recency_weighted_xgboost_208w",
+        "transition_event_count": 36,
+        "detected_event_count": 34,
+        "missed_event_count": 2,
+        "on_time_departure_count": 6,
+        "on_time_destination_count": 6,
+        "destination_detection_rate": 0.9444444444444444,
+        "mean_detection_delay_forecast_weeks": 0.9411764705882353,
+        "median_detection_delay_forecast_weeks": 1.0,
+        "maximum_detection_delay_forecast_weeks": 2,
+        "false_alarm_count": 14,
+        "exposure_years": 6.995352402855636,
+        "false_alarms_per_year": 2.001328767123288
+      },
+      {
+        "model": "markov",
+        "transition_event_count": 36,
+        "detected_event_count": 34,
+        "missed_event_count": 2,
+        "on_time_departure_count": 0,
+        "on_time_destination_count": 0,
+        "destination_detection_rate": 0.9444444444444444,
+        "mean_detection_delay_forecast_weeks": 1.0,
+        "median_detection_delay_forecast_weeks": 1.0,
+        "maximum_detection_delay_forecast_weeks": 1,
+        "false_alarm_count": 0,
+        "exposure_years": 6.995352402855636,
+        "false_alarms_per_year": 0.0
+      },
+      {
+        "model": "discounted_markov_208w",
+        "transition_event_count": 36,
+        "detected_event_count": 34,
+        "missed_event_count": 2,
+        "on_time_departure_count": 0,
+        "on_time_destination_count": 0,
+        "destination_detection_rate": 0.9444444444444444,
+        "mean_detection_delay_forecast_weeks": 1.0,
+        "median_detection_delay_forecast_weeks": 1.0,
+        "maximum_detection_delay_forecast_weeks": 1,
+        "false_alarm_count": 0,
+        "exposure_years": 6.995352402855636,
+        "false_alarms_per_year": 0.0
+      },
+      {
+        "model": "pca_ridge_logistic",
+        "transition_event_count": 36,
+        "detected_event_count": 31,
+        "missed_event_count": 5,
+        "on_time_departure_count": 14,
+        "on_time_destination_count": 11,
+        "destination_detection_rate": 0.8611111111111112,
+        "mean_detection_delay_forecast_weeks": 1.096774193548387,
+        "median_detection_delay_forecast_weeks": 1.0,
+        "maximum_detection_delay_forecast_weeks": 8,
+        "false_alarm_count": 83,
+        "exposure_years": 6.995352402855636,
+        "false_alarms_per_year": 11.865020547945207
+      },
+      {
+        "model": "recency_weighted_ridge_logistic_208w",
+        "transition_event_count": 36,
+        "detected_event_count": 32,
+        "missed_event_count": 4,
+        "on_time_departure_count": 9,
+        "on_time_destination_count": 7,
+        "destination_detection_rate": 0.8888888888888888,
+        "mean_detection_delay_forecast_weeks": 1.78125,
+        "median_detection_delay_forecast_weeks": 2.0,
+        "maximum_detection_delay_forecast_weeks": 8,
+        "false_alarm_count": 62,
+        "exposure_years": 6.995352402855636,
+        "false_alarms_per_year": 8.863027397260275
+      },
+      {
+        "model": "persistence",
+        "transition_event_count": 36,
+        "detected_event_count": 34,
+        "missed_event_count": 2,
+        "on_time_departure_count": 0,
+        "on_time_destination_count": 0,
+        "destination_detection_rate": 0.9444444444444444,
+        "mean_detection_delay_forecast_weeks": 1.0,
+        "median_detection_delay_forecast_weeks": 1.0,
+        "maximum_detection_delay_forecast_weeks": 1,
+        "false_alarm_count": 0,
+        "exposure_years": 6.995352402855636,
+        "false_alarms_per_year": 0.0
+      },
+      {
+        "model": "majority",
+        "transition_event_count": 36,
+        "detected_event_count": 14,
+        "missed_event_count": 22,
+        "on_time_departure_count": 21,
+        "on_time_destination_count": 13,
+        "destination_detection_rate": 0.3888888888888889,
+        "mean_detection_delay_forecast_weeks": 1.1428571428571428,
+        "median_detection_delay_forecast_weeks": 0.0,
+        "maximum_detection_delay_forecast_weeks": 16,
+        "false_alarm_count": 198,
+        "exposure_years": 6.995352402855636,
+        "false_alarms_per_year": 28.30450684931507
+      }
+    ],
+    "transition_events": [
+      {
+        "model": "xgb_hazard_destination",
+        "event_number": 1,
+        "target_at": "2016-01-08T21:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_off",
+        "status": "detected",
+        "detected_target_at": "2016-01-15T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "xgb_hazard_destination",
+        "event_number": 2,
+        "target_at": "2016-03-11T21:00:00+00:00",
+        "source_state": "risk_off",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2016-03-18T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "xgb_hazard_destination",
+        "event_number": 3,
+        "target_at": "2016-05-13T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2016-05-20T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "xgb_hazard_destination",
+        "event_number": 4,
+        "target_at": "2016-06-17T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2016-06-24T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "xgb_hazard_destination",
+        "event_number": 5,
+        "target_at": "2016-07-08T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2016-07-15T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "xgb_hazard_destination",
+        "event_number": 6,
+        "target_at": "2016-09-09T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2016-09-16T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "xgb_hazard_destination",
+        "event_number": 7,
+        "target_at": "2016-09-23T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2016-09-30T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "xgb_hazard_destination",
+        "event_number": 8,
+        "target_at": "2016-10-14T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2016-10-21T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "xgb_hazard_destination",
+        "event_number": 9,
+        "target_at": "2016-12-09T21:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2016-12-16T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "xgb_hazard_destination",
+        "event_number": 10,
+        "target_at": "2018-02-09T21:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2018-02-16T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "xgb_hazard_destination",
+        "event_number": 11,
+        "target_at": "2018-03-02T21:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_off",
+        "status": "missed_before_next_transition",
+        "detected_target_at": null,
+        "detection_delay_forecast_weeks": null
+      },
+      {
+        "model": "xgb_hazard_destination",
+        "event_number": 12,
+        "target_at": "2018-03-09T21:00:00+00:00",
+        "source_state": "risk_off",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2018-03-16T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "xgb_hazard_destination",
+        "event_number": 13,
+        "target_at": "2018-03-23T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_off",
+        "status": "detected",
+        "detected_target_at": "2018-03-30T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "xgb_hazard_destination",
+        "event_number": 14,
+        "target_at": "2018-05-11T20:00:00+00:00",
+        "source_state": "risk_off",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2018-05-18T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "xgb_hazard_destination",
+        "event_number": 15,
+        "target_at": "2018-08-03T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2018-08-10T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "xgb_hazard_destination",
+        "event_number": 16,
+        "target_at": "2018-10-12T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2018-10-19T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "xgb_hazard_destination",
+        "event_number": 17,
+        "target_at": "2018-10-26T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_off",
+        "status": "detected",
+        "detected_target_at": "2018-11-02T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "xgb_hazard_destination",
+        "event_number": 18,
+        "target_at": "2019-02-22T21:00:00+00:00",
+        "source_state": "risk_off",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2019-03-01T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "xgb_hazard_destination",
+        "event_number": 19,
+        "target_at": "2019-04-05T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2019-04-12T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "xgb_hazard_destination",
+        "event_number": 20,
+        "target_at": "2019-05-10T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2019-05-17T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "xgb_hazard_destination",
+        "event_number": 21,
+        "target_at": "2019-06-21T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2019-06-28T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "xgb_hazard_destination",
+        "event_number": 22,
+        "target_at": "2019-08-02T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2019-08-09T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "xgb_hazard_destination",
+        "event_number": 23,
+        "target_at": "2019-11-01T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2019-11-08T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "xgb_hazard_destination",
+        "event_number": 24,
+        "target_at": "2020-02-28T21:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "risk_off",
+        "status": "detected",
+        "detected_target_at": "2020-03-06T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "xgb_hazard_destination",
+        "event_number": 25,
+        "target_at": "2020-07-10T20:00:00+00:00",
+        "source_state": "risk_off",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2020-07-17T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "xgb_hazard_destination",
+        "event_number": 26,
+        "target_at": "2020-10-09T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2020-10-16T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "xgb_hazard_destination",
+        "event_number": 27,
+        "target_at": "2020-10-30T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2020-11-06T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "xgb_hazard_destination",
+        "event_number": 28,
+        "target_at": "2020-12-25T21:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2021-01-01T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "xgb_hazard_destination",
+        "event_number": 29,
+        "target_at": "2021-01-15T21:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2021-01-22T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "xgb_hazard_destination",
+        "event_number": 30,
+        "target_at": "2021-03-26T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2021-04-02T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "xgb_hazard_destination",
+        "event_number": 31,
+        "target_at": "2021-10-01T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2021-10-08T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "xgb_hazard_destination",
+        "event_number": 32,
+        "target_at": "2021-10-22T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2021-10-29T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "xgb_hazard_destination",
+        "event_number": 33,
+        "target_at": "2021-11-26T21:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2021-12-03T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "xgb_hazard_destination",
+        "event_number": 34,
+        "target_at": "2021-12-31T21:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "missed_before_next_transition",
+        "detected_target_at": null,
+        "detection_delay_forecast_weeks": null
+      },
+      {
+        "model": "xgb_hazard_destination",
+        "event_number": 35,
+        "target_at": "2022-01-07T21:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2022-01-14T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "xgb_hazard_destination",
+        "event_number": 36,
+        "target_at": "2022-01-21T21:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_off",
+        "status": "detected",
+        "detected_target_at": "2022-01-28T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "causal_multiscale_ensemble",
+        "event_number": 1,
+        "target_at": "2016-01-08T21:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_off",
+        "status": "detected",
+        "detected_target_at": "2016-01-15T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "causal_multiscale_ensemble",
+        "event_number": 2,
+        "target_at": "2016-03-11T21:00:00+00:00",
+        "source_state": "risk_off",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2016-03-18T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "causal_multiscale_ensemble",
+        "event_number": 3,
+        "target_at": "2016-05-13T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2016-05-20T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "causal_multiscale_ensemble",
+        "event_number": 4,
+        "target_at": "2016-06-17T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2016-06-24T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "causal_multiscale_ensemble",
+        "event_number": 5,
+        "target_at": "2016-07-08T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2016-07-15T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "causal_multiscale_ensemble",
+        "event_number": 6,
+        "target_at": "2016-09-09T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2016-09-16T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "causal_multiscale_ensemble",
+        "event_number": 7,
+        "target_at": "2016-09-23T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2016-09-30T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "causal_multiscale_ensemble",
+        "event_number": 8,
+        "target_at": "2016-10-14T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2016-10-21T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "causal_multiscale_ensemble",
+        "event_number": 9,
+        "target_at": "2016-12-09T21:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2016-12-16T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "causal_multiscale_ensemble",
+        "event_number": 10,
+        "target_at": "2018-02-09T21:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2018-02-16T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "causal_multiscale_ensemble",
+        "event_number": 11,
+        "target_at": "2018-03-02T21:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_off",
+        "status": "missed_before_next_transition",
+        "detected_target_at": null,
+        "detection_delay_forecast_weeks": null
+      },
+      {
+        "model": "causal_multiscale_ensemble",
+        "event_number": 12,
+        "target_at": "2018-03-09T21:00:00+00:00",
+        "source_state": "risk_off",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2018-03-16T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "causal_multiscale_ensemble",
+        "event_number": 13,
+        "target_at": "2018-03-23T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_off",
+        "status": "detected",
+        "detected_target_at": "2018-03-30T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "causal_multiscale_ensemble",
+        "event_number": 14,
+        "target_at": "2018-05-11T20:00:00+00:00",
+        "source_state": "risk_off",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2018-05-18T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "causal_multiscale_ensemble",
+        "event_number": 15,
+        "target_at": "2018-08-03T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2018-08-10T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "causal_multiscale_ensemble",
+        "event_number": 16,
+        "target_at": "2018-10-12T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2018-10-19T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "causal_multiscale_ensemble",
+        "event_number": 17,
+        "target_at": "2018-10-26T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_off",
+        "status": "detected",
+        "detected_target_at": "2018-11-02T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "causal_multiscale_ensemble",
+        "event_number": 18,
+        "target_at": "2019-02-22T21:00:00+00:00",
+        "source_state": "risk_off",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2019-03-01T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "causal_multiscale_ensemble",
+        "event_number": 19,
+        "target_at": "2019-04-05T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2019-04-12T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "causal_multiscale_ensemble",
+        "event_number": 20,
+        "target_at": "2019-05-10T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2019-05-17T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "causal_multiscale_ensemble",
+        "event_number": 21,
+        "target_at": "2019-06-21T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2019-06-28T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "causal_multiscale_ensemble",
+        "event_number": 22,
+        "target_at": "2019-08-02T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2019-08-09T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "causal_multiscale_ensemble",
+        "event_number": 23,
+        "target_at": "2019-11-01T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2019-11-08T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "causal_multiscale_ensemble",
+        "event_number": 24,
+        "target_at": "2020-02-28T21:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "risk_off",
+        "status": "detected",
+        "detected_target_at": "2020-03-06T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "causal_multiscale_ensemble",
+        "event_number": 25,
+        "target_at": "2020-07-10T20:00:00+00:00",
+        "source_state": "risk_off",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2020-07-17T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "causal_multiscale_ensemble",
+        "event_number": 26,
+        "target_at": "2020-10-09T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2020-10-16T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "causal_multiscale_ensemble",
+        "event_number": 27,
+        "target_at": "2020-10-30T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2020-11-06T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "causal_multiscale_ensemble",
+        "event_number": 28,
+        "target_at": "2020-12-25T21:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2021-01-01T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "causal_multiscale_ensemble",
+        "event_number": 29,
+        "target_at": "2021-01-15T21:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2021-01-22T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "causal_multiscale_ensemble",
+        "event_number": 30,
+        "target_at": "2021-03-26T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2021-04-02T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "causal_multiscale_ensemble",
+        "event_number": 31,
+        "target_at": "2021-10-01T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2021-10-08T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "causal_multiscale_ensemble",
+        "event_number": 32,
+        "target_at": "2021-10-22T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2021-10-29T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "causal_multiscale_ensemble",
+        "event_number": 33,
+        "target_at": "2021-11-26T21:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2021-12-03T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "causal_multiscale_ensemble",
+        "event_number": 34,
+        "target_at": "2021-12-31T21:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "missed_before_next_transition",
+        "detected_target_at": null,
+        "detection_delay_forecast_weeks": null
+      },
+      {
+        "model": "causal_multiscale_ensemble",
+        "event_number": 35,
+        "target_at": "2022-01-07T21:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2022-01-14T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "causal_multiscale_ensemble",
+        "event_number": 36,
+        "target_at": "2022-01-21T21:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_off",
+        "status": "detected",
+        "detected_target_at": "2022-01-28T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "causal_dynamic_ensemble",
+        "event_number": 1,
+        "target_at": "2016-01-08T21:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_off",
+        "status": "detected",
+        "detected_target_at": "2016-01-15T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "causal_dynamic_ensemble",
+        "event_number": 2,
+        "target_at": "2016-03-11T21:00:00+00:00",
+        "source_state": "risk_off",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2016-03-18T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "causal_dynamic_ensemble",
+        "event_number": 3,
+        "target_at": "2016-05-13T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2016-05-20T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "causal_dynamic_ensemble",
+        "event_number": 4,
+        "target_at": "2016-06-17T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2016-06-24T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "causal_dynamic_ensemble",
+        "event_number": 5,
+        "target_at": "2016-07-08T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2016-07-15T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "causal_dynamic_ensemble",
+        "event_number": 6,
+        "target_at": "2016-09-09T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2016-09-16T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "causal_dynamic_ensemble",
+        "event_number": 7,
+        "target_at": "2016-09-23T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2016-09-30T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "causal_dynamic_ensemble",
+        "event_number": 8,
+        "target_at": "2016-10-14T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2016-10-21T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "causal_dynamic_ensemble",
+        "event_number": 9,
+        "target_at": "2016-12-09T21:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2016-12-16T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "causal_dynamic_ensemble",
+        "event_number": 10,
+        "target_at": "2018-02-09T21:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2018-02-16T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "causal_dynamic_ensemble",
+        "event_number": 11,
+        "target_at": "2018-03-02T21:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_off",
+        "status": "missed_before_next_transition",
+        "detected_target_at": null,
+        "detection_delay_forecast_weeks": null
+      },
+      {
+        "model": "causal_dynamic_ensemble",
+        "event_number": 12,
+        "target_at": "2018-03-09T21:00:00+00:00",
+        "source_state": "risk_off",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2018-03-16T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "causal_dynamic_ensemble",
+        "event_number": 13,
+        "target_at": "2018-03-23T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_off",
+        "status": "detected",
+        "detected_target_at": "2018-03-30T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "causal_dynamic_ensemble",
+        "event_number": 14,
+        "target_at": "2018-05-11T20:00:00+00:00",
+        "source_state": "risk_off",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2018-05-18T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "causal_dynamic_ensemble",
+        "event_number": 15,
+        "target_at": "2018-08-03T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2018-08-10T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "causal_dynamic_ensemble",
+        "event_number": 16,
+        "target_at": "2018-10-12T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2018-10-19T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "causal_dynamic_ensemble",
+        "event_number": 17,
+        "target_at": "2018-10-26T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_off",
+        "status": "detected",
+        "detected_target_at": "2018-11-02T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "causal_dynamic_ensemble",
+        "event_number": 18,
+        "target_at": "2019-02-22T21:00:00+00:00",
+        "source_state": "risk_off",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2019-03-01T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "causal_dynamic_ensemble",
+        "event_number": 19,
+        "target_at": "2019-04-05T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2019-04-12T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "causal_dynamic_ensemble",
+        "event_number": 20,
+        "target_at": "2019-05-10T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2019-05-17T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "causal_dynamic_ensemble",
+        "event_number": 21,
+        "target_at": "2019-06-21T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2019-06-28T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "causal_dynamic_ensemble",
+        "event_number": 22,
+        "target_at": "2019-08-02T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2019-08-09T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "causal_dynamic_ensemble",
+        "event_number": 23,
+        "target_at": "2019-11-01T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2019-11-08T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "causal_dynamic_ensemble",
+        "event_number": 24,
+        "target_at": "2020-02-28T21:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "risk_off",
+        "status": "detected",
+        "detected_target_at": "2020-03-06T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "causal_dynamic_ensemble",
+        "event_number": 25,
+        "target_at": "2020-07-10T20:00:00+00:00",
+        "source_state": "risk_off",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2020-07-17T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "causal_dynamic_ensemble",
+        "event_number": 26,
+        "target_at": "2020-10-09T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2020-10-16T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "causal_dynamic_ensemble",
+        "event_number": 27,
+        "target_at": "2020-10-30T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2020-11-06T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "causal_dynamic_ensemble",
+        "event_number": 28,
+        "target_at": "2020-12-25T21:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2021-01-01T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "causal_dynamic_ensemble",
+        "event_number": 29,
+        "target_at": "2021-01-15T21:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2021-01-22T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "causal_dynamic_ensemble",
+        "event_number": 30,
+        "target_at": "2021-03-26T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2021-04-02T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "causal_dynamic_ensemble",
+        "event_number": 31,
+        "target_at": "2021-10-01T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2021-10-08T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "causal_dynamic_ensemble",
+        "event_number": 32,
+        "target_at": "2021-10-22T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2021-10-29T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "causal_dynamic_ensemble",
+        "event_number": 33,
+        "target_at": "2021-11-26T21:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2021-12-03T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "causal_dynamic_ensemble",
+        "event_number": 34,
+        "target_at": "2021-12-31T21:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "missed_before_next_transition",
+        "detected_target_at": null,
+        "detection_delay_forecast_weeks": null
+      },
+      {
+        "model": "causal_dynamic_ensemble",
+        "event_number": 35,
+        "target_at": "2022-01-07T21:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2022-01-14T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "causal_dynamic_ensemble",
+        "event_number": 36,
+        "target_at": "2022-01-21T21:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_off",
+        "status": "detected",
+        "detected_target_at": "2022-01-28T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "xgboost",
+        "event_number": 1,
+        "target_at": "2016-01-08T21:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_off",
+        "status": "detected",
+        "detected_target_at": "2016-01-15T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "xgboost",
+        "event_number": 2,
+        "target_at": "2016-03-11T21:00:00+00:00",
+        "source_state": "risk_off",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2016-03-11T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 0
+      },
+      {
+        "model": "xgboost",
+        "event_number": 3,
+        "target_at": "2016-05-13T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2016-05-27T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 2
+      },
+      {
+        "model": "xgboost",
+        "event_number": 4,
+        "target_at": "2016-06-17T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2016-06-24T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "xgboost",
+        "event_number": 5,
+        "target_at": "2016-07-08T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2016-07-15T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "xgboost",
+        "event_number": 6,
+        "target_at": "2016-09-09T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2016-09-16T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "xgboost",
+        "event_number": 7,
+        "target_at": "2016-09-23T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2016-09-30T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "xgboost",
+        "event_number": 8,
+        "target_at": "2016-10-14T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2016-10-21T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "xgboost",
+        "event_number": 9,
+        "target_at": "2016-12-09T21:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2016-12-16T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "xgboost",
+        "event_number": 10,
+        "target_at": "2018-02-09T21:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2018-02-23T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 2
+      },
+      {
+        "model": "xgboost",
+        "event_number": 11,
+        "target_at": "2018-03-02T21:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_off",
+        "status": "missed_before_next_transition",
+        "detected_target_at": null,
+        "detection_delay_forecast_weeks": null
+      },
+      {
+        "model": "xgboost",
+        "event_number": 12,
+        "target_at": "2018-03-09T21:00:00+00:00",
+        "source_state": "risk_off",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2018-03-09T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 0
+      },
+      {
+        "model": "xgboost",
+        "event_number": 13,
+        "target_at": "2018-03-23T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_off",
+        "status": "detected",
+        "detected_target_at": "2018-03-30T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "xgboost",
+        "event_number": 14,
+        "target_at": "2018-05-11T20:00:00+00:00",
+        "source_state": "risk_off",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2018-05-11T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 0
+      },
+      {
+        "model": "xgboost",
+        "event_number": 15,
+        "target_at": "2018-08-03T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2018-08-03T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 0
+      },
+      {
+        "model": "xgboost",
+        "event_number": 16,
+        "target_at": "2018-10-12T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2018-10-19T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "xgboost",
+        "event_number": 17,
+        "target_at": "2018-10-26T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_off",
+        "status": "detected",
+        "detected_target_at": "2018-11-02T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "xgboost",
+        "event_number": 18,
+        "target_at": "2019-02-22T21:00:00+00:00",
+        "source_state": "risk_off",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2019-02-22T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 0
+      },
+      {
+        "model": "xgboost",
+        "event_number": 19,
+        "target_at": "2019-04-05T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2019-04-05T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 0
+      },
+      {
+        "model": "xgboost",
+        "event_number": 20,
+        "target_at": "2019-05-10T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2019-05-17T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "xgboost",
+        "event_number": 21,
+        "target_at": "2019-06-21T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2019-06-28T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "xgboost",
+        "event_number": 22,
+        "target_at": "2019-08-02T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2019-08-09T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "xgboost",
+        "event_number": 23,
+        "target_at": "2019-11-01T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2019-11-08T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "xgboost",
+        "event_number": 24,
+        "target_at": "2020-02-28T21:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "risk_off",
+        "status": "detected",
+        "detected_target_at": "2020-03-06T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "xgboost",
+        "event_number": 25,
+        "target_at": "2020-07-10T20:00:00+00:00",
+        "source_state": "risk_off",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2020-07-17T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "xgboost",
+        "event_number": 26,
+        "target_at": "2020-10-09T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2020-10-09T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 0
+      },
+      {
+        "model": "xgboost",
+        "event_number": 27,
+        "target_at": "2020-10-30T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2020-11-13T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 2
+      },
+      {
+        "model": "xgboost",
+        "event_number": 28,
+        "target_at": "2020-12-25T21:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2020-12-25T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 0
+      },
+      {
+        "model": "xgboost",
+        "event_number": 29,
+        "target_at": "2021-01-15T21:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2021-01-22T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "xgboost",
+        "event_number": 30,
+        "target_at": "2021-03-26T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2021-04-02T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "xgboost",
+        "event_number": 31,
+        "target_at": "2021-10-01T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2021-10-08T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "xgboost",
+        "event_number": 32,
+        "target_at": "2021-10-22T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2021-10-29T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "xgboost",
+        "event_number": 33,
+        "target_at": "2021-11-26T21:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2021-12-03T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "xgboost",
+        "event_number": 34,
+        "target_at": "2021-12-31T21:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "missed_before_next_transition",
+        "detected_target_at": null,
+        "detection_delay_forecast_weeks": null
+      },
+      {
+        "model": "xgboost",
+        "event_number": 35,
+        "target_at": "2022-01-07T21:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2022-01-14T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "xgboost",
+        "event_number": 36,
+        "target_at": "2022-01-21T21:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_off",
+        "status": "detected",
+        "detected_target_at": "2022-01-28T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "recency_weighted_xgboost_208w",
+        "event_number": 1,
+        "target_at": "2016-01-08T21:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_off",
+        "status": "detected",
+        "detected_target_at": "2016-01-15T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "recency_weighted_xgboost_208w",
+        "event_number": 2,
+        "target_at": "2016-03-11T21:00:00+00:00",
+        "source_state": "risk_off",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2016-03-11T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 0
+      },
+      {
+        "model": "recency_weighted_xgboost_208w",
+        "event_number": 3,
+        "target_at": "2016-05-13T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2016-05-27T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 2
+      },
+      {
+        "model": "recency_weighted_xgboost_208w",
+        "event_number": 4,
+        "target_at": "2016-06-17T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2016-06-24T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "recency_weighted_xgboost_208w",
+        "event_number": 5,
+        "target_at": "2016-07-08T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2016-07-15T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "recency_weighted_xgboost_208w",
+        "event_number": 6,
+        "target_at": "2016-09-09T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2016-09-16T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "recency_weighted_xgboost_208w",
+        "event_number": 7,
+        "target_at": "2016-09-23T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2016-09-30T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "recency_weighted_xgboost_208w",
+        "event_number": 8,
+        "target_at": "2016-10-14T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2016-10-21T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "recency_weighted_xgboost_208w",
+        "event_number": 9,
+        "target_at": "2016-12-09T21:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2016-12-16T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "recency_weighted_xgboost_208w",
+        "event_number": 10,
+        "target_at": "2018-02-09T21:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2018-02-23T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 2
+      },
+      {
+        "model": "recency_weighted_xgboost_208w",
+        "event_number": 11,
+        "target_at": "2018-03-02T21:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_off",
+        "status": "missed_before_next_transition",
+        "detected_target_at": null,
+        "detection_delay_forecast_weeks": null
+      },
+      {
+        "model": "recency_weighted_xgboost_208w",
+        "event_number": 12,
+        "target_at": "2018-03-09T21:00:00+00:00",
+        "source_state": "risk_off",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2018-03-09T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 0
+      },
+      {
+        "model": "recency_weighted_xgboost_208w",
+        "event_number": 13,
+        "target_at": "2018-03-23T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_off",
+        "status": "detected",
+        "detected_target_at": "2018-03-30T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "recency_weighted_xgboost_208w",
+        "event_number": 14,
+        "target_at": "2018-05-11T20:00:00+00:00",
+        "source_state": "risk_off",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2018-05-11T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 0
+      },
+      {
+        "model": "recency_weighted_xgboost_208w",
+        "event_number": 15,
+        "target_at": "2018-08-03T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2018-08-10T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "recency_weighted_xgboost_208w",
+        "event_number": 16,
+        "target_at": "2018-10-12T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2018-10-19T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "recency_weighted_xgboost_208w",
+        "event_number": 17,
+        "target_at": "2018-10-26T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_off",
+        "status": "detected",
+        "detected_target_at": "2018-11-02T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "recency_weighted_xgboost_208w",
+        "event_number": 18,
+        "target_at": "2019-02-22T21:00:00+00:00",
+        "source_state": "risk_off",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2019-02-22T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 0
+      },
+      {
+        "model": "recency_weighted_xgboost_208w",
+        "event_number": 19,
+        "target_at": "2019-04-05T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2019-04-05T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 0
+      },
+      {
+        "model": "recency_weighted_xgboost_208w",
+        "event_number": 20,
+        "target_at": "2019-05-10T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2019-05-17T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "recency_weighted_xgboost_208w",
+        "event_number": 21,
+        "target_at": "2019-06-21T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2019-06-28T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "recency_weighted_xgboost_208w",
+        "event_number": 22,
+        "target_at": "2019-08-02T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2019-08-09T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "recency_weighted_xgboost_208w",
+        "event_number": 23,
+        "target_at": "2019-11-01T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2019-11-08T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "recency_weighted_xgboost_208w",
+        "event_number": 24,
+        "target_at": "2020-02-28T21:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "risk_off",
+        "status": "detected",
+        "detected_target_at": "2020-03-06T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "recency_weighted_xgboost_208w",
+        "event_number": 25,
+        "target_at": "2020-07-10T20:00:00+00:00",
+        "source_state": "risk_off",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2020-07-24T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 2
+      },
+      {
+        "model": "recency_weighted_xgboost_208w",
+        "event_number": 26,
+        "target_at": "2020-10-09T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2020-10-09T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 0
+      },
+      {
+        "model": "recency_weighted_xgboost_208w",
+        "event_number": 27,
+        "target_at": "2020-10-30T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2020-11-13T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 2
+      },
+      {
+        "model": "recency_weighted_xgboost_208w",
+        "event_number": 28,
+        "target_at": "2020-12-25T21:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2021-01-01T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "recency_weighted_xgboost_208w",
+        "event_number": 29,
+        "target_at": "2021-01-15T21:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2021-01-22T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "recency_weighted_xgboost_208w",
+        "event_number": 30,
+        "target_at": "2021-03-26T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2021-04-02T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "recency_weighted_xgboost_208w",
+        "event_number": 31,
+        "target_at": "2021-10-01T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2021-10-08T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "recency_weighted_xgboost_208w",
+        "event_number": 32,
+        "target_at": "2021-10-22T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2021-10-29T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "recency_weighted_xgboost_208w",
+        "event_number": 33,
+        "target_at": "2021-11-26T21:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2021-12-03T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "recency_weighted_xgboost_208w",
+        "event_number": 34,
+        "target_at": "2021-12-31T21:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "missed_before_next_transition",
+        "detected_target_at": null,
+        "detection_delay_forecast_weeks": null
+      },
+      {
+        "model": "recency_weighted_xgboost_208w",
+        "event_number": 35,
+        "target_at": "2022-01-07T21:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2022-01-14T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "recency_weighted_xgboost_208w",
+        "event_number": 36,
+        "target_at": "2022-01-21T21:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_off",
+        "status": "detected",
+        "detected_target_at": "2022-01-28T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "markov",
+        "event_number": 1,
+        "target_at": "2016-01-08T21:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_off",
+        "status": "detected",
+        "detected_target_at": "2016-01-15T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "markov",
+        "event_number": 2,
+        "target_at": "2016-03-11T21:00:00+00:00",
+        "source_state": "risk_off",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2016-03-18T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "markov",
+        "event_number": 3,
+        "target_at": "2016-05-13T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2016-05-20T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "markov",
+        "event_number": 4,
+        "target_at": "2016-06-17T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2016-06-24T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "markov",
+        "event_number": 5,
+        "target_at": "2016-07-08T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2016-07-15T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "markov",
+        "event_number": 6,
+        "target_at": "2016-09-09T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2016-09-16T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "markov",
+        "event_number": 7,
+        "target_at": "2016-09-23T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2016-09-30T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "markov",
+        "event_number": 8,
+        "target_at": "2016-10-14T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2016-10-21T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "markov",
+        "event_number": 9,
+        "target_at": "2016-12-09T21:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2016-12-16T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "markov",
+        "event_number": 10,
+        "target_at": "2018-02-09T21:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2018-02-16T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "markov",
+        "event_number": 11,
+        "target_at": "2018-03-02T21:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_off",
+        "status": "missed_before_next_transition",
+        "detected_target_at": null,
+        "detection_delay_forecast_weeks": null
+      },
+      {
+        "model": "markov",
+        "event_number": 12,
+        "target_at": "2018-03-09T21:00:00+00:00",
+        "source_state": "risk_off",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2018-03-16T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "markov",
+        "event_number": 13,
+        "target_at": "2018-03-23T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_off",
+        "status": "detected",
+        "detected_target_at": "2018-03-30T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "markov",
+        "event_number": 14,
+        "target_at": "2018-05-11T20:00:00+00:00",
+        "source_state": "risk_off",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2018-05-18T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "markov",
+        "event_number": 15,
+        "target_at": "2018-08-03T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2018-08-10T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "markov",
+        "event_number": 16,
+        "target_at": "2018-10-12T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2018-10-19T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "markov",
+        "event_number": 17,
+        "target_at": "2018-10-26T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_off",
+        "status": "detected",
+        "detected_target_at": "2018-11-02T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "markov",
+        "event_number": 18,
+        "target_at": "2019-02-22T21:00:00+00:00",
+        "source_state": "risk_off",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2019-03-01T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "markov",
+        "event_number": 19,
+        "target_at": "2019-04-05T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2019-04-12T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "markov",
+        "event_number": 20,
+        "target_at": "2019-05-10T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2019-05-17T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "markov",
+        "event_number": 21,
+        "target_at": "2019-06-21T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2019-06-28T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "markov",
+        "event_number": 22,
+        "target_at": "2019-08-02T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2019-08-09T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "markov",
+        "event_number": 23,
+        "target_at": "2019-11-01T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2019-11-08T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "markov",
+        "event_number": 24,
+        "target_at": "2020-02-28T21:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "risk_off",
+        "status": "detected",
+        "detected_target_at": "2020-03-06T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "markov",
+        "event_number": 25,
+        "target_at": "2020-07-10T20:00:00+00:00",
+        "source_state": "risk_off",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2020-07-17T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "markov",
+        "event_number": 26,
+        "target_at": "2020-10-09T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2020-10-16T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "markov",
+        "event_number": 27,
+        "target_at": "2020-10-30T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2020-11-06T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "markov",
+        "event_number": 28,
+        "target_at": "2020-12-25T21:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2021-01-01T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "markov",
+        "event_number": 29,
+        "target_at": "2021-01-15T21:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2021-01-22T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "markov",
+        "event_number": 30,
+        "target_at": "2021-03-26T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2021-04-02T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "markov",
+        "event_number": 31,
+        "target_at": "2021-10-01T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2021-10-08T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "markov",
+        "event_number": 32,
+        "target_at": "2021-10-22T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2021-10-29T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "markov",
+        "event_number": 33,
+        "target_at": "2021-11-26T21:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2021-12-03T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "markov",
+        "event_number": 34,
+        "target_at": "2021-12-31T21:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "missed_before_next_transition",
+        "detected_target_at": null,
+        "detection_delay_forecast_weeks": null
+      },
+      {
+        "model": "markov",
+        "event_number": 35,
+        "target_at": "2022-01-07T21:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2022-01-14T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "markov",
+        "event_number": 36,
+        "target_at": "2022-01-21T21:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_off",
+        "status": "detected",
+        "detected_target_at": "2022-01-28T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "discounted_markov_208w",
+        "event_number": 1,
+        "target_at": "2016-01-08T21:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_off",
+        "status": "detected",
+        "detected_target_at": "2016-01-15T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "discounted_markov_208w",
+        "event_number": 2,
+        "target_at": "2016-03-11T21:00:00+00:00",
+        "source_state": "risk_off",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2016-03-18T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "discounted_markov_208w",
+        "event_number": 3,
+        "target_at": "2016-05-13T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2016-05-20T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "discounted_markov_208w",
+        "event_number": 4,
+        "target_at": "2016-06-17T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2016-06-24T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "discounted_markov_208w",
+        "event_number": 5,
+        "target_at": "2016-07-08T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2016-07-15T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "discounted_markov_208w",
+        "event_number": 6,
+        "target_at": "2016-09-09T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2016-09-16T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "discounted_markov_208w",
+        "event_number": 7,
+        "target_at": "2016-09-23T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2016-09-30T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "discounted_markov_208w",
+        "event_number": 8,
+        "target_at": "2016-10-14T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2016-10-21T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "discounted_markov_208w",
+        "event_number": 9,
+        "target_at": "2016-12-09T21:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2016-12-16T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "discounted_markov_208w",
+        "event_number": 10,
+        "target_at": "2018-02-09T21:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2018-02-16T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "discounted_markov_208w",
+        "event_number": 11,
+        "target_at": "2018-03-02T21:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_off",
+        "status": "missed_before_next_transition",
+        "detected_target_at": null,
+        "detection_delay_forecast_weeks": null
+      },
+      {
+        "model": "discounted_markov_208w",
+        "event_number": 12,
+        "target_at": "2018-03-09T21:00:00+00:00",
+        "source_state": "risk_off",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2018-03-16T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "discounted_markov_208w",
+        "event_number": 13,
+        "target_at": "2018-03-23T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_off",
+        "status": "detected",
+        "detected_target_at": "2018-03-30T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "discounted_markov_208w",
+        "event_number": 14,
+        "target_at": "2018-05-11T20:00:00+00:00",
+        "source_state": "risk_off",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2018-05-18T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "discounted_markov_208w",
+        "event_number": 15,
+        "target_at": "2018-08-03T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2018-08-10T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "discounted_markov_208w",
+        "event_number": 16,
+        "target_at": "2018-10-12T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2018-10-19T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "discounted_markov_208w",
+        "event_number": 17,
+        "target_at": "2018-10-26T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_off",
+        "status": "detected",
+        "detected_target_at": "2018-11-02T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "discounted_markov_208w",
+        "event_number": 18,
+        "target_at": "2019-02-22T21:00:00+00:00",
+        "source_state": "risk_off",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2019-03-01T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "discounted_markov_208w",
+        "event_number": 19,
+        "target_at": "2019-04-05T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2019-04-12T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "discounted_markov_208w",
+        "event_number": 20,
+        "target_at": "2019-05-10T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2019-05-17T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "discounted_markov_208w",
+        "event_number": 21,
+        "target_at": "2019-06-21T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2019-06-28T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "discounted_markov_208w",
+        "event_number": 22,
+        "target_at": "2019-08-02T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2019-08-09T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "discounted_markov_208w",
+        "event_number": 23,
+        "target_at": "2019-11-01T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2019-11-08T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "discounted_markov_208w",
+        "event_number": 24,
+        "target_at": "2020-02-28T21:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "risk_off",
+        "status": "detected",
+        "detected_target_at": "2020-03-06T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "discounted_markov_208w",
+        "event_number": 25,
+        "target_at": "2020-07-10T20:00:00+00:00",
+        "source_state": "risk_off",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2020-07-17T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "discounted_markov_208w",
+        "event_number": 26,
+        "target_at": "2020-10-09T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2020-10-16T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "discounted_markov_208w",
+        "event_number": 27,
+        "target_at": "2020-10-30T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2020-11-06T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "discounted_markov_208w",
+        "event_number": 28,
+        "target_at": "2020-12-25T21:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2021-01-01T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "discounted_markov_208w",
+        "event_number": 29,
+        "target_at": "2021-01-15T21:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2021-01-22T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "discounted_markov_208w",
+        "event_number": 30,
+        "target_at": "2021-03-26T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2021-04-02T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "discounted_markov_208w",
+        "event_number": 31,
+        "target_at": "2021-10-01T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2021-10-08T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "discounted_markov_208w",
+        "event_number": 32,
+        "target_at": "2021-10-22T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2021-10-29T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "discounted_markov_208w",
+        "event_number": 33,
+        "target_at": "2021-11-26T21:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2021-12-03T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "discounted_markov_208w",
+        "event_number": 34,
+        "target_at": "2021-12-31T21:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "missed_before_next_transition",
+        "detected_target_at": null,
+        "detection_delay_forecast_weeks": null
+      },
+      {
+        "model": "discounted_markov_208w",
+        "event_number": 35,
+        "target_at": "2022-01-07T21:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2022-01-14T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "discounted_markov_208w",
+        "event_number": 36,
+        "target_at": "2022-01-21T21:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_off",
+        "status": "detected",
+        "detected_target_at": "2022-01-28T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "pca_ridge_logistic",
+        "event_number": 1,
+        "target_at": "2016-01-08T21:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_off",
+        "status": "detected",
+        "detected_target_at": "2016-01-15T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "pca_ridge_logistic",
+        "event_number": 2,
+        "target_at": "2016-03-11T21:00:00+00:00",
+        "source_state": "risk_off",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2016-03-11T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 0
+      },
+      {
+        "model": "pca_ridge_logistic",
+        "event_number": 3,
+        "target_at": "2016-05-13T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "missed_before_next_transition",
+        "detected_target_at": null,
+        "detection_delay_forecast_weeks": null
+      },
+      {
+        "model": "pca_ridge_logistic",
+        "event_number": 4,
+        "target_at": "2016-06-17T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2016-06-17T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 0
+      },
+      {
+        "model": "pca_ridge_logistic",
+        "event_number": 5,
+        "target_at": "2016-07-08T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2016-07-29T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 3
+      },
+      {
+        "model": "pca_ridge_logistic",
+        "event_number": 6,
+        "target_at": "2016-09-09T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2016-09-16T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "pca_ridge_logistic",
+        "event_number": 7,
+        "target_at": "2016-09-23T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "missed_before_next_transition",
+        "detected_target_at": null,
+        "detection_delay_forecast_weeks": null
+      },
+      {
+        "model": "pca_ridge_logistic",
+        "event_number": 8,
+        "target_at": "2016-10-14T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2016-10-14T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 0
+      },
+      {
+        "model": "pca_ridge_logistic",
+        "event_number": 9,
+        "target_at": "2016-12-09T21:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2016-12-09T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 0
+      },
+      {
+        "model": "pca_ridge_logistic",
+        "event_number": 10,
+        "target_at": "2018-02-09T21:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2018-02-16T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "pca_ridge_logistic",
+        "event_number": 11,
+        "target_at": "2018-03-02T21:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_off",
+        "status": "missed_before_next_transition",
+        "detected_target_at": null,
+        "detection_delay_forecast_weeks": null
+      },
+      {
+        "model": "pca_ridge_logistic",
+        "event_number": 12,
+        "target_at": "2018-03-09T21:00:00+00:00",
+        "source_state": "risk_off",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2018-03-09T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 0
+      },
+      {
+        "model": "pca_ridge_logistic",
+        "event_number": 13,
+        "target_at": "2018-03-23T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_off",
+        "status": "missed_before_next_transition",
+        "detected_target_at": null,
+        "detection_delay_forecast_weeks": null
+      },
+      {
+        "model": "pca_ridge_logistic",
+        "event_number": 14,
+        "target_at": "2018-05-11T20:00:00+00:00",
+        "source_state": "risk_off",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2018-05-11T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 0
+      },
+      {
+        "model": "pca_ridge_logistic",
+        "event_number": 15,
+        "target_at": "2018-08-03T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2018-08-03T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 0
+      },
+      {
+        "model": "pca_ridge_logistic",
+        "event_number": 16,
+        "target_at": "2018-10-12T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2018-10-19T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "pca_ridge_logistic",
+        "event_number": 17,
+        "target_at": "2018-10-26T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_off",
+        "status": "detected",
+        "detected_target_at": "2018-11-02T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "pca_ridge_logistic",
+        "event_number": 18,
+        "target_at": "2019-02-22T21:00:00+00:00",
+        "source_state": "risk_off",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2019-02-22T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 0
+      },
+      {
+        "model": "pca_ridge_logistic",
+        "event_number": 19,
+        "target_at": "2019-04-05T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2019-04-12T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "pca_ridge_logistic",
+        "event_number": 20,
+        "target_at": "2019-05-10T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2019-05-17T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "pca_ridge_logistic",
+        "event_number": 21,
+        "target_at": "2019-06-21T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2019-06-28T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "pca_ridge_logistic",
+        "event_number": 22,
+        "target_at": "2019-08-02T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2019-08-09T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "pca_ridge_logistic",
+        "event_number": 23,
+        "target_at": "2019-11-01T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2019-11-22T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 3
+      },
+      {
+        "model": "pca_ridge_logistic",
+        "event_number": 24,
+        "target_at": "2020-02-28T21:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "risk_off",
+        "status": "detected",
+        "detected_target_at": "2020-03-06T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "pca_ridge_logistic",
+        "event_number": 25,
+        "target_at": "2020-07-10T20:00:00+00:00",
+        "source_state": "risk_off",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2020-07-24T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 2
+      },
+      {
+        "model": "pca_ridge_logistic",
+        "event_number": 26,
+        "target_at": "2020-10-09T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2020-10-16T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "pca_ridge_logistic",
+        "event_number": 27,
+        "target_at": "2020-10-30T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2020-11-06T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "pca_ridge_logistic",
+        "event_number": 28,
+        "target_at": "2020-12-25T21:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2020-12-25T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 0
+      },
+      {
+        "model": "pca_ridge_logistic",
+        "event_number": 29,
+        "target_at": "2021-01-15T21:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2021-02-05T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 3
+      },
+      {
+        "model": "pca_ridge_logistic",
+        "event_number": 30,
+        "target_at": "2021-03-26T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2021-04-02T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "pca_ridge_logistic",
+        "event_number": 31,
+        "target_at": "2021-10-01T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2021-10-01T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 0
+      },
+      {
+        "model": "pca_ridge_logistic",
+        "event_number": 32,
+        "target_at": "2021-10-22T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2021-10-22T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 0
+      },
+      {
+        "model": "pca_ridge_logistic",
+        "event_number": 33,
+        "target_at": "2021-11-26T21:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2021-12-03T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "pca_ridge_logistic",
+        "event_number": 34,
+        "target_at": "2021-12-31T21:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "missed_before_next_transition",
+        "detected_target_at": null,
+        "detection_delay_forecast_weeks": null
+      },
+      {
+        "model": "pca_ridge_logistic",
+        "event_number": 35,
+        "target_at": "2022-01-07T21:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2022-01-14T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "pca_ridge_logistic",
+        "event_number": 36,
+        "target_at": "2022-01-21T21:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_off",
+        "status": "detected",
+        "detected_target_at": "2022-03-18T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 8
+      },
+      {
+        "model": "recency_weighted_ridge_logistic_208w",
+        "event_number": 1,
+        "target_at": "2016-01-08T21:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_off",
+        "status": "detected",
+        "detected_target_at": "2016-01-22T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 2
+      },
+      {
+        "model": "recency_weighted_ridge_logistic_208w",
+        "event_number": 2,
+        "target_at": "2016-03-11T21:00:00+00:00",
+        "source_state": "risk_off",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2016-04-01T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 3
+      },
+      {
+        "model": "recency_weighted_ridge_logistic_208w",
+        "event_number": 3,
+        "target_at": "2016-05-13T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2016-06-03T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 3
+      },
+      {
+        "model": "recency_weighted_ridge_logistic_208w",
+        "event_number": 4,
+        "target_at": "2016-06-17T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "missed_before_next_transition",
+        "detected_target_at": null,
+        "detection_delay_forecast_weeks": null
+      },
+      {
+        "model": "recency_weighted_ridge_logistic_208w",
+        "event_number": 5,
+        "target_at": "2016-07-08T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2016-07-29T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 3
+      },
+      {
+        "model": "recency_weighted_ridge_logistic_208w",
+        "event_number": 6,
+        "target_at": "2016-09-09T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2016-09-16T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "recency_weighted_ridge_logistic_208w",
+        "event_number": 7,
+        "target_at": "2016-09-23T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "missed_before_next_transition",
+        "detected_target_at": null,
+        "detection_delay_forecast_weeks": null
+      },
+      {
+        "model": "recency_weighted_ridge_logistic_208w",
+        "event_number": 8,
+        "target_at": "2016-10-14T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2016-10-14T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 0
+      },
+      {
+        "model": "recency_weighted_ridge_logistic_208w",
+        "event_number": 9,
+        "target_at": "2016-12-09T21:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2017-02-03T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 8
+      },
+      {
+        "model": "recency_weighted_ridge_logistic_208w",
+        "event_number": 10,
+        "target_at": "2018-02-09T21:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2018-02-09T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 0
+      },
+      {
+        "model": "recency_weighted_ridge_logistic_208w",
+        "event_number": 11,
+        "target_at": "2018-03-02T21:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_off",
+        "status": "missed_before_next_transition",
+        "detected_target_at": null,
+        "detection_delay_forecast_weeks": null
+      },
+      {
+        "model": "recency_weighted_ridge_logistic_208w",
+        "event_number": 12,
+        "target_at": "2018-03-09T21:00:00+00:00",
+        "source_state": "risk_off",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2018-03-09T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 0
+      },
+      {
+        "model": "recency_weighted_ridge_logistic_208w",
+        "event_number": 13,
+        "target_at": "2018-03-23T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_off",
+        "status": "detected",
+        "detected_target_at": "2018-03-30T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "recency_weighted_ridge_logistic_208w",
+        "event_number": 14,
+        "target_at": "2018-05-11T20:00:00+00:00",
+        "source_state": "risk_off",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2018-05-25T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 2
+      },
+      {
+        "model": "recency_weighted_ridge_logistic_208w",
+        "event_number": 15,
+        "target_at": "2018-08-03T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2018-08-24T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 3
+      },
+      {
+        "model": "recency_weighted_ridge_logistic_208w",
+        "event_number": 16,
+        "target_at": "2018-10-12T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2018-10-19T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "recency_weighted_ridge_logistic_208w",
+        "event_number": 17,
+        "target_at": "2018-10-26T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_off",
+        "status": "detected",
+        "detected_target_at": "2018-11-09T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 2
+      },
+      {
+        "model": "recency_weighted_ridge_logistic_208w",
+        "event_number": 18,
+        "target_at": "2019-02-22T21:00:00+00:00",
+        "source_state": "risk_off",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2019-03-08T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 2
+      },
+      {
+        "model": "recency_weighted_ridge_logistic_208w",
+        "event_number": 19,
+        "target_at": "2019-04-05T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2019-04-05T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 0
+      },
+      {
+        "model": "recency_weighted_ridge_logistic_208w",
+        "event_number": 20,
+        "target_at": "2019-05-10T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2019-05-24T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 2
+      },
+      {
+        "model": "recency_weighted_ridge_logistic_208w",
+        "event_number": 21,
+        "target_at": "2019-06-21T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2019-07-05T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 2
+      },
+      {
+        "model": "recency_weighted_ridge_logistic_208w",
+        "event_number": 22,
+        "target_at": "2019-08-02T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2019-08-16T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 2
+      },
+      {
+        "model": "recency_weighted_ridge_logistic_208w",
+        "event_number": 23,
+        "target_at": "2019-11-01T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2019-11-15T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 2
+      },
+      {
+        "model": "recency_weighted_ridge_logistic_208w",
+        "event_number": 24,
+        "target_at": "2020-02-28T21:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "risk_off",
+        "status": "detected",
+        "detected_target_at": "2020-03-06T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "recency_weighted_ridge_logistic_208w",
+        "event_number": 25,
+        "target_at": "2020-07-10T20:00:00+00:00",
+        "source_state": "risk_off",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2020-08-14T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 5
+      },
+      {
+        "model": "recency_weighted_ridge_logistic_208w",
+        "event_number": 26,
+        "target_at": "2020-10-09T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2020-10-09T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 0
+      },
+      {
+        "model": "recency_weighted_ridge_logistic_208w",
+        "event_number": 27,
+        "target_at": "2020-10-30T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2020-10-30T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 0
+      },
+      {
+        "model": "recency_weighted_ridge_logistic_208w",
+        "event_number": 28,
+        "target_at": "2020-12-25T21:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "missed_before_next_transition",
+        "detected_target_at": null,
+        "detection_delay_forecast_weeks": null
+      },
+      {
+        "model": "recency_weighted_ridge_logistic_208w",
+        "event_number": 29,
+        "target_at": "2021-01-15T21:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2021-02-05T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 3
+      },
+      {
+        "model": "recency_weighted_ridge_logistic_208w",
+        "event_number": 30,
+        "target_at": "2021-03-26T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2021-04-02T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "recency_weighted_ridge_logistic_208w",
+        "event_number": 31,
+        "target_at": "2021-10-01T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2021-10-15T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 2
+      },
+      {
+        "model": "recency_weighted_ridge_logistic_208w",
+        "event_number": 32,
+        "target_at": "2021-10-22T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2021-11-05T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 2
+      },
+      {
+        "model": "recency_weighted_ridge_logistic_208w",
+        "event_number": 33,
+        "target_at": "2021-11-26T21:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2021-12-10T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 2
+      },
+      {
+        "model": "recency_weighted_ridge_logistic_208w",
+        "event_number": 34,
+        "target_at": "2021-12-31T21:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2021-12-31T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 0
+      },
+      {
+        "model": "recency_weighted_ridge_logistic_208w",
+        "event_number": 35,
+        "target_at": "2022-01-07T21:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2022-01-14T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "recency_weighted_ridge_logistic_208w",
+        "event_number": 36,
+        "target_at": "2022-01-21T21:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_off",
+        "status": "detected",
+        "detected_target_at": "2022-01-28T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "persistence",
+        "event_number": 1,
+        "target_at": "2016-01-08T21:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_off",
+        "status": "detected",
+        "detected_target_at": "2016-01-15T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "persistence",
+        "event_number": 2,
+        "target_at": "2016-03-11T21:00:00+00:00",
+        "source_state": "risk_off",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2016-03-18T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "persistence",
+        "event_number": 3,
+        "target_at": "2016-05-13T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2016-05-20T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "persistence",
+        "event_number": 4,
+        "target_at": "2016-06-17T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2016-06-24T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "persistence",
+        "event_number": 5,
+        "target_at": "2016-07-08T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2016-07-15T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "persistence",
+        "event_number": 6,
+        "target_at": "2016-09-09T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2016-09-16T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "persistence",
+        "event_number": 7,
+        "target_at": "2016-09-23T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2016-09-30T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "persistence",
+        "event_number": 8,
+        "target_at": "2016-10-14T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2016-10-21T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "persistence",
+        "event_number": 9,
+        "target_at": "2016-12-09T21:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2016-12-16T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "persistence",
+        "event_number": 10,
+        "target_at": "2018-02-09T21:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2018-02-16T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "persistence",
+        "event_number": 11,
+        "target_at": "2018-03-02T21:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_off",
+        "status": "missed_before_next_transition",
+        "detected_target_at": null,
+        "detection_delay_forecast_weeks": null
+      },
+      {
+        "model": "persistence",
+        "event_number": 12,
+        "target_at": "2018-03-09T21:00:00+00:00",
+        "source_state": "risk_off",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2018-03-16T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "persistence",
+        "event_number": 13,
+        "target_at": "2018-03-23T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_off",
+        "status": "detected",
+        "detected_target_at": "2018-03-30T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "persistence",
+        "event_number": 14,
+        "target_at": "2018-05-11T20:00:00+00:00",
+        "source_state": "risk_off",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2018-05-18T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "persistence",
+        "event_number": 15,
+        "target_at": "2018-08-03T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2018-08-10T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "persistence",
+        "event_number": 16,
+        "target_at": "2018-10-12T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2018-10-19T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "persistence",
+        "event_number": 17,
+        "target_at": "2018-10-26T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_off",
+        "status": "detected",
+        "detected_target_at": "2018-11-02T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "persistence",
+        "event_number": 18,
+        "target_at": "2019-02-22T21:00:00+00:00",
+        "source_state": "risk_off",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2019-03-01T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "persistence",
+        "event_number": 19,
+        "target_at": "2019-04-05T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2019-04-12T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "persistence",
+        "event_number": 20,
+        "target_at": "2019-05-10T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2019-05-17T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "persistence",
+        "event_number": 21,
+        "target_at": "2019-06-21T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2019-06-28T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "persistence",
+        "event_number": 22,
+        "target_at": "2019-08-02T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2019-08-09T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "persistence",
+        "event_number": 23,
+        "target_at": "2019-11-01T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2019-11-08T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "persistence",
+        "event_number": 24,
+        "target_at": "2020-02-28T21:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "risk_off",
+        "status": "detected",
+        "detected_target_at": "2020-03-06T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "persistence",
+        "event_number": 25,
+        "target_at": "2020-07-10T20:00:00+00:00",
+        "source_state": "risk_off",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2020-07-17T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "persistence",
+        "event_number": 26,
+        "target_at": "2020-10-09T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2020-10-16T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "persistence",
+        "event_number": 27,
+        "target_at": "2020-10-30T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2020-11-06T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "persistence",
+        "event_number": 28,
+        "target_at": "2020-12-25T21:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2021-01-01T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "persistence",
+        "event_number": 29,
+        "target_at": "2021-01-15T21:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2021-01-22T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "persistence",
+        "event_number": 30,
+        "target_at": "2021-03-26T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2021-04-02T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "persistence",
+        "event_number": 31,
+        "target_at": "2021-10-01T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2021-10-08T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "persistence",
+        "event_number": 32,
+        "target_at": "2021-10-22T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2021-10-29T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "persistence",
+        "event_number": 33,
+        "target_at": "2021-11-26T21:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2021-12-03T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "persistence",
+        "event_number": 34,
+        "target_at": "2021-12-31T21:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "missed_before_next_transition",
+        "detected_target_at": null,
+        "detection_delay_forecast_weeks": null
+      },
+      {
+        "model": "persistence",
+        "event_number": 35,
+        "target_at": "2022-01-07T21:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2022-01-14T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "persistence",
+        "event_number": 36,
+        "target_at": "2022-01-21T21:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_off",
+        "status": "detected",
+        "detected_target_at": "2022-01-28T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
+      },
+      {
+        "model": "majority",
+        "event_number": 1,
+        "target_at": "2016-01-08T21:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_off",
+        "status": "missed_before_next_transition",
+        "detected_target_at": null,
+        "detection_delay_forecast_weeks": null
+      },
+      {
+        "model": "majority",
+        "event_number": 2,
+        "target_at": "2016-03-11T21:00:00+00:00",
+        "source_state": "risk_off",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2016-03-11T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 0
+      },
+      {
+        "model": "majority",
+        "event_number": 3,
+        "target_at": "2016-05-13T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "missed_before_next_transition",
+        "detected_target_at": null,
+        "detection_delay_forecast_weeks": null
+      },
+      {
+        "model": "majority",
+        "event_number": 4,
+        "target_at": "2016-06-17T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2016-06-17T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 0
+      },
+      {
+        "model": "majority",
+        "event_number": 5,
+        "target_at": "2016-07-08T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "missed_before_next_transition",
+        "detected_target_at": null,
+        "detection_delay_forecast_weeks": null
+      },
+      {
+        "model": "majority",
+        "event_number": 6,
+        "target_at": "2016-09-09T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2016-09-09T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 0
+      },
+      {
+        "model": "majority",
+        "event_number": 7,
+        "target_at": "2016-09-23T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "missed_before_next_transition",
+        "detected_target_at": null,
+        "detection_delay_forecast_weeks": null
+      },
+      {
+        "model": "majority",
+        "event_number": 8,
+        "target_at": "2016-10-14T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "detected",
+        "detected_target_at": "2016-10-14T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 0
+      },
+      {
+        "model": "majority",
+        "event_number": 9,
+        "target_at": "2016-12-09T21:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2017-03-31T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 16
+      },
+      {
+        "model": "majority",
+        "event_number": 10,
+        "target_at": "2018-02-09T21:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "missed_before_next_transition",
+        "detected_target_at": null,
+        "detection_delay_forecast_weeks": null
+      },
+      {
+        "model": "majority",
+        "event_number": 11,
+        "target_at": "2018-03-02T21:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_off",
+        "status": "missed_before_next_transition",
+        "detected_target_at": null,
+        "detection_delay_forecast_weeks": null
+      },
+      {
+        "model": "majority",
+        "event_number": 12,
+        "target_at": "2018-03-09T21:00:00+00:00",
+        "source_state": "risk_off",
+        "destination_state": "transition",
+        "status": "missed_before_next_transition",
+        "detected_target_at": null,
+        "detection_delay_forecast_weeks": null
+      },
+      {
+        "model": "majority",
+        "event_number": 13,
+        "target_at": "2018-03-23T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_off",
+        "status": "missed_before_next_transition",
+        "detected_target_at": null,
+        "detection_delay_forecast_weeks": null
+      },
+      {
+        "model": "majority",
+        "event_number": 14,
+        "target_at": "2018-05-11T20:00:00+00:00",
+        "source_state": "risk_off",
+        "destination_state": "transition",
+        "status": "missed_before_next_transition",
+        "detected_target_at": null,
+        "detection_delay_forecast_weeks": null
+      },
+      {
+        "model": "majority",
+        "event_number": 15,
+        "target_at": "2018-08-03T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2018-08-03T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 0
+      },
+      {
+        "model": "majority",
+        "event_number": 16,
+        "target_at": "2018-10-12T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "missed_before_next_transition",
+        "detected_target_at": null,
+        "detection_delay_forecast_weeks": null
+      },
+      {
+        "model": "majority",
+        "event_number": 17,
+        "target_at": "2018-10-26T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_off",
+        "status": "missed_before_next_transition",
+        "detected_target_at": null,
+        "detection_delay_forecast_weeks": null
+      },
+      {
+        "model": "majority",
+        "event_number": 18,
+        "target_at": "2019-02-22T21:00:00+00:00",
+        "source_state": "risk_off",
+        "destination_state": "transition",
+        "status": "missed_before_next_transition",
+        "detected_target_at": null,
+        "detection_delay_forecast_weeks": null
+      },
+      {
+        "model": "majority",
+        "event_number": 19,
+        "target_at": "2019-04-05T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2019-04-05T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 0
+      },
+      {
+        "model": "majority",
+        "event_number": 20,
+        "target_at": "2019-05-10T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "missed_before_next_transition",
+        "detected_target_at": null,
+        "detection_delay_forecast_weeks": null
+      },
+      {
+        "model": "majority",
+        "event_number": 21,
+        "target_at": "2019-06-21T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2019-06-21T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 0
+      },
+      {
+        "model": "majority",
+        "event_number": 22,
+        "target_at": "2019-08-02T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "missed_before_next_transition",
+        "detected_target_at": null,
+        "detection_delay_forecast_weeks": null
+      },
+      {
+        "model": "majority",
+        "event_number": 23,
+        "target_at": "2019-11-01T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2019-11-01T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 0
+      },
+      {
+        "model": "majority",
+        "event_number": 24,
+        "target_at": "2020-02-28T21:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "risk_off",
+        "status": "missed_before_next_transition",
+        "detected_target_at": null,
+        "detection_delay_forecast_weeks": null
+      },
+      {
+        "model": "majority",
+        "event_number": 25,
+        "target_at": "2020-07-10T20:00:00+00:00",
+        "source_state": "risk_off",
+        "destination_state": "transition",
+        "status": "missed_before_next_transition",
+        "detected_target_at": null,
+        "detection_delay_forecast_weeks": null
+      },
+      {
+        "model": "majority",
+        "event_number": 26,
+        "target_at": "2020-10-09T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2020-10-09T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 0
+      },
+      {
+        "model": "majority",
+        "event_number": 27,
+        "target_at": "2020-10-30T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "missed_before_next_transition",
+        "detected_target_at": null,
+        "detection_delay_forecast_weeks": null
+      },
+      {
+        "model": "majority",
+        "event_number": 28,
+        "target_at": "2020-12-25T21:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2020-12-25T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 0
+      },
+      {
+        "model": "majority",
+        "event_number": 29,
+        "target_at": "2021-01-15T21:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "missed_before_next_transition",
+        "detected_target_at": null,
+        "detection_delay_forecast_weeks": null
+      },
+      {
+        "model": "majority",
+        "event_number": 30,
+        "target_at": "2021-03-26T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2021-03-26T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 0
+      },
+      {
+        "model": "majority",
+        "event_number": 31,
+        "target_at": "2021-10-01T20:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "missed_before_next_transition",
+        "detected_target_at": null,
+        "detection_delay_forecast_weeks": null
+      },
+      {
+        "model": "majority",
+        "event_number": 32,
+        "target_at": "2021-10-22T20:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2021-10-22T20:00:00+00:00",
+        "detection_delay_forecast_weeks": 0
+      },
+      {
+        "model": "majority",
+        "event_number": 33,
+        "target_at": "2021-11-26T21:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "missed_before_next_transition",
+        "detected_target_at": null,
+        "detection_delay_forecast_weeks": null
+      },
+      {
+        "model": "majority",
+        "event_number": 34,
+        "target_at": "2021-12-31T21:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_on",
+        "status": "detected",
+        "detected_target_at": "2021-12-31T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 0
+      },
+      {
+        "model": "majority",
+        "event_number": 35,
+        "target_at": "2022-01-07T21:00:00+00:00",
+        "source_state": "risk_on",
+        "destination_state": "transition",
+        "status": "missed_before_next_transition",
+        "detected_target_at": null,
+        "detection_delay_forecast_weeks": null
+      },
+      {
+        "model": "majority",
+        "event_number": 36,
+        "target_at": "2022-01-21T21:00:00+00:00",
+        "source_state": "transition",
+        "destination_state": "risk_off",
+        "status": "missed_before_next_transition",
+        "detected_target_at": null,
+        "detection_delay_forecast_weeks": null
+      }
+    ],
+    "model_confidence_set": {
+      "role": "supplemental_not_selection_gate",
+      "changes_champion": false,
+      "method": "hansen_lunde_nason_range_circular_moving_block_bootstrap",
+      "alpha": 0.1,
+      "observation_count": 365,
+      "nominal_block_length": 13,
+      "effective_block_length": 13,
+      "bootstrap_resamples": 1999,
+      "bootstrap_seed": 17,
+      "retained_models": [
+        "xgb_hazard_destination",
+        "causal_multiscale_ensemble",
+        "causal_dynamic_ensemble",
+        "xgboost",
+        "recency_weighted_xgboost_208w"
+      ],
+      "eliminated_models": [
+        "majority",
+        "persistence",
+        "recency_weighted_ridge_logistic_208w",
+        "pca_ridge_logistic",
+        "discounted_markov_208w",
+        "markov"
+      ],
+      "termination_reason": "equal_predictive_ability_not_rejected",
+      "elimination_path": [
+        {
+          "step": 1,
+          "active_models": [
+            "xgb_hazard_destination",
+            "causal_multiscale_ensemble",
+            "causal_dynamic_ensemble",
+            "xgboost",
+            "recency_weighted_xgboost_208w",
+            "markov",
+            "discounted_markov_208w",
+            "pca_ridge_logistic",
+            "recency_weighted_ridge_logistic_208w",
+            "persistence",
+            "majority"
+          ],
+          "test_statistic": 8.603552835380357,
+          "test_statistic_nonfinite": false,
+          "bootstrap_p_value": 0.0005,
+          "rejected": true,
+          "eliminated_model": "majority",
+          "elimination_score": 8.603552835380357,
+          "remaining_models": [
+            "xgb_hazard_destination",
+            "causal_multiscale_ensemble",
+            "causal_dynamic_ensemble",
+            "xgboost",
+            "recency_weighted_xgboost_208w",
+            "markov",
+            "discounted_markov_208w",
+            "pca_ridge_logistic",
+            "recency_weighted_ridge_logistic_208w",
+            "persistence"
+          ]
+        },
+        {
+          "step": 2,
+          "active_models": [
+            "xgb_hazard_destination",
+            "causal_multiscale_ensemble",
+            "causal_dynamic_ensemble",
+            "xgboost",
+            "recency_weighted_xgboost_208w",
+            "markov",
+            "discounted_markov_208w",
+            "pca_ridge_logistic",
+            "recency_weighted_ridge_logistic_208w",
+            "persistence"
+          ],
+          "test_statistic": 5.783041722064401,
+          "test_statistic_nonfinite": false,
+          "bootstrap_p_value": 0.0005,
+          "rejected": true,
+          "eliminated_model": "persistence",
+          "elimination_score": 5.783041722064401,
+          "remaining_models": [
+            "xgb_hazard_destination",
+            "causal_multiscale_ensemble",
+            "causal_dynamic_ensemble",
+            "xgboost",
+            "recency_weighted_xgboost_208w",
+            "markov",
+            "discounted_markov_208w",
+            "pca_ridge_logistic",
+            "recency_weighted_ridge_logistic_208w"
+          ]
+        },
+        {
+          "step": 3,
+          "active_models": [
+            "xgb_hazard_destination",
+            "causal_multiscale_ensemble",
+            "causal_dynamic_ensemble",
+            "xgboost",
+            "recency_weighted_xgboost_208w",
+            "markov",
+            "discounted_markov_208w",
+            "pca_ridge_logistic",
+            "recency_weighted_ridge_logistic_208w"
+          ],
+          "test_statistic": 4.702737561593765,
+          "test_statistic_nonfinite": false,
+          "bootstrap_p_value": 0.0005,
+          "rejected": true,
+          "eliminated_model": "recency_weighted_ridge_logistic_208w",
+          "elimination_score": 4.702737561593765,
+          "remaining_models": [
+            "xgb_hazard_destination",
+            "causal_multiscale_ensemble",
+            "causal_dynamic_ensemble",
+            "xgboost",
+            "recency_weighted_xgboost_208w",
+            "markov",
+            "discounted_markov_208w",
+            "pca_ridge_logistic"
+          ]
+        },
+        {
+          "step": 4,
+          "active_models": [
+            "xgb_hazard_destination",
+            "causal_multiscale_ensemble",
+            "causal_dynamic_ensemble",
+            "xgboost",
+            "recency_weighted_xgboost_208w",
+            "markov",
+            "discounted_markov_208w",
+            "pca_ridge_logistic"
+          ],
+          "test_statistic": 4.627496534859622,
+          "test_statistic_nonfinite": false,
+          "bootstrap_p_value": 0.0005,
+          "rejected": true,
+          "eliminated_model": "pca_ridge_logistic",
+          "elimination_score": 4.627496534859622,
+          "remaining_models": [
+            "xgb_hazard_destination",
+            "causal_multiscale_ensemble",
+            "causal_dynamic_ensemble",
+            "xgboost",
+            "recency_weighted_xgboost_208w",
+            "markov",
+            "discounted_markov_208w"
+          ]
+        },
+        {
+          "step": 5,
+          "active_models": [
+            "xgb_hazard_destination",
+            "causal_multiscale_ensemble",
+            "causal_dynamic_ensemble",
+            "xgboost",
+            "recency_weighted_xgboost_208w",
+            "markov",
+            "discounted_markov_208w"
+          ],
+          "test_statistic": 3.4891929077063732,
+          "test_statistic_nonfinite": false,
+          "bootstrap_p_value": 0.0055,
+          "rejected": true,
+          "eliminated_model": "discounted_markov_208w",
+          "elimination_score": 3.4891929077063732,
+          "remaining_models": [
+            "xgb_hazard_destination",
+            "causal_multiscale_ensemble",
+            "causal_dynamic_ensemble",
+            "xgboost",
+            "recency_weighted_xgboost_208w",
+            "markov"
+          ]
+        },
+        {
+          "step": 6,
+          "active_models": [
+            "xgb_hazard_destination",
+            "causal_multiscale_ensemble",
+            "causal_dynamic_ensemble",
+            "xgboost",
+            "recency_weighted_xgboost_208w",
+            "markov"
+          ],
+          "test_statistic": 2.946068815421776,
+          "test_statistic_nonfinite": false,
+          "bootstrap_p_value": 0.0285,
+          "rejected": true,
+          "eliminated_model": "markov",
+          "elimination_score": 2.946068815421776,
+          "remaining_models": [
+            "xgb_hazard_destination",
+            "causal_multiscale_ensemble",
+            "causal_dynamic_ensemble",
+            "xgboost",
+            "recency_weighted_xgboost_208w"
+          ]
+        },
+        {
+          "step": 7,
+          "active_models": [
+            "xgb_hazard_destination",
+            "causal_multiscale_ensemble",
+            "causal_dynamic_ensemble",
+            "xgboost",
+            "recency_weighted_xgboost_208w"
+          ],
+          "test_statistic": 1.192757985401242,
+          "test_statistic_nonfinite": false,
+          "bootstrap_p_value": 0.647,
+          "rejected": false,
+          "eliminated_model": null,
+          "elimination_score": null,
+          "remaining_models": [
+            "xgb_hazard_destination",
+            "causal_multiscale_ensemble",
+            "causal_dynamic_ensemble",
+            "xgboost",
+            "recency_weighted_xgboost_208w"
+          ]
+        }
+      ]
+    },
+    "sha256": "a5a3d54092d7ffa7d47bcec0d600c6a9267212c4416faf6c8e939982f345fcb8"
+  },
+  "sha256": "a3c23c5fa50bd7ad03c36086cd6897fcba5174f5860e8a2ae6ad2bab12e4e3a2"
+}

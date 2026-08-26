@@ -20,6 +20,11 @@ def test_document_has_language_landmarks_and_skip_link() -> None:
     assert 'id="data-health"' in HTML
 
 
+def test_favicon_is_inline_and_cannot_generate_a_local_404() -> None:
+    assert '<link rel="icon" href="data:image/svg+xml,' in HTML
+    assert 'href="./favicon' not in HTML
+
+
 def test_interactive_controls_have_accessible_names() -> None:
     assert '<label for="analysis-date">' in HTML
     assert '<label for="week-select">' in HTML
@@ -56,14 +61,17 @@ def test_visuals_have_semantic_fallbacks_and_non_color_encoding() -> None:
     assert 'role="img"' in HTML
     assert "차트 값을 표로 보기" in HTML
     assert '<tbody id="history-data-body">' in HTML
-    assert "Risk-on · 실선" in HTML
-    assert "Transition · 파선" in HTML
-    assert "Risk-off · 점선" in HTML
+    assert 'data-state-label="risk_on">Risk-on</span> · 실선' in HTML
+    assert 'data-state-label="transition">Transition</span> · 파선' in HTML
+    assert 'data-state-label="risk_off">Risk-off</span> · 점선' in HTML
     assert "실제 t+1 결과" in HTML
     assert 'id="chart-selection-readout"' in HTML and 'aria-live="polite"' in HTML
     assert 'id="probability-chart-wrap"' in HTML and 'tabindex="0"' in HTML
     assert "방향키로 날짜 이동" in HTML
-    assert "↗" in HTML and "◆" in HTML and "↘" in HTML
+    assert 'data-state-symbol="risk_on"' in HTML
+    assert 'data-state-symbol="transition"' in HTML
+    assert 'data-state-symbol="risk_off"' in HTML
+    assert "function stateMeta(" in JS
     assert "현재 t" not in HTML and "예측 t+1" not in HTML
     assert 'membership ? "관측 소속도와 1주 예측확률" : "관측 확률과 1주 예측확률"' in JS
     assert "function actualNextWeekForWeek(" in JS
@@ -127,7 +135,7 @@ def test_keyboard_focus_reduced_motion_and_mobile_rules_exist() -> None:
     table_scrolls = re.findall(r'class="[^"]*\btable-scroll\b[^"]*" tabindex="0"', HTML)
     assert len(table_scrolls) == 5
     assert 'aria-label="선택 자산과 보유 기간의 국면별 조건부 성과 표 · 가로 스크롤 가능"' in HTML
-    assert "${STATE_META[code].label}, ${asset} ${OUTCOME_ASSET_LABELS[asset]}" in JS
+    assert "${stateMeta(code).label}, ${asset} ${OUTCOME_ASSET_LABELS[asset]}" in JS
     assert '.table-scroll[tabindex="0"]:focus-visible' in CSS
     assert ".transition-horizon-field select" in CSS
     assert ".model-forecast-field select" in CSS
@@ -142,6 +150,15 @@ def test_keyboard_focus_reduced_motion_and_mobile_rules_exist() -> None:
         ".model-forecast-body {\n"
         "    grid-template-columns: 1fr;"
     ) in CSS
+
+
+def test_mobile_timeline_buttons_have_24px_targets_without_widening_the_marks() -> None:
+    assert "WCAG-sized keyboard/touch target on a 390px viewport" in CSS
+    assert "min-width: 24px;" in CSS
+    assert "min-height: 38px;" in CSS
+    assert "touch-action: manipulation;" in CSS
+    assert ".timeline-cell::before" in CSS
+    assert "width: 8px;" in CSS
 
 
 def test_small_status_chips_use_high_contrast_text_tokens() -> None:

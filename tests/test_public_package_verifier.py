@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pytest
 
+from regime_lab.integrity import reviewed_candidate_sha256_v1
+
 
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_SCRIPT = ROOT / "scripts" / "package_public_demo.py"
@@ -47,7 +49,11 @@ def _grant_provider_rights_for_package_verifier_tests(
 def _web_root(tmp_path: Path) -> Path:
     web = tmp_path / "web"
     web.mkdir()
-    (web / "index.html").write_text("<main>demo</main>\n", encoding="utf-8")
+    (web / "index.html").write_text(
+        '<link rel="stylesheet" href="./styles.css?v=manual">\n'
+        '<main>demo</main><script src="./app.js?v=manual"></script>\n',
+        encoding="utf-8",
+    )
     (web / "styles.css").write_text("main { color: black; }\n", encoding="utf-8")
     (web / "app.js").write_text("console.log('demo');\n", encoding="utf-8")
     return web
@@ -132,6 +138,12 @@ def _minimal_v5_payload(tmp_path: Path) -> Path:
         },
         "model": {
             "champion": "markov",
+            "selection_status": "selected_by_gate",
+            "lifecycle": {
+                "selection": {"status": "selected_by_gate"},
+                "deployment": {"status": "operating"},
+                "publication": {"status": "reviewed_publication"},
+            },
             "baseline_v4": dict(package_public_demo.FROZEN_V4_BASELINE),
             "core_artifacts": {
                 "oos_predictions": _record("oos-predictions.csv", "3" * 64, rows=5),
@@ -202,10 +214,9 @@ def _minimal_v5_payload(tmp_path: Path) -> Path:
         ],
         "weekly": [{"date": f"week-{index:02d}"} for index in range(52)],
     }
-    candidate_raw = _json_bytes(payload)
     payload["meta"]["publication_status"] = "reviewed_publication"
     payload["meta"]["publication_review"] = {
-        "reviewed_candidate_sha256": hashlib.sha256(candidate_raw).hexdigest()
+        "reviewed_candidate_sha256": reviewed_candidate_sha256_v1(payload)
     }
     path = tmp_path / "v5.json"
     path.write_bytes(_json_bytes(payload))

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from copy import deepcopy
 from datetime import datetime, timezone
 import hashlib
 import importlib.util
@@ -22,8 +23,26 @@ from regime_lab.contract_v5 import (
     V5ContractError,
     validate_v5_champion_selection_evidence,
 )
+from regime_lab.config import project_root
 from regime_lab.io import write_json_atomic
+from regime_lab.integrity import (
+    IntegrityError,
+    bind_payload_to_generation_manifest,
+    build_generation_manifest,
+    reviewed_candidate_sha256_v1,
+    validate_generation_manifest,
+    validate_lifecycle_consistency,
+    validate_reviewed_candidate_hash,
+)
+from regime_lab.publication_contract import (
+    PublicContractError,
+    validate_v5_comparison_sidecar,
+)
 from regime_lab.schema import ContractError, validate_dashboard_payload
+from regime_lab.selection_family_audit import (
+    build_selection_family_audit_from_artifacts,
+    validate_selection_family_audit,
+)
 
 
 UTC = timezone.utc
@@ -58,6 +77,21 @@ def _canonical_json_bytes(value: object) -> bytes:
             sort_keys=True,
             separators=(",", ":"),
             allow_nan=False,
+        )
+        + "\n"
+    ).encode("utf-8")
+
+
+def _published_json_bytes(value: object) -> bytes:
+    """Mirror ``write_json_atomic`` so raw sidecar bindings are precomputed."""
+
+    return (
+        json.dumps(
+            value,
+            ensure_ascii=False,
+            allow_nan=False,
+            indent=2,
+            sort_keys=False,
         )
         + "\n"
     ).encode("utf-8")
@@ -192,7 +226,9 @@ def _validate_review_evidence(
     model = _mapping(candidate.get("model"), label="candidate.model")
     if meta.get("mode") != "live" or meta.get("freshness", {}).get("status") != "current":
         raise PromotionError("candidate must be a current live result")
-    if meta.get("publication_status") is not None or meta.get("publication_review") is not None:
+    if meta.get("publication_status") not in {None, "unpublished"} or meta.get(
+        "publication_review"
+    ) is not None:
         raise PromotionError("candidate is already marked for publication")
     if model.get("profile") != "standard":
         raise PromotionError("candidate must use the reviewed standard profile")
@@ -369,20 +405,94 @@ def promote(
     candidate_path: Path,
     v5_artifacts: Path,
     comparison_path: Path,
+    generation_manifest_path: Path,
     output_path: Path,
     reviewed_at: datetime,
+    output_comparison_path: Path | None = None,
+    output_manifest_path: Path | None = None,
+    output_selection_family_path: Path | None = None,
+    publication_contract_directory: Path | None = None,
 ) -> dict[str, Any]:
-    if output_path.exists() or output_path.is_symlink():
-        raise PromotionError(f"output already exists: {output_path}")
+    reviewed_comparison_path = output_comparison_path or output_path.with_name(
+        "v5-vs-v4-comparison.json"
+    )
+    reviewed_manifest_path = output_manifest_path or output_path.with_name(
+        "generation-manifest.json"
+    )
+    reviewed_selection_family_path = (
+        output_selection_family_path
+        or output_path.with_name("selection-family-audit.json")
+    )
+    contract_directory = (
+        publication_contract_directory
+        if publication_contract_directory is not None
+        else output_path.parent
+    )
+    if not contract_directory.is_absolute():
+        contract_directory = project_root() / contract_directory
+    contract_payload_path = contract_directory / "regime-results.json"
+    contract_comparison_path = contract_directory / "v5-vs-v4-comparison.json"
+    contract_selection_family_path = (
+        contract_directory / "selection-family-audit.json"
+    )
+    outputs = (
+        output_path,
+        reviewed_comparison_path,
+        reviewed_selection_family_path,
+        reviewed_manifest_path,
+    )
+    if len({path.resolve() for path in outputs}) != len(outputs):
+        raise PromotionError("reviewed generation output paths must be distinct")
+    for path in outputs:
+        if path.exists() or path.is_symlink():
+            raise PromotionError(f"output already exists: {path}")
     if reviewed_at.tzinfo is None or reviewed_at.utcoffset() is None:
         raise PromotionError("reviewed_at must include a timezone")
     candidate = _read_json(candidate_path, label="V5 candidate")
     comparison = _read_json(comparison_path, label="V5 comparison")
     try:
+        generation = validate_generation_manifest(
+            generation_manifest_path,
+            # The unreviewed build manifest deliberately precedes the
+            # independently rebuilt V5/V4 comparison.  Promotion validates
+            # that comparison below and binds it only into the reviewed
+            # generation.
+            require_comparison=False,
+            require_selection_family=True,
+            artifact_directory=v5_artifacts,
+        )
+        if generation["payload_path"].resolve() != candidate_path.resolve():
+            raise PromotionError("generation manifest points to a different candidate")
+        if generation["artifact_directory"].resolve() != v5_artifacts.resolve():
+            raise PromotionError("generation manifest points to different artifacts")
+        source_selection_family = build_selection_family_audit_from_artifacts(
+            candidate,
+            v5_artifacts,
+        )
+        validate_selection_family_audit(
+            source_selection_family,
+            expected_generation_id=str(candidate["meta"]["generation_id"]),
+        )
+        if generation["selection_family"] != source_selection_family:
+            raise PromotionError(
+                "generation selection-family differs from source evidence"
+            )
+        if generation["selection_family_path"].resolve() != (
+            v5_artifacts / "selection-family-audit.json"
+        ).resolve():
+            raise PromotionError(
+                "generation manifest points to a different selection-family sidecar"
+            )
+        candidate_lifecycle = validate_lifecycle_consistency(candidate)
+        if candidate_lifecycle["publication"] != "unpublished":
+            raise PromotionError("candidate generation must be unpublished")
+    except (IntegrityError, TypeError, ValueError) as exc:
+        raise PromotionError(f"candidate generation manifest failed: {exc}") from exc
+    try:
         validate_dashboard_payload(candidate)
     except ContractError as exc:
         raise PromotionError(f"candidate contract failed: {exc}") from exc
-    candidate_sha256 = _sha256(candidate_path)
+    candidate_raw_sha256 = _sha256(candidate_path)
     _validate_reproducible_comparison(
         comparison,
         v5_artifacts=v5_artifacts,
@@ -391,12 +501,25 @@ def promote(
     _validate_review_evidence(
         candidate,
         comparison,
-        candidate_sha256=candidate_sha256,
+        candidate_sha256=candidate_raw_sha256,
     )
 
-    meta = _mapping(candidate["meta"], label="candidate.meta")
-    model = _mapping(candidate["model"], label="candidate.model")
+    reviewed = deepcopy(candidate)
+    meta = _mapping(reviewed["meta"], label="candidate.meta")
+    model = _mapping(reviewed["model"], label="candidate.model")
     multiscale_promoted = model["champion"] == V5_MULTISCALE_MODEL
+    candidate_sha256 = reviewed_candidate_sha256_v1(reviewed)
+    lifecycle = _mapping(model["lifecycle"], label="candidate.model.lifecycle")
+    deployment = _mapping(
+        lifecycle["deployment"],
+        label="candidate.model.lifecycle.deployment",
+    )
+    publication = _mapping(
+        lifecycle["publication"],
+        label="candidate.model.lifecycle.publication",
+    )
+    deployment["status"] = "operating"  # type: ignore[index]
+    publication["status"] = V5_PUBLICATION_STATUS  # type: ignore[index]
     meta["publication_status"] = V5_PUBLICATION_STATUS  # type: ignore[index]
     meta["publication_review"] = {  # type: ignore[index]
         "schema_version": V5_PUBLICATION_REVIEW_SCHEMA,
@@ -408,15 +531,132 @@ def promote(
         "fx_promoted": False,
     }
     try:
-        validate_dashboard_payload(candidate)
-    except ContractError as exc:
+        validate_lifecycle_consistency(reviewed)
+        validate_dashboard_payload(reviewed)
+        validate_reviewed_candidate_hash(reviewed)
+    except (ContractError, IntegrityError) as exc:
         raise PromotionError(f"reviewed publication contract failed: {exc}") from exc
-    write_json_atomic(output_path, candidate)
+
+    reviewed_comparison = deepcopy(comparison)
+    try:
+        comparison_payload = reviewed_comparison["inputs"]["v5"]["regime_results"]
+    except (KeyError, TypeError) as exc:
+        raise PromotionError("comparison payload binding is missing") from exc
+    if not isinstance(comparison_payload, dict):
+        raise PromotionError("comparison payload binding is invalid")
+    # The sidecar describes the eventual public package member rather than the
+    # private review filename (which may be ``reviewed-regime-results.json``).
+    comparison_payload["path"] = "regime-results.json"
+    # The raw payload hash is excluded from the comparison contract hash, so a
+    # placeholder safely breaks the payload/manifest/sidecar cycle.
+    comparison_payload["sha256"] = "0" * 64
+    label_spec_path = project_root() / str(generation["label_spec"]["path"])
+    try:
+        reviewed_manifest = build_generation_manifest(
+            payload=reviewed,
+            payload_path=output_path,
+            artifact_directory=v5_artifacts,
+            input_snapshot=generation["input_snapshot"],
+            label_spec_path=label_spec_path,
+            comparison=reviewed_comparison,
+            comparison_path=reviewed_comparison_path,
+            selection_family=source_selection_family,
+            selection_family_path=reviewed_selection_family_path,
+            payload_contract_path=contract_payload_path,
+            comparison_contract_path=contract_comparison_path,
+            selection_family_contract_path=contract_selection_family_path,
+        )
+        reviewed = bind_payload_to_generation_manifest(reviewed, reviewed_manifest)
+        reviewed_raw = _published_json_bytes(reviewed)
+        comparison_payload["sha256"] = hashlib.sha256(reviewed_raw).hexdigest()
+        validate_lifecycle_consistency(reviewed)
+        validate_dashboard_payload(reviewed)
+        validate_reviewed_candidate_hash(reviewed)
+        validate_v5_comparison_sidecar(
+            reviewed_comparison,
+            payload=reviewed,
+            payload_raw=reviewed_raw,
+        )
+        validate_selection_family_audit(
+            source_selection_family,
+            expected_generation_id=str(reviewed["meta"]["generation_id"]),
+        )
+    except (ContractError, IntegrityError, PublicContractError) as exc:
+        raise PromotionError(f"final reviewed generation contract failed: {exc}") from exc
+
+    # The manifest is the commit marker and is written last.  All paths were
+    # required to be absent, so rollback can remove only files created here and
+    # can never overwrite or delete a prior last-good generation.
+    created: list[Path] = []
+    try:
+        write_json_atomic(output_path, reviewed)
+        created.append(output_path)
+        write_json_atomic(reviewed_comparison_path, reviewed_comparison)
+        created.append(reviewed_comparison_path)
+        write_json_atomic(
+            reviewed_selection_family_path,
+            source_selection_family,
+        )
+        created.append(reviewed_selection_family_path)
+        write_json_atomic(reviewed_manifest_path, reviewed_manifest)
+        created.append(reviewed_manifest_path)
+        final_generation = validate_generation_manifest(
+            reviewed_manifest_path,
+            require_comparison=True,
+            require_selection_family=True,
+            artifact_directory=v5_artifacts,
+            payload_path_override=output_path,
+            comparison_path_override=reviewed_comparison_path,
+            selection_family_path_override=reviewed_selection_family_path,
+        )
+        if final_generation["payload_path"].resolve() != output_path.resolve():
+            raise PromotionError("final manifest points to a different payload")
+        if (
+            final_generation["comparison_path"].resolve()
+            != reviewed_comparison_path.resolve()
+        ):
+            raise PromotionError("final manifest points to a different comparison")
+        if final_generation["selection_family_path"].resolve() != (
+            reviewed_selection_family_path.resolve()
+        ):
+            raise PromotionError(
+                "final manifest points to a different selection-family sidecar"
+            )
+        declared_members = {
+            final_generation["declared_payload_path"].resolve(),
+            final_generation["declared_comparison_path"].resolve(),
+            final_generation["declared_selection_family_path"].resolve(),
+        }
+        expected_declared_members = {
+            contract_payload_path.resolve(),
+            contract_comparison_path.resolve(),
+            contract_selection_family_path.resolve(),
+        }
+        if declared_members != expected_declared_members:
+            raise PromotionError(
+                "final manifest publication member paths are inconsistent"
+            )
+    except (IntegrityError, OSError, PromotionError) as exc:
+        for path in reversed(created):
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        if isinstance(exc, PromotionError):
+            raise
+        raise PromotionError(f"final reviewed generation verification failed: {exc}") from exc
     return {
         "ok": True,
         "output": str(output_path),
+        "comparison_output": str(reviewed_comparison_path),
+        "manifest_output": str(reviewed_manifest_path),
+        "selection_family_output": str(reviewed_selection_family_path),
         "candidate_sha256": candidate_sha256,
+        "candidate_raw_sha256": candidate_raw_sha256,
         "publication_sha256": _sha256(output_path),
+        "comparison_sha256": _sha256(reviewed_comparison_path),
+        "generation_manifest_sha256": final_generation["manifest_sha256"],
+        "selection_family_sha256": source_selection_family["sha256"],
         "reviewed_at": reviewed_at.astimezone(UTC).isoformat(),
         "champion": model["champion"],
         "multiscale_promoted": multiscale_promoted,
@@ -436,7 +676,36 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="private V5 artifacts used to independently reproduce all selection evidence",
     )
     parser.add_argument("--comparison", type=Path, required=True)
+    parser.add_argument(
+        "--manifest",
+        type=Path,
+        default=None,
+        help="candidate generation manifest; defaults to the candidate sibling",
+    )
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--output-comparison",
+        type=Path,
+        help="reviewed comparison path; defaults beside --output",
+    )
+    parser.add_argument(
+        "--output-manifest",
+        type=Path,
+        help="reviewed generation manifest path; defaults beside --output",
+    )
+    parser.add_argument(
+        "--output-selection-family",
+        type=Path,
+        help="reviewed selection-family audit path; defaults beside --output",
+    )
+    parser.add_argument(
+        "--publication-contract-directory",
+        type=Path,
+        help=(
+            "Logical final directory recorded in the reviewed generation "
+            "manifest when outputs are written to a private staging directory"
+        ),
+    )
     parser.add_argument(
         "--reviewed-at",
         help="ISO-8601 decision time; defaults to the current UTC time",
@@ -456,7 +725,16 @@ def main(argv: list[str] | None = None) -> int:
             candidate_path=args.candidate,
             v5_artifacts=args.v5_artifacts,
             comparison_path=args.comparison,
+            generation_manifest_path=(
+                args.manifest
+                if args.manifest is not None
+                else args.candidate.with_name("generation-manifest.json")
+            ),
             output_path=args.output,
+            output_comparison_path=args.output_comparison,
+            output_manifest_path=args.output_manifest,
+            output_selection_family_path=args.output_selection_family,
+            publication_contract_directory=args.publication_contract_directory,
             reviewed_at=reviewed_at,
         )
     except (PromotionError, OSError, ValueError) as exc:

@@ -8,7 +8,7 @@ It does not open the snapshot database, refit a model, or modify artifacts.
 from __future__ import annotations
 
 import argparse
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 from pathlib import Path
@@ -26,7 +26,34 @@ from regime_lab.artifact_inventory import (
     ArtifactInventoryError,
     verify_artifact_inventory,
 )
+from regime_lab.contract_v5 import (
+    V5_FORECAST_COMPARISON_MODELS as CONTRACT_V5_FORECAST_COMPARISON_MODELS,
+    V5_SCHEMA_VERSION as CONTRACT_V5_SCHEMA_VERSION,
+    V5_STANDARD_CORE_MODELS,
+)
 from regime_lab.feature_quality import verify_feature_quality_artifact
+from regime_lab.frozen_v4 import (
+    FROZEN_V4_BASELINE,
+    FrozenV4BaselineError,
+    verify_frozen_v4_baseline,
+)
+from regime_lab.integrity import (
+    GENERATION_MANIFEST_SCHEMA_VERSION,
+    IntegrityError,
+    validate_generation_manifest,
+    validate_lifecycle_consistency,
+    validate_reviewed_candidate_hash,
+)
+from regime_lab.operating_contract import load_operating_contract
+from regime_lab.publication_contract import (
+    PublicContractError,
+    validate_v5_comparison_sidecar,
+)
+from regime_lab.schema import ContractError, validate_dashboard_payload
+from regime_lab.selection_family_audit import (
+    build_selection_family_audit_from_artifacts,
+    validate_selection_family_audit,
+)
 
 
 STATE_ORDER = ("risk_on", "transition", "risk_off")
@@ -63,7 +90,7 @@ V4_RESULT_VERSION = "weekly-regime-result-v4"
 V4_MODEL_VERSION = "weekly-nondl-structural-v4"
 V4_FEATURE_SET_VERSION = "weekly-pit-structural-v4"
 V5_RESULT_VERSION = "weekly-regime-result-v5"
-V5_SCHEMA_VERSION = "2.0.0"
+V5_SCHEMA_VERSION = CONTRACT_V5_SCHEMA_VERSION
 V5_RESEARCH_ARTIFACTS = (
     ("directional_oos_predictions", "directional-oos-predictions.csv"),
     ("directional_model_leaderboard", "directional-model-leaderboard.csv"),
@@ -183,16 +210,21 @@ V4_BASE_MODELS = {
 V4_STANDARD_MODELS = V4_BASE_MODELS | V4_STRUCTURAL_MODELS
 V4_FULL_MODELS = V4_STANDARD_MODELS | {"gaussian_hmm"}
 V5_MULTISCALE_MODEL = "causal_multiscale_ensemble"
-V5_FORECAST_COMPARISON_MODELS = (
-    "markov",
-    "xgboost",
-    "xgb_hazard_destination",
-    "causal_dynamic_ensemble",
-    V5_MULTISCALE_MODEL,
-)
+V5_FORECAST_COMPARISON_MODELS = CONTRACT_V5_FORECAST_COMPARISON_MODELS
 V5_FORECAST_COMPARISON_METHOD = "model_comparison_walk_forward_probability"
-V5_STANDARD_MODELS = V4_STANDARD_MODELS | {V5_MULTISCALE_MODEL}
-V5_FULL_MODELS = V4_FULL_MODELS | {V5_MULTISCALE_MODEL}
+V5_STANDARD_MODELS = set(V5_STANDARD_CORE_MODELS)
+V5_FULL_MODELS = V5_STANDARD_MODELS | {"gaussian_hmm"}
+OPERATING_CONTRACT = load_operating_contract()
+# Legacy ranks remain available for frozen V2-V4 reproduction.  Active V5
+# names and ranks come from the same typed source of truth as model selection.
+COMPLEXITY.update(
+    {
+        str(name): int(rank)
+        for name, rank in OPERATING_CONTRACT.selection_policy[
+            "complexity_registry"
+        ].items()
+    }
+)
 V4_STRUCTURAL_EXPERTS = (
     "markov",
     "xgboost",
@@ -4125,11 +4157,25 @@ def _audit_v5_core_model(
         manifest_models and len(manifest_models) == len(set(manifest_models)),
         "v5 core candidate manifest model names are invalid",
     )
-    expected_models = (
-        V5_FULL_MODELS if profile == "full" else V5_STANDARD_MODELS
-    ) if is_v5 else (
-        V4_FULL_MODELS if profile == "full" else V4_STANDARD_MODELS
+    historical_roster = (
+        OPERATING_CONTRACT.historical_reviewed_roster_by_manifest_sha256(
+            manifest_hash
+        )
+        if is_v5
+        else None
     )
+    if historical_roster is not None:
+        expected_models = {
+            str(name) for name in historical_roster["candidate_models"]
+        }
+    elif is_v5:
+        expected_models = (
+            V5_FULL_MODELS if profile == "full" else V5_STANDARD_MODELS
+        )
+    else:
+        expected_models = (
+            V4_FULL_MODELS if profile == "full" else V4_STANDARD_MODELS
+        )
     require(
         set(manifest_models) == expected_models,
         "v5 core candidate manifest differs from the permitted V5 suite",
@@ -4493,7 +4539,19 @@ def _audit_v5_model_forecasts(
         f"{context} role/horizon mismatch",
     )
     models = comparison.get("models")
-    comparison_models = V5_FORECAST_COMPARISON_MODELS
+    historical_roster = (
+        OPERATING_CONTRACT.historical_reviewed_roster_by_manifest_sha256(
+            str(model.get("candidate_manifest_sha256", ""))
+        )
+    )
+    comparison_models = (
+        tuple(
+            str(name)
+            for name in historical_roster["forecast_comparison_models"]
+        )
+        if historical_roster is not None
+        else V5_FORECAST_COMPARISON_MODELS
+    )
     champion = str(model.get("champion", ""))
     if champion and champion not in comparison_models:
         comparison_models = (*comparison_models, champion)
@@ -7920,6 +7978,65 @@ def _v5_expected_research_artifacts(
     return tuple(expected)
 
 
+def _audit_v5_selection_family(
+    payload: Mapping[str, Any],
+    artifacts: Path,
+) -> dict[str, Any]:
+    """Rebuild the generic all-candidate selection audit from source rows."""
+
+    model = payload["model"]
+    manifest_sha256 = str(model.get("candidate_manifest_sha256", ""))
+    historical = (
+        OPERATING_CONTRACT.historical_reviewed_roster_by_manifest_sha256(
+            manifest_sha256
+        )
+    )
+    path = artifacts / "selection-family-audit.json"
+    if historical is not None and not path.exists() and not path.is_symlink():
+        return {
+            "status": "not_emitted_by_historical_reviewed_generation",
+            "candidate_manifest_sha256": historical[
+                "candidate_manifest_sha256"
+            ],
+        }
+    require(
+        path.is_file() and not path.is_symlink(),
+        "current V5 generation is missing selection-family-audit.json",
+    )
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+        validate_selection_family_audit(
+            document,
+            expected_generation_id=str(payload["meta"]["generation_id"]),
+        )
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
+        raise AuditFailure(f"selection-family audit contract failed: {exc}") from exc
+    require(isinstance(document, dict), "selection-family audit must be an object")
+
+    try:
+        expected = build_selection_family_audit_from_artifacts(payload, artifacts)
+    except (OSError, TypeError, ValueError) as exc:
+        raise AuditFailure(
+            f"selection-family source evidence failed: {exc}"
+        ) from exc
+    require(
+        document == expected,
+        "selection-family audit differs from independently rebuilt source evidence",
+    )
+    return {
+        "status": "verified",
+        "candidate_count": document["candidate_count"],
+        "common_origins": document["common_origin_contract"]["origin_count"],
+        "champion": document["champion"],
+        "runner_up": document["runner_up"],
+        "sha256": document["sha256"],
+        "supplemental_role": document["supplemental_evaluation"]["role"],
+        "mcs_retained_models": document["supplemental_evaluation"][
+            "model_confidence_set"
+        ]["retained_models"],
+    }
+
+
 def audit_v5(
     payload: Mapping[str, Any],
     payload_path: Path,
@@ -7988,6 +8105,7 @@ def audit_v5(
     )
     execution = _audit_v5_execution_parameters(payload)
     core = _audit_v5_core_model(payload, artifacts)
+    selection_family = _audit_v5_selection_family(payload, artifacts)
     model_forecasts = _audit_v5_model_forecasts(payload, artifacts)
     feature_summary = audit_feature_manifest(payload, artifacts)
     inherited_structural = _audit_v5_inherited_structural_outputs(
@@ -8041,6 +8159,7 @@ def audit_v5(
         "duration": duration,
         "execution_parameters_sha256": execution["sha256"],
         "core": core,
+        "selection_family": selection_family,
         "model_forecasts": model_forecasts,
         "feature_quality": feature_quality,
         "core_feature_manifest": {
@@ -8818,28 +8937,240 @@ def audit(payload_path: Path, artifacts: Path, expected_mode: str) -> dict[str, 
     }
 
 
+def _audit_publication_live() -> dict[str, Any]:
+    """Audit the authoritative reviewed publication, never an ignored V4 path."""
+
+    payload_path = PROJECT_ROOT / "publication/live/regime-results.json"
+    comparison_path = PROJECT_ROOT / "publication/live/v5-vs-v4-comparison.json"
+    manifest_path = PROJECT_ROOT / "publication/live/generation-manifest.json"
+    require(
+        payload_path.is_file() and not payload_path.is_symlink(),
+        "active publication payload is missing/non-regular",
+    )
+    payload_raw = payload_path.read_bytes()
+    payload = json.loads(payload_raw.decode("utf-8"))
+    require(isinstance(payload, dict), "active publication payload must be an object")
+    meta = payload.get("meta")
+    require(isinstance(meta, Mapping), "active publication metadata is missing")
+    require(
+        meta.get("result_version") == V5_RESULT_VERSION,
+        "publication-live requires the active V5 contract; frozen/stale V4 cannot pass",
+    )
+    require(meta.get("mode") == "live", "active publication must use live mode")
+    require(
+        isinstance(meta.get("freshness"), Mapping)
+        and meta["freshness"].get("status") == "current",
+        "active publication is not current",
+    )
+    _require_wall_clock_freshness(meta)
+    validate_dashboard_payload(payload)
+    lifecycle = validate_lifecycle_consistency(payload)
+    require(
+        lifecycle["publication"] == "reviewed_publication"
+        and lifecycle["deployment"] == "operating",
+        "active publication lifecycle is not operating+reviewed_publication",
+    )
+    validate_reviewed_candidate_hash(payload)
+    require(
+        comparison_path.is_file() and not comparison_path.is_symlink(),
+        "active publication comparison sidecar is missing/non-regular",
+    )
+    comparison_raw = comparison_path.read_bytes()
+    comparison = json.loads(comparison_raw.decode("utf-8"))
+    require(isinstance(comparison, dict), "active comparison sidecar must be an object")
+    validate_v5_comparison_sidecar(
+        comparison,
+        payload=payload,
+        payload_raw=payload_raw,
+    )
+    manifest_document = json.loads(manifest_path.read_text(encoding="utf-8"))
+    require(
+        isinstance(manifest_document, Mapping),
+        "active generation manifest must be an object",
+    )
+    selection_required = (
+        manifest_document.get("schema_version")
+        == GENERATION_MANIFEST_SCHEMA_VERSION
+    )
+    generation = validate_generation_manifest(
+        manifest_path,
+        require_comparison=True,
+        require_selection_family=selection_required,
+        require_artifacts=False,
+    )
+    require(
+        generation["payload_path"].resolve() == payload_path.resolve(),
+        "active generation manifest points to a different payload",
+    )
+    require(
+        generation["comparison_path"].resolve() == comparison_path.resolve(),
+        "active generation manifest points to a different comparison",
+    )
+    if selection_required:
+        selection_path = PROJECT_ROOT / "publication/live/selection-family-audit.json"
+        require(
+            generation["selection_family_path"].resolve()
+            == selection_path.resolve(),
+            "active generation manifest points to a different selection-family audit",
+        )
+    return {
+        "ok": True,
+        "target": "publication-live",
+        "contract": "v5",
+        "generation_id": meta.get("generation_id"),
+        "data_as_of": meta.get("data_as_of"),
+        "champion": payload.get("model", {}).get("champion"),
+        "lifecycle": lifecycle,
+        "generation_manifest_sha256": generation["manifest_sha256"],
+        "payload": str(payload_path),
+        "comparison": str(comparison_path),
+    }
+
+
+def _require_wall_clock_freshness(
+    meta: Mapping[str, Any],
+    *,
+    now: datetime | None = None,
+) -> None:
+    """Reject an old live snapshot even if its serialized status says current."""
+
+    freshness = meta.get("freshness")
+    require(isinstance(freshness, Mapping), "active freshness metadata is missing")
+    maximum_age = freshness.get("maximum_age_days")
+    require(
+        type(maximum_age) is int and maximum_age >= 0,
+        "active freshness maximum_age_days is invalid",
+    )
+    raw_data_as_of = meta.get("data_as_of")
+    require(isinstance(raw_data_as_of, str), "active data_as_of is invalid")
+    try:
+        data_as_of = datetime.fromisoformat(raw_data_as_of.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise AuditFailure("active data_as_of is invalid") from exc
+    require(
+        data_as_of.tzinfo is not None and data_as_of.utcoffset() is not None,
+        "active data_as_of must include timezone",
+    )
+    checked_at = now or datetime.now(timezone.utc)
+    require(
+        checked_at.tzinfo is not None and checked_at.utcoffset() is not None,
+        "audit time must include timezone",
+    )
+    age = checked_at.astimezone(timezone.utc) - data_as_of.astimezone(timezone.utc)
+    require(age >= timedelta(0), "active data_as_of cannot be in the future")
+    require(
+        age <= timedelta(days=maximum_age),
+        "active publication is stale at audit time",
+    )
+
+
+def _audit_local_generation(
+    manifest_path: Path,
+    *,
+    payload_path: Path | None = None,
+    comparison_path: Path | None = None,
+    selection_family_path: Path | None = None,
+    artifact_directory: Path | None = None,
+) -> dict[str, Any]:
+    generation = validate_generation_manifest(
+        manifest_path,
+        artifact_directory=artifact_directory,
+        payload_path_override=payload_path,
+        comparison_path_override=comparison_path,
+        selection_family_path_override=selection_family_path,
+    )
+    summary = audit(
+        generation["payload_path"],
+        generation["artifact_directory"],
+        "auto",
+    )
+    return {
+        **summary,
+        "target": "local-generation",
+        "generation_id": generation["generation_id"],
+        "generation_manifest_sha256": generation["manifest_sha256"],
+        "manifest": str(manifest_path),
+    }
+
+
+def _audit_frozen_v4_target() -> dict[str, Any]:
+    baseline = verify_frozen_v4_baseline(project_directory=PROJECT_ROOT)
+    return {
+        "ok": True,
+        "target": "frozen-v4",
+        "role": "immutable_research_baseline_not_active_publication",
+        "result_version": baseline["result_version"],
+        "generation_id": baseline["generation_id"],
+        "data_as_of": baseline["data_as_of"],
+        "payload": str(PROJECT_ROOT / str(FROZEN_V4_BASELINE["payload_path"])),
+        "artifacts": str(PROJECT_ROOT / str(FROZEN_V4_BASELINE["artifacts_path"])),
+    }
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Read-only audit of regime payload and walk-forward CSV artifacts"
+        description="Read-only audit of one explicitly selected Regime target"
     )
     parser.add_argument(
-        "--payload", type=Path, default=Path("web/data/regime-results.json")
+        "--target",
+        required=True,
+        choices=("publication-live", "local-generation", "frozen-v4"),
     )
     parser.add_argument(
-        "--artifacts", type=Path, default=Path("artifacts/latest")
+        "--manifest",
+        type=Path,
+        help="Required generation-manifest.json for --target local-generation",
     )
-    parser.add_argument(
-        "--mode", choices=("live", "demo", "auto"), default="live",
-        help="expected payload mode; default catches a stale demo payload",
+    parser.add_argument("--payload", type=Path)
+    parser.add_argument("--comparison", type=Path)
+    parser.add_argument("--selection-family", type=Path)
+    parser.add_argument("--artifacts", type=Path)
+    args = parser.parse_args(argv)
+    if args.target == "local-generation" and args.manifest is None:
+        parser.error("--target local-generation requires --manifest PATH")
+    if args.target != "local-generation" and args.manifest is not None:
+        parser.error("--manifest is only valid with --target local-generation")
+    staged_values = (
+        args.payload,
+        args.comparison,
+        args.selection_family,
+        args.artifacts,
     )
-    return parser.parse_args(argv)
+    if args.target != "local-generation" and any(
+        value is not None for value in staged_values
+    ):
+        parser.error("staged member overrides require --target local-generation")
+    return args
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     try:
-        summary = audit(args.payload, args.artifacts, args.mode)
-    except (AuditFailure, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        if args.target == "publication-live":
+            summary = _audit_publication_live()
+        elif args.target == "local-generation":
+            summary = _audit_local_generation(
+                args.manifest,
+                payload_path=args.payload,
+                comparison_path=args.comparison,
+                selection_family_path=args.selection_family,
+                artifact_directory=args.artifacts,
+            )
+        else:
+            summary = _audit_frozen_v4_target()
+    except (
+        AuditFailure,
+        ContractError,
+        FrozenV4BaselineError,
+        IntegrityError,
+        PublicContractError,
+        KeyError,
+        OSError,
+        TypeError,
+        UnicodeDecodeError,
+        ValueError,
+        json.JSONDecodeError,
+    ) as exc:
         print(
             json.dumps(
                 {"ok": False, "error": f"{type(exc).__name__}: {exc}"},

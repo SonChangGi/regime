@@ -1,8 +1,11 @@
 """Shared, provider-neutral data contracts.
 
-The central invariant in this module is that ``available_at`` means the first
-timestamp at which a value may be used by a model.  Point-in-time consumers
-must never substitute ``retrieved_at`` or an observation period for it.
+The legacy ``available_at`` clock remains the source-time PIT boundary used by
+historical research.  New observations also retain distinct source release,
+provider first-seen, and system retrieval clocks; operating consumers use
+``operating_available_at = max(source finalization, provider first-seen)``.
+Legacy ``released_at`` and ``retrieved_at`` names remain available so existing
+snapshot databases and callers can be read unchanged.
 """
 
 from __future__ import annotations
@@ -67,7 +70,16 @@ def ensure_utc(value: datetime, *, field_name: str = "timestamp") -> datetime:
 
 @dataclass(frozen=True, slots=True)
 class Observation:
-    """A single revision-aware observation suitable for PIT replay."""
+    """A single revision-aware observation suitable for bitemporal PIT replay.
+
+    ``source_released_at`` is the provider/source finalization timestamp,
+    ``provider_first_seen_at`` is the first successful receipt of that provider
+    value, and ``system_retrieved_at`` is the retrieval carrying this revision.
+    ``available_at`` remains the historical source-time eligibility clock.
+    Callers reading legacy rows may omit the new fields; they are then
+    reconstructed from the historical ``released_at``/``retrieved_at`` columns
+    without rewriting the original availability contract.
+    """
 
     source: str
     series_id: str
@@ -84,6 +96,9 @@ class Observation:
     quality_status: HealthStatus = HealthStatus.OK
     raw_sha256: str = ""
     metadata: Mapping[str, Any] = field(default_factory=dict)
+    source_released_at: datetime | None = None
+    provider_first_seen_at: datetime | None = None
+    system_retrieved_at: datetime | None = None
 
     def __post_init__(self) -> None:
         if not self.source.strip():
@@ -102,15 +117,48 @@ class Observation:
             if self.released_at is not None
             else None
         )
-        if released_at is not None and released_at > available_at:
-            raise ValueError("released_at must not be after available_at")
-        if retrieved_at < available_at:
-            raise ValueError("retrieved_at must not be before available_at")
+        declared_source_release = (
+            ensure_utc(self.source_released_at, field_name="source_released_at")
+            if self.source_released_at is not None
+            else None
+        )
+        provider_first_seen_at = (
+            ensure_utc(
+                self.provider_first_seen_at,
+                field_name="provider_first_seen_at",
+            )
+            if self.provider_first_seen_at is not None
+            else retrieved_at
+        )
+        # The legacy aliases remain the canonical mutation inputs.  This keeps
+        # ``dataclasses.replace(record, released_at=..., retrieved_at=...)``
+        # working for established adapters: replace copies the materialized new
+        # fields, so treating a stale copied alias as an error would break an
+        # otherwise valid legacy update.  Explicit-only callers may still omit
+        # ``released_at`` and have ``source_released_at`` populate both names.
+        source_released_at = released_at or declared_source_release
+        system_retrieved_at = retrieved_at
+        released_at = source_released_at
+        if provider_first_seen_at > system_retrieved_at:
+            raise ValueError(
+                "provider_first_seen_at must not be after system_retrieved_at"
+            )
+        if source_released_at is not None and source_released_at > available_at:
+            raise ValueError("source_released_at must not be after available_at")
+        # Legacy snapshots can have an economic ``available_at`` that predates
+        # the project's first retrieval.  Provider adapters that claim
+        # operational availability must explicitly take the maximum; the
+        # forecast ledger independently enforces that first-seen is pre-decision.
+        if system_retrieved_at < available_at:
+            raise ValueError("system_retrieved_at must not be before available_at")
 
         status = HealthStatus(self.quality_status)
         object.__setattr__(self, "available_at", available_at)
-        object.__setattr__(self, "retrieved_at", retrieved_at)
-        object.__setattr__(self, "released_at", released_at)
+        object.__setattr__(self, "retrieved_at", system_retrieved_at)
+        object.__setattr__(self, "released_at", source_released_at)
+        object.__setattr__(self, "source_released_at", source_released_at)
+        object.__setattr__(self, "provider_first_seen_at", provider_first_seen_at)
+        object.__setattr__(self, "system_retrieved_at", system_retrieved_at)
         object.__setattr__(self, "quality_status", status)
         object.__setattr__(self, "metadata", dict(self.metadata))
         if self.value is not None:
@@ -118,6 +166,16 @@ class Observation:
 
     def with_revision_seq(self, revision_seq: int) -> "Observation":
         return replace(self, revision_seq=revision_seq)
+
+    @property
+    def operating_available_at(self) -> datetime:
+        """Earliest defensible operational timestamp from the explicit clocks."""
+
+        assert self.provider_first_seen_at is not None
+        candidates = [self.provider_first_seen_at]
+        if self.source_released_at is not None:
+            candidates.append(self.source_released_at)
+        return max(candidates)
 
 
 @dataclass(frozen=True, slots=True)
@@ -331,6 +389,9 @@ def _prospective_revision(
     return replace(
         record,
         released_at=discovered_at,
+        source_released_at=discovered_at,
+        provider_first_seen_at=discovered_at,
+        system_retrieved_at=discovered_at,
         available_at=discovered_at,
         vintage_date=discovered_at.date(),
         revision_seq=0,

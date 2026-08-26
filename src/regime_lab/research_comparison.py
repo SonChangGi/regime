@@ -519,11 +519,21 @@ def _prepare_matrix(
         capabilities=("local_storage", "model_training"),
     )
     with SQLiteSnapshotStore(database, read_only=True) as store:
-        observations = store.read_last_good_observations(available_as_of=cutoff)
+        # The accepted Alpha snapshot is a current full-history backfill whose
+        # source finalization can be later than the Friday 16:00 period end.
+        # Read the complete last-good chain here and let the mixed
+        # ``reconstructed_market`` join align only Alpha rows by market period;
+        # all macro rows still obey their source availability timestamp.
+        observations = store.read_last_good_observations()
     if not observations:
         raise RuntimeError("no last-good observations are available at as_of")
     cutoffs = weekly_cutoffs(date(2006, 1, 1), cutoff)
-    dataset = build_weekly_dataset(config, cutoffs, observations)
+    dataset = build_weekly_dataset(
+        config,
+        cutoffs,
+        observations,
+        availability_basis="reconstructed_market",
+    )
     canonical = dataset.canonical.loc[dataset.canonical["spy_close"].notna()].copy()
     if len(canonical) < 650:
         raise RuntimeError("research comparison requires at least 650 weekly rows")

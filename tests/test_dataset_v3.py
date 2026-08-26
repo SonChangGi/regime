@@ -217,6 +217,44 @@ def test_v3_dataset_is_prefix_causal_and_rejects_incomplete_ohlc_config() -> Non
         build_weekly_dataset(incomplete, cutoffs, observations)
 
 
+def test_research_dividend_rows_do_not_silently_enter_model_features() -> None:
+    cutoffs, observations = _history(rows=24)
+    config = _config()
+    alpha = config["alpha_vantage"]
+    assert isinstance(alpha, dict)
+    alpha["research_fields"] = ["dividend_amount"]
+
+    dividends = tuple(
+        Observation(
+            source="alpha_vantage",
+            series_id=f"{symbol}.dividend_amount",
+            observed_period_end=cutoff.date(),
+            value=0.25 if row_number % 13 == 0 else 0.0,
+            released_at=cutoff,
+            available_at=cutoff,
+            vintage_date=cutoff.date(),
+            retrieved_at=cutoffs[-1] + timedelta(days=2),
+            raw_sha256=f"{symbol}-dividend-{row_number}",
+        )
+        for row_number, cutoff in enumerate(cutoffs)
+        for symbol in SYMBOLS
+    )
+    with_research_rows = build_weekly_dataset(
+        config,
+        cutoffs,
+        observations + dividends,
+    )
+    without_research_rows = build_weekly_dataset(
+        _config(),
+        cutoffs,
+        observations,
+    )
+
+    assert_frame_equal(with_research_rows.canonical, without_research_rows.canonical)
+    assert_frame_equal(with_research_rows.features, without_research_rows.features)
+    assert not any("dividend" in column for column in with_research_rows.features)
+
+
 def test_late_h8_vintage_uses_missingness_and_coverage_without_prefix_leakage() -> None:
     cutoffs, base_observations = _history(rows=24)
     config = _config()

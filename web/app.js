@@ -3,6 +3,7 @@
 
   const DATA_URL = "./data/regime-results.json";
   const V5_COMPARISON_URL = "./data/v5-vs-v4-comparison.json";
+  const V5_SELECTION_FAMILY_AUDIT_URL = "./data/selection-family-audit.json";
   const SVG_NS = "http://www.w3.org/2000/svg";
   const THEME_STORAGE_KEY = "quant-research-theme";
   const LEGACY_THEME_STORAGE_KEYS = Object.freeze(["regime-dashboard-theme"]);
@@ -16,7 +17,7 @@
   const V4_LABEL_VERSION = "market-causal-3state-v1";
   const V4_FEATURE_SET_VERSION = "weekly-pit-structural-v4";
   const V5_RESULT_VERSION = "weekly-regime-result-v5";
-  const V5_SCHEMA_VERSION = "2.0.0";
+  const V5_SCHEMA_VERSION = "2.1.0";
   const V5_MODEL_VERSION = "weekly-nondl-structural-v5";
   const V5_LABEL_VERSION = "market-causal-3state-v1";
   const V5_FEATURE_SET_VERSION = "weekly-pit-structural-v5";
@@ -114,21 +115,6 @@
     stacking_weights: "stacking-weights.csv",
     multiscale_ensemble_scales: "multiscale-ensemble-scales.csv",
   });
-  const V5_STANDARD_CORE_MODELS = Object.freeze([
-    "majority", "persistence", "markov", "elastic_net_logistic",
-    "calibrated_linear_svm", "random_forest", "extra_trees",
-    "hist_gradient_boosting", "ridge_logistic", "transition_logistic",
-    "duration_tvtp_hurdle", "shrinkage_lda", "spline_logistic", "xgboost",
-    "xgb_hazard_destination", "causal_dynamic_ensemble",
-    "causal_multiscale_ensemble",
-  ]);
-  const V5_FORECAST_COMPARISON_MODELS = Object.freeze([
-    "markov",
-    "xgboost",
-    "xgb_hazard_destination",
-    "causal_dynamic_ensemble",
-    "causal_multiscale_ensemble",
-  ]);
   const V5_FX_RESEARCH_ARTIFACTS = Object.freeze([
     "fx_features", "fx_coverage", "fx_ablation_oos",
   ]);
@@ -157,7 +143,9 @@
     panelGap: 64,
     outcomeOffset: 26,
   });
-  const STATE_META = Object.freeze({
+  // Frozen v3/v4 rendering fallback only. Active v5 output must supply the
+  // canonical labels, colours, and symbols in payload.states.
+  const FROZEN_LEGACY_STATE_META = Object.freeze({
     risk_on: Object.freeze({ label: "Risk-on", ko: "위험 선호", symbol: "↗", short: "↗" }),
     transition: Object.freeze({ label: "Transition", ko: "전환", symbol: "◆", short: "◆" }),
     risk_off: Object.freeze({ label: "Risk-off", ko: "위험 회피", symbol: "↘", short: "↘" }),
@@ -221,6 +209,7 @@
   const state = {
     raw: null,
     comparisonSummary: null,
+    selectionFamilyAudit: null,
     weekly: [],
     selectedIndex: -1,
     historyWindow: 52,
@@ -229,6 +218,7 @@
     chartHistory: [],
     chartPinnedDate: null,
     chartPreviewDate: null,
+    forecastExpiryTimer: null,
     transitionHorizon: 1,
     outcomeAsset: "SPY",
     outcomeHorizon: 13,
@@ -338,10 +328,14 @@
     }
     if (mode === "live") {
       const labels = ["실데이터", profile].filter(Boolean);
+      const lifecycle = isObject(model.lifecycle) ? model.lifecycle : {};
+      const deployment = isObject(lifecycle.deployment) ? lifecycle.deployment.status : null;
       if (meta.publication_status === V5_PUBLICATION_STATUS) {
-        labels.push("공개 검토 완료");
-      } else if (model.selection_status === "provisional_predeployment") {
-        labels.push("배포 전 잠정");
+        labels.push("공개 운영");
+      } else if (deployment === "reviewed") {
+        labels.push("검토 완료 · 미배포");
+      } else if (model.selection_status === "selected_by_gate") {
+        labels.push("연구 후보 · 미배포");
       }
       return {
         mode,
@@ -481,6 +475,387 @@
     }
   }
 
+  function canonicalJsonText(value) {
+    if (value === null || typeof value === "boolean" || typeof value === "string") {
+      return JSON.stringify(value);
+    }
+    if (typeof value === "number") {
+      if (!Number.isFinite(value)) throw new TypeError("canonical JSON cannot contain non-finite numbers");
+      return JSON.stringify(value);
+    }
+    if (Array.isArray(value)) return `[${value.map(canonicalJsonText).join(",")}]`;
+    if (isObject(value)) {
+      return `{${Object.keys(value).sort().map((key) => (
+        `${JSON.stringify(key)}:${canonicalJsonText(value[key])}`
+      )).join(",")}}`;
+    }
+    throw new TypeError("canonical JSON contains an unsupported value");
+  }
+
+  function canonicalJsonFromSource(source, omittedTopLevelKey = null) {
+    if (typeof source !== "string") throw new TypeError("JSON source must be a string");
+    let index = 0;
+    const skipWhitespace = () => {
+      while (/\s/.test(source[index] || "")) index += 1;
+    };
+    const parseStringToken = () => {
+      const start = index;
+      index += 1;
+      while (index < source.length) {
+        if (source[index] === "\\") {
+          index += 2;
+          continue;
+        }
+        if (source[index] === '"') {
+          index += 1;
+          const decoded = JSON.parse(source.slice(start, index));
+          return { decoded, text: JSON.stringify(decoded) };
+        }
+        index += 1;
+      }
+      throw new SyntaxError("unterminated JSON string");
+    };
+    const parseValue = (depth) => {
+      skipWhitespace();
+      const token = source[index];
+      if (token === '"') return parseStringToken().text;
+      if (token === "[") {
+        index += 1;
+        const items = [];
+        skipWhitespace();
+        if (source[index] === "]") {
+          index += 1;
+          return "[]";
+        }
+        while (index < source.length) {
+          items.push(parseValue(depth + 1));
+          skipWhitespace();
+          if (source[index] === "]") {
+            index += 1;
+            return `[${items.join(",")}]`;
+          }
+          if (source[index] !== ",") throw new SyntaxError("invalid JSON array");
+          index += 1;
+        }
+        throw new SyntaxError("unterminated JSON array");
+      }
+      if (token === "{") {
+        index += 1;
+        const entries = [];
+        const keys = new Set();
+        skipWhitespace();
+        if (source[index] === "}") {
+          index += 1;
+          return "{}";
+        }
+        while (index < source.length) {
+          skipWhitespace();
+          if (source[index] !== '"') throw new SyntaxError("invalid JSON object key");
+          const key = parseStringToken();
+          if (keys.has(key.decoded)) throw new SyntaxError("duplicate JSON object key");
+          keys.add(key.decoded);
+          skipWhitespace();
+          if (source[index] !== ":") throw new SyntaxError("invalid JSON object separator");
+          index += 1;
+          const value = parseValue(depth + 1);
+          if (!(depth === 0 && key.decoded === omittedTopLevelKey)) {
+            entries.push({ key: key.decoded, text: `${key.text}:${value}` });
+          }
+          skipWhitespace();
+          if (source[index] === "}") {
+            index += 1;
+            entries.sort((left, right) => left.key < right.key ? -1 : left.key > right.key ? 1 : 0);
+            return `{${entries.map((entry) => entry.text).join(",")}}`;
+          }
+          if (source[index] !== ",") throw new SyntaxError("invalid JSON object");
+          index += 1;
+        }
+        throw new SyntaxError("unterminated JSON object");
+      }
+      const scalar = source.slice(index).match(/^(?:-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|null)/);
+      if (!scalar) throw new SyntaxError("invalid JSON scalar");
+      index += scalar[0].length;
+      return scalar[0];
+    };
+    const result = parseValue(0);
+    skipWhitespace();
+    if (index !== source.length) throw new SyntaxError("trailing JSON content");
+    return result;
+  }
+
+  function safeRelativeArtifactPath(value) {
+    return typeof value === "string"
+      && value.length > 0
+      && !value.startsWith("/")
+      && !value.split("/").includes("..")
+      && !value.includes("\\");
+  }
+
+  function validateSelectionFamilyAuditSemantics(report, payload) {
+    if (!isObject(report) || !isObject(payload)) return null;
+    const meta = isObject(payload.meta) ? payload.meta : {};
+    const selection = isObject(payload.selection) ? payload.selection : {};
+    const model = isObject(payload.model) ? payload.model : {};
+    const topLevelFields = [
+      "schema_version", "status", "generation_id", "evidence_track", "evidence_status",
+      "candidate_manifest_sha256", "selection_period", "source_artifacts",
+      "candidate_count", "candidate_set", "champion", "runner_up",
+      "selection_reason", "policy_sha256", "complexity_registry",
+      "complexity_registry_sha256", "fallback", "common_origin_contract",
+      "candidates", "supplemental_evaluation", "sha256",
+    ];
+    if (
+      !hasExactKeys(report, topLevelFields)
+      || meta.result_version !== V5_RESULT_VERSION
+      || report.schema_version !== "selection-family-audit/v2"
+      || report.status !== "completed"
+      || report.generation_id !== meta.generation_id
+      || !isLowerSha256(report.sha256)
+      || report.candidate_manifest_sha256 !== model.candidate_manifest_sha256
+      || report.policy_sha256 !== selection.policy_sha256
+      || report.complexity_registry_sha256 !== selection.complexity_registry_sha256
+      || report.evidence_track !== payload.forecast?.evidence_track
+      || (
+        report.evidence_track === "operational_oos"
+          ? report.evidence_status !== "operational_oos"
+          : !["historical_reconstructed_oos", "synthetic_fixture"].includes(report.evidence_status)
+      )
+      || report.champion !== modelName(model.champion)
+      || report.runner_up !== selection.runner_up
+      || report.selection_reason !== selection.selection_reason
+    ) return null;
+
+    const selectionPeriod = report.selection_period;
+    const selectionTimestamps = isObject(selectionPeriod)
+      ? [
+        selectionPeriod.selection_end_at,
+        selectionPeriod.first_origin_at,
+        selectionPeriod.last_origin_at,
+        selectionPeriod.first_target_at,
+        selectionPeriod.last_target_at,
+      ]
+      : [];
+    if (
+      !hasExactKeys(selectionPeriod, [
+        "role", "declared", "selection_end_at", "first_origin_at",
+        "last_origin_at", "first_target_at", "last_target_at",
+      ])
+      || selectionPeriod.role !== "predeployment_selection_only"
+      || typeof selectionPeriod.declared !== "string"
+      || !selectionPeriod.declared
+      || (typeof model.selection_period === "string" && selectionPeriod.declared !== model.selection_period)
+      || selectionTimestamps.some((value) => !isZonedIsoTimestamp(value))
+      || Date.parse(selectionPeriod.first_origin_at) > Date.parse(selectionPeriod.last_origin_at)
+      || Date.parse(selectionPeriod.first_target_at) > Date.parse(selectionPeriod.last_target_at)
+      || Date.parse(selectionPeriod.last_target_at) >= Date.parse(selectionPeriod.selection_end_at)
+    ) return null;
+
+    const sourceArtifacts = report.source_artifacts;
+    const payloadArtifacts = isObject(model.core_artifacts) ? model.core_artifacts : {};
+    if (!hasExactKeys(sourceArtifacts, ["selection_diagnostics", "oos_predictions"])) return null;
+    for (const key of ["selection_diagnostics", "oos_predictions"]) {
+      const record = sourceArtifacts[key];
+      if (
+        !hasExactKeys(record, ["path", "sha256", "row_count"])
+        || !safeRelativeArtifactPath(record.path)
+        || !isLowerSha256(record.sha256)
+        || !Number.isInteger(record.row_count)
+        || record.row_count <= 0
+        || !isObject(payloadArtifacts[key])
+        || record.path !== payloadArtifacts[key].path
+        || record.sha256 !== payloadArtifacts[key].sha256
+      ) return null;
+    }
+    const candidates = Array.isArray(report.candidate_set) ? report.candidate_set : [];
+    const payloadCandidates = Array.isArray(selection.candidate_set) ? selection.candidate_set : [];
+    const rows = Array.isArray(report.candidates) ? report.candidates : [];
+    const registry = isObject(report.complexity_registry) ? report.complexity_registry : {};
+    if (
+      candidates.length === 0
+      || report.candidate_count !== candidates.length
+      || JSON.stringify(candidates) !== JSON.stringify(payloadCandidates)
+      || JSON.stringify(rows.map((row) => isObject(row) ? row.model : null)) !== JSON.stringify(candidates)
+      || Object.keys(registry).length !== candidates.length
+      || candidates.some((name) => !Object.prototype.hasOwnProperty.call(registry, name))
+    ) return null;
+
+    const selectedRows = rows.filter((row) => isObject(row) && row.selected === true);
+    const runnerUpRows = rows.filter((row) => isObject(row) && row.runner_up === true);
+    const validRows = rows.every((row, index) => (
+      isObject(row)
+      && row.candidate_order === index + 1
+      && row.model === candidates[index]
+      && typeof row.selected === "boolean"
+      && typeof row.runner_up === "boolean"
+      && typeof row.is_reference === "boolean"
+      && Number.isInteger(row.complexity_rank)
+      && row.complexity_rank >= 0
+      && registry[row.model] === row.complexity_rank
+      && isObject(row.gate)
+      && typeof row.gate.passed_all === "boolean"
+      && typeof row.gate.reason === "string"
+      && Array.isArray(row.gate.failed_checks)
+      && Number.isInteger(row.gate.fallback_count)
+      && row.gate.fallback_count >= 0
+      && isObject(row.metrics)
+      && strictFiniteNumber(row.metrics.log_loss) !== null
+      && row.metrics.log_loss >= 0
+      && strictFiniteNumber(row.metrics.brier) !== null
+      && row.metrics.brier >= 0
+    ));
+    if (
+      !validRows
+      || rows.filter((row) => row.is_reference === true).length !== 1
+      || selectedRows.length !== 1
+      || selectedRows[0].model !== report.champion
+      || selectedRows[0].gate.passed_all !== true
+      || (report.runner_up === null && runnerUpRows.length !== 0)
+      || (report.runner_up !== null && (
+        runnerUpRows.length !== 1
+        || runnerUpRows[0].model !== report.runner_up
+        || runnerUpRows[0].gate.passed_all !== true
+      ))
+    ) return null;
+
+    const fallback = report.fallback;
+    if (
+      fallback !== null
+      && (
+        !hasExactKeys(fallback, ["model", "trigger", "reason"])
+        || !candidates.includes(fallback.model)
+        || typeof fallback.trigger !== "string"
+        || !fallback.trigger
+        || typeof fallback.reason !== "string"
+        || !fallback.reason
+      )
+    ) return null;
+
+    const origins = report.common_origin_contract;
+    const originColumns = [
+      "origin_date", "target_date", "evaluation_split", "current_state",
+      "actual", "train_size", "gap",
+    ];
+    if (
+      !isObject(origins)
+      || origins.status !== "matched"
+      || JSON.stringify(origins.columns) !== JSON.stringify(originColumns)
+      || !Number.isInteger(origins.origin_count)
+      || origins.origin_count <= 0
+      || !isZonedIsoTimestamp(origins.first_origin_at)
+      || !isZonedIsoTimestamp(origins.last_origin_at)
+      || Date.parse(origins.first_origin_at) > Date.parse(origins.last_origin_at)
+      || origins.first_origin_at !== selectionPeriod.first_origin_at
+      || origins.last_origin_at !== selectionPeriod.last_origin_at
+      || !isLowerSha256(origins.origins_sha256)
+      || sourceArtifacts.selection_diagnostics.row_count !== candidates.length
+      || sourceArtifacts.oos_predictions.row_count < origins.origin_count * candidates.length
+    ) return null;
+
+    const supplemental = report.supplemental_evaluation;
+    if (
+      !isObject(supplemental)
+      || supplemental.schema_version !== "regime-selection-evaluation/1"
+      || supplemental.status !== "completed"
+      || supplemental.evidence_status !== report.evidence_status
+      || supplemental.role !== "supplemental_not_selection_gate"
+      || supplemental.evaluation_split !== "selection"
+      || supplemental.holdout_rows_used !== 0
+      || supplemental.selection_effect !== "none"
+      || supplemental.selected_champion_unchanged !== report.champion
+      || JSON.stringify(supplemental.candidate_set) !== JSON.stringify(candidates)
+      || !isObject(supplemental.common_origin_contract)
+      || supplemental.common_origin_contract.status !== "matched"
+      || supplemental.common_origin_contract.origin_count !== origins.origin_count
+      || supplemental.common_origin_contract.first_origin_at !== origins.first_origin_at
+      || supplemental.common_origin_contract.last_origin_at !== origins.last_origin_at
+      || !isObject(supplemental.primary_metric_crosscheck)
+      || supplemental.primary_metric_crosscheck.status !== "matched"
+      || supplemental.primary_metric_crosscheck.changes_holm_gate !== false
+      || supplemental.primary_metric_crosscheck.changes_champion !== false
+      || !isLowerSha256(supplemental.sha256)
+    ) return null;
+
+    return Object.freeze({
+      source: "selection-family-audit/v2",
+      candidateCount: candidates.length,
+      candidates: Object.freeze([...candidates]),
+      champion: report.champion,
+      runnerUp: report.runner_up,
+      selectionReason: report.selection_reason,
+      policySha256: report.policy_sha256,
+      evidenceTrack: report.evidence_track,
+      evidenceStatus: report.evidence_status,
+      originCount: origins.origin_count,
+      fallback: isObject(report.fallback) ? Object.freeze({ ...report.fallback }) : null,
+    });
+  }
+
+  async function validateSelectionFamilyAudit(report, payload, sourceText = null) {
+    const validated = validateSelectionFamilyAuditSemantics(report, payload);
+    if (!validated) return null;
+    const body = { ...report };
+    delete body.sha256;
+    const supplementalBody = { ...report.supplemental_evaluation };
+    delete supplementalBody.sha256;
+    let hashes = null;
+    try {
+      hashes = await Promise.all([
+        sha256Text(
+          typeof sourceText === "string"
+            ? canonicalJsonFromSource(sourceText, "sha256")
+            : canonicalJsonText(body),
+        ),
+        sha256Text(canonicalJsonText(report.complexity_registry)),
+        typeof sourceText === "string"
+          ? Promise.resolve(report.supplemental_evaluation.sha256)
+          : sha256Text(canonicalJsonText(supplementalBody)),
+      ]);
+    } catch (_error) {
+      return null;
+    }
+    return (
+      hashes[0] === report.sha256
+      && hashes[1] === report.complexity_registry_sha256
+      && hashes[2] === report.supplemental_evaluation.sha256
+    ) ? validated : null;
+  }
+
+  async function loadSelectionFamilyAudit(payload) {
+    if (!isObject(payload.meta) || payload.meta.result_version !== V5_RESULT_VERSION) return null;
+    try {
+      const response = await fetch(V5_SELECTION_FAMILY_AUDIT_URL, {
+        cache: "no-store",
+        headers: { Accept: "application/json" },
+      });
+      if (!response.ok) return null;
+      const sourceText = await response.text();
+      return await validateSelectionFamilyAudit(JSON.parse(sourceText), payload, sourceText);
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  function selectionEvidenceForDisplay(payload, audit = null) {
+    if (isObject(audit) && audit.source === "selection-family-audit/v2") return audit;
+    const selection = isObject(payload) && isObject(payload.selection) ? payload.selection : {};
+    const candidates = Array.isArray(selection.candidate_set)
+      ? selection.candidate_set.filter((name) => typeof name === "string" && name)
+      : forecastComparisonModels(payload);
+    return Object.freeze({
+      source: "payload",
+      candidateCount: candidates.length,
+      candidates: Object.freeze([...candidates]),
+      champion: modelName(isObject(payload?.model) ? payload.model.champion : null),
+      runnerUp: selection.runner_up ?? null,
+      selectionReason: selection.selection_reason ?? null,
+      policySha256: selection.policy_sha256 ?? null,
+      evidenceTrack: isObject(payload?.forecast) ? payload.forecast.evidence_track : null,
+      evidenceStatus: null,
+      originCount: null,
+      fallback: null,
+    });
+  }
+
   function createElement(tag, className, text) {
     const element = document.createElement(tag);
     if (className) element.className = className;
@@ -609,8 +984,151 @@
       .replace(/\b\w/g, (letter) => letter.toUpperCase());
   }
 
-  function stateMeta(code) {
-    return STATE_META[code] || { label: textValue(code, "Unknown"), ko: "알 수 없음", symbol: "?", short: "?" };
+  function stateMeta(code, payload = state.raw) {
+    const rows = isObject(payload) && Array.isArray(payload.states) ? payload.states : [];
+    const supplied = rows.find((row) => isObject(row) && row.id === code);
+    if (supplied) {
+      const symbol = textValue(supplied.symbol, "?");
+      return {
+        label: textValue(supplied.label, textValue(code, "Unknown")),
+        ko: textValue(firstValue(supplied, ["label_ko", "ko"]), "알 수 없음"),
+        description: textValue(supplied.description, ""),
+        color: textValue(supplied.color, ""),
+        symbol,
+        short: symbol,
+      };
+    }
+    return FROZEN_LEGACY_STATE_META[code]
+      || { label: textValue(code, "Unknown"), ko: "알 수 없음", symbol: "?", short: "?", color: "" };
+  }
+
+  function applyPayloadStateTheme(payload = state.raw) {
+    if (typeof document === "undefined" || !document.documentElement) return;
+    for (const code of STATE_ORDER) {
+      const color = stateMeta(code, payload).color;
+      if (/^#[0-9a-f]{6}$/i.test(color)) {
+        document.documentElement.style.setProperty(`--${code.replaceAll("_", "-")}`, color);
+      }
+    }
+    for (const element of document.querySelectorAll("[data-state-label]")) {
+      element.textContent = stateMeta(element.dataset.stateLabel, payload).label;
+    }
+    for (const element of document.querySelectorAll("[data-state-symbol]")) {
+      element.textContent = stateMeta(element.dataset.stateSymbol, payload).symbol;
+    }
+  }
+
+  function formatDurationSeconds(value) {
+    const seconds = strictFiniteNumber(value);
+    if (seconds === null || seconds < 0) return "—";
+    if (seconds === 0) return "0시간";
+    const totalHours = Math.floor(seconds / 3600);
+    const days = Math.floor(totalHours / 24);
+    const hours = totalHours % 24;
+    return [days ? `${days}일` : null, hours || !days ? `${hours}시간` : null]
+      .filter(Boolean)
+      .join(" ");
+  }
+
+  function selectedForecastIsHistorical() {
+    return state.selectedIndex >= 0
+      && state.weekly.length > 0
+      && state.selectedIndex < state.weekly.length - 1;
+  }
+
+  function forecastSurfacePolicy(
+    payload,
+    selectedIndex,
+    weeklyLength,
+    nowMilliseconds = Date.now(),
+  ) {
+    const resultVersion = isObject(payload) && isObject(payload.meta)
+      ? payload.meta.result_version
+      : null;
+    const latestSelection = Number.isInteger(selectedIndex)
+      && Number.isInteger(weeklyLength)
+      && weeklyLength > 0
+      && selectedIndex === weeklyLength - 1;
+    const expiredLatest = resultVersion === V5_RESULT_VERSION
+      && latestSelection
+      && !forecastAvailability(payload, nowMilliseconds).current;
+    return Object.freeze({
+      expiredLatest,
+      showCurrentForecast: !expiredLatest,
+      preserveHistory: true,
+    });
+  }
+
+  function applyExpiredForecastDomState(elements, policy) {
+    if (!isObject(elements) || !isObject(policy)) return;
+    if (policy.expiredLatest) {
+      for (const id of [
+        "next-regime-card",
+        "transition-card",
+        "model-forecast-field",
+        "model-forecast-explorer",
+      ]) {
+        if (elements[id]) elements[id].hidden = true;
+      }
+    }
+    if (policy.preserveHistory && elements.history) elements.history.hidden = false;
+  }
+
+  function suppressCurrentForecastSurface() {
+    return forecastSurfacePolicy(
+      state.raw,
+      state.selectedIndex,
+      state.weekly.length,
+    ).expiredLatest;
+  }
+
+  function scheduleForecastExpiryRefresh(availability) {
+    if (typeof window === "undefined" || typeof window.setTimeout !== "function") return;
+    if (state.forecastExpiryTimer !== null) {
+      window.clearTimeout(state.forecastExpiryTimer);
+      state.forecastExpiryTimer = null;
+    }
+    if (!availability.current || availability.remaining_seconds <= 0) return;
+    const delay = Math.min(2147483647, availability.remaining_seconds * 1000 + 250);
+    state.forecastExpiryTimer = window.setTimeout(() => {
+      state.forecastExpiryTimer = null;
+      if (selectedWeek()) renderSelectedWeek();
+    }, delay);
+  }
+
+  function renderContractOverview() {
+    const isV5 = isV5Payload();
+    dom["contract-overview-grid"].hidden = !isV5;
+    if (!isV5) return;
+
+    const label = isObject(state.raw.label) ? state.raw.label : {};
+    const shortHash = typeof label.spec_sha256 === "string" ? label.spec_sha256.slice(0, 8) : "hash 없음";
+    setText(dom["label-spec-identity"], `${textValue(label.spec_version, "정의 미기재")} · ${shortHash}`);
+    const membershipText = label.membership_semantics === "distance_to_anchor_not_posterior"
+      ? "관측 소속도는 임계 anchor와의 거리이며 posterior가 아닙니다. 다음 주 값은 t까지의 정보로 만든 t+1 예측확률입니다."
+      : "관측 소속도와 다음 주 예측확률은 서로 다른 값입니다.";
+    setText(dom["membership-definition"], membershipText);
+
+    const forecast = isObject(state.raw.forecast) ? state.raw.forecast : {};
+    const availability = forecastAvailability(state.raw);
+    const evidenceLabel = forecast.evidence_track === "operational_oos"
+      ? "실제 운영 OOS"
+      : forecast.evidence_track === "reconstructed_oos"
+        ? "재구성 OOS"
+        : "근거 트랙 미기재";
+    const currentLabel = availability.current ? "예측 유효" : "예측기간 종료";
+    setText(dom["forecast-contract-status"], `${currentLabel} · ${evidenceLabel}`);
+    dom["forecast-contract-status"].classList.toggle("is-expired", !availability.current);
+    setText(dom["forecast-origin-at"], formatDateTime(forecast.origin_at));
+    setText(dom["forecast-decision-at"], forecast.decision_at ? formatDateTime(forecast.decision_at) : "발행시각 없음");
+    setText(dom["forecast-target-at"], formatDateTime(forecast.target_at));
+    setText(dom["forecast-remaining-horizon"], formatDurationSeconds(availability.remaining_seconds));
+    dom["forecast-expired-notice"].hidden = availability.current;
+    dom["hero-results"].classList.toggle(
+      "has-expired-current-forecast",
+      !selectedForecastIsHistorical() && !availability.current,
+    );
+    scheduleForecastExpiryRefresh(availability);
   }
 
   function normalizeStatus(value) {
@@ -754,8 +1272,210 @@
       && Number.isFinite(Date.parse(value));
   }
 
+  function validateV5StateDefinitions(rows, errors) {
+    const fields = ["id", "label", "label_ko", "description", "color", "symbol"];
+    if (!Array.isArray(rows) || rows.length !== STATE_ORDER.length) return;
+    rows.forEach((row, index) => {
+      const path = `states[${index}]`;
+      if (!hasExactKeys(row, fields)) {
+        errors.push(`${path} 메타데이터 필드가 v5 계약과 일치하지 않습니다.`);
+        return;
+      }
+      if (row.id !== STATE_ORDER[index]) errors.push(`${path}.id 순서가 올바르지 않습니다.`);
+      for (const field of ["label", "label_ko", "description", "symbol"]) {
+        if (typeof row[field] !== "string" || !row[field].trim()) {
+          errors.push(`${path}.${field}는 비어 있지 않은 문자열이어야 합니다.`);
+        }
+      }
+      if (typeof row.color !== "string" || !/^#[0-9a-f]{6}$/i.test(row.color)) {
+        errors.push(`${path}.color는 6자리 hex 색상이어야 합니다.`);
+      }
+    });
+  }
+
+  function validateV5LabelEnvelope(label, errors) {
+    const fields = [
+      "spec_id", "spec_version", "spec_sha256", "fit_period",
+      "input_scope", "membership_semantics",
+    ];
+    if (!hasExactKeys(label, fields)) {
+      errors.push("v5 label 필드가 계약과 일치하지 않습니다.");
+      return;
+    }
+    if (label.spec_id !== "v1_spy_hysteresis" || label.spec_version !== V5_LABEL_VERSION) {
+      errors.push("v5 label canonical spec이 올바르지 않습니다.");
+    }
+    if (!isLowerSha256(label.spec_sha256)) errors.push("v5 label.spec_sha256이 올바르지 않습니다.");
+    if (label.input_scope !== "SPY adjusted close only") errors.push("v5 label.input_scope가 올바르지 않습니다.");
+    if (label.membership_semantics !== "distance_to_anchor_not_posterior") {
+      errors.push("v5 관측 소속도 의미가 올바르지 않습니다.");
+    }
+    const fit = label.fit_period;
+    if (
+      !hasExactKeys(fit, ["start", "end", "weeks"])
+      || !isIsoDate(fit.start)
+      || !isIsoDate(fit.end)
+      || fit.end < fit.start
+      || fit.weeks !== 520
+    ) {
+      errors.push("v5 label.fit_period가 올바르지 않습니다.");
+    }
+  }
+
+  function forecastAvailability(payload, nowMilliseconds = Date.now()) {
+    const forecast = isObject(payload) ? payload.forecast : null;
+    const targetMilliseconds = isObject(forecast) ? Date.parse(forecast.target_at) : NaN;
+    const now = strictFiniteNumber(nowMilliseconds);
+    const contractActive = isObject(forecast) && forecast.status === "active";
+    const current = contractActive
+      && now !== null
+      && Number.isFinite(targetMilliseconds)
+      && now < targetMilliseconds;
+    return Object.freeze({
+      status: current ? "active" : contractActive ? "elapsed" : "expired",
+      current,
+      remaining_seconds: current
+        ? Math.max(0, Math.floor((targetMilliseconds - now) / 1000))
+        : 0,
+    });
+  }
+
+  function validateV5ForecastEnvelope(forecast, mode, errors) {
+    const fields = [
+      "status", "origin_at", "decision_at", "target_at",
+      "remaining_horizon", "evidence_track",
+    ];
+    if (!hasExactKeys(forecast, fields)) {
+      errors.push("v5 forecast 필드가 계약과 일치하지 않습니다.");
+      return;
+    }
+    if (!["active", "expired"].includes(forecast.status)) errors.push("v5 forecast.status가 올바르지 않습니다.");
+    if (!["operational_oos", "reconstructed_oos"].includes(forecast.evidence_track)) {
+      errors.push("v5 forecast.evidence_track이 올바르지 않습니다.");
+    }
+    const origin = isZonedIsoTimestamp(forecast.origin_at) ? Date.parse(forecast.origin_at) : NaN;
+    const target = isZonedIsoTimestamp(forecast.target_at) ? Date.parse(forecast.target_at) : NaN;
+    if (!Number.isFinite(origin) || !Number.isFinite(target) || target - origin !== 7 * 86400000) {
+      errors.push("v5 forecast origin/target 1주 구간이 올바르지 않습니다.");
+      return;
+    }
+    if (!Number.isInteger(forecast.remaining_horizon) || forecast.remaining_horizon < 0) {
+      errors.push("v5 forecast.remaining_horizon이 올바르지 않습니다.");
+      return;
+    }
+    if (forecast.status === "active") {
+      const decision = isZonedIsoTimestamp(forecast.decision_at) ? Date.parse(forecast.decision_at) : NaN;
+      if (!Number.isFinite(decision) || decision < origin || decision >= target) {
+        errors.push("v5 forecast는 origin_at <= decision_at < target_at이어야 합니다.");
+      } else if (forecast.remaining_horizon !== Math.floor((target - decision) / 1000)) {
+        errors.push("v5 forecast.remaining_horizon이 decision_at과 일치하지 않습니다.");
+      }
+    } else if (forecast.decision_at !== null || forecast.remaining_horizon !== 0 || mode === "live") {
+      errors.push("v5 expired forecast 상태가 운영 계약과 일치하지 않습니다.");
+    }
+  }
+
+  function validateV5SelectionEnvelope(selection, model, errors) {
+    const fields = [
+      "schema_version", "status", "policy_sha256", "complexity_registry_sha256",
+      "candidate_set", "runner_up", "selection_reason", "simplicity_tolerance",
+      "tie_break_order", "operating_champion",
+    ];
+    if (!hasExactKeys(selection, fields)) {
+      errors.push("v5 selection 필드가 계약과 일치하지 않습니다.");
+      return;
+    }
+    if (selection.schema_version !== "regime-selection-evidence/1" || selection.status !== "selected_by_gate") {
+      errors.push("v5 selection schema/status가 올바르지 않습니다.");
+    }
+    if (selection.status !== model.selection_status) errors.push("v5 selection status alias가 일치하지 않습니다.");
+    if (!isLowerSha256(selection.policy_sha256) || !isLowerSha256(selection.complexity_registry_sha256)) {
+      errors.push("v5 selection policy hash가 올바르지 않습니다.");
+    }
+    const candidates = Array.isArray(selection.candidate_set) ? selection.candidate_set : [];
+    const diagnosticNames = Array.isArray(model.selection_diagnostics)
+      ? model.selection_diagnostics.map((row) => isObject(row) ? row.model : null)
+      : [];
+    if (
+      !candidates.length
+      || candidates.some((name) => typeof name !== "string" || !name)
+      || new Set(candidates).size !== candidates.length
+      || JSON.stringify(candidates) !== JSON.stringify(diagnosticNames)
+    ) {
+      errors.push("v5 selection.candidate_set이 진단 후보와 일치하지 않습니다.");
+    }
+    if (
+      selection.runner_up !== null
+      && (!candidates.includes(selection.runner_up) || selection.runner_up === model.champion)
+    ) {
+      errors.push("v5 selection.runner_up이 올바르지 않습니다.");
+    }
+    if (![
+      "best_gate_passing_log_loss",
+      "simplicity_tiebreak_within_tolerance",
+      "reference_fallback_no_challenger_passed",
+    ].includes(selection.selection_reason)) {
+      errors.push("v5 selection.selection_reason이 올바르지 않습니다.");
+    }
+    if (selection.simplicity_tolerance !== 0.01) errors.push("v5 simplicity_tolerance은 0.01이어야 합니다.");
+    if (JSON.stringify(selection.tie_break_order) !== JSON.stringify(["complexity_rank", "calibration_error", "log_loss", "model"])) {
+      errors.push("v5 selection.tie_break_order가 올바르지 않습니다.");
+    }
+    if (
+      typeof selection.operating_champion !== "string"
+      || !selection.operating_champion
+      || !candidates.includes(selection.operating_champion)
+    ) {
+      errors.push("v5 selection.operating_champion이 없습니다.");
+    }
+  }
+
+  function validateV5Lifecycle(payload, errors) {
+    const { meta, model } = payload;
+    const lifecycle = model.lifecycle;
+    if (!hasExactKeys(lifecycle, ["selection", "deployment", "publication"])) {
+      errors.push("v5 model.lifecycle 필드가 계약과 일치하지 않습니다.");
+      return;
+    }
+    const selection = lifecycle.selection;
+    const deployment = lifecycle.deployment;
+    const publication = lifecycle.publication;
+    if (
+      !hasExactKeys(selection, ["status"])
+      || !hasExactKeys(deployment, ["status"])
+      || !hasExactKeys(publication, ["status"])
+    ) {
+      errors.push("v5 lifecycle 하위 필드가 계약과 일치하지 않습니다.");
+      return;
+    }
+    if (selection.status !== "selected_by_gate" || model.selection_status !== selection.status) {
+      errors.push("v5 lifecycle selection status가 올바르지 않습니다.");
+    }
+    if (!["candidate", "reviewed", "operating"].includes(deployment.status)) {
+      errors.push("v5 lifecycle deployment status가 올바르지 않습니다.");
+    }
+    if (!["unpublished", V5_PUBLICATION_STATUS].includes(publication.status) || meta.publication_status !== publication.status) {
+      errors.push("v5 lifecycle publication status가 올바르지 않습니다.");
+    }
+    const allowed = (
+      publication.status === "unpublished" && ["candidate", "reviewed"].includes(deployment.status)
+    ) || (
+      publication.status === V5_PUBLICATION_STATUS && deployment.status === "operating"
+    );
+    if (!allowed) errors.push("v5 lifecycle 조합이 올바르지 않습니다.");
+  }
+
+  function validateV5Envelope(payload, errors) {
+    validateV5StateDefinitions(payload.states, errors);
+    validateV5LabelEnvelope(payload.label, errors);
+    validateV5ForecastEnvelope(payload.forecast, payload.meta.mode, errors);
+    validateV5SelectionEnvelope(payload.selection, payload.model, errors);
+    validateV5Lifecycle(payload, errors);
+  }
+
   function validateV5ModelContract(payload, errors) {
     const { meta, model } = payload;
+    validateV5Envelope(payload, errors);
     if (typeof meta.generation_id !== "string" || !meta.generation_id) errors.push("v5 meta.generation_id가 없습니다.");
     if (!["demo", "live"].includes(meta.mode)) errors.push("v5 meta.mode는 demo 또는 live여야 합니다.");
     if (!Array.isArray(meta.warnings) || meta.warnings.some((warning) => typeof warning !== "string" || !warning.trim())) {
@@ -764,10 +1484,12 @@
     if (!isZonedIsoTimestamp(meta.generated_at) || !isZonedIsoTimestamp(meta.data_as_of)) {
       errors.push("v5 meta.generated_at과 data_as_of는 timezone을 포함한 ISO-8601이어야 합니다.");
     }
-    if (meta.publication_status !== undefined || meta.publication_review !== undefined) {
+    const publicationStatus = meta.publication_status;
+    if (publicationStatus === V5_PUBLICATION_STATUS) {
       const review = meta.publication_review;
-      if (meta.mode !== "live" || meta.publication_status !== V5_PUBLICATION_STATUS) {
-        errors.push("v5 publication_status가 올바르지 않습니다.");
+      if (meta.mode !== "live") errors.push("v5 reviewed publication은 live 결과여야 합니다.");
+      if (!isLowerSha256(meta.generation_manifest_sha256)) {
+        errors.push("v5 reviewed publication에는 generation manifest hash가 필요합니다.");
       }
       const reviewFields = [
         "schema_version", "decision", "reviewed_at", "reviewed_candidate_sha256",
@@ -792,6 +1514,15 @@
           errors.push("v5 publication_review는 FX 비승격을 보존해야 합니다.");
         }
       }
+    } else if (publicationStatus === "unpublished") {
+      if (meta.publication_review !== undefined) {
+        errors.push("v5 unpublished 결과에는 publication_review가 없어야 합니다.");
+      }
+    } else {
+      errors.push("v5 publication_status가 올바르지 않습니다.");
+    }
+    if (meta.generation_manifest_sha256 !== undefined && !isLowerSha256(meta.generation_manifest_sha256)) {
+      errors.push("v5 generation_manifest_sha256이 올바르지 않습니다.");
     }
     if (!isObject(meta.freshness)) {
       errors.push("v5 meta.freshness 객체가 없습니다.");
@@ -831,19 +1562,15 @@
           errors.push("v5 model.forecast_comparison 역할·horizon이 올바르지 않습니다.");
         }
         const comparisonModels = forecastComparison.models;
-        const expectedComparisonModels = [...V5_FORECAST_COMPARISON_MODELS];
-        if (
-          typeof model.champion === "string"
-          && !expectedComparisonModels.includes(model.champion)
-        ) {
-          expectedComparisonModels.push(model.champion);
-        }
         if (
           !Array.isArray(comparisonModels)
-          || comparisonModels.length !== expectedComparisonModels.length
-          || comparisonModels.some((name, index) => name !== expectedComparisonModels[index])
+          || !comparisonModels.length
+          || comparisonModels.some((name) => typeof name !== "string" || !name)
+          || new Set(comparisonModels).size !== comparisonModels.length
+          || !comparisonModels.includes(model.champion)
+          || !comparisonModels.includes(payload.selection?.operating_champion)
         ) {
-          errors.push("v5 model.forecast_comparison 모델 순서가 올바르지 않습니다.");
+          errors.push("v5 model.forecast_comparison 모델 목록이 올바르지 않습니다.");
         }
         const leaderboardNames = new Set(
           Array.isArray(model.leaderboard)
@@ -1403,10 +2130,9 @@
     const candidateNames = Array.isArray(candidateManifest?.models)
       ? candidateManifest.models.map((row) => row?.name)
       : [];
-    const expectedCandidateNames = [
-      ...V5_STANDARD_CORE_MODELS,
-      ...(model.profile === "full" ? ["gaussian_hmm"] : []),
-    ];
+    const expectedCandidateNames = isObject(payload.selection) && Array.isArray(payload.selection.candidate_set)
+      ? payload.selection.candidate_set
+      : [];
     if (
       !isObject(candidateManifest)
       || candidateManifest.profile !== model.profile
@@ -2006,6 +2732,11 @@
     }
     const expectedSchemaVersion = isV5 ? V5_SCHEMA_VERSION : "1.0.0";
     if (payload.meta.schema_version !== expectedSchemaVersion) errors.push(`schema_version은 ${expectedSchemaVersion}이어야 합니다.`);
+    if (isV5) {
+      for (const field of ["label", "forecast", "selection", "research"]) {
+        if (!isObject(payload[field])) errors.push(`v5 ${field} 객체가 없습니다.`);
+      }
+    }
     if (!payload.meta.generated_at) errors.push("meta.generated_at이 없습니다.");
     if (!payload.meta.data_as_of) errors.push("meta.data_as_of가 없습니다.");
     if (!isV5 && !payload.meta.mode) errors.push("meta.mode가 없습니다.");
@@ -2017,8 +2748,9 @@
       errors.push("states는 risk_on, transition, risk_off 순서여야 합니다.");
     }
     if (!payload.model.champion) errors.push("model.champion이 없습니다.");
-    if (payload.model.selection_status !== "provisional_predeployment") {
-      errors.push("model.selection_status는 provisional_predeployment여야 합니다.");
+    const expectedSelectionStatus = isV5 ? "selected_by_gate" : "provisional_predeployment";
+    if (payload.model.selection_status !== expectedSelectionStatus) {
+      errors.push(`model.selection_status는 ${expectedSelectionStatus}여야 합니다.`);
     }
     if (!Array.isArray(payload.model.leaderboard)) errors.push("model.leaderboard 배열이 없습니다.");
     if (!payload.feature_catalog.length || payload.feature_catalog.some((item) => !isObject(item))) {
@@ -2499,6 +3231,12 @@
       : [];
   }
 
+  function operatingChampionName(payload = state.raw) {
+    const selection = isObject(payload) && isObject(payload.selection) ? payload.selection : {};
+    const model = isObject(payload) && isObject(payload.model) ? payload.model : {};
+    return modelName(selection.operating_champion || model.champion);
+  }
+
   function forecastForWeek(week, requestedModel = state.comparisonModel, payload = state.raw) {
     if (!isObject(week)) return null;
     const official = isObject(week.next_week) ? week.next_week : null;
@@ -2673,6 +3411,9 @@
       "dashboard", "header-result-identity", "header-analysis-date", "header-data-as-of", "header-model-health", "theme-toggle",
       "theme-toggle-text", "dashboard-subtitle", "date-form", "analysis-date", "week-select",
       "snap-note", "previous-week", "next-week", "latest-week", "history-window",
+      "hero-results", "contract-overview-grid", "label-spec-identity", "membership-definition",
+      "forecast-window-card", "forecast-contract-status", "forecast-origin-at", "forecast-decision-at",
+      "forecast-target-at", "forecast-remaining-horizon", "forecast-expired-notice",
       "current-regime-card", "current-horizon", "current-regime-symbol", "current-regime-name",
       "current-regime-confidence", "current-probabilities", "current-entropy", "next-regime-card", "next-horizon",
       "next-regime-symbol", "next-regime-name", "next-regime-confidence",
@@ -2695,6 +3436,8 @@
       "conditional-stat-scroll", "conditional-stat-table-caption", "conditional-stat-body",
       "champion-summary", "model-evidence-summary", "model-caption", "model-loss-caption",
       "model-loss-chart", "model-loss-axis", "leaderboard-body",
+      "model-role-grid", "operating-model-name", "operating-model-status", "frozen-baseline-name",
+      "research-selector-summary", "research-selector-detail", "research-selection-status", "research-selection-detail",
       "model-forecast-field", "model-forecast-select", "model-forecast-explorer",
       "model-forecast-role", "model-forecast-title", "model-forecast-caption",
       "model-forecast-symbol", "model-forecast-state", "model-forecast-confidence",
@@ -2924,6 +3667,12 @@
   }
 
   function renderNextForecastSurface(week) {
+    const suppressed = suppressCurrentForecastSurface();
+    dom["next-regime-card"].hidden = suppressed;
+    if (suppressed) {
+      renderNextModelContext(null);
+      return null;
+    }
     const forecast = forecastForWeek(week, state.comparisonModel);
     const forecastDate = firstValue(forecast, ["date", "target_date", "period_end"]);
     renderRegime("next", forecast, forecastDate);
@@ -2932,7 +3681,12 @@
       dom["next-horizon"].textContent += ` · ${modelForecastLabel(selectedModel)}`;
     }
     if (dom["next-regime-card"]) {
-      const championName = modelName(state.raw && state.raw.model && state.raw.model.champion);
+      const championName = operatingChampionName();
+      const roleLabel = selectedForecastIsHistorical()
+        ? "과거 OOS"
+        : selectedModel === championName
+          ? "공식"
+          : "연구";
       dom["next-regime-card"].classList.toggle(
         "is-comparison-model",
         Boolean(selectedModel) && selectedModel !== championName,
@@ -2940,7 +3694,7 @@
       dom["next-regime-card"].dataset.forecastModel = selectedModel;
       dom["next-regime-card"].setAttribute(
         "aria-label",
-        `${modelForecastLabel(selectedModel)} ${selectedModel === championName ? "공식" : "비교"} 1주 예측 · ${stateMeta(isObject(forecast) ? forecast.state : null).ko}`,
+        `${modelForecastLabel(selectedModel)} ${roleLabel} 1주 예측 · ${stateMeta(isObject(forecast) ? forecast.state : null).ko}`,
       );
     }
     renderNextModelContext(forecast);
@@ -2961,6 +3715,10 @@
       renderConditionalComparison();
       renderConditionalDetail();
     }
+    applyExpiredForecastDomState(
+      dom,
+      forecastSurfacePolicy(state.raw, state.selectedIndex, state.weekly.length),
+    );
   }
 
   function renderSelectedWeek() {
@@ -2972,6 +3730,7 @@
     setText(dom["header-analysis-date"], formatDate(week.date));
     renderHeaderDataAsOf(cutoff);
     dom["dashboard-subtitle"].textContent = `${formatDate(week.date)} 관측 주${cutoff ? ` · 컷오프 ${formatDateTime(cutoff)}` : ""}`;
+    renderContractOverview();
 
     renderRegime("current", week.current, week.date);
     const forecast = renderNextForecastSurface(week);
@@ -2986,16 +3745,21 @@
     renderDurationContext(week.duration_context);
     renderFxContext(week.fx_context);
     renderModelForecast();
+    applyExpiredForecastDomState(
+      dom,
+      forecastSurfacePolicy(state.raw, state.selectedIndex, state.weekly.length),
+    );
   }
 
   function historyComparisonMeta() {
     const membership = isV5Payload();
     const model = modelForecastLabel(state.comparisonModel);
+    const lineStyles = { risk_on: "실선", transition: "파선", risk_off: "점선" };
     return {
       title: membership ? "관측 소속도와 1주 예측확률" : "관측 확률과 1주 예측확률",
       observedMeasure: membership ? "관측 소속도" : "관측 확률",
       model,
-      legendLabel: "상하 패널의 Risk-on 실선, Transition 파선, Risk-off 점선 범례",
+      legendLabel: `상하 패널의 ${STATE_ORDER.map((code) => `${stateMeta(code).label} ${lineStyles[code]}`).join(", ")} 범례`,
       tableLabel: `${model} ${membership ? "관측 소속도" : "관측 확률"}와 다음 주 예측확률 및 실제 결과 표`,
       tableCaption: `${model} ${membership ? "관측 소속도" : "관측 확률"}·1주 예측확률·실제 다음 주 결과·정규화 예측 엔트로피`,
       timelineTitle: "관측 국면 타임라인",
@@ -3040,7 +3804,7 @@
     const probabilityContainer = dom[`${prefix}-probabilities`];
     probabilityContainer.replaceChildren();
     for (const stateCode of STATE_ORDER) {
-      const stateDefinition = STATE_META[stateCode];
+      const stateDefinition = stateMeta(stateCode);
       const value = isCurrent ? getCurrentMeasure(result, stateCode) : getProbability(result, stateCode);
       const row = createElement("div", "probability-row");
       const label = createElement("span", "probability-label");
@@ -3073,13 +3837,17 @@
       xgb_hazard_destination: "입력 PIT 피처·이탈/목적지",
       causal_dynamic_ensemble: "입력 완료 OOS 예측 풀",
       causal_multiscale_ensemble: "입력 완료 OOS 예측 풀 26·52·104주",
+      pca_ridge_logistic: "입력 PIT 피처 · fold 내부 PCA",
+      recency_weighted_xgboost_208w: "입력 PIT 피처 · 208주 최근 가중",
+      recency_weighted_ridge_logistic_208w: "입력 PIT 피처 · 208주 최근 가중",
+      discounted_markov_208w: "입력 현재 국면 · 최근 전이 가중",
     }[model];
     if (inputLabel) details.push(inputLabel);
     if (isObject(result) && result.fallback === true) details.push("fallback");
     const health = state.raw && isObject(state.raw.model)
       ? state.raw.model.model_health
       : null;
-    const championName = modelName(state.raw && state.raw.model && state.raw.model.champion);
+    const championName = operatingChampionName();
     if (isV5Payload() && model && model !== championName) {
       details.push("비교 예측");
     } else if (isV5Payload() && isObject(health)) {
@@ -3090,6 +3858,13 @@
   }
 
   function renderTransition(week, forecast = null) {
+    const suppressed = suppressCurrentForecastSurface();
+    dom["transition-card"].hidden = suppressed;
+    if (suppressed) {
+      dom["transition-horizon-bars"].replaceChildren();
+      dom["transition-risk-detail"].replaceChildren();
+      return;
+    }
     const riskByHorizon = isObject(week.transition_risk) ? week.transition_risk : null;
     const selectedForecast = isObject(forecast) ? forecast : forecastForWeek(week);
     const value = oneWeekDepartureProbability(week, selectedForecast);
@@ -3176,9 +3951,10 @@
           const mass = probability(directional && directional.first_destination ? directional.first_destination[code] : null);
           if (mass === null || mass === 0) continue;
           const item = createElement("span", "direction-mass");
-          const marker = createElement("span", `state-dot ${code}`, STATE_META[code].short);
+          const definition = stateMeta(code);
+          const marker = createElement("span", `state-dot ${code}`, definition.short);
           marker.setAttribute("aria-hidden", "true");
-          item.append(marker, document.createTextNode(`${STATE_META[code].label} ${formatPercent(mass)}`));
+          item.append(marker, document.createTextNode(`${definition.label} ${formatPercent(mass)}`));
           masses.append(item);
         }
         if (masses.childElementCount) detail.append(masses);
@@ -3272,9 +4048,9 @@
       const forecastReadout = dom[`chart-readout-forecast-${code.replaceAll("_", "-")}`];
       if (forecastReadout) setText(forecastReadout, week ? formatPercent(forecastHistoryMeasure(week, code)) : "—");
     }
-    setText(dom["chart-readout-predicted"], predictedState ? STATE_META[predictedState].label : "—");
+    setText(dom["chart-readout-predicted"], predictedState ? stateMeta(predictedState).label : "—");
     const actualText = actual.status === "available"
-      ? `${STATE_META[actual.state].label}${predictedState ? ` · ${actual.state === predictedState ? "일치" : "불일치"}` : ""}`
+      ? `${stateMeta(actual.state).label}${predictedState ? ` · ${actual.state === predictedState ? "일치" : "불일치"}` : ""}`
       : actual.status === "pending"
         ? "결과 대기"
         : actual.status === "missing"
@@ -3298,8 +4074,14 @@
     }
 
     if (dom["chart-selection-readout"]) {
+      const observedVector = STATE_ORDER
+        .map((code) => `${stateMeta(code).label} ${formatPercent(observedHistoryMeasure(week, code))}`)
+        .join(", ");
+      const forecastVector = STATE_ORDER
+        .map((code) => `${stateMeta(code).label} ${formatPercent(forecastHistoryMeasure(week, code))}`)
+        .join(", ");
       const summary = week
-        ? `${formatDate(week.date)} 관측 기준. ${historyMeta.observedMeasure}: Risk-on ${formatPercent(observedHistoryMeasure(week, "risk_on"))}, Transition ${formatPercent(observedHistoryMeasure(week, "transition"))}, Risk-off ${formatPercent(observedHistoryMeasure(week, "risk_off"))}. ${historyMeta.model} 1주 예측확률: Risk-on ${formatPercent(forecastHistoryMeasure(week, "risk_on"))}, Transition ${formatPercent(forecastHistoryMeasure(week, "transition"))}, Risk-off ${formatPercent(forecastHistoryMeasure(week, "risk_off"))}. 실제 다음 주 ${actualText}. 정규화 예측 엔트로피 ${formatNumber(entropy, 3)}.`
+        ? `${formatDate(week.date)} 관측 기준. ${historyMeta.observedMeasure}: ${observedVector}. ${historyMeta.model} 1주 예측확률: ${forecastVector}. 실제 다음 주 ${actualText}. 정규화 예측 엔트로피 ${formatNumber(entropy, 3)}.`
         : "선택된 차트 날짜가 없습니다.";
       dom["chart-selection-readout"].setAttribute("aria-label", summary);
     }
@@ -3311,13 +4093,13 @@
     const actual = actualNextWeekForWeek(week);
     const predictedState = isObject(forecast) && STATE_ORDER.includes(forecast.state) ? forecast.state : null;
     const actualText = actual.status === "available"
-      ? `${STATE_META[actual.state].label}${predictedState ? ` (${actual.state === predictedState ? "일치" : "불일치"})` : ""}`
+      ? `${stateMeta(actual.state).label}${predictedState ? ` (${actual.state === predictedState ? "일치" : "불일치"})` : ""}`
       : actual.status === "pending"
         ? "결과 대기"
         : actual.status === "missing"
           ? "결과 없음"
           : "—";
-    tooltip.textContent = `${formatDate(week.date)} 관측\n관측 · ${STATE_ORDER.map((code) => `${STATE_META[code].label} ${formatPercent(observedHistoryMeasure(week, code))}`).join(" · ")}\n${modelForecastLabel(state.comparisonModel)} 예측 · ${STATE_ORDER.map((code) => `${STATE_META[code].label} ${formatPercent(forecastHistoryMeasure(week, code))}`).join(" · ")}\n실제 t+1 ${actualText} · 엔트로피 ${formatNumber(forecastEntropyForWeek(week), 3)}`;
+    tooltip.textContent = `${formatDate(week.date)} 관측\n관측 · ${STATE_ORDER.map((code) => `${stateMeta(code).label} ${formatPercent(observedHistoryMeasure(week, code))}`).join(" · ")}\n${modelForecastLabel(state.comparisonModel)} 예측 · ${STATE_ORDER.map((code) => `${stateMeta(code).label} ${formatPercent(forecastHistoryMeasure(week, code))}`).join(" · ")}\n실제 t+1 ${actualText} · 엔트로피 ${formatNumber(forecastEntropyForWeek(week), 3)}`;
     tooltip.hidden = false;
     const wrapRect = dom["probability-chart-wrap"].getBoundingClientRect();
     const left = finiteNumber(event.clientX) === null ? 8 : event.clientX - wrapRect.left + 10;
@@ -3614,9 +4396,9 @@
       row.append(createElement("td", null, actual.date || "—"));
       for (const code of STATE_ORDER) row.append(createElement("td", null, formatPercent(forecastHistoryMeasure(week, code))));
       const predictedState = isObject(forecast) && STATE_ORDER.includes(forecast.state) ? forecast.state : null;
-      row.append(createElement("td", null, predictedState ? STATE_META[predictedState].label : "—"));
+      row.append(createElement("td", null, predictedState ? stateMeta(predictedState).label : "—"));
       const actualText = actual.status === "available"
-        ? `${STATE_META[actual.state].label}${predictedState ? ` · ${actual.state === predictedState ? "일치" : "불일치"}` : ""}`
+        ? `${stateMeta(actual.state).label}${predictedState ? ` · ${actual.state === predictedState ? "일치" : "불일치"}` : ""}`
         : actual.status === "pending"
           ? "결과 대기"
           : actual.status === "missing"
@@ -4067,8 +4849,8 @@
         );
         const label = createElement("span", "conditional-regime-label");
         label.append(
-          createElement("b", null, STATE_META[code].short),
-          createElement("span", null, STATE_META[code].label),
+          createElement("b", null, stateMeta(code).short),
+          createElement("span", null, stateMeta(code).label),
         );
         const track = createElement("span", "conditional-return-track");
         track.setAttribute("aria-hidden", "true");
@@ -4090,7 +4872,7 @@
         );
         regimeRow.setAttribute(
           "aria-label",
-          `${basisLabel}, ${STATE_META[code].label}, ${asset} ${OUTCOME_ASSET_LABELS[asset]}, ${state.outcomeHorizon}주 평균 수익률 ${formatted}, 표본 ${sample}개${statusLabel ? `, ${statusLabel}` : ""}`,
+          `${basisLabel}, ${stateMeta(code).label}, ${asset} ${OUTCOME_ASSET_LABELS[asset]}, ${state.outcomeHorizon}주 평균 수익률 ${formatted}, 표본 ${sample}개${statusLabel ? `, ${statusLabel}` : ""}`,
         );
         regimeRow.append(label, track, output);
         regimeList.append(regimeRow);
@@ -4114,7 +4896,7 @@
           : "";
       const tableRow = createElement("tr");
       tableRow.append(
-        createElement("td", null, STATE_META[code].label),
+        createElement("td", null, stateMeta(code).label),
         createElement("td", null, formatSignedPercent(row.mean_return)),
         createElement("td", null, formatSignedPercent(row.median_return)),
         createElement("td", null, formatPercent(row.positive_rate)),
@@ -4464,6 +5246,10 @@
       recency_weighted_ridge_logistic_208w: "Ridge Logistic · 최근 가중",
       pca_ridge_logistic: "PCA · Ridge Logistic",
       discounted_markov_208w: "Markov · 최근 가중",
+      direct_jump_tvtp_hurdle: "Direct-jump TVTP",
+      filtered_hsmm: "Filtered HSMM",
+      dynamic_factor_tvtp: "Dynamic-factor TVTP",
+      bayesian_online_changepoint: "BOCPD",
     }[name] || textValue(name, "모델");
   }
 
@@ -4471,7 +5257,7 @@
     const container = dom["model-forecast-probabilities"];
     container.replaceChildren();
     for (const code of STATE_ORDER) {
-      const definition = STATE_META[code];
+      const definition = stateMeta(code);
       const value = getProbability(forecast, code);
       const row = createElement("div", "probability-row");
       const label = createElement("span", "probability-label");
@@ -4498,31 +5284,39 @@
       : [];
     const supported = isV5Payload()
       && models.length > 0
-      && forecasts.length === models.length;
+      && forecasts.length === models.length
+      && !suppressCurrentForecastSurface();
     dom["model-forecast-field"].hidden = !supported;
     dom["model-forecast-explorer"].hidden = !supported;
     if (!supported) return;
 
     const championName = modelName(model.champion);
+    const operatingName = operatingChampionName();
     if (!models.includes(state.comparisonModel)) {
-      state.comparisonModel = models.includes(championName) ? championName : models[0];
+      state.comparisonModel = models.includes(operatingName)
+        ? operatingName
+        : models.includes(championName)
+          ? championName
+          : models[0];
     }
     const leaderboard = Array.isArray(model.leaderboard) ? model.leaderboard : [];
     const select = dom["model-forecast-select"];
     const optionSignature = models.map((name) => {
       const row = leaderboard.find((candidate) => modelName(candidate) === name);
-      return `${name}:${textValue(firstValue(row, ["rank", "position"]), "")}:${name === championName}`;
+      return `${name}:${textValue(firstValue(row, ["rank", "position"]), "")}:${name === operatingName}`;
     }).join("|");
     if (select.dataset.models !== optionSignature) {
       select.replaceChildren();
       for (const name of models) {
         const row = leaderboard.find((candidate) => modelName(candidate) === name);
         const rank = finiteNumber(firstValue(row, ["rank", "position"]));
-        const role = name === championName
+        const role = name === operatingName
           ? "공식"
-          : rank === null
-            ? "비교"
-            : `2023+ #${formatNumber(rank, 0)}`;
+          : name === championName
+            ? "로컬 선정"
+            : rank === null
+              ? "연구"
+              : `연구 · 2023+ #${formatNumber(rank, 0)}`;
         const option = createElement("option", null, `${modelForecastLabel(name)} · ${role}`);
         option.value = name;
         select.append(option);
@@ -4538,15 +5332,21 @@
       return;
     }
     const leaderboardRow = leaderboard.find((row) => modelName(row) === state.comparisonModel) || {};
-    const isChampion = state.comparisonModel === championName;
+    const isChampion = state.comparisonModel === operatingName;
+    const selectedRole = isChampion
+      ? "공식 모델"
+      : state.comparisonModel === championName
+        ? "로컬 선정 모델"
+        : "연구 모델";
     const role = dom["model-forecast-role"];
     role.classList.toggle("is-comparison", !isChampion);
     role.classList.toggle("is-fallback", forecast.fallback === true);
-    setText(role, forecast.fallback === true ? `${isChampion ? "공식 모델" : "비교 모델"} · 보조값` : isChampion ? "공식 모델" : "비교 모델");
+    setText(role, forecast.fallback === true ? `${selectedRole} · 보조값` : selectedRole);
     setText(dom["model-forecast-title"], `${modelForecastLabel(state.comparisonModel)} 주간 예측`);
 
-    const officialState = week.next_week && week.next_week.state;
-    const officialModelLabel = modelForecastLabel(championName);
+    const officialForecast = forecastForWeek(week, operatingName);
+    const officialState = officialForecast && officialForecast.state;
+    const officialModelLabel = modelForecastLabel(operatingName);
     const agreement = forecast.state === officialState
       ? "공식 예측과 국면 일치"
       : `공식 ${officialModelLabel} ${stateMeta(officialState).ko}`;
@@ -4578,16 +5378,84 @@
     );
   }
 
+  function renderModelRoles(model) {
+    const grid = dom["model-role-grid"];
+    if (!isV5Payload()) {
+      grid.hidden = true;
+      return;
+    }
+    grid.hidden = false;
+    const selection = isObject(state.raw.selection) ? state.raw.selection : {};
+    const selectionEvidence = selectionEvidenceForDisplay(
+      state.raw,
+      state.selectionFamilyAudit,
+    );
+    const lifecycle = isObject(model.lifecycle) ? model.lifecycle : {};
+    const deployment = isObject(lifecycle.deployment) ? lifecycle.deployment.status : "candidate";
+    const operatingName = textValue(selection.operating_champion, modelName(model.champion));
+    const operatingStatus = deployment === "operating"
+      ? "현재 payload · 공개 운영"
+      : "기존 reviewed 운영 기준 유지";
+    const researchRunStatus = {
+      operating: "운영 반영 완료",
+      reviewed: "검토 완료 · 미배포",
+      candidate: "candidate · 미배포",
+    }[deployment] || "run 상태 확인 필요";
+    setText(dom["operating-model-name"], modelForecastLabel(operatingName));
+    setText(dom["operating-model-status"], operatingStatus);
+
+    const baseline = isObject(model.baseline_v4) ? model.baseline_v4 : {};
+    setText(dom["frozen-baseline-name"], modelForecastLabel(baseline.champion));
+
+    const selectors = selectionEvidence.candidates;
+    const researchModels = selectors.filter((name) => name !== operatingName);
+    setText(
+      dom["research-selector-summary"],
+      `${formatNumber(researchModels.length, 0)}개 비교 모델`,
+    );
+    setText(
+      dom["research-selector-detail"],
+      researchModels.length
+        ? [
+          researchModels.slice(0, 3).map(modelForecastLabel).join(" · ")
+            + (researchModels.length > 3 ? ` 외 ${researchModels.length - 3}개` : ""),
+          selectionEvidence.source === "selection-family-audit/v2"
+            ? `generic audit · matched origin ${formatNumber(selectionEvidence.originCount, 0)}`
+            : "payload 계약 fallback",
+        ].join(" · ")
+        : "등록된 비교 모델 없음",
+    );
+
+    const reasonLabel = {
+      best_gate_passing_log_loss: "gate 통과 최저 Log loss",
+      simplicity_tiebreak_within_tolerance: "0.01 이내 단순성 tie-break",
+      reference_fallback_no_challenger_passed: "기준 모델 유지",
+    }[selectionEvidence.selectionReason] || "선정 근거 확인 필요";
+    setText(dom["research-selection-status"], reasonLabel);
+    setText(
+      dom["research-selection-detail"],
+      [
+        researchRunStatus,
+        selectionEvidence.runnerUp
+          ? `runner-up ${modelForecastLabel(selectionEvidence.runnerUp)}`
+          : "runner-up 없음",
+      ].join(" · "),
+    );
+  }
+
   function renderModel() {
     const model = state.raw.model || {};
     const champion = model.champion;
     const championName = modelName(champion);
     const holdoutDiagnostic = isObject(model.holdout_diagnostic) ? model.holdout_diagnostic : null;
     const holdoutBestName = holdoutDiagnostic ? textValue(holdoutDiagnostic.best_model, "") : "";
+    const lifecycle = isObject(model.lifecycle) ? model.lifecycle : {};
+    const deployment = isObject(lifecycle.deployment) ? lifecycle.deployment.status : null;
     dom["champion-summary"].replaceChildren(
-      createElement("span", null, "선정 모델"),
+      createElement("span", null, deployment === "operating" ? "공식 운영 모델" : "로컬 선정 모델"),
       createElement("strong", null, modelForecastLabel(championName)),
     );
+    renderModelRoles(model);
     renderModelEvidenceSummary(model, championName, holdoutDiagnostic);
     renderTransitionModels();
     const selection = firstValue(model, ["selection_period"]);
@@ -4834,9 +5702,9 @@
     const visibleLabel = identity.mode === "demo"
       ? "모의자료"
       : meta.publication_status === V5_PUBLICATION_STATUS
-        ? "공개 검토 완료"
-        : model.selection_status === "provisional_predeployment"
-          ? "배포 전 잠정"
+        ? "공개 운영"
+        : model.selection_status === "selected_by_gate"
+          ? "연구 후보"
           : identity.mode === "live"
             ? "실데이터"
             : identity.label;
@@ -4873,23 +5741,34 @@
 
   function renderHeaderModelHealth() {
     const model = state.raw && isObject(state.raw.model) ? state.raw.model : {};
-    const champion = modelName(model.champion);
+    const selection = state.raw && isObject(state.raw.selection) ? state.raw.selection : {};
+    const champion = isV5Payload()
+      ? modelName(selection.operating_champion || model.champion)
+      : modelName(model.champion);
     const championLabel = modelForecastLabel(champion);
     dom["header-model-health"].replaceChildren(createElement("span", null, championLabel));
     if (isV5Payload() && isObject(model.model_health)) {
+      const lifecycle = isObject(model.lifecycle) ? model.lifecycle : {};
+      const deployment = isObject(lifecycle.deployment) ? lifecycle.deployment.status : null;
       const review = model.model_health.status === "review_due";
-      const chip = createElement("span", `model-health-chip ${review ? "is-review" : "is-ok"}`, review ? "검토 필요" : "정상");
+      const label = model.model_health.status === "review_due"
+        ? "검토 필요"
+        : deployment === "operating"
+          ? "공식"
+          : "공식 유지";
+      const chip = createElement("span", `model-health-chip ${review ? "is-review" : "is-ok"}`, label);
       dom["header-model-health"].append(chip);
       const reasons = modelHealthReasonLabels(model.model_health.reasons);
       dom["header-model-health"].setAttribute(
         "aria-label",
-        [championLabel, review ? "검토 필요" : "정상", ...reasons].join(" · "),
+        [championLabel, label, ...reasons].join(" · "),
       );
     }
   }
 
   function renderStaticSections() {
     renderGlobalMetadata();
+    renderContractOverview();
     renderModel();
     renderSources();
     renderFeatureCatalog();
@@ -4916,10 +5795,14 @@
       if (validation.errors.length) throw new DataContractError(validation.errors);
 
       state.raw = payload;
-      state.comparisonSummary = await loadV5ComparisonSummary(payload, payloadText);
+      applyPayloadStateTheme(payload);
+      [state.comparisonSummary, state.selectionFamilyAudit] = await Promise.all([
+        loadV5ComparisonSummary(payload, payloadText),
+        loadSelectionFamilyAudit(payload),
+      ]);
       state.weekly = validation.weekly;
       state.validationWarnings = validation.warnings;
-      state.comparisonModel = modelName(payload.model && payload.model.champion);
+      state.comparisonModel = operatingChampionName(payload);
       state.outcomeBasis = "observed";
       state.preferredHistoryWindow = dom["history-window"].value === "all"
         ? "all"
@@ -4968,6 +5851,7 @@
   const dashboardApi = Object.freeze({
     DATA_URL,
     V5_COMPARISON_URL,
+    V5_SELECTION_FAMILY_AUDIT_URL,
     STATE_ORDER,
     finiteNumber,
     strictFiniteNumber,
@@ -4981,7 +5865,15 @@
     championSelectionEvidence,
     validatePayload,
     resultIdentity,
+    stateMeta,
+    forecastAvailability,
+    forecastSurfacePolicy,
+    applyExpiredForecastDomState,
     validateV5ComparisonSummary,
+    validateSelectionFamilyAuditSemantics,
+    validateSelectionFamilyAudit,
+    loadSelectionFamilyAudit,
+    selectionEvidenceForDisplay,
     fxStatusLabel,
     displayFreshness,
     currentMeasureKind,

@@ -1173,13 +1173,22 @@ class AlphaVantageClient:
                     continue
                 if observation_start is not None and period_end < observation_start:
                     continue
-                available_at = datetime.combine(
+                source_released_at = datetime.combine(
                     period_end,
                     self.config.market_available_time_et,
                     tzinfo=_EASTERN,
                 ).astimezone(timezone.utc)
-                if available_at > cutoff:
+                # Preserve the first receipt even when collection happens after
+                # the modeled week.  Operational joins use the maximum of source
+                # finalization and this first-seen clock; source-time research
+                # joins retain the legacy ``available_at`` field.  A future or
+                # not-yet-finalized period is excluded outright.
+                if period_end > cutoff.astimezone(_EASTERN).date():
                     continue
+                if source_released_at > retrieved_at:
+                    continue
+                provider_first_seen_at = retrieved_at
+                available_at = source_released_at
                 row_hash = hashlib.sha256(
                     json.dumps(raw_row, sort_keys=True, separators=(",", ":")).encode("utf-8")
                 ).hexdigest()
@@ -1196,10 +1205,13 @@ class AlphaVantageClient:
                             series_id=f"{symbol}.{field_name}",
                             observed_period_end=period_end,
                             value=value,
-                            released_at=available_at,
+                            released_at=source_released_at,
+                            source_released_at=source_released_at,
                             available_at=available_at,
+                            provider_first_seen_at=provider_first_seen_at,
                             vintage_date=period_end,
                             retrieved_at=retrieved_at,
+                            system_retrieved_at=retrieved_at,
                             units=_FIELD_UNITS[field_name],
                             adjustment="weekly_adjusted" if field_name == "adjusted_close" else "weekly",
                             license_class=self.config.license_class,
@@ -1208,8 +1220,19 @@ class AlphaVantageClient:
                             metadata={
                                 "symbol": symbol,
                                 "field": field_name,
+                                "research_role": (
+                                    "pit_corporate_action_input"
+                                    if field_name == "dividend_amount"
+                                    else "operating_feature_input"
+                                ),
                                 "provider_full_response": True,
+                                "source_released_at": source_released_at.isoformat(),
+                                "provider_first_seen_at": provider_first_seen_at.isoformat(),
+                                "system_retrieved_at": retrieved_at.isoformat(),
                                 "snapshot_retrieved_at": retrieved_at.isoformat(),
+                                "operating_availability_policy": (
+                                    "max_source_finalization_provider_first_seen"
+                                ),
                                 "pit_revision_policy": "prospective_on_later_diff",
                                 "historical_vintage_note": (
                                     "provider supplies current adjusted history; later changes are not backdated"

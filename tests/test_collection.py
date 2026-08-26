@@ -20,6 +20,7 @@ from regime_lab.collection import (
     _validate_initial_alpha_baseline,
     _with_identified_issues,
     _write_result_snapshot,
+    alpha_market_week_is_current,
     last_completed_week_cutoff,
     validate_collection_for_training,
     weekly_cutoffs,
@@ -43,6 +44,51 @@ ALPHA_TEST_FIELDS = (
     "adjusted_close",
     "volume",
 )
+
+
+@pytest.mark.parametrize(
+    ("available_at", "coverage_end", "expected"),
+    (
+        # The provider's weekly adjusted bar is finalized after the frozen
+        # Friday 16:00 model cutoff; coverage and model eligibility are
+        # deliberately separate questions.
+        (
+            datetime(2026, 8, 14, 20, 15, tzinfo=timezone.utc),
+            date(2026, 8, 14),
+            True,
+        ),
+        # A delayed first observation still proves provider coverage, but its
+        # evidence clock prevents use in an earlier operational replay.
+        (
+            datetime(2026, 8, 20, 1, 33, 35, tzinfo=timezone.utc),
+            date(2026, 8, 14),
+            True,
+        ),
+        (
+            datetime(2026, 8, 14, 19, 59, tzinfo=timezone.utc),
+            date(2026, 8, 14),
+            False,
+        ),
+        (
+            datetime(2026, 8, 7, 20, 15, tzinfo=timezone.utc),
+            date(2026, 8, 7),
+            False,
+        ),
+    ),
+)
+def test_alpha_current_week_coverage_is_separate_from_model_eligibility(
+    available_at: datetime,
+    coverage_end: date,
+    expected: bool,
+) -> None:
+    assert (
+        alpha_market_week_is_current(
+            available_at=available_at,
+            coverage_end=coverage_end,
+            cutoff=datetime(2026, 8, 14, 20, 0, tzinfo=timezone.utc),
+        )
+        is expected
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -281,10 +327,12 @@ def test_default_alpha_config_declares_unique_symbols_and_configured_series() ->
     alpha = config["alpha_vantage"]
     symbols = tuple(alpha["symbols"])
     fields = tuple(alpha["fields"])
+    research_fields = tuple(alpha["research_fields"])
 
     assert len(symbols) == 23
     assert len(set(symbols)) == 23
     assert fields == ("open", "high", "low", "close", "adjusted_close", "volume")
+    assert research_fields == ("dividend_amount",)
     assert len(
         {
             f"{symbol}.{field}"
@@ -342,7 +390,9 @@ def test_live_collection_passes_configured_ohlcv_fields_in_one_symbol_batch(
 ) -> None:
     cutoff = datetime(2024, 1, 5, 21, tzinfo=timezone.utc)
     retrieved_at = datetime(2024, 1, 6, 12, tzinfo=timezone.utc)
-    configured_fields = ("open", "high", "low", "close", "adjusted_close", "volume")
+    feature_fields = ("open", "high", "low", "close", "adjusted_close", "volume")
+    research_fields = ("dividend_amount",)
+    configured_fields = (*feature_fields, *research_fields)
 
     class FakeAlphaVantageClient:
         calls: list[tuple[tuple[str, ...], tuple[str, ...]]] = []
@@ -389,7 +439,8 @@ def test_live_collection_passes_configured_ohlcv_fields_in_one_symbol_batch(
             "base_url": "https://example.invalid/alpha",
             "daily_request_cap": 25,
             "symbols": ["SPY", "IWM"],
-            "fields": list(configured_fields),
+            "fields": list(feature_fields),
+            "research_fields": list(research_fields),
         },
         "alfred": {"base_url": "https://example.invalid/fred", "series": []},
     }
@@ -409,6 +460,15 @@ def test_live_collection_passes_configured_ohlcv_fields_in_one_symbol_batch(
         assert connection.execute(
             "SELECT COUNT(*) FROM request_budget_events"
         ).fetchone()[0] == 2
+        request_params = json.loads(
+            connection.execute(
+                "SELECT request_params_json FROM snapshots "
+                "WHERE source = 'alpha_vantage'"
+            ).fetchone()[0]
+        )
+        assert request_params["fields"] == list(configured_fields)
+        assert request_params["feature_fields"] == list(feature_fields)
+        assert request_params["research_fields"] == list(research_fields)
     alpha_source = next(
         item for item in result.sources if item["id"] == "alpha_vantage"
     )
@@ -1515,6 +1575,29 @@ def test_alpha_baseline_coverage_uses_common_periods_and_dedupes_revisions() -> 
     assert accepted.health is HealthStatus.OK
     assert metrics["initial_baseline_validation"] == "passed"
     assert metrics["initial_baseline_common_periods"] == 4
+
+    late_current_period = tuple(
+        record(
+            field,
+            period,
+            available_at=(
+                datetime(2024, 1, 26, 21, 15, tzinfo=timezone.utc)
+                if period == periods[-1]
+                else None
+            ),
+        )
+        for period in periods
+        for field in ("adjusted_close", "volume")
+    )
+    late_accepted, late_metrics = _validate_initial_alpha_baseline(
+        CollectionResult(records=late_current_period, requests_made=1, attempts=1),
+        expected_series=expected,
+        history_start=date(2024, 1, 1),
+        cutoff=cutoff,
+        minimum_coverage=0.75,
+    )
+    assert late_accepted.health is HealthStatus.OK
+    assert late_metrics["initial_baseline_validation"] == "passed"
 
     # An assembled append-only chain can contain an eligible prospective
     # revision for a period already present. Coverage counts that period once.

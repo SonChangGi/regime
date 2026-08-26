@@ -162,6 +162,51 @@ def test_hurdle_surfaces_observed_direct_jumps_and_routes_them_adjacent() -> Non
     assert (probabilities[2:, STATE_ORDER.index("risk_on")] == 0.0).all()
 
 
+def test_direct_jump_hurdle_keeps_three_observed_nonadjacent_transitions() -> None:
+    features = pd.DataFrame(
+        {
+            "current_state": [
+                "risk_on",
+                "risk_on",
+                "risk_off",
+                "risk_off",
+                "transition",
+                "transition",
+            ],
+            "signal": [-2.0, -1.0, 1.0, 2.0, -0.5, 0.5],
+        }
+    )
+    target = pd.Series(
+        [
+            "risk_off",
+            "risk_off",
+            "risk_on",
+            "risk_off",
+            "risk_on",
+            "risk_off",
+        ],
+        dtype="object",
+    )
+    estimator = DurationAwareTVTPHurdleClassifier(
+        adjacent_only=False,
+        random_state=17,
+    ).fit(features, target)
+    probabilities = estimator.predict_proba(
+        pd.DataFrame(
+            {
+                "current_state": ["risk_on", "risk_off"],
+                "signal": [-1.5, 1.5],
+            }
+        )
+    )
+
+    assert estimator.forbidden_transition_count_ == 0
+    assert estimator.fit_diagnostics_["allowed_switch_rows"] == 5
+    assert probabilities[0, STATE_ORDER.index("risk_off")] > 0.0
+    assert probabilities[1, STATE_ORDER.index("risk_on")] > 0.0
+    np.testing.assert_allclose(probabilities.sum(axis=1), 1.0, atol=1e-12)
+
+
 def test_hurdle_is_cloneable_and_deterministic() -> None:
     features, target = _transition_data()
     prototype = DurationAwareTVTPHurdleClassifier(

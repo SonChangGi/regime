@@ -21,8 +21,16 @@ from sklearn.metrics import precision_score, recall_score
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
+from regime_lab.operating_contract import load_operating_contract
+
 from .labels import STATE_ORDER
-from .models import DIRECT_NEXT_STATE_MODEL_NAMES, MODEL_NAMES, BenchmarkProfile
+from .models import (
+    DIRECT_NEXT_STATE_MODEL_NAMES,
+    MODEL_NAMES,
+    MODEL_REGISTRY,
+    SHADOW_NEXT_STATE_MODEL_NAMES,
+    BenchmarkProfile,
+)
 from .models import DiscountedMarkovClassifier, GaussianHMMChallenger
 from .models import SmoothedMarkovClassifier, align_probabilities
 from .models import augment_with_current_state, build_model
@@ -43,6 +51,9 @@ SELECTION_BOOTSTRAP_SEED = 17
 SELECTION_ALPHA = 0.05
 SELECTION_MINIMUM_LOG_LOSS_IMPROVEMENT = 0.05
 SELECTION_BRIER_TOLERANCE = 0.01
+SELECTION_SIMPLICITY_TOLERANCE = float(
+    load_operating_contract().selection_policy["simplicity_tolerance"]
+)
 TRANSITION_MODELS: tuple[str, ...] = (
     "empirical_hazard",
     "markov_hazard",
@@ -228,9 +239,11 @@ def _model_names(
     names = list(MODEL_NAMES if models is None else models)
     if include_hmm and "gaussian_hmm" not in names:
         names.append("gaussian_hmm")
-    supported = set(MODEL_NAMES).union(
-        DIRECT_NEXT_STATE_MODEL_NAMES, {"gaussian_hmm"}
-    )
+    supported = {
+        name
+        for name, spec in MODEL_REGISTRY.items()
+        if spec.task == "multiclass_next_state" and spec.kind != "synthetic"
+    }.union(SHADOW_NEXT_STATE_MODEL_NAMES, {"gaussian_hmm"})
     unknown = sorted(set(names).difference(supported))
     if unknown:
         raise ValueError(f"unknown benchmark models: {unknown}")
@@ -256,10 +269,10 @@ def _predict_learned_model(
             n_iter=profile.hmm_iterations,
             random_state=random_state,
         )
-    elif name == "duration_tvtp_hurdle":
+    elif name in {"duration_tvtp_hurdle", "direct_jump_tvtp_hurdle"}:
         estimator = DurationAwareTVTPHurdleClassifier(
             derive_duration=False,
-            adjacent_only=True,
+            adjacent_only=name == "duration_tvtp_hurdle",
             hazard_C=0.05,
             destination_C=0.05,
             smoothing=1.0,
@@ -269,10 +282,10 @@ def _predict_learned_model(
         estimator = build_model(name, profile, random_state=random_state)
     model_train = x_train
     model_test = x_test
-    if name == "duration_tvtp_hurdle":
+    if name in {"duration_tvtp_hurdle", "direct_jump_tvtp_hurdle"}:
         if transition_train_frame is None or transition_test_frame is None:
             raise ValueError(
-                "duration_tvtp_hurdle requires causal transition feature frames"
+                f"{name} requires causal transition feature frames"
             )
         model_train = transition_train_frame
         model_test = transition_test_frame
@@ -294,11 +307,11 @@ def _predict_learned_model(
         )
         estimator.fit(model_train, y_train)
         raw = estimator.predict_proba(model_test)
-    if name == "duration_tvtp_hurdle" and bool(
+    if name in {"duration_tvtp_hurdle", "direct_jump_tvtp_hurdle"} and bool(
         getattr(estimator, "used_fallback_", False)
     ):
         reasons = ";".join(getattr(estimator, "fallback_reasons_", ()))
-        raise ValueError(f"duration_tvtp_hurdle fit fallback: {reasons}")
+        raise ValueError(f"{name} fit fallback: {reasons}")
     classes = getattr(estimator, "classes_", None)
     if classes is None:
         raise RuntimeError(f"{name} did not expose fitted classes_")
@@ -444,7 +457,7 @@ def select_champion(
     *,
     minimum_log_loss_improvement: float = 0.001,
     calibration_tolerance: float = 0.02,
-    simplicity_tolerance: float = 0.01,
+    simplicity_tolerance: float = SELECTION_SIMPLICITY_TOLERANCE,
 ) -> str:
     """Prefer a calibrated, simpler challenger only after beating a baseline."""
 
@@ -689,8 +702,10 @@ def select_champion_with_diagnostics(
     if (
         not np.isfinite(float(minimum_log_loss_improvement))
         or not np.isfinite(float(brier_tolerance))
+        or not np.isfinite(float(simplicity_tolerance))
         or minimum_log_loss_improvement < 0
         or brier_tolerance < 0
+        or simplicity_tolerance < 0
     ):
         raise ValueError("selection materiality thresholds must be non-negative")
     if not 0 < alpha < 1:
@@ -955,7 +970,7 @@ def run_benchmark(
     if not any(name in BASELINE_MODELS for name in names):
         raise ValueError("models must include at least one baseline")
     transition_features: pd.DataFrame | None = None
-    if "duration_tvtp_hurdle" in names:
+    if set(names).intersection({"duration_tvtp_hurdle", "direct_jump_tvtp_hurdle"}):
         transition_features = derive_causal_transition_features(features, states)
 
     # There are len(features)-1 supervised origins because the final state's
@@ -1303,7 +1318,7 @@ def forecast_next_regime(
     x_test = features.iloc[[test_position]]
     transition_features = (
         derive_causal_transition_features(features, states)
-        if champion_name == "duration_tvtp_hurdle"
+        if champion_name in {"duration_tvtp_hurdle", "direct_jump_tvtp_hurdle"}
         else None
     )
     fallback = False

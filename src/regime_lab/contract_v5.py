@@ -9,7 +9,14 @@ import json
 import math
 from typing import Any
 
+from regime_lab.analysis.label_spec import load_label_spec
 from regime_lab.frozen_v4 import FROZEN_V4_BASELINE
+from regime_lab.integrity import (
+    IntegrityError,
+    validate_lifecycle_consistency,
+    validate_reviewed_candidate_hash,
+)
+from regime_lab.operating_contract import load_operating_contract
 from regime_lab.v5_artifacts import (
     CONDITIONAL_STATISTICS_COLUMNS,
     FX_RESEARCH_ARTIFACT_KEYS,
@@ -21,7 +28,7 @@ from regime_lab.v5_artifacts import (
 )
 
 
-V5_SCHEMA_VERSION = "2.0.0"
+V5_SCHEMA_VERSION = "2.1.0"
 V5_RESULT_VERSION = "weekly-regime-result-v5"
 V5_MODEL_VERSION = "weekly-nondl-structural-v5"
 V5_LABEL_VERSION = "market-causal-3state-v1"
@@ -29,7 +36,18 @@ V5_FEATURE_SET_VERSION = "weekly-pit-structural-v5"
 V5_PUBLICATION_STATUS = "reviewed_publication"
 V5_PUBLICATION_REVIEW_SCHEMA = "regime-v5-publication-review/1"
 V5_PAYLOAD_FIELDS = frozenset(
-    {"meta", "states", "model", "weekly", "sources", "feature_catalog", "research"}
+    {
+        "meta",
+        "states",
+        "label",
+        "forecast",
+        "selection",
+        "model",
+        "weekly",
+        "sources",
+        "feature_catalog",
+        "research",
+    }
 )
 V5_META_FIELDS = frozenset(
     {
@@ -49,10 +67,17 @@ V5_META_FIELDS = frozenset(
         "warnings",
         "current_membership_definition",
         "freshness",
+        "publication_status",
     }
 )
 V5_PUBLICATION_META_FIELDS = frozenset(
-    {*V5_META_FIELDS, "publication_status", "publication_review"}
+    {*V5_META_FIELDS, "publication_review"}
+)
+V5_MANIFEST_META_FIELDS = frozenset(
+    {*V5_META_FIELDS, "generation_manifest_sha256"}
+)
+V5_PUBLICATION_MANIFEST_META_FIELDS = frozenset(
+    {*V5_PUBLICATION_META_FIELDS, "generation_manifest_sha256"}
 )
 STATE_ORDER = ("risk_on", "transition", "risk_off")
 HORIZONS = (1, 4, 13)
@@ -75,28 +100,22 @@ V5_LEGACY_REVIEWED_005_SNAPSHOT_SHA256 = (
     "3fb67126917d6f0ec178de01d9aebc7698476921d1b4d183b2dd0da50e992704"
 )
 V5_FORECAST_COMPARISON_MODELS = (
+    "majority",
+    "persistence",
     "markov",
     "xgboost",
+    "pca_ridge_logistic",
+    "recency_weighted_xgboost_208w",
+    "recency_weighted_ridge_logistic_208w",
+    "discounted_markov_208w",
     "xgb_hazard_destination",
     "causal_dynamic_ensemble",
     V5_MULTISCALE_MODEL,
 )
+_OPERATING_CONTRACT = load_operating_contract()
 V5_STANDARD_CORE_MODELS = frozenset(
     {
-        "majority",
-        "persistence",
-        "markov",
-        "elastic_net_logistic",
-        "calibrated_linear_svm",
-        "random_forest",
-        "extra_trees",
-        "hist_gradient_boosting",
-        "ridge_logistic",
-        "transition_logistic",
-        "duration_tvtp_hurdle",
-        "shrinkage_lda",
-        "spline_logistic",
-        "xgboost",
+        *_OPERATING_CONTRACT.weekly_base_models,
         "xgb_hazard_destination",
         "causal_dynamic_ensemble",
         V5_MULTISCALE_MODEL,
@@ -235,6 +254,222 @@ def _iso_datetime(value: Any, context: str) -> datetime:
     if parsed.tzinfo is None or parsed.utcoffset() is None:
         raise V5ContractError(f"{context} must include a timezone")
     return parsed
+
+
+def _validate_label_contract(value: Any) -> None:
+    context = "payload.label"
+    label = _mapping(value, context)
+    expected = {
+        "spec_id",
+        "spec_version",
+        "spec_sha256",
+        "fit_period",
+        "input_scope",
+        "membership_semantics",
+    }
+    if set(label) != expected:
+        raise V5ContractError(f"{context} fields are invalid")
+    specification = load_label_spec()
+    if label.get("spec_id") != specification.spec_id:
+        raise V5ContractError(f"{context}.spec_id is not the frozen canonical label")
+    if label.get("spec_version") != V5_LABEL_VERSION:
+        raise V5ContractError(f"{context}.spec_version is invalid")
+    _sha256(label.get("spec_sha256"), f"{context}.spec_sha256")
+    if label.get("spec_sha256") != specification.spec_sha256:
+        raise V5ContractError(f"{context}.spec_sha256 differs from label-spec.json")
+    if label.get("input_scope") != "SPY adjusted close only":
+        raise V5ContractError(f"{context}.input_scope is invalid")
+    if label.get("membership_semantics") != "distance_to_anchor_not_posterior":
+        raise V5ContractError(f"{context}.membership_semantics is invalid")
+    fit = _mapping(_require(label, "fit_period", context), f"{context}.fit_period")
+    if set(fit) != {"start", "end", "weeks"}:
+        raise V5ContractError(f"{context}.fit_period fields are invalid")
+    start = _iso_date(fit["start"], f"{context}.fit_period.start")
+    end = _iso_date(fit["end"], f"{context}.fit_period.end")
+    if end < start or _integer(fit["weeks"], f"{context}.fit_period.weeks", minimum=1) != 520:
+        raise V5ContractError(f"{context}.fit_period is invalid")
+
+
+def _validate_forecast_contract(value: Any, *, mode: str) -> tuple[datetime, datetime]:
+    context = "payload.forecast"
+    forecast = _mapping(value, context)
+    expected = {
+        "status",
+        "origin_at",
+        "decision_at",
+        "target_at",
+        "remaining_horizon",
+        "evidence_track",
+    }
+    if set(forecast) != expected:
+        raise V5ContractError(f"{context} fields are invalid")
+    status = forecast.get("status")
+    if status not in {"active", "expired"}:
+        raise V5ContractError(f"{context}.status is invalid")
+    if forecast.get("evidence_track") not in {"operational_oos", "reconstructed_oos"}:
+        raise V5ContractError(f"{context}.evidence_track is invalid")
+    origin = _iso_datetime(forecast.get("origin_at"), f"{context}.origin_at")
+    target = _iso_datetime(forecast.get("target_at"), f"{context}.target_at")
+    if target <= origin or (target - origin).total_seconds() != 7 * 86_400:
+        raise V5ContractError(f"{context} origin/target horizon is invalid")
+    remaining = _integer(
+        forecast.get("remaining_horizon"),
+        f"{context}.remaining_horizon",
+    )
+    if status == "active":
+        decision = _iso_datetime(
+            forecast.get("decision_at"), f"{context}.decision_at"
+        )
+        if not origin <= decision < target:
+            raise V5ContractError(
+                f"{context} requires origin_at <= decision_at < target_at"
+            )
+        expected_remaining = int((target - decision).total_seconds())
+        if remaining != expected_remaining or remaining <= 0:
+            raise V5ContractError(f"{context}.remaining_horizon is inconsistent")
+    else:
+        if forecast.get("decision_at") is not None or remaining != 0:
+            raise V5ContractError(f"{context} expired state is inconsistent")
+        if mode == "live":
+            raise V5ContractError("live payload cannot expose an expired current forecast")
+    return origin, target
+
+
+def _validate_selection_contract(value: Any, model: Mapping[str, Any]) -> None:
+    context = "payload.selection"
+    selection = _mapping(value, context)
+    expected = {
+        "schema_version",
+        "status",
+        "policy_sha256",
+        "complexity_registry_sha256",
+        "candidate_set",
+        "runner_up",
+        "selection_reason",
+        "simplicity_tolerance",
+        "tie_break_order",
+        "operating_champion",
+    }
+    if set(selection) != expected:
+        raise V5ContractError(f"{context} fields are invalid")
+    if selection.get("schema_version") != "regime-selection-evidence/1":
+        raise V5ContractError(f"{context}.schema_version is invalid")
+    if selection.get("status") != "selected_by_gate":
+        raise V5ContractError(f"{context}.status is invalid")
+    if selection.get("status") != model.get("selection_status"):
+        raise V5ContractError(f"{context}.status differs from model alias")
+    policy = _OPERATING_CONTRACT.selection_policy
+    if selection.get("policy_sha256") != _OPERATING_CONTRACT.selection_policy_sha256:
+        raise V5ContractError(f"{context}.policy_sha256 is invalid")
+    if selection.get("complexity_registry_sha256") != _OPERATING_CONTRACT.complexity_registry_sha256:
+        raise V5ContractError(f"{context}.complexity_registry_sha256 is invalid")
+    tolerance = _number(
+        selection.get("simplicity_tolerance"),
+        f"{context}.simplicity_tolerance",
+        minimum=0.0,
+    )
+    if not math.isclose(tolerance, 0.01, abs_tol=1e-12, rel_tol=0.0):
+        raise V5ContractError(f"{context}.simplicity_tolerance is invalid")
+    if selection.get("tie_break_order") != policy["tie_break_order"]:
+        raise V5ContractError(f"{context}.tie_break_order is invalid")
+    candidates = list(
+        _sequence(selection.get("candidate_set"), f"{context}.candidate_set", nonempty=True)
+    )
+    if any(not isinstance(name, str) or not name for name in candidates) or len(candidates) != len(set(candidates)):
+        raise V5ContractError(f"{context}.candidate_set is invalid")
+    diagnostic_rows = [
+        row
+        for row in _sequence(
+            _require(model, "selection_diagnostics", "payload.model"),
+            "payload.model.selection_diagnostics",
+            nonempty=True,
+        )
+        if isinstance(row, Mapping)
+    ]
+    diagnostic_names = [
+        str(row.get("model"))
+        for row in diagnostic_rows
+    ]
+    if candidates != diagnostic_names:
+        raise V5ContractError(f"{context}.candidate_set differs from diagnostics")
+    runner_up = selection.get("runner_up")
+    if runner_up is not None and (
+        not isinstance(runner_up, str)
+        or runner_up not in candidates
+        or runner_up == model.get("champion")
+    ):
+        raise V5ContractError(f"{context}.runner_up is invalid")
+    allowed_reasons = {
+        "reference_fallback_no_challenger_passed",
+        "simplicity_tiebreak_within_tolerance",
+        "best_gate_passing_log_loss",
+    }
+    reason = selection.get("selection_reason")
+    if reason not in allowed_reasons:
+        raise V5ContractError(f"{context}.selection_reason is invalid")
+
+    champion = str(model.get("champion", ""))
+    champion_row = next(
+        (row for row in diagnostic_rows if str(row.get("model")) == champion),
+        None,
+    )
+    if champion_row is None:
+        raise V5ContractError(f"{context} champion diagnostics are missing")
+    passing_rows = [
+        row for row in diagnostic_rows if row.get("gate_passed") is True
+    ]
+    runner_rows = [
+        row
+        for row in passing_rows
+        if str(row.get("model")) != champion
+        and row.get("is_reference") is not True
+    ]
+    runner_rows.sort(
+        key=lambda row: (
+            float(row.get("log_loss", float("inf"))),
+            float(row.get("brier", float("inf"))),
+            str(row.get("model")),
+        )
+    )
+    expected_runner = str(runner_rows[0]["model"]) if runner_rows else None
+    if runner_up != expected_runner:
+        raise V5ContractError(f"{context}.runner_up differs from gate evidence")
+
+    if champion_row.get("gate_passed") is not True:
+        expected_reason = "reference_fallback_no_challenger_passed"
+    else:
+        champion_loss = float(champion_row.get("log_loss", float("inf")))
+        best_gate_row = min(
+            passing_rows,
+            key=lambda row: (
+                float(row.get("log_loss", float("inf"))),
+                str(row.get("model")),
+            ),
+        )
+        best_gate_loss = float(best_gate_row.get("log_loss", float("inf")))
+        if champion_loss <= best_gate_loss + 1e-12:
+            expected_reason = "best_gate_passing_log_loss"
+        else:
+            if champion_loss > best_gate_loss + tolerance + 1e-12:
+                raise V5ContractError(
+                    f"{context} simplicity tie exceeds its tolerance"
+                )
+            registry = policy["complexity_registry"]
+            best_name = str(best_gate_row.get("model"))
+            if (
+                champion not in registry
+                or best_name not in registry
+                or int(registry[champion]) >= int(registry[best_name])
+            ):
+                raise V5ContractError(
+                    f"{context} simplicity tie lacks a lower-complexity champion"
+                )
+            expected_reason = "simplicity_tiebreak_within_tolerance"
+    if reason != expected_reason:
+        raise V5ContractError(f"{context}.selection_reason differs from gate evidence")
+    expected_operating = _OPERATING_CONTRACT.document["models"]["official_champion"]
+    if selection.get("operating_champion") != expected_operating:
+        raise V5ContractError(f"{context}.operating_champion is invalid")
 
 
 def _validate_current(value: Any, context: str) -> str:
@@ -1268,7 +1503,26 @@ def _validate_v5_core_candidate_contract(
     expected = set(V5_STANDARD_CORE_MODELS)
     if profile == "full":
         expected.add("gaussian_hmm")
-    if len(names) != len(set(names)) or set(names) != expected:
+    roster_id = manifest.get("roster_id")
+    historical = _OPERATING_CONTRACT.historical_reviewed_roster_by_manifest_sha256(
+        supplied_hash
+    )
+    if roster_id is not None:
+        named_historical = _OPERATING_CONTRACT.historical_reviewed_roster(
+            str(roster_id)
+        )
+        if historical is None or named_historical != historical:
+            raise V5ContractError(f"{context}.roster_id is invalid")
+    historical_expected = (
+        set(str(name) for name in historical["candidate_models"])
+        if historical is not None
+        else None
+    )
+    current_roster = set(names) == expected and roster_id is None and historical is None
+    historical_roster = (
+        historical_expected is not None and set(names) == historical_expected
+    )
+    if len(names) != len(set(names)) or not (current_roster or historical_roster):
         raise V5ContractError(f"{context} model set is invalid")
 
     structural = _mapping(
@@ -1437,7 +1691,7 @@ def _validate_model(model: Any, *, mode: str) -> int:
     for field, expected in expected_versions.items():
         if _require(model, field, "payload.model") != expected:
             raise V5ContractError(f"payload.model.{field} must be {expected}")
-    if model.get("selection_status") != "provisional_predeployment":
+    if model.get("selection_status") != "selected_by_gate":
         raise V5ContractError("payload.model.selection_status is invalid")
     if not isinstance(model.get("champion"), str) or not model["champion"]:
         raise V5ContractError("payload.model.champion must be non-empty")
@@ -1539,9 +1793,17 @@ def _validate_forecast_comparison(model: Mapping[str, Any]) -> tuple[str, ...]:
         _sequence(comparison["models"], f"{context}.models", nonempty=True)
     )
     champion = str(_require(model, "champion", "payload.model"))
-    valid_models = models == V5_FORECAST_COMPARISON_MODELS
-    if champion not in V5_FORECAST_COMPARISON_MODELS:
-        valid_models = models == (*V5_FORECAST_COMPARISON_MODELS, champion)
+    historical = _OPERATING_CONTRACT.historical_reviewed_roster_by_manifest_sha256(
+        str(model.get("candidate_manifest_sha256", ""))
+    )
+    expected_models = (
+        tuple(str(name) for name in historical["forecast_comparison_models"])
+        if historical is not None
+        else V5_FORECAST_COMPARISON_MODELS
+    )
+    valid_models = models == expected_models
+    if champion not in expected_models:
+        valid_models = models == (*expected_models, champion)
     if not valid_models:
         raise V5ContractError(f"{context}.models are invalid")
     leaderboard = _sequence(
@@ -1946,10 +2208,10 @@ def _validate_publication_review(
         model,
         expected=(0.05 if is_legacy_reviewed_snapshot else 0.01),
     )
-    if status is None:
+    if status == "unpublished":
         if review is not None:
             raise V5ContractError(
-                "payload.meta.publication_review requires publication_status"
+                "unpublished payload cannot carry publication_review"
             )
         return
     if mode != "live" or status != V5_PUBLICATION_STATUS:
@@ -1993,6 +2255,11 @@ def _validate_publication_review(
         raise V5ContractError(
             "payload.meta.publication_review.fx_promoted must be false"
         )
+    if payload is not None:
+        try:
+            validate_reviewed_candidate_hash(payload)
+        except IntegrityError as exc:
+            raise V5ContractError(str(exc)) from exc
 
 
 def _validate_conditional_stats(value: Any, *, expected_resamples: int) -> None:
@@ -2278,21 +2545,60 @@ def validate_v5_payload(payload: Mapping[str, Any]) -> None:
     )
     if freshness_cutoff != data_as_of:
         raise V5ContractError("payload.meta.freshness.data_as_of is inconsistent")
+    has_review = "publication_review" in meta
+    has_manifest = "generation_manifest_sha256" in meta
     expected_meta_fields = (
-        V5_PUBLICATION_META_FIELDS
-        if "publication_status" in meta or "publication_review" in meta
+        V5_PUBLICATION_MANIFEST_META_FIELDS
+        if has_review and has_manifest
+        else V5_PUBLICATION_META_FIELDS
+        if has_review
+        else V5_MANIFEST_META_FIELDS
+        if has_manifest
         else V5_META_FIELDS
     )
     if set(meta) != expected_meta_fields:
         raise V5ContractError("payload.meta fields are invalid")
+    if has_manifest:
+        _sha256(
+            meta.get("generation_manifest_sha256"),
+            "payload.meta.generation_manifest_sha256",
+        )
 
     states = _sequence(_require(payload, "states", "payload"), "payload.states")
-    if tuple(item.get("id") if isinstance(item, Mapping) else None for item in states) != STATE_ORDER:
-        raise V5ContractError(f"payload.states must be ordered as {STATE_ORDER}")
+    if [dict(item) for item in states if isinstance(item, Mapping)] != [
+        dict(item) for item in _OPERATING_CONTRACT.state_definitions
+    ]:
+        raise V5ContractError("payload.states differ from operating-contract.json")
+    _validate_label_contract(_require(payload, "label", "payload"))
+    forecast_origin, forecast_target = _validate_forecast_contract(
+        _require(payload, "forecast", "payload"), mode=str(mode)
+    )
     model = _mapping(_require(payload, "model", "payload"), "payload.model")
     evidence_week_count = _validate_model(model, mode=str(mode))
+    try:
+        lifecycle = validate_lifecycle_consistency(payload)
+    except IntegrityError as exc:
+        raise V5ContractError(str(exc)) from exc
+    if lifecycle["publication"] == V5_PUBLICATION_STATUS and not has_manifest:
+        raise V5ContractError(
+            "reviewed publication requires generation_manifest_sha256"
+        )
+    is_reviewed_publication = (
+        meta.get("publication_status") == V5_PUBLICATION_STATUS
+    )
+    # For reviewed output, validate policy identity before recomputing the
+    # richer selection explanation.  A forged legacy 0.05 policy must fail for
+    # that exact reason rather than being masked by downstream metric changes.
+    # Unpublished candidates retain the earlier diagnostic ordering so drift
+    # in their selection evidence is reported at its narrowest contract edge.
+    if is_reviewed_publication:
+        _validate_publication_review(meta, model, mode=str(mode), payload=payload)
+    _validate_selection_contract(
+        _require(payload, "selection", "payload"), model
+    )
     forecast_comparison_models = _validate_forecast_comparison(model)
-    _validate_publication_review(meta, model, mode=str(mode), payload=payload)
+    if not is_reviewed_publication:
+        _validate_publication_review(meta, model, mode=str(mode), payload=payload)
 
     weekly = _sequence(_require(payload, "weekly", "payload"), "payload.weekly", nonempty=True)
     previous: date | None = None
@@ -2366,6 +2672,14 @@ def validate_v5_payload(payload: Mapping[str, Any]) -> None:
         raise V5ContractError(
             "payload.model evidence forecast row count must equal payload.weekly"
         )
+    latest_week = _mapping(weekly[-1], "payload.weekly[-1]")
+    latest_origin = _iso_date(latest_week["date"], "payload.weekly[-1].date")
+    latest_target = _iso_date(
+        _mapping(latest_week["next_week"], "payload.weekly[-1].next_week")["date"],
+        "payload.weekly[-1].next_week.date",
+    )
+    if forecast_origin.date() != latest_origin or forecast_target.date() != latest_target:
+        raise V5ContractError("payload.forecast differs from the latest weekly row")
 
     sources = _sequence(_require(payload, "sources", "payload"), "payload.sources")
     sources_by_id: dict[str, Mapping[str, Any]] = {}

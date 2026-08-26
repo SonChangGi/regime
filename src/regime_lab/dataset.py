@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import timedelta
-from typing import Any, Mapping, Sequence
+from typing import Any, Literal, Mapping, Sequence
 
 import numpy as np
 import pandas as pd
@@ -16,7 +16,7 @@ from regime_lab.analysis.structural_features import (
     build_release_innovation_features,
     build_structural_feature_manifest,
 )
-from regime_lab.data import HealthStatus, Observation, weekly_asof_frame
+from regime_lab.data import AsOfValue, HealthStatus, Observation, weekly_asof_join
 
 
 _DEFAULT_ALPHA_FIELDS = ("adjusted_close", "volume")
@@ -39,6 +39,11 @@ class WeeklyDataset:
     health: pd.Series
     feature_catalog: tuple[dict[str, Any], ...]
     feature_group_manifest: tuple[dict[str, Any], ...] = ()
+    availability_basis: Literal[
+        "source", "operational", "reconstructed_market"
+    ] = "source"
+    input_vintages: tuple[AsOfValue, ...] = ()
+    latest_input_vintages: tuple[AsOfValue, ...] = ()
 
 
 def _alpha_fields(config: Mapping[str, Any]) -> tuple[str, ...]:
@@ -279,16 +284,53 @@ def build_weekly_dataset(
     config: Mapping[str, Any],
     cutoffs: Sequence[object],
     observations: Sequence[Observation],
+    *,
+    availability_basis: Literal[
+        "source", "operational", "reconstructed_market"
+    ] = "source",
 ) -> WeeklyDataset:
     required = _required_series(config)
-    rows = weekly_asof_frame(
+    selected = weekly_asof_join(
         cutoffs,
         observations,
         required_series=required,
         max_age_by_series=_max_ages(config),
+        availability_basis=availability_basis,
     )
+    rows = pd.DataFrame(asdict(row) for row in selected)
     if rows.empty:
         raise RuntimeError("as-of join produced no weekly rows")
+    latest_cutoff = max(row.cutoff for row in selected)
+    eligible_vintages = (
+        row
+        for row in selected
+        if row.value is not None
+        and row.observed_period_end is not None
+        and row.provider_first_seen_at is not None
+        and row.system_retrieved_at is not None
+        and row.revision_seq is not None
+        and row.raw_sha256 is not None
+    )
+    input_vintages = tuple(
+        {
+            (
+                row.source,
+                row.series_id,
+                row.observed_period_end,
+                row.source_released_at,
+                row.provider_first_seen_at,
+                row.system_retrieved_at,
+                row.revision_seq,
+                row.raw_sha256,
+            ): row
+            for row in eligible_vintages
+        }.values()
+    )
+    latest_input_vintages = tuple(
+        row
+        for row in input_vintages
+        if row.cutoff == latest_cutoff
+    )
     canonical = _pivot_metric(rows, "value").astype(float)
 
     alpha_rows = rows.loc[rows["source"] == "alpha_vantage"].copy()
@@ -537,6 +579,9 @@ def build_weekly_dataset(
         health=health,
         feature_catalog=tuple(catalog),
         feature_group_manifest=feature_group_manifest,
+        availability_basis=availability_basis,
+        input_vintages=input_vintages,
+        latest_input_vintages=latest_input_vintages,
     )
 
 

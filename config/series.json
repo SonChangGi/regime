@@ -73,6 +73,7 @@
       "XLRE": "2015-10-07"
     },
     "fields": ["open", "high", "low", "close", "adjusted_close", "volume"],
+    "research_fields": ["dividend_amount"],
     "ohlc_feature_symbols": ["SPY", "IWM", "RSP", "HYG", "TLT"],
     "symbol_groups": {
       "gics_sector": ["XLB", "XLC", "XLE", "XLF", "XLI", "XLK", "XLP", "XLRE", "XLU", "XLV", "XLY"],

@@ -9,8 +9,9 @@
       content="선택한 시점까지 공개된 정보로 미국 증시 국면을 판단하고 다음 주 국면 확률을 보여주는 연구 대시보드"
     >
     <title>US Market Regime Lab | Quant Research</title>
-    <link rel="stylesheet" href="./styles.css?v=20260826-v5-12">
-    <script src="./app.js?v=20260826-v5-12" defer></script>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23111727'/%3E%3Cpath d='M14 43 26 31l9 8 15-20' fill='none' stroke='%2334d399' stroke-width='7' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+    <link rel="stylesheet" href="./styles.css?v=e36a95335a2e1501dbb4751d1a11456bb60809184bf3724dc2b7c7a81bd81937">
+    <script src="./app.js?v=77e9000e8e5bc0a8151a184c26920ec9b30c82af8baae3497df7b4fa50d459a3" defer></script>
   </head>
   <body id="top">
     <a class="skip-link" href="#main-content">본문으로 건너뛰기</a>
@@ -135,7 +136,7 @@
             <span id="model-forecast-scope" class="sr-only">선택 모델의 1주 예측 레이어</span>
           </div>
 
-          <div class="hero-grid" aria-label="핵심 국면 결과">
+          <div id="hero-results" class="hero-grid" aria-label="핵심 국면 결과">
           <article id="current-regime-card" class="regime-card card">
             <div class="card-kicker">
               <span>현재 국면</span>
@@ -191,6 +192,51 @@
           </article>
           </div>
 
+          <div id="contract-overview-grid" class="contract-overview-grid v5-only" hidden>
+            <article id="label-definition-card" class="definition-card card" aria-labelledby="label-definition-title">
+              <div class="card-heading compact-card-heading">
+                <div>
+                  <span class="card-kicker">Label contract</span>
+                  <h2 id="label-definition-title">국면 정의</h2>
+                </div>
+                <span id="label-spec-identity" class="contract-chip">불러오는 중</span>
+              </div>
+              <dl class="definition-facts">
+                <div>
+                  <dt>공식 정답지</dt>
+                  <dd>SPY 조정종가의 13·26주 추세, 4·13주 변동성, 13·52주 낙폭</dd>
+                </div>
+                <div>
+                  <dt>시장 폭 · 거시</dt>
+                  <dd>RSP·IWM·섹터 breadth와 거시·금리·신용은 예측 피처 또는 연구 challenger이며, 공식 정답지에는 아직 포함하지 않습니다.</dd>
+                </div>
+                <div>
+                  <dt>두 값의 의미</dt>
+                  <dd id="membership-definition">관측 소속도는 임계 anchor와의 거리이며 posterior가 아닙니다. 다음 주 값은 t까지의 정보로 만든 t+1 예측확률입니다.</dd>
+                </div>
+              </dl>
+            </article>
+
+            <article id="forecast-window-card" class="forecast-window-card card" aria-labelledby="forecast-window-title">
+              <div class="card-heading compact-card-heading">
+                <div>
+                  <span class="card-kicker">Forecast clock</span>
+                  <h2 id="forecast-window-title">운영 예측 시점</h2>
+                </div>
+                <span id="forecast-contract-status" class="contract-chip" role="status">불러오는 중</span>
+              </div>
+              <dl class="forecast-timing" aria-label="운영 예측 시점과 남은 예측기간">
+                <div><dt>주간 기준일</dt><dd id="forecast-origin-at">—</dd></div>
+                <div><dt>실제 발행시각</dt><dd id="forecast-decision-at">—</dd></div>
+                <div><dt>예측 대상시각</dt><dd id="forecast-target-at">—</dd></div>
+                <div><dt>남은 예측기간</dt><dd id="forecast-remaining-horizon">—</dd></div>
+              </dl>
+              <p id="forecast-expired-notice" class="forecast-expired-notice" role="status" hidden>
+                예측 대상시각이 지나 현재 예측 카드에서 제외했습니다. 결과는 과거 이력에만 보존됩니다.
+              </p>
+            </article>
+          </div>
+
         </section>
 
         <section id="history" class="dashboard-section analysis-grid" aria-label="국면 상태와 시장 맥락 추이">
@@ -217,9 +263,9 @@
 
             <div class="chart-context-row">
               <div id="history-chart-legend" class="chart-legend" aria-label="국면 상태 선 범례">
-                <span><i class="legend-line risk-on-line" aria-hidden="true"></i>Risk-on · 실선</span>
-                <span><i class="legend-line transition-line" aria-hidden="true"></i>Transition · 파선</span>
-                <span><i class="legend-line risk-off-line" aria-hidden="true"></i>Risk-off · 점선</span>
+                <span><i class="legend-line risk-on-line" aria-hidden="true"></i><span data-state-label="risk_on">Risk-on</span> · 실선</span>
+                <span><i class="legend-line transition-line" aria-hidden="true"></i><span data-state-label="transition">Transition</span> · 파선</span>
+                <span><i class="legend-line risk-off-line" aria-hidden="true"></i><span data-state-label="risk_off">Risk-off</span> · 점선</span>
                 <span><i class="legend-outcome-markers" aria-hidden="true">● ◆ ▼</i>실제 t+1 결과</span>
               </div>
               <div id="chart-selection-readout" class="chart-selection-readout" aria-live="polite">
@@ -232,17 +278,17 @@
                   <div class="chart-readout-series observed">
                     <span id="chart-readout-observed-label" class="chart-readout-series-label">관측 소속도 · t</span>
                     <dl>
-                      <div><dt>Risk-on</dt><dd id="chart-readout-risk-on">—</dd></div>
-                      <div><dt>Transition</dt><dd id="chart-readout-transition">—</dd></div>
-                      <div><dt>Risk-off</dt><dd id="chart-readout-risk-off">—</dd></div>
+                      <div><dt data-state-label="risk_on">Risk-on</dt><dd id="chart-readout-risk-on">—</dd></div>
+                      <div><dt data-state-label="transition">Transition</dt><dd id="chart-readout-transition">—</dd></div>
+                      <div><dt data-state-label="risk_off">Risk-off</dt><dd id="chart-readout-risk-off">—</dd></div>
                     </dl>
                   </div>
                   <div class="chart-readout-series forecast">
                     <span id="chart-readout-forecast-label" class="chart-readout-series-label">1주 예측확률 · t→t+1</span>
                     <dl>
-                      <div><dt>Risk-on</dt><dd id="chart-readout-forecast-risk-on">—</dd></div>
-                      <div><dt>Transition</dt><dd id="chart-readout-forecast-transition">—</dd></div>
-                      <div><dt>Risk-off</dt><dd id="chart-readout-forecast-risk-off">—</dd></div>
+                      <div><dt data-state-label="risk_on">Risk-on</dt><dd id="chart-readout-forecast-risk-on">—</dd></div>
+                      <div><dt data-state-label="transition">Transition</dt><dd id="chart-readout-forecast-transition">—</dd></div>
+                      <div><dt data-state-label="risk_off">Risk-off</dt><dd id="chart-readout-forecast-risk-off">—</dd></div>
                     </dl>
                   </div>
                   <dl class="chart-readout-diagnostics">
@@ -289,12 +335,12 @@
                       <th scope="col" rowspan="2">엔트로피 (0–1)</th>
                     </tr>
                     <tr>
-                      <th scope="col">Risk-on</th>
-                      <th scope="col">Transition</th>
-                      <th scope="col">Risk-off</th>
-                      <th scope="col">Risk-on</th>
-                      <th scope="col">Transition</th>
-                      <th scope="col">Risk-off</th>
+                      <th scope="col" data-state-label="risk_on">Risk-on</th>
+                      <th scope="col" data-state-label="transition">Transition</th>
+                      <th scope="col" data-state-label="risk_off">Risk-off</th>
+                      <th scope="col" data-state-label="risk_on">Risk-on</th>
+                      <th scope="col" data-state-label="transition">Transition</th>
+                      <th scope="col" data-state-label="risk_off">Risk-off</th>
                     </tr>
                   </thead>
                   <tbody id="history-data-body"></tbody>
@@ -324,9 +370,9 @@
               <p class="section-caption sr-only">1칸 = 1주</p>
             </div>
             <div class="timeline-key" aria-label="타임라인 기호 범례">
-              <span><b aria-hidden="true">↗</b> Risk-on</span>
-              <span><b aria-hidden="true">◆</b> Transition</span>
-              <span><b aria-hidden="true">↘</b> Risk-off</span>
+              <span><b data-state-symbol="risk_on" aria-hidden="true">↗</b> <span data-state-label="risk_on">Risk-on</span></span>
+              <span><b data-state-symbol="transition" aria-hidden="true">◆</b> <span data-state-label="transition">Transition</span></span>
+              <span><b data-state-symbol="risk_off" aria-hidden="true">↘</b> <span data-state-label="risk_off">Risk-off</span></span>
             </div>
           </div>
           <div id="regime-timeline" class="timeline-track" aria-label="주간 현재 국면"></div>
@@ -412,9 +458,9 @@
             <span id="conditional-comparison-caption">13주 보유 · 동일 축 · 0 기준</span>
           </div>
           <div class="conditional-regime-legend" aria-label="국면 범례">
-            <span><i class="legend-line risk-on-line" aria-hidden="true"></i>Risk-on</span>
-            <span><i class="legend-line transition-line" aria-hidden="true"></i>Transition</span>
-            <span><i class="legend-line risk-off-line" aria-hidden="true"></i>Risk-off</span>
+            <span><i class="legend-line risk-on-line" aria-hidden="true"></i><span data-state-label="risk_on">Risk-on</span></span>
+            <span><i class="legend-line transition-line" aria-hidden="true"></i><span data-state-label="transition">Transition</span></span>
+            <span><i class="legend-line risk-off-line" aria-hidden="true"></i><span data-state-label="risk_off">Risk-off</span></span>
           </div>
           <div id="conditional-stat-grid" class="conditional-stat-grid" role="region" aria-label="국면별 자산군 평균 수익률 비교"></div>
           <details class="compact-table-details">
@@ -478,6 +524,28 @@
             <div class="model-heading-controls">
               <div id="champion-summary" class="champion-summary" aria-label="선정 모델"></div>
             </div>
+          </div>
+          <div id="model-role-grid" class="model-role-grid v5-only" aria-label="공식·기준선·연구 모델 역할" hidden>
+            <article>
+              <span>공식 운영 모델</span>
+              <strong id="operating-model-name">—</strong>
+              <small id="operating-model-status">—</small>
+            </article>
+            <article>
+              <span>V4 동결 기준선</span>
+              <strong id="frozen-baseline-name">—</strong>
+              <small>회귀 재현 전용</small>
+            </article>
+            <article>
+              <span>연구 모델 선택기</span>
+              <strong id="research-selector-summary">—</strong>
+              <small id="research-selector-detail">—</small>
+            </article>
+            <article>
+              <span>현재 연구 상태</span>
+              <strong id="research-selection-status">—</strong>
+              <small id="research-selection-detail">—</small>
+            </article>
           </div>
           <article id="model-forecast-explorer" class="model-forecast-explorer v5-only" aria-labelledby="model-forecast-title" hidden>
             <div class="model-forecast-heading">

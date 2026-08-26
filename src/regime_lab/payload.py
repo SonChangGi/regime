@@ -10,33 +10,11 @@ from typing import Any
 import numpy as np
 
 from regime_lab.io import write_json_atomic
+from regime_lab.operating_contract import load_operating_contract
 from regime_lab.schema import SCHEMA_VERSION, STATE_ORDER, validate_dashboard_payload
 
 STATE_DEFINITIONS = [
-    {
-        "id": "risk_on",
-        "label": "Risk-on",
-        "label_ko": "위험선호",
-        "description": "추세가 우호적이고 스트레스가 제한적인 상태",
-        "color": "#2764d8",
-        "symbol": "●",
-    },
-    {
-        "id": "transition",
-        "label": "Transition",
-        "label_ko": "전환",
-        "description": "방향과 스트레스 신호가 엇갈리는 경계 상태",
-        "color": "#b87713",
-        "symbol": "◆",
-    },
-    {
-        "id": "risk_off",
-        "label": "Risk-off",
-        "label_ko": "위험회피",
-        "description": "하락 추세 또는 강한 하방 스트레스 상태",
-        "color": "#b54869",
-        "symbol": "▲",
-    },
+    dict(value) for value in load_operating_contract().state_definitions
 ]
 
 
