@@ -135,6 +135,144 @@ def _legacy_v1_frame(rows: int = 180) -> pd.DataFrame:
     )
 
 
+def _legacy_v1_reference_outputs(
+    frame: pd.DataFrame,
+    *,
+    train_rows: int,
+) -> tuple[float, float, pd.Series, pd.DataFrame, pd.DataFrame]:
+    """Reproduce the pre-registry V1 implementation without shared helpers."""
+
+    def raw_components(source: pd.DataFrame) -> pd.DataFrame:
+        price = pd.to_numeric(source["spy_close"], errors="coerce").astype(float)
+        log_price = np.log(price.where(price > 0.0))
+        weekly_return = log_price.diff(1)
+        output: dict[str, pd.Series] = {}
+        for lookback in (13, 26):
+            volatility = weekly_return.rolling(
+                lookback,
+                min_periods=max(4, lookback // 2),
+            ).std(ddof=0)
+            output[f"trend_{lookback}w"] = log_price.diff(lookback) / (
+                volatility.replace(0.0, np.nan) * np.sqrt(float(lookback))
+            )
+        for window in (4, 13):
+            output[f"vol_{window}w"] = weekly_return.rolling(
+                window,
+                min_periods=max(2, window // 2),
+            ).std(ddof=0) * np.sqrt(52.0)
+        for window in (13, 52):
+            peak = price.rolling(
+                window,
+                min_periods=max(4, window // 2),
+            ).max()
+            output[f"drawdown_{window}w"] = -(price / peak - 1.0)
+        return pd.DataFrame(output, index=source.index).replace(
+            [np.inf, -np.inf], np.nan
+        )
+
+    def robust_location_scale(series: pd.Series) -> tuple[float, float]:
+        finite = pd.to_numeric(series, errors="coerce").replace(
+            [np.inf, -np.inf], np.nan
+        ).dropna()
+        centre = float(finite.median())
+        q25, q75 = finite.quantile([0.25, 0.75]).to_numpy(dtype=float)
+        scale = float((q75 - q25) / 1.349)
+        if not np.isfinite(scale) or scale <= 1e-12:
+            mad = float((finite - centre).abs().median() * 1.4826)
+            scale = mad if np.isfinite(mad) and mad > 1e-12 else 1.0
+        return centre, scale
+
+    train_raw = raw_components(frame.iloc[:train_rows])
+    component_stats = {
+        column: robust_location_scale(train_raw[column])
+        for column in train_raw
+    }
+
+    def standardized_components(raw: pd.DataFrame) -> pd.DataFrame:
+        standardized = pd.DataFrame(index=raw.index)
+        for column, (centre, scale) in component_stats.items():
+            standardized[column] = (raw[column] - centre) / scale
+        return standardized
+
+    train_standardized = standardized_components(train_raw)
+    train_trend = train_standardized[["trend_13w", "trend_26w"]].mean(axis=1)
+    train_stress = train_standardized[
+        ["vol_4w", "vol_13w", "drawdown_13w", "drawdown_52w"]
+    ].mean(axis=1)
+    trend_stats = robust_location_scale(train_trend)
+    stress_stats = robust_location_scale(train_stress)
+    train_risk = (
+        (train_trend - trend_stats[0]) / trend_stats[1]
+        - (train_stress - stress_stats[0]) / stress_stats[1]
+    ).dropna()
+    lower = float(train_risk.quantile(0.30))
+    upper = float(train_risk.quantile(0.70))
+
+    standardized = standardized_components(raw_components(frame))
+    trend_raw = standardized[["trend_13w", "trend_26w"]].mean(axis=1)
+    stress_raw = standardized[
+        ["vol_4w", "vol_13w", "drawdown_13w", "drawdown_52w"]
+    ].mean(axis=1)
+    trend_score = (trend_raw - trend_stats[0]) / trend_stats[1]
+    stress_score = (stress_raw - stress_stats[0]) / stress_stats[1]
+    scores = pd.DataFrame(
+        {
+            "trend_score": trend_score,
+            "stress_score": stress_score,
+            "risk_score": trend_score - stress_score,
+        },
+        index=frame.index,
+    )
+
+    state = "transition"
+    margin = (upper - lower) * 0.15
+    labels: list[str] = []
+    for value in scores["risk_score"].to_numpy(dtype=float):
+        if not np.isfinite(value):
+            labels.append(state)
+            continue
+        if state == "transition":
+            if value <= lower:
+                state = "risk_off"
+            elif value >= upper:
+                state = "risk_on"
+        elif state == "risk_on":
+            if value <= lower - margin:
+                state = "risk_off"
+            elif value < upper - margin:
+                state = "transition"
+        else:
+            if value >= upper + margin:
+                state = "risk_on"
+            elif value > lower + margin:
+                state = "transition"
+        labels.append(state)
+    label_series = pd.Series(
+        labels,
+        index=frame.index,
+        name="regime",
+        dtype="object",
+    )
+
+    risk_values = scores["risk_score"].to_numpy(dtype=float)
+    width = max(upper - lower, 1e-6)
+    anchors = np.asarray(
+        [upper + width / 2.0, (lower + upper) / 2.0, lower - width / 2.0]
+    )
+    scaled_distance = (risk_values[:, None] - anchors[None, :]) / width
+    logits = -(scaled_distance**2) / 0.75
+    logits[~np.isfinite(risk_values)] = np.asarray([-20.0, 0.0, -20.0])
+    logits -= np.max(logits, axis=1, keepdims=True)
+    memberships = np.exp(logits)
+    memberships /= memberships.sum(axis=1, keepdims=True)
+    membership_frame = pd.DataFrame(
+        memberships,
+        index=frame.index,
+        columns=STATE_ORDER,
+    )
+    return lower, upper, label_series, scores, membership_frame
+
+
 def test_typed_registry_freezes_v1_and_registers_only_unrun_shadows() -> None:
     registry = load_label_spec_registry()
     assert registry.default_spec == "v1_spy_hysteresis"
@@ -199,7 +337,7 @@ def test_label_spec_hash_is_deterministic_and_mutation_needs_version_bump(
         load_label_spec_registry(shadow_path)
 
 
-def test_v1_default_output_remains_frozen_at_contract_precision() -> None:
+def test_v1_default_output_matches_frozen_legacy_reference() -> None:
     frame = _legacy_v1_frame()
     labeler = CausalRegimeLabeler().fit(frame.iloc[:120])
     labels = labeler.transform(frame)
@@ -208,27 +346,25 @@ def test_v1_default_output_remains_frozen_at_contract_precision() -> None:
     ).hexdigest() == (
         "999b845d5caba658f939968668e4fbabc0d21b45f32e444be6ea8d2145cbc576"
     )
-
-    # NumPy delegates transcendental functions to the platform libm, so raw
-    # IEEE-754 bytes can differ in their final bits between macOS and Linux.
-    # Freeze every numeric output at a much tighter precision than the public
-    # payload while keeping state assignments exactly byte-stable above.
-    numeric_values = np.concatenate(
-        (
-            np.asarray(
-                [labeler.lower_threshold_, labeler.upper_threshold_],
-                dtype=float,
-            ),
-            labeler.score_frame(frame).to_numpy(dtype=float).ravel(),
-            labeler.state_probabilities(frame).to_numpy(dtype=float).ravel(),
-        )
+    (
+        reference_lower,
+        reference_upper,
+        reference_labels,
+        reference_scores,
+        reference_memberships,
+    ) = _legacy_v1_reference_outputs(frame, train_rows=120)
+    assert labeler.lower_threshold_ == reference_lower
+    assert labeler.upper_threshold_ == reference_upper
+    assert_series_equal(labels, reference_labels, check_exact=True)
+    assert_frame_equal(
+        labeler.score_frame(frame),
+        reference_scores,
+        check_exact=True,
     )
-    canonical_numeric = "|".join(
-        "nan" if not np.isfinite(value) else format(float(value), ".10e")
-        for value in numeric_values
-    )
-    assert hashlib.sha256(canonical_numeric.encode("ascii")).hexdigest() == (
-        "36038e89713d82c77cca7dc162741adfedf1a6df2759b85696551a77dfbc2e04"
+    assert_frame_equal(
+        labeler.state_probabilities(frame),
+        reference_memberships,
+        check_exact=True,
     )
     assert_frame_equal(
         labeler.state_probabilities(frame),
