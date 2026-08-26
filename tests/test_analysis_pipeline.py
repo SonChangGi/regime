@@ -108,6 +108,7 @@ def test_pipeline_passes_profile_specific_time_split_minimums(
         captured.update(kwargs)
         raise _BenchmarkIntercept
 
+    monkeypatch.setattr(pipeline, "verify_frozen_v4_baseline", lambda: {})
     monkeypatch.setattr(pipeline, "run_benchmark", intercept)
     dataset = _minimal_weekly_dataset()
 
