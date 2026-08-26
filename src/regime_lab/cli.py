@@ -52,6 +52,10 @@ from regime_lab.provider_rights import (
     providers_for_live_config,
     verify_provider_rights,
 )
+from regime_lab.publication_contract import (
+    V5_RESULT_VERSION,
+    validate_v5_comparison_sidecar,
+)
 from regime_lab.pipeline import build_dashboard_result
 from regime_lab.schema import validate_dashboard_payload
 from regime_lab.server import serve_dashboard
@@ -778,6 +782,16 @@ def command_collect_h10(args: argparse.Namespace) -> int:
         raise SystemExit(
             "archive date bounds require --official-release-archive-ingest"
         )
+    requested_at = datetime.now(timezone.utc)
+    as_of = getattr(args, "as_of", None) or last_completed_week_cutoff(
+        requested_at
+    )
+    if as_of > requested_at:
+        raise SystemExit("H.10 as-of cutoff must not be in the future")
+    if as_of != last_completed_week_cutoff(as_of):
+        raise SystemExit(
+            "H.10 as-of must be an exact completed Friday 16:00 ET cutoff"
+        )
     receipt_value = getattr(args, "receipt", None)
     if receipt_value is None and archive_ingest:
         receipt_value = _V5_H10_ARCHIVE_DEFAULT_RECEIPT
@@ -808,16 +822,6 @@ def command_collect_h10(args: argparse.Namespace) -> int:
                 refresh_h10_store,
             )
 
-            requested_at = datetime.now(timezone.utc)
-            as_of = getattr(args, "as_of", None) or last_completed_week_cutoff(
-                requested_at
-            )
-            if as_of > requested_at:
-                raise SystemExit("H.10 as-of cutoff must not be in the future")
-            if as_of != last_completed_week_cutoff(as_of):
-                raise SystemExit(
-                    "H.10 as-of must be an exact completed Friday 16:00 ET cutoff"
-                )
             with SQLiteSnapshotStore(database) as store:
                 if archive_ingest:
                     refresh = refresh_h10_archive_store(
@@ -930,7 +934,7 @@ def command_build(args: argparse.Namespace) -> int:
             "live build does not permit the three-origin quick smoke profile; "
             "use standard or full"
         )
-    contract_version = getattr(args, "contract", "v4")
+    contract_version = getattr(args, "contract", "v5")
     output, artifacts = _resolve_contract_write_targets(
         command="build",
         contract_version=contract_version,
@@ -1135,6 +1139,11 @@ def command_build(args: argparse.Namespace) -> int:
                     if v5_preflight is None
                     else str(v5_preflight["source_fingerprint_sha256"])
                 ),
+                minimum_log_loss_improvement=(
+                    config["model"].get("minimum_log_loss_improvement")
+                    if contract_version == "v5"
+                    else None
+                ),
             )
             if v5_preflight is not None:
                 require_v5_analysis_source_unchanged(
@@ -1187,7 +1196,7 @@ def command_build(args: argparse.Namespace) -> int:
 
 
 def command_demo(args: argparse.Namespace) -> int:
-    contract_version = getattr(args, "contract", "v4")
+    contract_version = getattr(args, "contract", "v5")
     output, artifacts = _resolve_contract_write_targets(
         command="demo",
         contract_version=contract_version,
@@ -1243,6 +1252,38 @@ def command_validate(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_serve(args: argparse.Namespace) -> int:
+    payload = _root_path(args.payload)
+    comparison_value = getattr(args, "comparison", None)
+    if comparison_value is None:
+        sibling = payload.with_name("v5-vs-v4-comparison.json")
+        comparison = sibling if sibling.is_file() and not sibling.is_symlink() else None
+    else:
+        comparison = _root_path(comparison_value)
+    payload_raw = payload.read_bytes()
+    payload_document = json.loads(payload_raw)
+    validate_dashboard_payload(payload_document)
+    comparison_raw = None
+    if comparison is not None:
+        if payload_document.get("meta", {}).get("result_version") != V5_RESULT_VERSION:
+            raise ValueError("a V5/V4 comparison sidecar requires a V5 payload")
+        comparison_raw = comparison.read_bytes()
+        comparison_document = json.loads(comparison_raw)
+        validate_v5_comparison_sidecar(
+            comparison_document,
+            payload=payload_document,
+            payload_raw=payload_raw,
+        )
+    serve_dashboard(
+        _root_path(args.web_root),
+        host=args.host,
+        port=args.port,
+        payload_bytes=payload_raw,
+        comparison_bytes=comparison_raw,
+    )
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="regime-lab")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -1274,8 +1315,8 @@ def build_parser() -> argparse.ArgumentParser:
     build.add_argument(
         "--contract",
         choices=("v4", "v5"),
-        default="v4",
-        help="result contract; v5 is an explicit local research opt-in",
+        default="v5",
+        help="result contract (default: active V5; V4 is frozen regression only)",
     )
     build.add_argument(
         "--expected-cutoff",
@@ -1367,25 +1408,34 @@ def build_parser() -> argparse.ArgumentParser:
     demo.add_argument(
         "--contract",
         choices=("v4", "v5"),
-        default="v4",
-        help="result contract; v5 keeps synthetic output clearly labelled",
+        default="v5",
+        help="result contract (default: active V5; V4 is frozen regression only)",
     )
     demo.set_defaults(func=command_demo)
 
     validate = subparsers.add_parser("validate", help="validate a dashboard result JSON")
-    validate.add_argument("path", nargs="?", default="web/data/regime-results.json")
+    validate.add_argument(
+        "path",
+        nargs="?",
+        default="publication/live/regime-results.json",
+    )
     validate.set_defaults(func=command_validate)
 
     serve = subparsers.add_parser("serve", help="serve the static local dashboard")
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=8765)
     serve.add_argument("--web-root", default="web")
-    serve.set_defaults(
-        func=lambda args: serve_dashboard(
-            _root_path(args.web_root), host=args.host, port=args.port
-        )
-        or 0
+    serve.add_argument(
+        "--payload",
+        default="publication/live/regime-results.json",
+        help="dashboard payload (default: reviewed live V5 publication)",
     )
+    serve.add_argument(
+        "--comparison",
+        default=None,
+        help="optional V5/V4 sidecar (default: payload sibling when present)",
+    )
+    serve.set_defaults(func=command_serve)
 
     smoke = subparsers.add_parser("smoke", help="run a bounded provider smoke test")
     smoke.add_argument("provider", choices=("all", "alfred", "alpha_vantage"), default="all", nargs="?")

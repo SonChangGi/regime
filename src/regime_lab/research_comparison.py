@@ -210,10 +210,15 @@ def _preregistered_selection_policy(
         raise RuntimeError("V6 selection policy id is invalid")
     if policy.get("effective_date") != "2026-08-25":
         raise RuntimeError("V6 selection policy effective date is invalid")
-    if policy.get("application") != "prospective_v6_runs_only":
-        raise RuntimeError("V6 selection policy is not prospective-only")
-    if policy.get("retroactive_reselection") is not False:
-        raise RuntimeError("V6 selection policy permits retroactive reselection")
+    if policy.get("application") != "active_v5_and_prospective_v6_runs":
+        raise RuntimeError("V5/V6 selection policy application is invalid")
+    reselection_scope = policy.get("reselection_scope")
+    if reselection_scope != {
+        "v4": "prohibited_frozen",
+        "legacy_reviewed_v5_snapshot": "preserved_exact_only",
+        "new_v5_and_v6_runs": "required_current_policy",
+    }:
+        raise RuntimeError("V5/V6 reselection scope is invalid")
     unchanged_gates = policy.get("unchanged_gates")
     expected_gate_keys = {
         "holm_alpha",
@@ -225,9 +230,15 @@ def _preregistered_selection_policy(
         or set(unchanged_gates) != expected_gate_keys
     ):
         raise RuntimeError("V6 unchanged selection gates are invalid")
-    prior_contracts = policy.get("frozen_prior_contracts")
-    if not isinstance(prior_contracts, Mapping):
-        raise RuntimeError("V6 frozen prior contracts are unavailable")
+    version_contracts = policy.get("version_contracts")
+    if not isinstance(version_contracts, Mapping):
+        raise RuntimeError("V4/V5 version contracts are unavailable")
+    v4_contract = version_contracts.get("v4")
+    v5_contract = version_contracts.get("v5")
+    if not isinstance(v4_contract, Mapping) or not isinstance(
+        v5_contract, Mapping
+    ):
+        raise RuntimeError("V4/V5 version contracts are unavailable")
     try:
         minimum_improvement = float(policy["minimum_log_loss_improvement"])
         evaluation_minimum = float(evaluation["minimum_log_loss_improvement"])
@@ -237,9 +248,8 @@ def _preregistered_selection_policy(
         policy_brier_tolerance = float(
             unchanged_gates["maximum_brier_degradation"]
         )
-        prior_minimum = float(
-            prior_contracts["v4_v5_minimum_log_loss_improvement"]
-        )
+        v4_minimum = float(v4_contract["minimum_log_loss_improvement"])
+        v5_minimum = float(v5_contract["minimum_log_loss_improvement"])
     except (KeyError, TypeError, ValueError) as exc:
         raise RuntimeError("V6 selection policy thresholds are invalid") from exc
     if (
@@ -250,10 +260,17 @@ def _preregistered_selection_policy(
     ):
         raise RuntimeError("V6 log-loss selection threshold is inconsistent")
     if (
-        not np.isclose(prior_minimum, 0.05, rtol=0.0, atol=1e-12)
-        or prior_contracts.get("v4_v5_reselection") is not False
+        v4_contract.get("status") != "frozen_regression_baseline"
+        or not np.isclose(v4_minimum, 0.05, rtol=0.0, atol=1e-12)
+        or v4_contract.get("champion_name_locked") is not True
     ):
-        raise RuntimeError("V4/V5 selection contracts are not frozen")
+        raise RuntimeError("V4 frozen regression contract is invalid")
+    if (
+        v5_contract.get("status") != "active_operating_contract"
+        or not np.isclose(v5_minimum, 0.01, rtol=0.0, atol=1e-12)
+        or v5_contract.get("champion_name_locked") is not False
+    ):
+        raise RuntimeError("V5 active selection contract is invalid")
     fallback_count_required = unchanged_gates["fallback_count_required"]
     if type(fallback_count_required) is not int or fallback_count_required != 0:
         raise RuntimeError("V6 fallback gate differs from the frozen gate")
@@ -279,8 +296,8 @@ def _preregistered_selection_policy(
     return {
         "id": V6_SELECTION_POLICY_ID,
         "effective_date": "2026-08-25",
-        "application": "prospective_v6_runs_only",
-        "retroactive_reselection": False,
+        "application": "active_v5_and_prospective_v6_runs",
+        "reselection_scope": dict(reselection_scope),
         "minimum_log_loss_improvement": minimum_improvement,
         "holm_alpha": holm_alpha,
         "maximum_brier_degradation": brier_tolerance,

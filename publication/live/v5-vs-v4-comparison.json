@@ -127,12 +127,12 @@
       },
       "regime_results": {
         "path": "regime-results.json",
-        "sha256": "307acebc05c161b2020df49e57f8d2b62c1e521f7c8f407117b034c5eba77273"
+        "sha256": "10beb66464a8f30ebd2a2bfde1440ee566bee6c21523a5e04a57c75357c08428"
       },
       "selection_diagnostics": {
         "path": "selection-diagnostics.csv",
         "row_count": 17,
-        "sha256": "30ce4d3d150f341a873b2cc194e52ff5f3f43a4ace697d9fab008fbae6dfd937"
+        "sha256": "0bd5c7ebf677247ef2f3de9ed82532760d0a9539a975fe5606ed2b43bde58dcd"
       }
     }
   },
@@ -214,13 +214,24 @@
       }
     },
     "selection_gate_crosscheck": {
-      "artifact_role": "selection_only_existing_champion_gate",
+      "artifact_role": "selection_family_independently_recomputed",
       "models": {
+        "causal_dynamic_ensemble": {
+          "brier": 0.1695545225738348,
+          "fallback_count": 0,
+          "gate_passed": true,
+          "gate_reason": "passed",
+          "log_loss": 0.3266156575731663,
+          "matched_metric_crosscheck": true,
+          "n_predictions": 365,
+          "reference_model": "markov",
+          "selected": true
+        },
         "causal_multiscale_ensemble": {
           "brier": 0.1692603331826354,
           "fallback_count": 0,
-          "gate_passed": false,
-          "gate_reason": "insufficient_log_loss_improvement",
+          "gate_passed": true,
+          "gate_reason": "passed",
           "log_loss": 0.3264174809731198,
           "matched_metric_crosscheck": true,
           "n_predictions": 365,
@@ -228,18 +239,18 @@
           "selected": false
         },
         "markov": {
-          "brier": 0.17892474894730642,
+          "brier": 0.1789247489473064,
           "fallback_count": 0,
           "gate_passed": true,
           "gate_reason": "passed",
-          "log_loss": 0.35751713724450357,
+          "log_loss": 0.3575171372445035,
           "matched_metric_crosscheck": true,
           "n_predictions": 365,
           "reference_model": "markov",
-          "selected": true
+          "selected": false
         }
       },
-      "pairwise_gate_against_markov": false
+      "multiscale_gate_against_selection_reference": true
     }
   },
   "v5_markov_vs_frozen_v4_markov": {

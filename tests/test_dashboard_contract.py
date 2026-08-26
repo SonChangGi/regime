@@ -332,6 +332,8 @@ def _valid_v5_browser_payload() -> dict:
         {
             "name": name,
             "rank": rank,
+            "selected": name == "markov",
+            "is_champion": name == "markov",
             "selection_log_loss": 0.90 + rank / 100,
             "log_loss": 0.80 + rank / 100,
             "brier": 0.50 + rank / 100,
@@ -466,6 +468,14 @@ def _valid_v5_browser_payload() -> dict:
             "champion": "markov",
             "selection_status": "provisional_predeployment",
             "leaderboard": leaderboard,
+            "selection_diagnostics": [
+                {
+                    "model": name,
+                    "selected": name == "markov",
+                    "gate_passed": name == "markov",
+                }
+                for name in V5_FORECAST_COMPARISON_MODELS
+            ],
             "forecast_comparison": {
                 "role": "research_comparison",
                 "horizon_weeks": 1,
@@ -770,7 +780,7 @@ def test_dashboard_assets_are_local_and_present() -> None:
         ]
     }
     assert len(asset_versions) == 1
-    assert asset_versions == {"20260826-v5-11"}
+    assert asset_versions == {"20260826-v5-12"}
 
     assert all(not str(script.get("src", "")).startswith(("http://", "https://", "//")) for script in parser.scripts)
     assert all(not str(link.get("href", "")).startswith(("http://", "https://", "//")) for link in parser.links)
@@ -1169,6 +1179,20 @@ def test_v5_browser_binds_model_comparison_order_inventory_and_official_parity()
         for error in _browser_validation_errors(orphan_forecasts)
     )
 
+    missing_comparison_suite = deepcopy(payload)
+    missing_comparison_suite["model"].pop("forecast_comparison")
+    missing_comparison_suite["weekly"][0].pop("model_forecasts")
+    errors = _browser_validation_errors(missing_comparison_suite)
+    assert any("model.forecast_comparison 객체" in error for error in errors)
+    assert any("model_forecasts에는 forecast_comparison" in error for error in errors)
+
+    missing_all_weekly_forecasts = deepcopy(payload)
+    missing_all_weekly_forecasts["weekly"][0].pop("model_forecasts")
+    assert any(
+        "model_forecasts 모델 수" in error
+        for error in _browser_validation_errors(missing_all_weekly_forecasts)
+    )
+
 
 def test_v5_browser_rejects_model_forecast_state_that_is_not_probability_argmax() -> None:
     payload = _valid_v5_browser_payload()
@@ -1491,24 +1515,28 @@ def test_v5_browser_rejects_research_artifact_manifest_drift() -> None:
     )
 
 
-def test_v5_browser_accepts_model_conditioned_stats_as_an_optional_complete_pair() -> None:
+def test_v5_browser_requires_model_conditioned_stats_and_complete_artifact_pair() -> None:
     complete_pair = _valid_v5_browser_payload()
     assert _browser_validation_errors(complete_pair) == []
 
-    legacy_without_pair = _valid_v5_browser_payload()
-    legacy_without_pair["research"].pop("model_conditioned_asset_stats")
-    legacy_without_pair["model"]["research_artifacts"].pop(
+    missing_all_model_conditioned_outputs = _valid_v5_browser_payload()
+    missing_all_model_conditioned_outputs["research"].pop(
+        "model_conditioned_asset_stats"
+    )
+    missing_all_model_conditioned_outputs["model"]["research_artifacts"].pop(
         "model_conditioned_asset_outcomes"
     )
-    legacy_without_pair["model"]["research_artifacts"].pop(
+    missing_all_model_conditioned_outputs["model"]["research_artifacts"].pop(
         "model_conditioned_asset_statistics"
     )
-    assert _browser_validation_errors(legacy_without_pair) == []
+    errors = _browser_validation_errors(missing_all_model_conditioned_outputs)
+    assert any("research_artifacts manifest" in error for error in errors)
+    assert any("model_conditioned_asset_stats 객체가 필요" in error for error in errors)
 
     artifacts_without_stats = _valid_v5_browser_payload()
     artifacts_without_stats["research"].pop("model_conditioned_asset_stats")
     assert any(
-        "공개 파생 통계" in error
+        "model_conditioned_asset_stats 객체가 필요" in error
         for error in _browser_validation_errors(artifacts_without_stats)
     )
 
@@ -1689,6 +1717,53 @@ process.stdout.write(JSON.stringify({{
         "entropy": 0.25,
         "invalidModelFallback": "markov",
         "legacyFallback": "legacy",
+    }
+
+
+def test_champion_selection_evidence_and_default_forecast_are_model_agnostic() -> None:
+    program = f"""
+const api = require({json.dumps(str(JS_PATH))});
+const payload = {{
+  model: {{
+    champion: "xgboost",
+    leaderboard: [
+      {{name: "markov", selected: false, is_champion: false}},
+      {{name: "xgboost", selected: true, is_champion: true}}
+    ],
+    selection_diagnostics: [
+      {{model: "markov", selected: false, gate_passed: true}},
+      {{model: "xgboost", selected: true, gate_passed: true}}
+    ],
+    forecast_comparison: {{models: ["markov", "xgboost"]}}
+  }}
+}};
+const week = {{
+  next_week: {{model: "xgboost", state: "risk_on"}},
+  model_forecasts: [
+    {{model: "markov", state: "transition"}},
+    {{model: "xgboost", state: "risk_on"}}
+  ]
+}};
+const evidence = api.championSelectionEvidence(payload.model);
+const selected = api.forecastForWeek(week, null, payload);
+const mismatch = JSON.parse(JSON.stringify(payload.model));
+mismatch.leaderboard[0].selected = true;
+mismatch.leaderboard[0].is_champion = true;
+process.stdout.write(JSON.stringify({{
+  valid: evidence.valid,
+  champion: evidence.champion,
+  defaultModel: selected.model,
+  duplicateRejected: api.championSelectionEvidence(mismatch).valid
+}}));
+"""
+    completed = subprocess.run(
+        ["node", "-e", program], text=True, capture_output=True, check=True
+    )
+    assert json.loads(completed.stdout) == {
+        "valid": True,
+        "champion": "xgboost",
+        "defaultModel": "xgboost",
+        "duplicateRejected": False,
     }
 
 
@@ -1938,19 +2013,51 @@ def test_v5_comparison_sidecar_requires_current_payload_and_frozen_v4_identity()
             "primary_selection": split,
             "post_selection_holdout": split,
         },
+        "v5_causal_multiscale_ensemble_vs_v5_markov": {
+            "selection_gate_crosscheck": {
+                "artifact_role": "selection_family_independently_recomputed",
+                "multiscale_gate_against_selection_reference": False,
+            }
+        },
     }
-    payload = {"model": {"baseline_v4": {"artifacts_inventory_sha256": inventory_sha}}}
+    payload = {
+        "model": {
+            "baseline_v4": {"artifacts_inventory_sha256": inventory_sha},
+            "selection_diagnostics": [
+                {"minimum_log_loss_improvement": 0.01}
+            ],
+        }
+    }
+    legacy_report = json.loads(json.dumps(report))
+    legacy_gate = legacy_report[
+        "v5_causal_multiscale_ensemble_vs_v5_markov"
+    ]["selection_gate_crosscheck"]
+    legacy_gate["artifact_role"] = "selection_only_existing_champion_gate"
+    legacy_gate["pairwise_gate_against_markov"] = legacy_gate.pop(
+        "multiscale_gate_against_selection_reference"
+    )
+    legacy_payload = json.loads(json.dumps(payload))
+    legacy_payload["model"]["selection_diagnostics"][0][
+        "minimum_log_loss_improvement"
+    ] = 0.05
     program = f"""
 const api = require({json.dumps(str(JS_PATH))});
 const report = {json.dumps(report)};
 const payload = {json.dumps(payload)};
+const legacyReport = {json.dumps(legacy_report)};
+const legacyPayload = {json.dumps(legacy_payload)};
 process.stdout.write(JSON.stringify([
   api.validateV5ComparisonSummary(report, payload, {json.dumps(payload_sha)}),
   api.validateV5ComparisonSummary(report, payload, {json.dumps('c' * 64)}),
+  api.validateV5ComparisonSummary(legacyReport, payload, {json.dumps(payload_sha)}),
+  api.validateV5ComparisonSummary(legacyReport, legacyPayload, {json.dumps(payload_sha)}),
+  api.validateV5ComparisonSummary(report, legacyPayload, {json.dumps(payload_sha)}),
 ]));
 """
     completed = subprocess.run(["node", "-e", program], text=True, capture_output=True, check=True)
-    accepted, rejected = json.loads(completed.stdout)
+    accepted, rejected, mismatched_role, accepted_legacy, mismatched_new_role = (
+        json.loads(completed.stdout)
+    )
     assert accepted == {
         "commonKeys": 2,
         "selectionKeys": 1,
@@ -1958,6 +2065,9 @@ process.stdout.write(JSON.stringify([
         "exactParity": True,
     }
     assert rejected is None
+    assert mismatched_role is None
+    assert accepted_legacy == accepted
+    assert mismatched_new_role is None
 
 
 def test_v5_decision_evidence_is_collapsed_at_the_bottom_and_semantically_distinct() -> None:
@@ -1978,7 +2088,7 @@ def test_v5_decision_evidence_is_collapsed_at_the_bottom_and_semantically_distin
         "실제 OOS",
         "FX 후보 gate",
         "core 비승격",
-        "멀티스케일 후보",
+        "공식 모델 선정",
         "V4 기준 비교",
         "입력 피처 품질",
         "Markov 확률 완전 일치",

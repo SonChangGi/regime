@@ -152,6 +152,7 @@ def test_build_writes_degraded_report_and_stops_before_analysis(
     args = argparse.Namespace(
         alfred_rights_confirmed=True,
         profile="standard",
+        contract="v4",
         config=tmp_path / "series.json",
         database=database,
         output=output,
@@ -232,6 +233,7 @@ def test_ac_power_failure_updates_report_and_stops_before_analysis(
     args = argparse.Namespace(
         alfred_rights_confirmed=True,
         profile="standard",
+        contract="v4",
         config=tmp_path / "series.json",
         database=database,
         output=tmp_path / "result.json",
@@ -279,6 +281,7 @@ def test_database_lock_collision_writes_transient_collection_receipt(
     args = argparse.Namespace(
         alfred_rights_confirmed=True,
         profile="standard",
+        contract="v4",
         config=tmp_path / "series.json",
         database=database,
         output=tmp_path / "result.json",
@@ -367,7 +370,12 @@ def test_v5_live_build_forwards_preflight_fingerprint_and_private_checkpoint(
     monkeypatch.setattr(
         cli,
         "load_config",
-        lambda _path: {"model": {"final_holdout_start": "2023-01-01"}},
+        lambda _path: {
+            "model": {
+                "final_holdout_start": "2023-01-01",
+                "minimum_log_loss_improvement": 0.01,
+            }
+        },
     )
     monkeypatch.setattr(cli, "_mutable_path", lambda value, **_kwargs: Path(value))
     monkeypatch.setattr(
@@ -441,6 +449,7 @@ def test_v5_live_build_forwards_preflight_fingerprint_and_private_checkpoint(
         output.parent / ".private-checkpoints" / "base-walk-forward"
     )
     assert captured["source_fingerprint_sha256"] == source_fingerprint
+    assert captured["minimum_log_loss_improvement"] == 0.01
     receipt = json.loads(report.read_text(encoding="utf-8"))
     assert receipt["ready_for_training"] is True
     assert receipt["gate_error"] is None

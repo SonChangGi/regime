@@ -8,12 +8,13 @@
 
 ## 구조 v5 운영 계약
 
-주간 자동화와 publication은 현재 v5 계약이다. 수동 build/demo의 기본값은 V4
-재현을 위해 유지하며 raw V5 후보는 명시적으로 opt-in한다. 첫 표준 실데이터 실행에서 Markov는 frozen v4
-Markov와 matched OOS 확률·평가값이 정확히 일치해 champion을 유지했다. 다중 기억
-앙상블과 FX ablation은 사전등록 gate를 통과하지 못해 core champion에 승격하지
-않았다. 후보 생성과 공개 검토 표식 추가는 분리하며, 공개 payload는 파생 비교
-sidecar와 byte 단위로 결속한다. 전체 사전등록값은
+주간 자동화와 publication은 현재 V5 계약이다. V4는 현재 서비스 버전이 아니라
+회귀 검사용 동결 기준선이다. 첫 표준 실데이터 실행에서 Markov는 frozen V4
+Markov와 matched OOS 확률·평가값이 정확히 일치해 당시 champion을 유지했다.
+현재 V5는 모델명을 고정하지 않고 0.01 selection gate를 통과한 단일 모델을 공식
+champion으로 사용한다. FX ablation은 별도 심사 전까지 core 예측에 승격하지 않는다.
+후보 생성과 공개 검토 표식 추가는 분리하며, 공개 payload는 파생 비교 sidecar와
+byte 단위로 결속한다. 최초 V5 사전등록값은
 [`structural-v5-preregistration.md`](structural-v5-preregistration.md)에 고정한다.
 
 - **현재 국면:** `causal_hysteresis_state`가 hard label이다. `memberships`는 같은
@@ -274,13 +275,16 @@ set. Any fit or probability-contract failure is surfaced as a class-prior
 fallback and degrades result health.
 
 Selection is probability-first and conservative. Each learned challenger is
-paired with the best probabilistic baseline on identical weeks. Promotion
-requires at least 0.05 absolute multiclass-log-loss improvement, zero fallback
-rows, no more than 0.01 Brier degradation, and a one-sided Holm-adjusted result
-from a deterministic 13-week circular moving-block bootstrap (1,999 resamples,
-seed 17). If no challenger clears every gate, the best baseline remains the
-provisional champion. Candidate definitions, hyperparameters, profile budgets,
-seed and a SHA-256 are serialized in `candidate-manifest.json`.
+paired with the best probabilistic baseline on identical weeks. Current V5
+promotion requires at least 0.01 absolute multiclass-log-loss improvement,
+zero fallback rows, no more than 0.01 Brier degradation, and a one-sided
+Holm-adjusted result from a deterministic 13-week circular moving-block
+bootstrap (1,999 resamples, seed 17). If no challenger clears every gate, the
+best baseline remains the provisional champion. Frozen V4 and the historical
+first V5 release decision retain their original 0.05 threshold for exact
+reproduction; they do not control a new V5 promotion. Candidate definitions,
+hyperparameters, profile budgets, seed and a SHA-256 are serialized in
+`candidate-manifest.json`.
 
 The payload also reports the provisional champion's 2023+ diagnostic. If its
 multiclass-log-loss regret versus that period's best model exceeds 0.05, model

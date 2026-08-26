@@ -64,6 +64,16 @@ FX_VARIANTS = (
     "v4_plus_all_fx",
 )
 V5_MULTISCALE_MODEL = "causal_multiscale_ensemble"
+V5_MINIMUM_PROMOTION_LOG_LOSS_IMPROVEMENT = 0.01
+V5_MAXIMUM_PROMOTION_BRIER_DEGRADATION = 0.01
+V5_MAXIMUM_PROMOTION_ALPHA = 0.05
+# The only reviewed V5 publication produced before the 0.01 promotion policy
+# took effect.  The digest is over the decoded payload serialized as canonical
+# JSON, so whitespace and object-key order do not affect the identity while any
+# semantic change does.
+V5_LEGACY_REVIEWED_005_SNAPSHOT_SHA256 = (
+    "3fb67126917d6f0ec178de01d9aebc7698476921d1b4d183b2dd0da50e992704"
+)
 V5_FORECAST_COMPARISON_MODELS = (
     "markov",
     "xgboost",
@@ -1052,6 +1062,8 @@ def _validate_evidence_artifacts(model: Mapping[str, Any]) -> int:
 def _validate_research_artifacts(
     model: Mapping[str, Any],
     directional: Mapping[str, Any],
+    *,
+    mode: str,
 ) -> None:
     context = "payload.model.research_artifacts"
     artifacts = _mapping(_require(model, "research_artifacts", "payload.model"), context)
@@ -1086,7 +1098,12 @@ def _validate_research_artifacts(
         counts[key] = _integer(
             item["row_count"],
             f"{item_context}.row_count",
-            minimum=0 if key == "fx_ablation_oos" else 1,
+            minimum=(
+                0
+                if key == "fx_ablation_oos"
+                or (key == "model_conditioned_asset_outcomes" and mode == "demo")
+                else 1
+            ),
         )
         _sha256(item["sha256"], f"{item_context}.sha256")
 
@@ -1504,14 +1521,12 @@ def _validate_model(model: Any, *, mode: str) -> int:
     if "feature_quality_artifact" in model:
         _validate_feature_quality_artifact(model)
     _validate_v5_core_candidate_contract(model, profile=str(model_profile))
-    _validate_research_artifacts(model, directional)
+    _validate_research_artifacts(model, directional, mode=mode)
     return _validate_evidence_artifacts(model)
 
 
-def _validate_forecast_comparison(model: Mapping[str, Any]) -> tuple[str, ...] | None:
-    raw = model.get("forecast_comparison")
-    if raw is None:
-        return None
+def _validate_forecast_comparison(model: Mapping[str, Any]) -> tuple[str, ...]:
+    raw = _require(model, "forecast_comparison", "payload.model")
     context = "payload.model.forecast_comparison"
     comparison = _mapping(raw, context)
     if set(comparison) != {"role", "horizon_weeks", "models"}:
@@ -1601,14 +1616,336 @@ def _validate_model_forecasts(
         )
 
 
+def _validate_selected_gate_evidence(
+    row: Mapping[str, Any],
+    *,
+    context: str,
+) -> None:
+    if row.get("gate_passed") is not True or row.get("gate_reason") != "passed":
+        raise V5ContractError(f"{context} selected model must have passed its gate")
+
+    model_name = _require(row, "model", context)
+    reference_model = _require(row, "reference_model", context)
+    if not isinstance(model_name, str) or not model_name:
+        raise V5ContractError(f"{context}.model must be non-empty")
+    if not isinstance(reference_model, str) or not reference_model:
+        raise V5ContractError(f"{context}.reference_model must be non-empty")
+
+    log_loss = _number(
+        _require(row, "log_loss", context),
+        f"{context}.log_loss",
+        minimum=0.0,
+    )
+    reference_log_loss = _number(
+        _require(row, "reference_log_loss", context),
+        f"{context}.reference_log_loss",
+        minimum=0.0,
+    )
+    improvement = _number(
+        _require(row, "absolute_log_loss_improvement", context),
+        f"{context}.absolute_log_loss_improvement",
+    )
+    brier = _number(
+        _require(row, "brier", context),
+        f"{context}.brier",
+        minimum=0.0,
+    )
+    reference_brier = _number(
+        _require(row, "reference_brier", context),
+        f"{context}.reference_brier",
+        minimum=0.0,
+    )
+    brier_difference = _number(
+        _require(row, "brier_difference", context),
+        f"{context}.brier_difference",
+    )
+    if not math.isclose(
+        improvement,
+        reference_log_loss - log_loss,
+        abs_tol=1e-10,
+        rel_tol=0.0,
+    ):
+        raise V5ContractError(f"{context}.absolute_log_loss_improvement is inconsistent")
+    if not math.isclose(
+        brier_difference,
+        brier - reference_brier,
+        abs_tol=1e-10,
+        rel_tol=0.0,
+    ):
+        raise V5ContractError(f"{context}.brier_difference is inconsistent")
+
+    fallback_count = _integer(
+        _require(row, "fallback_count", context),
+        f"{context}.fallback_count",
+    )
+    if fallback_count != 0:
+        raise V5ContractError(f"{context}.fallback_count must be zero")
+    _integer(
+        _require(row, "n_predictions", context),
+        f"{context}.n_predictions",
+        minimum=1,
+    )
+    block_weeks = _integer(
+        _require(row, "bootstrap_block_weeks", context),
+        f"{context}.bootstrap_block_weeks",
+        minimum=1,
+    )
+    effective_block_weeks = _integer(
+        _require(row, "bootstrap_effective_block_weeks", context),
+        f"{context}.bootstrap_effective_block_weeks",
+        minimum=1,
+    )
+    if block_weeks != 13 or effective_block_weeks > block_weeks:
+        raise V5ContractError(f"{context} bootstrap block contract is invalid")
+    if (
+        _integer(
+            _require(row, "bootstrap_resamples", context),
+            f"{context}.bootstrap_resamples",
+            minimum=1,
+        )
+        != 1_999
+        or _integer(
+            _require(row, "bootstrap_seed", context),
+            f"{context}.bootstrap_seed",
+        )
+        != 17
+    ):
+        raise V5ContractError(f"{context} bootstrap contract is invalid")
+
+    alpha = _number(
+        _require(row, "alpha", context),
+        f"{context}.alpha",
+        minimum=0.0,
+        maximum=V5_MAXIMUM_PROMOTION_ALPHA,
+    )
+    if alpha <= 0.0:
+        raise V5ContractError(f"{context}.alpha must be positive")
+    minimum_improvement = _number(
+        _require(row, "minimum_log_loss_improvement", context),
+        f"{context}.minimum_log_loss_improvement",
+        minimum=V5_MINIMUM_PROMOTION_LOG_LOSS_IMPROVEMENT,
+    )
+    if not any(
+        math.isclose(
+            minimum_improvement,
+            allowed,
+            abs_tol=1e-12,
+            rel_tol=0.0,
+        )
+        for allowed in (0.01, 0.05)
+    ):
+        raise V5ContractError(
+            f"{context}.minimum_log_loss_improvement is not an approved threshold"
+        )
+    brier_tolerance = _number(
+        _require(row, "brier_tolerance", context),
+        f"{context}.brier_tolerance",
+        minimum=0.0,
+        maximum=V5_MAXIMUM_PROMOTION_BRIER_DEGRADATION,
+    )
+
+    if model_name == reference_model:
+        if (
+            not math.isclose(improvement, 0.0, abs_tol=1e-10, rel_tol=0.0)
+            or not math.isclose(brier_difference, 0.0, abs_tol=1e-10, rel_tol=0.0)
+            or row.get("raw_p_value") is not None
+            or row.get("holm_adjusted_p_value") is not None
+        ):
+            raise V5ContractError(f"{context} reference-model gate evidence is invalid")
+        return
+
+    raw_p_value = _number(
+        _require(row, "raw_p_value", context),
+        f"{context}.raw_p_value",
+        minimum=0.0,
+        maximum=1.0,
+    )
+    adjusted_p_value = _number(
+        _require(row, "holm_adjusted_p_value", context),
+        f"{context}.holm_adjusted_p_value",
+        minimum=0.0,
+        maximum=1.0,
+    )
+    if (
+        improvement + 1e-12 < minimum_improvement
+        or adjusted_p_value > alpha + 1e-12
+        or adjusted_p_value + 1e-12 < raw_p_value
+        or brier_difference > brier_tolerance + 1e-12
+    ):
+        raise V5ContractError(f"{context} selected challenger gate evidence is invalid")
+
+
+def validate_v5_champion_selection_evidence(model: Mapping[str, Any]) -> str:
+    """Bind the declared champion to one audited selection-gate decision."""
+
+    champion = _require(model, "champion", "payload.model")
+    if not isinstance(champion, str) or not champion:
+        raise V5ContractError("payload.model.champion must be non-empty")
+
+    leaderboard = _sequence(
+        _require(model, "leaderboard", "payload.model"),
+        "payload.model.leaderboard",
+        nonempty=True,
+    )
+    selected_leaderboard: list[str] = []
+    champion_leaderboard: list[str] = []
+    leaderboard_names: set[str] = set()
+    for index, raw in enumerate(leaderboard):
+        context = f"payload.model.leaderboard[{index}]"
+        row = _mapping(raw, context)
+        name = _require(row, "name", context)
+        if not isinstance(name, str) or not name:
+            raise V5ContractError(f"{context}.name must be non-empty")
+        if name in leaderboard_names:
+            raise V5ContractError(f"{context}.name must be unique")
+        leaderboard_names.add(name)
+        if not isinstance(row.get("selected"), bool) or not isinstance(
+            row.get("is_champion"), bool
+        ):
+            raise V5ContractError(
+                f"{context}.selected/is_champion must be boolean"
+            )
+        if row["selected"] != row["is_champion"]:
+            raise V5ContractError(f"{context}.selected/is_champion must agree")
+        if row["selected"]:
+            selected_leaderboard.append(name)
+        if row["is_champion"]:
+            champion_leaderboard.append(name)
+    if selected_leaderboard != [champion] or champion_leaderboard != [champion]:
+        raise V5ContractError(
+            "payload.model.leaderboard must select exactly the declared champion"
+        )
+
+    diagnostics = _sequence(
+        _require(model, "selection_diagnostics", "payload.model"),
+        "payload.model.selection_diagnostics",
+        nonempty=True,
+    )
+    selected_diagnostics: list[tuple[str, Mapping[str, Any], str]] = []
+    diagnostic_rows: dict[str, tuple[Mapping[str, Any], str]] = {}
+    reference_models: set[str] = set()
+    for index, raw in enumerate(diagnostics):
+        context = f"payload.model.selection_diagnostics[{index}]"
+        row = _mapping(raw, context)
+        name = _require(row, "model", context)
+        if not isinstance(name, str) or not name:
+            raise V5ContractError(f"{context}.model must be non-empty")
+        if name in diagnostic_rows:
+            raise V5ContractError(f"{context}.model must be unique")
+        diagnostic_rows[name] = (row, context)
+        reference_model = _require(row, "reference_model", context)
+        if not isinstance(reference_model, str) or not reference_model:
+            raise V5ContractError(f"{context}.reference_model must be non-empty")
+        reference_models.add(reference_model)
+        if not isinstance(row.get("selected"), bool) or not isinstance(
+            row.get("gate_passed"), bool
+        ):
+            raise V5ContractError(f"{context}.selected/gate_passed must be boolean")
+        if row["selected"]:
+            selected_diagnostics.append((name, row, context))
+    if len(selected_diagnostics) != 1 or selected_diagnostics[0][0] != champion:
+        raise V5ContractError(
+            "payload.model.selection_diagnostics must select exactly the declared "
+            "champion"
+        )
+    if len(reference_models) != 1:
+        raise V5ContractError(
+            "payload.model.selection_diagnostics reference model is inconsistent"
+        )
+    reference_model = next(iter(reference_models))
+    if reference_model not in diagnostic_rows or reference_model not in leaderboard_names:
+        raise V5ContractError(
+            "payload.model.selection_diagnostics reference model is missing"
+        )
+
+    selected_row, selected_context = (
+        selected_diagnostics[0][1],
+        selected_diagnostics[0][2],
+    )
+    reference_row, reference_context = diagnostic_rows[reference_model]
+    _validate_selected_gate_evidence(selected_row, context=selected_context)
+    if selected_row is not reference_row:
+        _validate_selected_gate_evidence(reference_row, context=reference_context)
+        metric_bindings = (
+            ("reference_log_loss", "log_loss"),
+            ("reference_brier", "brier"),
+            ("n_predictions", "n_predictions"),
+            ("bootstrap_block_weeks", "bootstrap_block_weeks"),
+            ("bootstrap_effective_block_weeks", "bootstrap_effective_block_weeks"),
+            ("bootstrap_resamples", "bootstrap_resamples"),
+            ("bootstrap_seed", "bootstrap_seed"),
+            ("alpha", "alpha"),
+            ("minimum_log_loss_improvement", "minimum_log_loss_improvement"),
+            ("brier_tolerance", "brier_tolerance"),
+        )
+        for selected_field, reference_field in metric_bindings:
+            if selected_row.get(selected_field) != reference_row.get(reference_field):
+                raise V5ContractError(
+                    f"{selected_context}.{selected_field} differs from reference "
+                    "model evidence"
+                )
+    return champion
+
+
+def _canonical_payload_sha256(payload: Mapping[str, Any]) -> str:
+    try:
+        raw = json.dumps(
+            payload,
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise V5ContractError("payload cannot be canonicalized") from exc
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _validate_reviewed_selection_threshold(
+    model: Mapping[str, Any],
+    *,
+    expected: float,
+) -> None:
+    diagnostics = _sequence(
+        _require(model, "selection_diagnostics", "payload.model"),
+        "payload.model.selection_diagnostics",
+        nonempty=True,
+    )
+    for index, raw in enumerate(diagnostics):
+        context = f"payload.model.selection_diagnostics[{index}]"
+        row = _mapping(raw, context)
+        threshold = _number(
+            _require(row, "minimum_log_loss_improvement", context),
+            f"{context}.minimum_log_loss_improvement",
+            minimum=0.0,
+        )
+        if not math.isclose(threshold, expected, abs_tol=1e-12, rel_tol=0.0):
+            raise V5ContractError(
+                "reviewed V5 publication selection threshold must be exactly "
+                f"{expected:.2f}"
+            )
+
+
 def _validate_publication_review(
     meta: Mapping[str, Any],
     model: Mapping[str, Any],
     *,
     mode: str,
+    payload: Mapping[str, Any] | None = None,
 ) -> None:
     status = meta.get("publication_status")
     review = meta.get("publication_review")
+    champion = validate_v5_champion_selection_evidence(model)
+    is_legacy_reviewed_snapshot = (
+        status == V5_PUBLICATION_STATUS
+        and payload is not None
+        and _canonical_payload_sha256(payload)
+        == V5_LEGACY_REVIEWED_005_SNAPSHOT_SHA256
+    )
+    _validate_reviewed_selection_threshold(
+        model,
+        expected=(0.05 if is_legacy_reviewed_snapshot else 0.01),
+    )
     if status is None:
         if review is not None:
             raise V5ContractError(
@@ -1643,79 +1980,18 @@ def _validate_publication_review(
         review.get("reviewed_candidate_sha256"),
         "payload.meta.publication_review.reviewed_candidate_sha256",
     )
-    if model.get("champion") != "markov" or review.get("champion") != "markov":
+    if review.get("champion") != champion:
         raise V5ContractError(
-            "reviewed V5 publication must retain the Markov champion"
+            "payload.meta.publication_review.champion must match payload.model.champion"
         )
-    if review.get("multiscale_promoted") is not False:
+    expected_multiscale_promotion = champion == V5_MULTISCALE_MODEL
+    if review.get("multiscale_promoted") is not expected_multiscale_promotion:
         raise V5ContractError(
-            "payload.meta.publication_review.multiscale_promoted must be false"
+            "payload.meta.publication_review.multiscale_promoted is inconsistent"
         )
     if review.get("fx_promoted") is not False:
         raise V5ContractError(
             "payload.meta.publication_review.fx_promoted must be false"
-        )
-
-    leaderboard = _sequence(
-        _require(model, "leaderboard", "payload.model"),
-        "payload.model.leaderboard",
-        nonempty=True,
-    )
-    selected_leaderboard: list[str] = []
-    champion_leaderboard: list[str] = []
-    for index, raw in enumerate(leaderboard):
-        context = f"payload.model.leaderboard[{index}]"
-        row = _mapping(raw, context)
-        name = _require(row, "name", context)
-        if not isinstance(name, str) or not name:
-            raise V5ContractError(f"{context}.name must be non-empty")
-        if not isinstance(row.get("selected"), bool) or not isinstance(
-            row.get("is_champion"), bool
-        ):
-            raise V5ContractError(
-                f"{context}.selected/is_champion must be boolean"
-            )
-        if row["selected"]:
-            selected_leaderboard.append(name)
-        if row["is_champion"]:
-            champion_leaderboard.append(name)
-    if selected_leaderboard != ["markov"] or champion_leaderboard != ["markov"]:
-        raise V5ContractError(
-            "reviewed V5 leaderboard must select exactly one Markov champion"
-        )
-
-    diagnostics = _sequence(
-        _require(model, "selection_diagnostics", "payload.model"),
-        "payload.model.selection_diagnostics",
-        nonempty=True,
-    )
-    selected_diagnostics: list[str] = []
-    multiscale_rows = 0
-    for index, raw in enumerate(diagnostics):
-        context = f"payload.model.selection_diagnostics[{index}]"
-        row = _mapping(raw, context)
-        name = _require(row, "model", context)
-        if not isinstance(name, str) or not name:
-            raise V5ContractError(f"{context}.model must be non-empty")
-        if not isinstance(row.get("selected"), bool) or not isinstance(
-            row.get("gate_passed"), bool
-        ):
-            raise V5ContractError(f"{context}.selected/gate_passed must be boolean")
-        if row["selected"]:
-            if row["gate_passed"] is not True:
-                raise V5ContractError(
-                    f"{context} selected model must have passed its gate"
-                )
-            selected_diagnostics.append(name)
-        if name == V5_MULTISCALE_MODEL:
-            multiscale_rows += 1
-            if row["selected"] is not False or row["gate_passed"] is not False:
-                raise V5ContractError(
-                    "reviewed V5 Multiscale diagnostic must remain non-promoted"
-                )
-    if selected_diagnostics != ["markov"] or multiscale_rows != 1:
-        raise V5ContractError(
-            "reviewed V5 selection diagnostics must select Markov and retain Multiscale"
         )
 
 
@@ -1835,7 +2111,7 @@ def _validate_conditional_stats(value: Any, *, expected_resamples: int) -> None:
 def _validate_model_conditioned_stats(
     value: Any,
     *,
-    expected_models: tuple[str, ...] | None,
+    expected_models: tuple[str, ...],
     expected_resamples: int,
     model: Mapping[str, Any],
 ) -> None:
@@ -1847,14 +2123,8 @@ def _validate_model_conditioned_stats(
     )
     artifact_keys = set(artifacts)
     if raw is None:
-        if artifact_keys & OPTIONAL_RESEARCH_ARTIFACT_KEYS:
-            raise V5ContractError(
-                "model-conditioned artifacts require public derived statistics"
-            )
-        return
-    if expected_models is None:
         raise V5ContractError(
-            "model-conditioned statistics require forecast comparison metadata"
+            "payload.research.model_conditioned_asset_stats is required"
         )
     if not OPTIONAL_RESEARCH_ARTIFACT_KEYS.issubset(artifact_keys):
         raise V5ContractError(
@@ -2022,7 +2292,7 @@ def validate_v5_payload(payload: Mapping[str, Any]) -> None:
     model = _mapping(_require(payload, "model", "payload"), "payload.model")
     evidence_week_count = _validate_model(model, mode=str(mode))
     forecast_comparison_models = _validate_forecast_comparison(model)
-    _validate_publication_review(meta, model, mode=str(mode))
+    _validate_publication_review(meta, model, mode=str(mode), payload=payload)
 
     weekly = _sequence(_require(payload, "weekly", "payload"), "payload.weekly", nonempty=True)
     previous: date | None = None
@@ -2039,20 +2309,14 @@ def validate_v5_payload(payload: Mapping[str, Any]) -> None:
         )
         if (forecast_date - origin).days != 7:
             raise V5ContractError(f"{context}.next_week.date is inconsistent")
-        if forecast_comparison_models is None:
-            if "model_forecasts" in row:
-                raise V5ContractError(
-                    f"{context}.model_forecasts requires model forecast_comparison metadata"
-                )
-        else:
-            _validate_model_forecasts(
-                _require(row, "model_forecasts", context),
-                f"{context}.model_forecasts",
-                origin=origin,
-                models=forecast_comparison_models,
-                champion=str(model["champion"]),
-                official=_mapping(row["next_week"], f"{context}.next_week"),
-            )
+        _validate_model_forecasts(
+            _require(row, "model_forecasts", context),
+            f"{context}.model_forecasts",
+            origin=origin,
+            models=forecast_comparison_models,
+            champion=str(model["champion"]),
+            official=_mapping(row["next_week"], f"{context}.next_week"),
+        )
         departure = _validate_transition_risk(
             _require(row, "transition_risk", context),
             f"{context}.transition_risk",
@@ -2259,10 +2523,15 @@ __all__ = [
     "V5_FEATURE_SET_VERSION",
     "V5_FORECAST_COMPARISON_MODELS",
     "V5_LABEL_VERSION",
+    "V5_MAXIMUM_PROMOTION_ALPHA",
+    "V5_MAXIMUM_PROMOTION_BRIER_DEGRADATION",
+    "V5_MINIMUM_PROMOTION_LOG_LOSS_IMPROVEMENT",
     "V5_MODEL_VERSION",
+    "V5_MULTISCALE_MODEL",
     "V5_PUBLICATION_REVIEW_SCHEMA",
     "V5_PUBLICATION_STATUS",
     "V5_RESULT_VERSION",
     "V5_SCHEMA_VERSION",
+    "validate_v5_champion_selection_evidence",
     "validate_v5_payload",
 ]

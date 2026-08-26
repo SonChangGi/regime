@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 from pathlib import Path
 import re
 from typing import Any
 
+from regime_lab.contract_v5 import V5_LEGACY_REVIEWED_005_SNAPSHOT_SHA256
 from regime_lab.frozen_v4 import (
     FROZEN_V4_BASELINE,
     FROZEN_V4_INVENTORY_FILE_COUNT,
@@ -82,6 +84,20 @@ class PublicContractError(RuntimeError):
 
 def _sha256(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
+
+
+def _canonical_payload_sha256(payload: dict[str, Any]) -> str:
+    try:
+        raw = json.dumps(
+            payload,
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise PublicContractError("V5 payload cannot be canonicalized") from exc
+    return _sha256(raw)
 
 
 def _normalized_key(value: object) -> str:
@@ -851,23 +867,50 @@ def _validate_multiscale_comparison(
         comparison["selection_gate_crosscheck"],
         context=f"{context}.selection_gate_crosscheck",
     )
+    artifact_role = gate.get("artifact_role")
+    if artifact_role == "selection_only_existing_champion_gate":
+        if (
+            _canonical_payload_sha256(payload)
+            != V5_LEGACY_REVIEWED_005_SNAPSHOT_SHA256
+        ):
+            raise PublicContractError(
+                "legacy V5 comparison gate is restricted to the exact reviewed "
+                "0.05 snapshot"
+            )
+        gate_field = "pairwise_gate_against_markov"
+    elif artifact_role == "selection_family_independently_recomputed":
+        gate_field = "multiscale_gate_against_selection_reference"
+    else:
+        raise PublicContractError("V5 comparison Multiscale gate identity is invalid")
     _require_exact_keys(
         gate,
-        {"artifact_role", "models", "pairwise_gate_against_markov"},
+        {"artifact_role", "models", gate_field},
         context=f"{context}.selection_gate_crosscheck",
     )
-    if (
-        gate.get("artifact_role") != "selection_only_existing_champion_gate"
-        or gate.get("pairwise_gate_against_markov") is not False
-    ):
+    if type(gate.get(gate_field)) is not bool:
         raise PublicContractError("V5 comparison Multiscale gate identity is invalid")
     gate_models = _require_object(
         gate.get("models"),
         context=f"{context}.selection_gate_crosscheck.models",
     )
+    champion = model.get("champion")
+    if not isinstance(champion, str) or champion not in diagnostics:
+        raise PublicContractError("V5 payload champion selection diagnostics are missing")
+    champion_reference = diagnostics[champion].get("reference_model")
+    if (
+        not isinstance(champion_reference, str)
+        or champion_reference not in diagnostics
+    ):
+        raise PublicContractError("V5 payload champion reference diagnostics are missing")
+    required_gate_models = {
+        "causal_multiscale_ensemble",
+        "markov",
+        champion,
+        champion_reference,
+    }
     _require_exact_keys(
         gate_models,
-        {"causal_multiscale_ensemble", "markov"},
+        required_gate_models,
         context=f"{context}.selection_gate_crosscheck.models",
     )
     gate_fields = {
@@ -881,7 +924,7 @@ def _validate_multiscale_comparison(
         "reference_model",
         "selected",
     }
-    for name in ("causal_multiscale_ensemble", "markov"):
+    for name in sorted(required_gate_models):
         row_context = f"{context}.selection_gate_crosscheck.models.{name}"
         row = _require_object(gate_models[name], context=row_context)
         _require_exact_keys(row, gate_fields, context=row_context)
@@ -904,6 +947,71 @@ def _validate_multiscale_comparison(
                 payload_row.get(field),
                 context=f"{row_context}.{field}",
             )
+    if (
+        gate_models[champion].get("selected") is not True
+        or gate_models[champion].get("gate_passed") is not True
+        or gate_models[champion].get("reference_model") != champion_reference
+    ):
+        raise PublicContractError(
+            "V5 comparison gate does not bind the selected champion to its reference"
+        )
+    if (
+        artifact_role == "selection_only_existing_champion_gate"
+        and diagnostics["causal_multiscale_ensemble"].get("reference_model")
+        != "markov"
+    ):
+        raise PublicContractError(
+            "legacy V5 comparison Multiscale gate is not a Markov comparison"
+        )
+    if (
+        gate[gate_field]
+        is not gate_models["causal_multiscale_ensemble"]["gate_passed"]
+    ):
+        raise PublicContractError(
+            "V5 comparison Multiscale selection-reference gate does not match selection diagnostics"
+        )
+
+
+def _validate_champion_selection_evidence(payload: dict[str, Any]) -> None:
+    """Bind the public sidecar to the payload's data-selected champion."""
+
+    model = _require_object(payload.get("model"), context="V5 payload.model")
+    champion = model.get("champion")
+    if not isinstance(champion, str) or not champion:
+        raise PublicContractError("V5 payload champion is invalid")
+
+    leaderboard = _index_named_rows(
+        model.get("leaderboard"),
+        name_field="name",
+        context="V5 payload leaderboard",
+    )
+    selected_leaderboard = [
+        name
+        for name, row in leaderboard.items()
+        if row.get("selected") is True
+    ]
+    champion_leaderboard = [
+        name for name, row in leaderboard.items() if row.get("is_champion") is True
+    ]
+    if selected_leaderboard != [champion] or champion_leaderboard != [champion]:
+        raise PublicContractError(
+            "V5 payload leaderboard does not select exactly its champion"
+        )
+
+    diagnostics = _index_named_rows(
+        model.get("selection_diagnostics"),
+        name_field="model",
+        context="V5 payload selection diagnostics",
+    )
+    selected_diagnostics = [
+        name for name, row in diagnostics.items() if row.get("selected") is True
+    ]
+    if selected_diagnostics != [champion]:
+        raise PublicContractError(
+            "V5 payload selection diagnostics do not select exactly its champion"
+        )
+    if diagnostics[champion].get("gate_passed") is not True:
+        raise PublicContractError("V5 payload champion did not pass its selection gate")
 
 
 def validate_v5_comparison_sidecar(
@@ -941,6 +1049,7 @@ def validate_v5_comparison_sidecar(
     if report.get("comparison_contract") != expected_contract:
         raise PublicContractError("V5 comparison matching contract is invalid")
     _validate_v5_comparison_inputs(report, payload, payload_raw)
+    _validate_champion_selection_evidence(payload)
     _validate_fx_comparison(report.get("fx_ablation"), payload=payload)
     _validate_multiscale_comparison(
         report.get("v5_causal_multiscale_ensemble_vs_v5_markov"),

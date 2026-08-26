@@ -232,8 +232,17 @@ def test_v5_composer_changes_semantics_without_allocation_output() -> None:
     baseline = dict(FROZEN_V4_BASELINE)
     prereg_sha = hashlib.sha256(b"preregistered-v5").hexdigest()
 
+    source_payload = _v4_payload(index, states)
+    source_payload["model"]["forecast_comparison"] = {
+        "role": "research_comparison",
+        "horizon_weeks": 1,
+        "models": list(V5_FORECAST_COMPARISON_MODELS),
+    }
+    for week in source_payload["weekly"]:
+        week["model_forecasts"] = _model_forecasts(week["next_week"])
+
     payload, conditional = build_v5_payload(
-        _v4_payload(index, states),
+        source_payload,
         canonical=canonical,
         features=features,
         states=states,
@@ -243,14 +252,6 @@ def test_v5_composer_changes_semantics_without_allocation_output() -> None:
         duration_bootstrap_resamples=1,
         outcome_bootstrap_resamples=1,
     )
-    payload["model"]["forecast_comparison"] = {
-        "role": "research_comparison",
-        "horizon_weeks": 1,
-        "models": list(V5_FORECAST_COMPARISON_MODELS),
-    }
-    for week in payload["weekly"]:
-        week["model_forecasts"] = _model_forecasts(week["next_week"])
-
     core_paths = {
         "oos_predictions": "oos-predictions.csv",
         "model_leaderboard": "model-leaderboard.csv",
@@ -322,6 +323,35 @@ def test_v5_composer_changes_semantics_without_allocation_output() -> None:
             "sha256": "e" * 64,
         },
     }
+    for row in payload["model"]["leaderboard"]:
+        row["selected"] = row["name"] == "markov"
+        row["is_champion"] = row["name"] == "markov"
+    payload["model"]["selection_diagnostics"] = [
+        {
+            "model": "markov",
+            "reference_model": "markov",
+            "selected": True,
+            "gate_passed": True,
+            "gate_reason": "passed",
+            "log_loss": 0.36,
+            "reference_log_loss": 0.36,
+            "absolute_log_loss_improvement": 0.0,
+            "brier": 0.18,
+            "reference_brier": 0.18,
+            "brier_difference": 0.0,
+            "fallback_count": 0,
+            "raw_p_value": None,
+            "holm_adjusted_p_value": None,
+            "n_predictions": 1,
+            "bootstrap_block_weeks": 13,
+            "bootstrap_effective_block_weeks": 1,
+            "bootstrap_resamples": 1_999,
+            "bootstrap_seed": 17,
+            "alpha": 0.05,
+            "minimum_log_loss_improvement": 0.01,
+            "brier_tolerance": 0.01,
+        }
+    ]
 
     validate_v5_payload(payload)
     assert payload["meta"]["schema_version"] == "2.0.0"

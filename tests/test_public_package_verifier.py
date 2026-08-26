@@ -453,7 +453,7 @@ def _v5_report(payload: Path) -> dict:
                 right=holdout["markov"],
             ),
             "selection_gate_crosscheck": {
-                "artifact_role": "selection_only_existing_champion_gate",
+                "artifact_role": "selection_family_independently_recomputed",
                 "models": {
                     name: {
                         field: row[field]
@@ -471,7 +471,7 @@ def _v5_report(payload: Path) -> dict:
                     | {"matched_metric_crosscheck": True}
                     for name, row in selection.items()
                 },
-                "pairwise_gate_against_markov": False,
+                "multiscale_gate_against_selection_reference": False,
             },
         },
         "v5_markov_vs_frozen_v4_markov": {

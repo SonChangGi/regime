@@ -317,7 +317,8 @@ BOOTSTRAP_BLOCK_WEEKS = 13
 BOOTSTRAP_RESAMPLES = 1_999
 BOOTSTRAP_SEED = 17
 SELECTION_ALPHA = 0.05
-MINIMUM_LOG_LOSS_IMPROVEMENT = 0.05
+ALLOWED_LOG_LOSS_IMPROVEMENT_THRESHOLDS = (0.01, 0.05)
+DIRECTIONAL_MINIMUM_LOG_LOSS_IMPROVEMENT = 0.05
 BRIER_TOLERANCE = 0.01
 
 
@@ -2504,7 +2505,22 @@ def bootstrap_pvalues(improvements: dict[str, np.ndarray]) -> tuple[dict[str, fl
 def choose_selection_champion(
     metrics: pd.DataFrame,
     predictions: pd.DataFrame,
+    *,
+    minimum_log_loss_improvement: float,
 ) -> tuple[str, pd.DataFrame]:
+    require(
+        np.isfinite(minimum_log_loss_improvement)
+        and any(
+            np.isclose(
+                minimum_log_loss_improvement,
+                allowed,
+                atol=1e-12,
+                rtol=0.0,
+            )
+            for allowed in ALLOWED_LOG_LOSS_IMPROVEMENT_THRESHOLDS
+        ),
+        "selection minimum log-loss improvement is invalid",
+    )
     baselines = [name for name in BASELINES if name in metrics.index]
     require(bool(baselines), "no probability baseline for selection audit")
     baseline_table = metrics.loc[baselines].copy()
@@ -2531,7 +2547,7 @@ def choose_selection_champion(
         if model not in BASELINES:
             if int(row["fallback_count"]) != 0:
                 failures.append("fallback_present")
-            if improvement + 1e-12 < MINIMUM_LOG_LOSS_IMPROVEMENT:
+            if improvement + 1e-12 < minimum_log_loss_improvement:
                 failures.append("insufficient_log_loss_improvement")
             if adjusted[model] > SELECTION_ALPHA:
                 failures.append("holm_not_significant")
@@ -2563,7 +2579,7 @@ def choose_selection_champion(
                 "bootstrap_resamples": BOOTSTRAP_RESAMPLES,
                 "bootstrap_seed": BOOTSTRAP_SEED,
                 "alpha": SELECTION_ALPHA,
-                "minimum_log_loss_improvement": MINIMUM_LOG_LOSS_IMPROVEMENT,
+                "minimum_log_loss_improvement": minimum_log_loss_improvement,
                 "brier_tolerance": BRIER_TOLERANCE,
             }
         )
@@ -2582,6 +2598,50 @@ def choose_selection_champion(
     diagnostics = pd.DataFrame(rows)
     diagnostics["selected"] = diagnostics["model"].eq(champion)
     return champion, diagnostics
+
+
+def selection_minimum_log_loss_improvement(
+    diagnostics: pd.DataFrame | Sequence[Mapping[str, Any]],
+    *,
+    context: str,
+) -> float:
+    if isinstance(diagnostics, pd.DataFrame):
+        require(
+            "minimum_log_loss_improvement" in diagnostics.columns,
+            f"{context} minimum_log_loss_improvement is missing",
+        )
+        values = pd.to_numeric(
+            diagnostics["minimum_log_loss_improvement"], errors="coerce"
+        ).to_numpy(dtype=float)
+    else:
+        try:
+            values = np.asarray(
+                [
+                    float(row.get("minimum_log_loss_improvement", np.nan))
+                    if isinstance(row, Mapping)
+                    else np.nan
+                    for row in diagnostics
+                ],
+                dtype=float,
+            )
+        except (TypeError, ValueError) as exc:
+            raise AuditFailure(
+                f"{context} minimum_log_loss_improvement is invalid"
+            ) from exc
+    require(
+        len(values) > 0 and np.isfinite(values).all(),
+        f"{context} minimum_log_loss_improvement is invalid",
+    )
+    threshold = float(values[0])
+    require(
+        np.allclose(values, threshold, atol=1e-12, rtol=0.0)
+        and any(
+            np.isclose(threshold, allowed, atol=1e-12, rtol=0.0)
+            for allowed in ALLOWED_LOG_LOSS_IMPROVEMENT_THRESHOLDS
+        ),
+        f"{context} minimum_log_loss_improvement is inconsistent",
+    )
+    return threshold
 
 
 def validate_probability_object(value: Any, context: str) -> None:
@@ -4240,9 +4300,14 @@ def _audit_v5_core_model(
 
     selection_metrics = probability_metrics(selection)
     holdout_metrics = probability_metrics(holdout)
+    selection_threshold = selection_minimum_log_loss_improvement(
+        diagnostics,
+        context="v5 core selection diagnostics",
+    )
     expected_champion, expected_diagnostics = choose_selection_champion(
         selection_metrics,
         selection,
+        minimum_log_loss_improvement=selection_threshold,
     )
     require(
         expected_champion == champion,
@@ -4414,20 +4479,7 @@ def _audit_v5_model_forecasts(
     )
     comparison = model.get("forecast_comparison")
     if comparison is None:
-        require(
-            all(
-                isinstance(week, Mapping) and "model_forecasts" not in week
-                for week in weekly
-            ),
-            "v5 model forecasts require forecast_comparison metadata",
-        )
-        return {
-            "status": "absent",
-            "models": 0,
-            "weeks": 0,
-            "historical_rows": 0,
-            "latest_rows": 0,
-        }
+        raise AuditFailure("v5 model forecast comparison metadata is required")
 
     context = "v5 model forecast comparison"
     require(isinstance(comparison, Mapping), f"{context} metadata is invalid")
@@ -5048,7 +5100,10 @@ def _v5_select_directional_horizon(
         if model_name not in V5_DIRECTIONAL_BASELINES:
             if int(row["fallback_count"]) != 0:
                 failures.append("fallback_present")
-            if improvements[model_name] < MINIMUM_LOG_LOSS_IMPROVEMENT:
+            if (
+                improvements[model_name]
+                < DIRECTIONAL_MINIMUM_LOG_LOSS_IMPROVEMENT
+            ):
                 failures.append("insufficient_log_loss_improvement")
             if float(row["brier"]) > float(baseline["brier"]) + BRIER_TOLERANCE:
                 failures.append("brier_degradation")
@@ -8347,8 +8402,24 @@ def audit(payload_path: Path, artifacts: Path, expected_mode: str) -> dict[str, 
                 "holdout target before selection_end")
         selection_metrics = probability_metrics(selection)
         holdout_metrics = probability_metrics(holdout)
+        payload_selection_diagnostics = model_contract.get(
+            "selection_diagnostics"
+        )
+        require(
+            isinstance(payload_selection_diagnostics, list)
+            and payload_selection_diagnostics,
+            "payload selection diagnostics are missing",
+        )
+        selection_threshold = selection_minimum_log_loss_improvement(
+            payload_selection_diagnostics,
+            context="payload selection diagnostics",
+        )
         expected_champion, recomputed_selection_diagnostics = (
-            choose_selection_champion(selection_metrics, selection)
+            choose_selection_champion(
+                selection_metrics,
+                selection,
+                minimum_log_loss_improvement=selection_threshold,
+            )
         )
         published_segment = "holdout"
     else:

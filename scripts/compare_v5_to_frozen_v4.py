@@ -16,6 +16,10 @@ import re
 import tempfile
 from typing import Any, Mapping, Sequence
 
+import numpy as np
+
+from regime_lab.analysis.models import model_complexity_rank
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_V4_ARTIFACTS = PROJECT_ROOT / "artifacts/baselines/v4-20260821"
@@ -36,6 +40,13 @@ FX_VARIANTS = (
     "v4_plus_bilateral_panel",
     "v4_plus_all_fx",
 )
+SELECTION_BASELINE_MODELS = ("majority", "persistence", "markov")
+SELECTION_BOOTSTRAP_BLOCK_WEEKS = 13
+SELECTION_BOOTSTRAP_RESAMPLES = 1_999
+SELECTION_BOOTSTRAP_SEED = 17
+SELECTION_ALPHA = 0.05
+SELECTION_BRIER_TOLERANCE = 0.01
+SELECTION_SIMPLICITY_TOLERANCE = 0.01
 CORE_ARTIFACT_PATHS = {
     "oos_predictions": "oos-predictions.csv",
     "selection_diagnostics": "selection-diagnostics.csv",
@@ -166,6 +177,12 @@ def _finite_float(value: Any, *, context: str) -> float:
         raise ComparisonError(f"{context} must be numeric") from exc
     _require(math.isfinite(parsed), f"{context} must be finite")
     return parsed
+
+
+def _optional_finite_float(value: Any, *, context: str) -> float | None:
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    return _finite_float(value, context=context)
 
 
 def _aware_timestamp(value: str, *, context: str) -> datetime:
@@ -495,6 +512,7 @@ def _read_selection_diagnostics(path: Path) -> tuple[dict[str, dict[str, Any]], 
     required = {
         "model",
         "reference_model",
+        "is_reference",
         "selected",
         "gate_passed",
         "gate_reason",
@@ -505,7 +523,16 @@ def _read_selection_diagnostics(path: Path) -> tuple[dict[str, dict[str, Any]], 
         "reference_brier",
         "brier_difference",
         "fallback_count",
+        "raw_p_value",
+        "holm_adjusted_p_value",
         "n_predictions",
+        "bootstrap_block_weeks",
+        "bootstrap_effective_block_weeks",
+        "bootstrap_resamples",
+        "bootstrap_seed",
+        "alpha",
+        "minimum_log_loss_improvement",
+        "brier_tolerance",
     }
     with path.open("r", encoding="utf-8", newline="") as stream:
         reader = csv.DictReader(stream)
@@ -519,6 +546,7 @@ def _read_selection_diagnostics(path: Path) -> tuple[dict[str, dict[str, Any]], 
             row = {
                 "model": model,
                 "reference_model": str(raw["reference_model"]),
+                "is_reference": _parse_bool(raw["is_reference"], context=f"selection diagnostics line {line_number}.is_reference"),
                 "selected": _parse_bool(raw["selected"], context=f"selection diagnostics line {line_number}.selected"),
                 "gate_passed": _parse_bool(raw["gate_passed"], context=f"selection diagnostics line {line_number}.gate_passed"),
                 "gate_reason": str(raw["gate_reason"]),
@@ -529,7 +557,16 @@ def _read_selection_diagnostics(path: Path) -> tuple[dict[str, dict[str, Any]], 
                 "reference_brier": _finite_float(raw["reference_brier"], context=f"selection diagnostics line {line_number}.reference_brier"),
                 "brier_difference": _finite_float(raw["brier_difference"], context=f"selection diagnostics line {line_number}.brier_difference"),
                 "fallback_count": _integer(raw["fallback_count"], context=f"selection diagnostics line {line_number}.fallback_count"),
+                "raw_p_value": _optional_finite_float(raw["raw_p_value"], context=f"selection diagnostics line {line_number}.raw_p_value"),
+                "holm_adjusted_p_value": _optional_finite_float(raw["holm_adjusted_p_value"], context=f"selection diagnostics line {line_number}.holm_adjusted_p_value"),
                 "n_predictions": _integer(raw["n_predictions"], context=f"selection diagnostics line {line_number}.n_predictions", minimum=1),
+                "bootstrap_block_weeks": _integer(raw["bootstrap_block_weeks"], context=f"selection diagnostics line {line_number}.bootstrap_block_weeks", minimum=1),
+                "bootstrap_effective_block_weeks": _integer(raw["bootstrap_effective_block_weeks"], context=f"selection diagnostics line {line_number}.bootstrap_effective_block_weeks", minimum=1),
+                "bootstrap_resamples": _integer(raw["bootstrap_resamples"], context=f"selection diagnostics line {line_number}.bootstrap_resamples", minimum=1),
+                "bootstrap_seed": _integer(raw["bootstrap_seed"], context=f"selection diagnostics line {line_number}.bootstrap_seed"),
+                "alpha": _finite_float(raw["alpha"], context=f"selection diagnostics line {line_number}.alpha"),
+                "minimum_log_loss_improvement": _finite_float(raw["minimum_log_loss_improvement"], context=f"selection diagnostics line {line_number}.minimum_log_loss_improvement"),
+                "brier_tolerance": _finite_float(raw["brier_tolerance"], context=f"selection diagnostics line {line_number}.brier_tolerance"),
             }
             _require(
                 math.isclose(row["absolute_log_loss_improvement"], row["reference_log_loss"] - row["log_loss"], abs_tol=1e-12, rel_tol=0.0),
@@ -544,26 +581,427 @@ def _read_selection_diagnostics(path: Path) -> tuple[dict[str, dict[str, Any]], 
     return output, row_count
 
 
+def _selection_calibration_error(rows: Sequence[PredictionRow]) -> float:
+    _require(bool(rows), "selection calibration requires predictions")
+    correct_by_bin: list[list[float]] = [[] for _ in range(10)]
+    confidence_by_bin: list[list[float]] = [[] for _ in range(10)]
+    for row in rows:
+        probability = np.asarray(row.probabilities, dtype=float)
+        probability = np.clip(probability, 1e-9, 1.0)
+        probability /= probability.sum()
+        predicted_position = int(np.argmax(probability))
+        confidence = float(probability[predicted_position])
+        # Match the production top-label ECE bins: [0,.1], then (a,b].
+        bin_position = next(
+            index
+            for index in range(10)
+            if (confidence >= index / 10.0 if index == 0 else confidence > index / 10.0)
+            and confidence <= (index + 1) / 10.0
+        )
+        correct_by_bin[bin_position].append(
+            float(STATE_ORDER[predicted_position] == row.actual)
+        )
+        confidence_by_bin[bin_position].append(confidence)
+    total = len(rows)
+    return sum(
+        (len(correct) / total)
+        * abs(sum(correct) / len(correct) - sum(confidence) / len(confidence))
+        for correct, confidence in zip(
+            correct_by_bin,
+            confidence_by_bin,
+            strict=True,
+        )
+        if correct
+    )
+
+
+def _holm_adjusted_pvalues(pvalues: Mapping[str, float]) -> dict[str, float]:
+    ordered = sorted(pvalues.items(), key=lambda item: (item[1], item[0]))
+    adjusted: dict[str, float] = {}
+    running_maximum = 0.0
+    for rank, (model, pvalue) in enumerate(ordered):
+        candidate = min(1.0, float(pvalue) * (len(ordered) - rank))
+        running_maximum = max(running_maximum, candidate)
+        adjusted[model] = running_maximum
+    return adjusted
+
+
+def _selection_bootstrap_pvalues(
+    improvements: Mapping[str, np.ndarray],
+    *,
+    block_length: int,
+    resamples: int,
+    random_state: int,
+) -> tuple[dict[str, float], int]:
+    _require(bool(improvements), "selection family has no learned challengers")
+    lengths = {len(values) for values in improvements.values()}
+    _require(len(lengths) == 1, "selection paired loss lengths differ")
+    observation_count = lengths.pop()
+    _require(observation_count > 0, "selection family is empty")
+    effective_block = min(block_length, max(1, observation_count // 2))
+    blocks_per_sample = int(np.ceil(observation_count / effective_block))
+    generator = np.random.default_rng(random_state)
+    starts = generator.integers(
+        0,
+        observation_count,
+        size=(resamples, blocks_per_sample),
+    )
+    offsets = np.arange(effective_block)
+    indices = (starts[..., np.newaxis] + offsets) % observation_count
+    indices = indices.reshape(resamples, -1)[:, :observation_count]
+    output: dict[str, float] = {}
+    for model, differential in improvements.items():
+        _require(
+            np.isfinite(differential).all(),
+            f"selection paired losses are non-finite for {model}",
+        )
+        observed = float(differential.mean())
+        null_means = (differential - observed)[indices].mean(axis=1)
+        output[model] = float(
+            (1 + np.count_nonzero(null_means >= observed)) / (resamples + 1)
+        )
+    return output, effective_block
+
+
+def _validate_payload_selection_diagnostics(
+    payload: Mapping[str, Any],
+    diagnostics: Mapping[str, Mapping[str, Any]],
+) -> None:
+    model = payload.get("model")
+    _require(isinstance(model, Mapping), "V5 payload.model is missing")
+    supplied = model.get("selection_diagnostics")
+    _require(isinstance(supplied, list) and supplied, "V5 payload selection diagnostics are missing")
+    supplied_by_model: dict[str, Mapping[str, Any]] = {}
+    for position, raw in enumerate(supplied):
+        _require(isinstance(raw, Mapping), f"V5 payload selection diagnostics row {position} is invalid")
+        name = raw.get("model")
+        _require(isinstance(name, str) and name and name not in supplied_by_model, "V5 payload selection diagnostics model names are invalid")
+        supplied_by_model[name] = raw
+    _require(set(supplied_by_model) == set(diagnostics), "V5 payload and artifact selection families differ")
+    exact_fields = {
+        "reference_model",
+        "selected",
+        "gate_passed",
+        "gate_reason",
+        "fallback_count",
+        "n_predictions",
+        "bootstrap_block_weeks",
+        "bootstrap_effective_block_weeks",
+        "bootstrap_resamples",
+        "bootstrap_seed",
+    }
+    numeric_fields = {
+        "log_loss",
+        "reference_log_loss",
+        "absolute_log_loss_improvement",
+        "brier",
+        "reference_brier",
+        "brier_difference",
+        "raw_p_value",
+        "holm_adjusted_p_value",
+        "alpha",
+        "minimum_log_loss_improvement",
+        "brier_tolerance",
+    }
+    for name, artifact_row in diagnostics.items():
+        payload_row = supplied_by_model[name]
+        for field in exact_fields:
+            _require(
+                payload_row.get(field) == artifact_row[field],
+                f"V5 payload selection diagnostics {field} mismatch for {name}",
+            )
+        for field in numeric_fields:
+            expected = artifact_row[field]
+            actual = payload_row.get(field)
+            if expected is None:
+                _require(actual is None, f"V5 payload selection diagnostics {field} mismatch for {name}")
+                continue
+            _require(
+                type(actual) in {int, float}
+                and math.isfinite(float(actual))
+                and math.isclose(float(actual), float(expected), abs_tol=1e-8, rel_tol=0.0),
+                f"V5 payload selection diagnostics {field} mismatch for {name}",
+            )
+
+
+def _validate_selection_family(
+    diagnostics: Mapping[str, Mapping[str, Any]],
+    rows: Sequence[PredictionRow],
+    *,
+    champion: str,
+) -> None:
+    selection_rows = [row for row in rows if row.evaluation_split == "selection"]
+    models = set(diagnostics)
+    _require(models == {row.model for row in selection_rows}, "selection diagnostics and OOS model families differ")
+    references = {str(row["reference_model"]) for row in diagnostics.values()}
+    _require(len(references) == 1, "selection diagnostics reference models differ")
+    reference_model = next(iter(references))
+    _require(reference_model in models and reference_model in SELECTION_BASELINE_MODELS, "selection reference model is invalid")
+
+    ordered_by_model: dict[str, list[PredictionRow]] = {}
+    reference_keys: list[tuple[str, str, str]] | None = None
+    for model in sorted(models):
+        ordered = sorted(
+            (row for row in selection_rows if row.model == model),
+            key=lambda row: row.target_date,
+        )
+        keys = [(row.origin_date, row.target_date, row.actual) for row in ordered]
+        _require(len({row.target_date for row in ordered}) == len(ordered), f"selection target dates are duplicated for {model}")
+        if reference_keys is None:
+            reference_keys = keys
+        else:
+            _require(keys == reference_keys, f"selection origins/outcomes differ for {model}")
+        ordered_by_model[model] = ordered
+    assert reference_keys is not None
+
+    metrics = {model: _metrics(model_rows) for model, model_rows in ordered_by_model.items()}
+    baseline_models = [model for model in SELECTION_BASELINE_MODELS if model in models]
+    _require(bool(baseline_models), "selection family has no probability baseline")
+    expected_reference = min(
+        baseline_models,
+        key=lambda name: (
+            float(metrics[name]["log_loss"]),
+            _selection_calibration_error(ordered_by_model[name]),
+            name,
+        ),
+    )
+    _require(reference_model == expected_reference, "selection reference model was not independently reproduced")
+
+    common_configuration = {
+        field: {row[field] for row in diagnostics.values()}
+        for field in (
+            "bootstrap_block_weeks",
+            "bootstrap_effective_block_weeks",
+            "bootstrap_resamples",
+            "bootstrap_seed",
+            "alpha",
+            "minimum_log_loss_improvement",
+            "brier_tolerance",
+        )
+    }
+    _require(all(len(values) == 1 for values in common_configuration.values()), "selection diagnostic configuration differs across models")
+    block_length = int(next(iter(common_configuration["bootstrap_block_weeks"])))
+    resamples = int(next(iter(common_configuration["bootstrap_resamples"])))
+    seed = int(next(iter(common_configuration["bootstrap_seed"])))
+    alpha = float(next(iter(common_configuration["alpha"])))
+    minimum_improvement = float(next(iter(common_configuration["minimum_log_loss_improvement"])))
+    brier_tolerance = float(next(iter(common_configuration["brier_tolerance"])))
+    _require(
+        (block_length, resamples, seed) == (
+            SELECTION_BOOTSTRAP_BLOCK_WEEKS,
+            SELECTION_BOOTSTRAP_RESAMPLES,
+            SELECTION_BOOTSTRAP_SEED,
+        ),
+        "selection moving-block bootstrap configuration is invalid",
+    )
+    _require(math.isclose(alpha, SELECTION_ALPHA, abs_tol=1e-12, rel_tol=0.0), "selection alpha is invalid")
+    _require(math.isclose(brier_tolerance, SELECTION_BRIER_TOLERANCE, abs_tol=1e-12, rel_tol=0.0), "selection Brier tolerance is invalid")
+    _require(
+        any(math.isclose(minimum_improvement, allowed, abs_tol=1e-12, rel_tol=0.0) for allowed in (0.01, 0.05)),
+        "selection minimum log-loss improvement is invalid",
+    )
+
+    loss_by_model: dict[str, np.ndarray] = {}
+    positions = {state: index for index, state in enumerate(STATE_ORDER)}
+    for model, model_rows in ordered_by_model.items():
+        actual_probability = np.asarray(
+            [row.probabilities[positions[row.actual]] for row in model_rows],
+            dtype=float,
+        )
+        with np.errstate(divide="ignore", invalid="ignore"):
+            loss_by_model[model] = -np.log(actual_probability)
+    challengers = [model for model in diagnostics if model not in SELECTION_BASELINE_MODELS]
+    improvements = {
+        model: loss_by_model[reference_model] - loss_by_model[model]
+        for model in challengers
+    }
+    raw_pvalues, effective_block = _selection_bootstrap_pvalues(
+        improvements,
+        block_length=block_length,
+        resamples=resamples,
+        random_state=seed,
+    )
+    adjusted_pvalues = _holm_adjusted_pvalues(raw_pvalues)
+    _require(
+        common_configuration["bootstrap_effective_block_weeks"] == {effective_block},
+        "selection effective bootstrap block was not independently reproduced",
+    )
+
+    reference_metrics = metrics[reference_model]
+    passing: list[str] = []
+    for model, diagnostic in diagnostics.items():
+        model_metrics = metrics[model]
+        improvement = float(reference_metrics["log_loss"]) - float(model_metrics["log_loss"])
+        brier_difference = float(model_metrics["brier"]) - float(reference_metrics["brier"])
+        for field, expected in (
+            ("log_loss", model_metrics["log_loss"]),
+            ("reference_log_loss", reference_metrics["log_loss"]),
+            ("absolute_log_loss_improvement", improvement),
+            ("brier", model_metrics["brier"]),
+            ("reference_brier", reference_metrics["brier"]),
+            ("brier_difference", brier_difference),
+        ):
+            _require(
+                math.isclose(float(diagnostic[field]), float(expected), abs_tol=1e-12, rel_tol=0.0),
+                f"selection diagnostics {field} mismatch for {model}",
+            )
+        _require(diagnostic["n_predictions"] == model_metrics["n"], f"selection diagnostics n_predictions mismatch for {model}")
+        _require(diagnostic["fallback_count"] == model_metrics["fallback_count"], f"selection diagnostics fallback mismatch for {model}")
+        _require(diagnostic["is_reference"] is (model == reference_model), f"selection diagnostics is_reference mismatch for {model}")
+
+        if model in SELECTION_BASELINE_MODELS:
+            _require(diagnostic["raw_p_value"] is None and diagnostic["holm_adjusted_p_value"] is None, f"selection baseline p-values must be empty for {model}")
+        else:
+            raw_p_value = diagnostic["raw_p_value"]
+            adjusted_p_value = diagnostic["holm_adjusted_p_value"]
+            _require(
+                type(raw_p_value) in {int, float},
+                f"selection diagnostics raw_p_value mismatch for {model}",
+            )
+            _require(
+                type(adjusted_p_value) in {int, float},
+                f"selection diagnostics holm_adjusted_p_value mismatch for {model}",
+            )
+            _require(
+                math.isclose(float(raw_p_value), raw_pvalues[model], abs_tol=1e-12, rel_tol=0.0),
+                f"selection diagnostics raw_p_value mismatch for {model}",
+            )
+            _require(
+                math.isclose(float(adjusted_p_value), adjusted_pvalues[model], abs_tol=1e-12, rel_tol=0.0),
+                f"selection diagnostics holm_adjusted_p_value mismatch for {model}",
+            )
+
+        failures: list[str] = []
+        if model not in SELECTION_BASELINE_MODELS:
+            if int(model_metrics["fallback_count"]) != 0:
+                failures.append("fallback_present")
+            if improvement + 1e-12 < minimum_improvement:
+                failures.append("insufficient_log_loss_improvement")
+            if adjusted_pvalues[model] > alpha:
+                failures.append("holm_not_significant")
+            if brier_difference > brier_tolerance + 1e-12:
+                failures.append("brier_degradation")
+            if not failures:
+                passing.append(model)
+        elif model != reference_model:
+            failures.append("non_reference_baseline")
+        expected_gate = model == reference_model or not failures
+        expected_reason = "passed" if not failures else ";".join(failures)
+        _require(diagnostic["gate_passed"] is expected_gate, f"selection diagnostics gate_passed mismatch for {model}")
+        _require(diagnostic["gate_reason"] == expected_reason, f"selection diagnostics gate_reason mismatch for {model}")
+
+    expected_champion = reference_model
+    if passing:
+        best_loss = min(float(metrics[model]["log_loss"]) for model in passing)
+        near_best = [
+            model
+            for model in passing
+            if float(metrics[model]["log_loss"])
+            <= best_loss + SELECTION_SIMPLICITY_TOLERANCE
+        ]
+        expected_champion = min(
+            near_best,
+            key=lambda name: (
+                model_complexity_rank(name),
+                _selection_calibration_error(ordered_by_model[name]),
+                float(metrics[name]["log_loss"]),
+                name,
+            ),
+        )
+    _require(champion == expected_champion, "declared champion was not independently reproduced from the selection family")
+    _require(
+        [name for name, row in diagnostics.items() if row["selected"] is True]
+        == [expected_champion],
+        "selection diagnostics selected flag was not independently reproduced",
+    )
+
+
 def _selection_gate_crosscheck(
     diagnostics: Mapping[str, Mapping[str, Any]],
-    pairs: Sequence[tuple[PredictionRow, PredictionRow]],
+    rows: Sequence[PredictionRow],
+    *,
+    champion: str,
 ) -> dict[str, Any]:
-    selected_pairs = [pair for pair in pairs if pair[0].evaluation_split == "selection"]
-    _require(selected_pairs, "selection gate cross-check has no common selection rows")
+    champion_row = diagnostics.get(champion)
+    _require(
+        isinstance(champion_row, Mapping),
+        "selection diagnostics is missing the declared champion",
+    )
+    champion_reference = champion_row.get("reference_model")
+    _require(
+        isinstance(champion_reference, str) and champion_reference,
+        "declared champion reference model is invalid",
+    )
+    selected_models = [
+        name for name, row in diagnostics.items() if row.get("selected") is True
+    ]
+    _require(
+        selected_models == [champion],
+        "selection diagnostics does not select exactly the declared champion",
+    )
+
+    model_names = sorted(
+        {
+            "causal_multiscale_ensemble",
+            "markov",
+            champion,
+            champion_reference,
+        }
+    )
     output: dict[str, Any] = {}
-    for position, model in enumerate(("causal_multiscale_ensemble", "markov")):
+    for model in model_names:
         row = diagnostics.get(model)
         _require(isinstance(row, Mapping), f"selection diagnostics is missing {model}")
-        computed = _metrics([pair[position] for pair in selected_pairs])
+        reference_model = row.get("reference_model")
+        _require(
+            isinstance(reference_model, str) and reference_model,
+            f"selection diagnostics reference model is invalid for {model}",
+        )
+        reference_row = diagnostics.get(reference_model)
+        _require(
+            isinstance(reference_row, Mapping),
+            f"selection diagnostics is missing reference {reference_model} for {model}",
+        )
+        pairs = _equivalent_model_pairs(
+            rows,
+            left_model=model,
+            right_model=reference_model,
+        )
+        selected_pairs = [
+            pair for pair in pairs if pair[0].evaluation_split == "selection"
+        ]
+        _require(
+            selected_pairs,
+            f"selection gate cross-check has no common selection rows for {model}",
+        )
+        computed = _metrics([pair[0] for pair in selected_pairs])
+        computed_reference = _metrics([pair[1] for pair in selected_pairs])
         _require(row["n_predictions"] == computed["n"], f"selection diagnostics n_predictions mismatch for {model}")
         _require(row["fallback_count"] == computed["fallback_count"], f"selection diagnostics fallback mismatch for {model}")
+        _require(
+            reference_row["n_predictions"] == computed_reference["n"],
+            f"selection diagnostics reference n_predictions mismatch for {model}",
+        )
+        _require(
+            reference_row["fallback_count"] == computed_reference["fallback_count"],
+            f"selection diagnostics reference fallback mismatch for {model}",
+        )
         for metric in ("log_loss", "brier"):
             _require(
                 math.isclose(float(row[metric]), float(computed[metric]), abs_tol=1e-12, rel_tol=0.0),
                 f"selection diagnostics {metric} mismatch for {model}",
             )
+            _require(
+                math.isclose(
+                    float(row[f"reference_{metric}"]),
+                    float(computed_reference[metric]),
+                    abs_tol=1e-12,
+                    rel_tol=0.0,
+                ),
+                f"selection diagnostics reference {metric} mismatch for {model}",
+            )
         output[model] = {
-            "reference_model": row["reference_model"],
+            "reference_model": reference_model,
             "selected": row["selected"],
             "gate_passed": row["gate_passed"],
             "gate_reason": row["gate_reason"],
@@ -573,9 +1011,12 @@ def _selection_gate_crosscheck(
             "brier": row["brier"],
             "matched_metric_crosscheck": True,
         }
+    multiscale = diagnostics["causal_multiscale_ensemble"]
     return {
-        "artifact_role": "selection_only_existing_champion_gate",
-        "pairwise_gate_against_markov": False,
+        "artifact_role": "selection_family_independently_recomputed",
+        "multiscale_gate_against_selection_reference": bool(
+            multiscale["gate_passed"]
+        ),
         "models": output,
     }
 
@@ -967,6 +1408,9 @@ def build_comparison(
             "selection_diagnostics": diagnostic_row_count,
         },
     )
+    champion = str(payload.get("model", {}).get("champion", ""))
+    _validate_payload_selection_diagnostics(payload, diagnostics)
+    _validate_selection_family(diagnostics, v5_rows, champion=champion)
 
     markov_pairs = _same_model_pairs(
         v5_rows,
@@ -1011,7 +1455,8 @@ def build_comparison(
     )
     multiscale_comparison["selection_gate_crosscheck"] = _selection_gate_crosscheck(
         diagnostics,
-        multiscale_pairs,
+        v5_rows,
+        champion=champion,
     )
     fx_summary, fx_input = _fx_summary(payload, v5_directory)
 

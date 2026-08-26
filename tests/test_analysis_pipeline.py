@@ -127,6 +127,34 @@ def test_pipeline_passes_profile_specific_time_split_minimums(
     assert captured["progress"] == progress_messages.append
     assert captured["checkpoint_directory"] is None
     assert captured["source_fingerprint_sha256"] is None
+    assert captured["minimum_log_loss_improvement"] == 0.01
+
+
+@pytest.mark.parametrize(
+    ("contract_version", "override", "expected"),
+    (("v4", 0.01, 0.05), ("v5", 0.05, 0.01)),
+)
+def test_pipeline_rejects_threshold_from_the_other_contract(
+    contract_version: str,
+    override: float,
+    expected: float,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(pipeline, "verify_frozen_v4_baseline", lambda: {})
+
+    with pytest.raises(
+        ValueError,
+        match=rf"{contract_version} minimum_log_loss_improvement must be {expected:.2f}",
+    ):
+        pipeline.build_dashboard_result(
+            _minimal_weekly_dataset(),
+            None,
+            profile_name="standard",
+            mode="live",
+            selection_end="2023-01-01",
+            contract_version=contract_version,
+            minimum_log_loss_improvement=override,
+        )
 
 
 def test_pipeline_forwards_private_checkpoint_only_for_v5(
@@ -156,6 +184,7 @@ def test_pipeline_forwards_private_checkpoint_only_for_v5(
 
     assert captured["checkpoint_directory"] == checkpoint
     assert captured["source_fingerprint_sha256"] == "a" * 64
+    assert captured["minimum_log_loss_improvement"] == 0.01
 
     with pytest.raises(ValueError, match="V5-only"):
         pipeline.build_dashboard_result(

@@ -391,6 +391,30 @@
     const inputs = report.inputs;
     const model = payload.model;
     const baseline = isObject(model) ? model.baseline_v4 : null;
+    const selectionDiagnostics = isObject(model) ? model.selection_diagnostics : null;
+    const gate = isObject(report.v5_causal_multiscale_ensemble_vs_v5_markov)
+      ? report.v5_causal_multiscale_ensemble_vs_v5_markov.selection_gate_crosscheck
+      : null;
+    const thresholds = Array.isArray(selectionDiagnostics)
+      ? [...new Set(selectionDiagnostics.map((row) => (
+        isObject(row) ? strictFiniteNumber(row.minimum_log_loss_improvement) : null
+      )))]
+      : [];
+    const selectionThreshold = thresholds.length === 1 ? thresholds[0] : null;
+    const gateMatchesThreshold = isObject(gate) && (
+      (
+        selectionThreshold === 0.05
+        && gate.artifact_role === "selection_only_existing_champion_gate"
+        && typeof gate.pairwise_gate_against_markov === "boolean"
+        && !("multiscale_gate_against_selection_reference" in gate)
+      )
+      || (
+        selectionThreshold === 0.01
+        && gate.artifact_role === "selection_family_independently_recomputed"
+        && typeof gate.multiscale_gate_against_selection_reference === "boolean"
+        && !("pairwise_gate_against_markov" in gate)
+      )
+    );
     if (
       !isObject(inputs)
       || !isObject(inputs.v5)
@@ -400,6 +424,7 @@
       || !isObject(inputs.frozen_v4.sha256sums)
       || !isObject(baseline)
       || inputs.frozen_v4.sha256sums.sha256 !== baseline.artifacts_inventory_sha256
+      || !gateMatchesThreshold
     ) return null;
     const comparison = report.v5_markov_vs_frozen_v4_markov;
     if (!isObject(comparison) || !isObject(comparison.common_keys)) return null;
@@ -497,10 +522,13 @@
   function formatNumber(value, digits = 2) {
     const number = finiteNumber(value);
     if (number === null) return "—";
+    const factor = 10 ** digits;
+    const rounded = Math.round(number * factor) / factor;
+    const normalized = Object.is(rounded, -0) ? 0 : rounded;
     return new Intl.NumberFormat("ko-KR", {
       maximumFractionDigits: digits,
       minimumFractionDigits: 0,
-    }).format(number);
+    }).format(normalized);
   }
 
   function formatCompactNumber(value, digits = 2) {
@@ -682,6 +710,44 @@
     if (!Number.isInteger(value) || value < minimum) errors.push(`${path}는 ${minimum} 이상의 정수여야 합니다.`);
   }
 
+  function championSelectionEvidence(value) {
+    const model = isObject(value) ? value : {};
+    const champion = typeof model.champion === "string" && model.champion
+      ? model.champion
+      : null;
+    const leaderboard = Array.isArray(model.leaderboard) ? model.leaderboard : [];
+    const diagnostics = Array.isArray(model.selection_diagnostics)
+      ? model.selection_diagnostics
+      : [];
+    const leaderboardSelections = leaderboard
+      .filter((row) => isObject(row) && row.selected === true)
+      .map((row) => row.name);
+    const leaderboardChampions = leaderboard
+      .filter((row) => isObject(row) && row.is_champion === true)
+      .map((row) => row.name);
+    const diagnosticSelections = diagnostics
+      .filter((row) => isObject(row) && row.selected === true)
+      .map((row) => row.model);
+    const diagnostic = diagnostics.find(
+      (row) => isObject(row) && row.model === champion,
+    );
+    return Object.freeze({
+      champion,
+      leaderboardSelections: Object.freeze(leaderboardSelections),
+      leaderboardChampions: Object.freeze(leaderboardChampions),
+      diagnosticSelections: Object.freeze(diagnosticSelections),
+      valid: champion !== null
+        && leaderboardSelections.length === 1
+        && leaderboardSelections[0] === champion
+        && leaderboardChampions.length === 1
+        && leaderboardChampions[0] === champion
+        && diagnosticSelections.length === 1
+        && diagnosticSelections[0] === champion
+        && isObject(diagnostic)
+        && diagnostic.gate_passed === true,
+    });
+  }
+
   function isZonedIsoTimestamp(value) {
     return typeof value === "string"
       && /(?:Z|[+-]\d{2}:\d{2})$/.test(value)
@@ -715,8 +781,15 @@
         if (!isZonedIsoTimestamp(review.reviewed_at)) errors.push("v5 publication_review reviewed_at이 올바르지 않습니다.");
         if (!isLowerSha256(review.reviewed_candidate_sha256)) errors.push("v5 publication_review candidate hash가 올바르지 않습니다.");
         if (review.champion !== model.champion) errors.push("v5 publication_review champion이 일치하지 않습니다.");
-        if (review.multiscale_promoted !== false || review.fx_promoted !== false) {
-          errors.push("v5 publication_review는 연구 후보 비승격을 보존해야 합니다.");
+        if (
+          typeof review.multiscale_promoted !== "boolean"
+          || review.multiscale_promoted
+            !== (model.champion === "causal_multiscale_ensemble")
+        ) {
+          errors.push("v5 publication_review 멀티스케일 승격 상태가 공식 모델과 일치하지 않습니다.");
+        }
+        if (review.fx_promoted !== false) {
+          errors.push("v5 publication_review는 FX 비승격을 보존해야 합니다.");
         }
       }
     }
@@ -743,8 +816,13 @@
     if (model.label_version !== V5_LABEL_VERSION) errors.push(`v5 model.label_version은 ${V5_LABEL_VERSION}이어야 합니다.`);
     if (model.feature_set_version !== V5_FEATURE_SET_VERSION) errors.push(`v5 model.feature_set_version은 ${V5_FEATURE_SET_VERSION}이어야 합니다.`);
     if (!Array.isArray(model.leaderboard) || !model.leaderboard.length) errors.push("v5 model.leaderboard는 비어 있지 않아야 합니다.");
+    if (!championSelectionEvidence(model).valid) {
+      errors.push("v5 공식 모델은 leaderboard와 selection diagnostics의 단일 gate 통과 모델이어야 합니다.");
+    }
     const forecastComparison = model.forecast_comparison;
-    if (forecastComparison !== undefined) {
+    if (!isObject(forecastComparison)) {
+      errors.push("v5 model.forecast_comparison 객체가 없습니다.");
+    } else {
       const comparisonFields = ["role", "horizon_weeks", "models"];
       if (!hasExactKeys(forecastComparison, comparisonFields)) {
         errors.push("v5 model.forecast_comparison 필드가 계약과 일치하지 않습니다.");
@@ -1357,10 +1435,7 @@
       || !hasRequiredResearch
       || researchKeys.some((key) => !allowedResearchKeys.has(key))
       || (fxResearchCount !== 0 && fxResearchCount !== V5_FX_RESEARCH_ARTIFACTS.length)
-      || (
-        modelConditionedResearchCount !== 0
-        && modelConditionedResearchCount !== V5_MODEL_CONDITIONED_RESEARCH_ARTIFACTS.length
-      )
+      || modelConditionedResearchCount !== V5_MODEL_CONDITIONED_RESEARCH_ARTIFACTS.length
       || (fxAblation?.status === "evaluated" && fxResearchCount !== V5_FX_RESEARCH_ARTIFACTS.length)
     ) {
       errors.push("v5 model.research_artifacts manifest가 불완전합니다.");
@@ -1508,9 +1583,7 @@
 
     const forecastComparison = isObject(model) ? model.forecast_comparison : null;
     if (!forecastComparison) {
-      if (item.model_forecasts !== undefined) {
-        errors.push(`${path}.model_forecasts에는 forecast_comparison 메타데이터가 필요합니다.`);
-      }
+      errors.push(`${path}.model_forecasts에는 forecast_comparison 메타데이터가 필요합니다.`);
     } else {
       const comparisonModels = Array.isArray(forecastComparison.models)
         ? forecastComparison.models
@@ -1804,9 +1877,7 @@
     const conditionedArtifactCount = V5_MODEL_CONDITIONED_RESEARCH_ARTIFACTS
       .filter((key) => Object.hasOwn(researchArtifacts, key)).length;
     if (modelConditioned == null) {
-      if (conditionedArtifactCount > 0) {
-        errors.push("v5 model-conditioned artifact에는 공개 파생 통계가 필요합니다.");
-      }
+      errors.push("v5 research.model_conditioned_asset_stats 객체가 필요합니다.");
       return;
     }
     if (!isObject(modelConditioned)) {
@@ -4477,7 +4548,7 @@
     const officialState = week.next_week && week.next_week.state;
     const officialModelLabel = modelForecastLabel(championName);
     const agreement = forecast.state === officialState
-      ? `공식 ${officialModelLabel}와 국면 일치`
+      ? "공식 예측과 국면 일치"
       : `공식 ${officialModelLabel} ${stateMeta(officialState).ko}`;
     setText(
       dom["model-forecast-caption"],
@@ -4594,12 +4665,18 @@
           .join(" · "),
       );
     }
-    const multiscale = diagnostics.find((row) => isObject(row) && row.model === "causal_multiscale_ensemble");
-    if (isObject(multiscale)) {
+    const championDiagnostic = diagnostics.find(
+      (row) => isObject(row) && modelName(row.model) === championName,
+    );
+    if (isObject(championDiagnostic)) {
+      const referenceName = modelName(championDiagnostic.reference_model);
+      const retainedReference = referenceName === championName;
       appendEvidence(
-        "멀티스케일 후보",
-        `Log loss 개선 ${formatNumber(multiscale.absolute_log_loss_improvement, 4)} · 기준 ${formatNumber(multiscale.minimum_log_loss_improvement, 4)} · ${multiscale.gate_passed === true ? "통과" : "미통과"}`,
-        multiscale.gate_passed === true ? "is-ok" : "is-review",
+        "공식 모델 선정",
+        retainedReference
+          ? `${modelForecastLabel(championName)} · 비교 기준 모델 유지`
+          : `${modelForecastLabel(championName)} · Log loss 개선 ${formatNumber(championDiagnostic.absolute_log_loss_improvement, 4)} · 기준 ${formatNumber(championDiagnostic.minimum_log_loss_improvement, 4)} · ${championDiagnostic.gate_passed === true ? "통과" : "미통과"}`,
+        championDiagnostic.gate_passed === true ? "is-ok" : "is-review",
       );
     }
     if (isObject(holdoutDiagnostic) && holdoutDiagnostic.applicable === true) {
@@ -4901,6 +4978,7 @@
     normalizeStatus,
     snapToPriorDate,
     resolveHistoryWindow,
+    championSelectionEvidence,
     validatePayload,
     resultIdentity,
     validateV5ComparisonSummary,

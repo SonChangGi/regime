@@ -1,11 +1,110 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from regime_lab import cli
 from regime_lab.config import project_root
+from regime_lab.schema import ContractError
+
+
+@pytest.mark.parametrize("command", ("build", "demo"))
+def test_active_v5_is_the_default_cli_contract(command: str) -> None:
+    args = cli.build_parser().parse_args([command])
+
+    assert args.contract == "v5"
+    assert args.output is None
+    assert args.artifacts is None
+
+
+def test_validate_and_serve_default_to_reviewed_live_v5() -> None:
+    parser = cli.build_parser()
+
+    validate = parser.parse_args(["validate"])
+    serve = parser.parse_args(["serve"])
+
+    assert validate.path == "publication/live/regime-results.json"
+    assert serve.payload == "publication/live/regime-results.json"
+    assert serve.comparison is None
+
+
+def test_serve_auto_selects_payload_sibling_comparison(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = tmp_path / "regime-results.json"
+    comparison = tmp_path / "v5-vs-v4-comparison.json"
+    payload.write_text(
+        '{"meta":{"result_version":"weekly-regime-result-v5"}}',
+        encoding="utf-8",
+    )
+    comparison.write_text("{}", encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    def fake_serve(
+        web_root: Path,
+        host: str,
+        port: int,
+        *,
+        payload_bytes: bytes,
+        comparison_bytes: bytes | None,
+    ) -> None:
+        captured.update(
+            web_root=web_root,
+            host=host,
+            port=port,
+            payload_bytes=payload_bytes,
+            comparison_bytes=comparison_bytes,
+        )
+
+    monkeypatch.setattr(cli, "serve_dashboard", fake_serve)
+    monkeypatch.setattr(cli, "validate_dashboard_payload", lambda _payload: None)
+    monkeypatch.setattr(
+        cli,
+        "validate_v5_comparison_sidecar",
+        lambda *_args, **_kwargs: None,
+    )
+    args = SimpleNamespace(
+        web_root="web",
+        host="127.0.0.1",
+        port=9988,
+        payload=str(payload),
+        comparison=None,
+    )
+
+    assert cli.command_serve(args) == 0
+    assert captured == {
+        "web_root": project_root() / "web",
+        "host": "127.0.0.1",
+        "port": 9988,
+        "payload_bytes": payload.read_bytes(),
+        "comparison_bytes": comparison.read_bytes(),
+    }
+
+
+def test_serve_rejects_invalid_payload_before_binding(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = tmp_path / "regime-results.json"
+    payload.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(
+        cli,
+        "serve_dashboard",
+        lambda *_args, **_kwargs: pytest.fail("invalid payload must not be served"),
+    )
+    args = SimpleNamespace(
+        web_root="web",
+        host="127.0.0.1",
+        port=9988,
+        payload=str(payload),
+        comparison=None,
+    )
+
+    with pytest.raises(ContractError):
+        cli.command_serve(args)
 
 
 @pytest.mark.parametrize(

@@ -1784,13 +1784,11 @@ def test_v5_model_forecast_audit_binds_historical_and_latest_sources(
     }
 
 
-def test_v5_model_forecast_audit_preserves_absent_contract() -> None:
+def test_v5_model_forecast_audit_rejects_absent_contract() -> None:
     payload = {"model": {}, "weekly": [{"date": "2026-08-21"}]}
 
-    summary = audit_outputs._audit_v5_model_forecasts(payload, Path("unused"))
-
-    assert summary["status"] == "absent"
-    assert summary["weeks"] == 0
+    with pytest.raises(audit_outputs.AuditFailure, match="metadata is required"):
+        audit_outputs._audit_v5_model_forecasts(payload, Path("unused"))
 
 
 def test_v5_model_forecast_audit_rejects_orphan_rows_without_metadata() -> None:
@@ -2010,7 +2008,11 @@ def test_selection_audit_rebuilds_every_published_diagnostic_field() -> None:
     predictions = pd.DataFrame(rows)
     metrics = audit_outputs.probability_metrics(predictions)
 
-    _, diagnostics = audit_outputs.choose_selection_champion(metrics, predictions)
+    _, diagnostics = audit_outputs.choose_selection_champion(
+        metrics,
+        predictions,
+        minimum_log_loss_improvement=0.01,
+    )
 
     assert {
         "model",
@@ -2964,7 +2966,9 @@ def test_offline_synthetic_v4_bundle_passes_the_full_auditor(tmp_path: Path) -> 
     from regime_lab.payload import write_dashboard_payload
 
     payload, benchmark = generate_demo_payload(
-        load_config(default_config_path()), profile_name="quick"
+        load_config(default_config_path()),
+        profile_name="quick",
+        contract_version="v4",
     )
     artifacts = tmp_path / "artifacts"
     payload_path = tmp_path / "regime-results.json"

@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pytest
 
+from regime_lab import publication_contract
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "package_public_demo.py"
@@ -53,6 +55,69 @@ def test_current_live_publication_passes_reviewed_provider_policy(
         "personal_noncommercial_derived_results"
     )
     assert manifest["contains_raw_observations"] is False
+
+
+def test_legacy_comparison_gate_is_bound_to_exact_reviewed_snapshot() -> None:
+    payload = json.loads(LIVE_PUBLICATION.read_text(encoding="utf-8"))
+    payload_raw = _json_bytes(payload)
+    comparison = json.loads(
+        (ROOT / "publication/live/v5-vs-v4-comparison.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    gate = comparison["v5_causal_multiscale_ensemble_vs_v5_markov"][
+        "selection_gate_crosscheck"
+    ]
+    gate["artifact_role"] = "selection_only_existing_champion_gate"
+    gate["pairwise_gate_against_markov"] = gate.pop(
+        "multiscale_gate_against_selection_reference"
+    )
+
+    package_public_demo.validate_dashboard_payload(payload)
+    with pytest.raises(
+        publication_contract.PublicContractError,
+        match="restricted to the exact reviewed 0.05 snapshot",
+    ):
+        publication_contract.validate_v5_comparison_sidecar(
+            comparison,
+            payload=payload,
+            payload_raw=payload_raw,
+        )
+
+
+def test_live_package_rejects_new_reviewed_v5_with_legacy_005_policy(
+    tmp_path: Path,
+) -> None:
+    payload = json.loads(LIVE_PUBLICATION.read_text(encoding="utf-8"))
+    payload["weekly"][-1]["summary"] += " "
+    for row in payload["model"]["selection_diagnostics"]:
+        row["minimum_log_loss_improvement"] = 0.05
+        if row["selected"] and row["model"] != row["reference_model"]:
+            row["log_loss"] = row["reference_log_loss"] - 0.06
+            row["absolute_log_loss_improvement"] = 0.06
+    candidate = dict(payload)
+    candidate_meta = dict(payload["meta"])
+    candidate_meta.pop("publication_status")
+    candidate_meta.pop("publication_review")
+    candidate["meta"] = candidate_meta
+    payload["meta"]["publication_review"]["reviewed_candidate_sha256"] = (
+        hashlib.sha256(_json_bytes(candidate)).hexdigest()
+    )
+    payload_path = tmp_path / "forged-reviewed-v5.json"
+    payload_path.write_bytes(_json_bytes(payload))
+
+    with pytest.raises(
+        package_public_demo.PackagingError,
+        match=r"selection threshold must be exactly 0\.01",
+    ):
+        package_public_demo.package_public_dashboard(
+            web_root=ROOT / "web",
+            payload_path=payload_path,
+            output_directory=tmp_path / "forged-reviewed-v5",
+            publication_mode=package_public_demo.PUBLICATION_MODE_LIVE_DERIVED,
+            rights_acknowledged=True,
+            comparison_path=ROOT / "publication/live/v5-vs-v4-comparison.json",
+        )
 
 
 def _web_root(tmp_path: Path) -> Path:
@@ -472,7 +537,7 @@ def _v5_comparison(payload_path: Path) -> dict:
                 right=holdout_rows["markov"],
             ),
             "selection_gate_crosscheck": {
-                "artifact_role": "selection_only_existing_champion_gate",
+                "artifact_role": "selection_family_independently_recomputed",
                 "models": {
                     name: {
                         field: row[field]
@@ -490,7 +555,7 @@ def _v5_comparison(payload_path: Path) -> dict:
                     | {"matched_metric_crosscheck": True}
                     for name, row in selection_rows.items()
                 },
-                "pairwise_gate_against_markov": False,
+                "multiscale_gate_against_selection_reference": False,
             },
         },
         "v5_markov_vs_frozen_v4_markov": {
@@ -516,6 +581,134 @@ def _write_v5_comparison(tmp_path: Path, payload_path: Path, report: dict | None
         encoding="utf-8",
     )
     return path
+
+
+def test_v5_comparison_binds_non_markov_champion_gate_row(tmp_path: Path) -> None:
+    payload_path = _minimal_live_payload(
+        tmp_path,
+        result_version=package_public_demo.V5_RESULT_VERSION,
+    )
+    payload = json.loads(payload_path.read_text(encoding="utf-8"))
+    model = payload["model"]
+    model["champion"] = "xgboost"
+    for row in model["selection_diagnostics"]:
+        row["selected"] = False
+    markov_selection = next(
+        row for row in model["selection_diagnostics"] if row["model"] == "markov"
+    )
+    model["selection_diagnostics"].append(
+        {
+            **markov_selection,
+            "model": "xgboost",
+            "selected": True,
+            "reference_model": "markov",
+        }
+    )
+    for row in model["leaderboard"]:
+        row["selected"] = False
+        row["is_champion"] = False
+    markov_holdout = next(
+        row for row in model["leaderboard"] if row["name"] == "markov"
+    )
+    model["leaderboard"].append(
+        {
+            **markov_holdout,
+            "name": "xgboost",
+            "selected": True,
+            "is_champion": True,
+        }
+    )
+    payload_path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+    comparison = _v5_comparison(payload_path)
+    multiscale = comparison["v5_causal_multiscale_ensemble_vs_v5_markov"]
+
+    publication_contract._validate_multiscale_comparison(
+        multiscale,
+        payload=payload,
+    )
+
+    del multiscale["selection_gate_crosscheck"]["models"]["xgboost"]
+    with pytest.raises(
+        publication_contract.PublicContractError,
+        match="fields are not exact",
+    ):
+        publication_contract._validate_multiscale_comparison(
+            multiscale,
+            payload=payload,
+        )
+
+
+def test_v5_comparison_names_a_non_markov_selection_reference_truthfully(
+    tmp_path: Path,
+) -> None:
+    payload_path = _minimal_live_payload(
+        tmp_path,
+        result_version=package_public_demo.V5_RESULT_VERSION,
+    )
+    payload = json.loads(payload_path.read_text(encoding="utf-8"))
+    model = payload["model"]
+    model["champion"] = "xgboost"
+    markov_selection = next(
+        row for row in model["selection_diagnostics"] if row["model"] == "markov"
+    )
+    for row in model["selection_diagnostics"]:
+        row["reference_model"] = "xgboost"
+        row["selected"] = False
+    model["selection_diagnostics"].append(
+        {
+            **markov_selection,
+            "model": "xgboost",
+            "reference_model": "xgboost",
+            "selected": True,
+        }
+    )
+    for row in model["leaderboard"]:
+        row["selected"] = False
+        row["is_champion"] = False
+    markov_holdout = next(
+        row for row in model["leaderboard"] if row["name"] == "markov"
+    )
+    model["leaderboard"].append(
+        {
+            **markov_holdout,
+            "name": "xgboost",
+            "selected": True,
+            "is_champion": True,
+        }
+    )
+    payload_path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+    comparison = _v5_comparison(payload_path)
+    multiscale = comparison["v5_causal_multiscale_ensemble_vs_v5_markov"]
+    gate = multiscale["selection_gate_crosscheck"]
+
+    publication_contract._validate_multiscale_comparison(
+        multiscale,
+        payload=payload,
+    )
+
+    gate["multiscale_gate_against_selection_reference"] = True
+    with pytest.raises(
+        publication_contract.PublicContractError,
+        match="selection-reference gate does not match",
+    ):
+        publication_contract._validate_multiscale_comparison(
+            multiscale,
+            payload=payload,
+        )
+
+    gate["multiscale_gate_against_selection_reference"] = False
+    gate["artifact_role"] = "selection_only_existing_champion_gate"
+    gate["pairwise_gate_against_markov"] = gate.pop(
+        "multiscale_gate_against_selection_reference"
+    )
+    with pytest.raises(
+        publication_contract.PublicContractError,
+        match="restricted to the exact reviewed 0.05 snapshot",
+    ):
+        publication_contract._validate_multiscale_comparison(
+            multiscale,
+            payload=payload,
+        )
 
 
 def test_package_copies_only_allowlisted_assets_and_synthetic_payload(tmp_path: Path) -> None:
@@ -708,6 +901,7 @@ def test_v5_live_package_refuses_unreviewed_candidate(
         ("v5_oos", "oos_predictions record does not match"),
         ("fx_metric", "does not match the reviewed payload"),
         ("multiscale_metric", "does not match the reviewed payload"),
+        ("multiscale_gate", "selection-reference gate does not match"),
         ("raw_data_alias", "fields are not exact"),
         ("numeric_parity", "numeric probability parity is not exact"),
         ("token_parity", "token probability hashes or mismatches differ"),
@@ -740,6 +934,10 @@ def test_v5_live_package_refuses_unreviewed_or_raw_comparison_sidecar(
         report["v5_causal_multiscale_ensemble_vs_v5_markov"][
             "primary_selection"
         ]["metrics"]["causal_multiscale_ensemble"]["log_loss"] += 0.1
+    elif case == "multiscale_gate":
+        report["v5_causal_multiscale_ensemble_vs_v5_markov"][
+            "selection_gate_crosscheck"
+        ]["multiscale_gate_against_selection_reference"] = True
     elif case == "raw_data_alias":
         report["fx_ablation"]["data"] = [["2026-08-21", 1.2345]]
     elif case == "numeric_parity":

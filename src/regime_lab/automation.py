@@ -333,6 +333,123 @@ def _validate_v5_comparison_bytes(
         raise AutomationError(f"{label} comparison contract failed: {exc}") from exc
 
 
+def _validate_v5_champion_evidence(
+    payload: Mapping[str, Any],
+    *,
+    latest: Mapping[str, Any],
+) -> None:
+    """Require the reviewed, selected, and deployed V5 model to be identical."""
+
+    model = payload.get("model")
+    if not isinstance(model, Mapping):
+        raise AutomationError("V5 candidate model evidence is missing")
+    champion = model.get("champion")
+    if not isinstance(champion, str) or not champion:
+        raise AutomationError("V5 candidate champion is invalid")
+
+    fx = model.get("fx_ablation")
+    gate = fx.get("gate") if isinstance(fx, Mapping) else None
+    if (
+        not isinstance(fx, Mapping)
+        or fx.get("promotion_allowed") is not False
+        or fx.get("core_champion_promoted") is not False
+        or not isinstance(gate, Mapping)
+        or gate.get("passed_variants") != []
+    ):
+        raise AutomationError("V5 publication must preserve FX non-promotion")
+
+    meta = payload.get("meta")
+    review = meta.get("publication_review") if isinstance(meta, Mapping) else None
+    if not isinstance(review, Mapping) or review.get("champion") != champion:
+        raise AutomationError(
+            "V5 publication review does not bind the selected champion"
+        )
+
+    leaderboard = model.get("leaderboard")
+    if not isinstance(leaderboard, list):
+        raise AutomationError("V5 candidate leaderboard evidence is missing")
+    selected_leaderboard = [
+        row.get("name")
+        for row in leaderboard
+        if isinstance(row, Mapping) and row.get("selected") is True
+    ]
+    champion_leaderboard = [
+        row.get("name")
+        for row in leaderboard
+        if isinstance(row, Mapping) and row.get("is_champion") is True
+    ]
+    if selected_leaderboard != [champion] or champion_leaderboard != [champion]:
+        raise AutomationError(
+            "V5 leaderboard does not select exactly the reviewed champion"
+        )
+
+    diagnostics = model.get("selection_diagnostics")
+    if not isinstance(diagnostics, list):
+        raise AutomationError("V5 candidate selection audit is missing")
+    selected_diagnostics = [
+        row.get("model")
+        for row in diagnostics
+        if isinstance(row, Mapping) and row.get("selected") is True
+    ]
+    if selected_diagnostics != [champion]:
+        raise AutomationError(
+            "V5 selection audit does not select exactly the reviewed champion"
+        )
+    selected_row = next(
+        row
+        for row in diagnostics
+        if isinstance(row, Mapping) and row.get("model") == champion
+    )
+    if selected_row.get("gate_passed") is not True:
+        raise AutomationError("V5 selected champion did not pass its promotion gate")
+
+    forecast_comparison = model.get("forecast_comparison")
+    comparison_models = (
+        forecast_comparison.get("models")
+        if isinstance(forecast_comparison, Mapping)
+        else None
+    )
+    if not isinstance(comparison_models, list) or champion not in comparison_models:
+        raise AutomationError("V5 selected champion is missing from forecast evidence")
+
+    official = latest.get("next_week")
+    if not isinstance(official, Mapping) or official.get("model") != champion:
+        raise AutomationError(
+            "V5 official forecast does not use the reviewed champion"
+        )
+    forecasts = latest.get("model_forecasts")
+    champion_forecasts = (
+        [
+            row
+            for row in forecasts
+            if isinstance(row, Mapping) and row.get("model") == champion
+        ]
+        if isinstance(forecasts, list)
+        else []
+    )
+    if len(champion_forecasts) != 1:
+        raise AutomationError(
+            "V5 forecast audit does not contain exactly one champion forecast"
+        )
+    parity_fields = (
+        "state",
+        "probabilities",
+        "confidence",
+        "entropy",
+        "date",
+        "model",
+        "fallback",
+        "fallback_reason",
+    )
+    if any(
+        champion_forecasts[0].get(field) != official.get(field)
+        for field in parity_fields
+    ):
+        raise AutomationError(
+            "V5 official forecast differs from the audited champion forecast"
+        )
+
+
 def _run(
     args: Sequence[str],
     *,
@@ -1276,18 +1393,7 @@ def validate_automation_candidate(
     elif meta_status != "ok":
         raise AutomationError("candidate meta.status is not publishable")
     if is_v5:
-        model = payload.get("model", {})
-        fx = model.get("fx_ablation", {}) if isinstance(model, dict) else {}
-        fx_gate = fx.get("gate", {}) if isinstance(fx, dict) else {}
-        if (
-            model.get("champion") != "markov"
-            or fx.get("promotion_allowed") is not False
-            or fx.get("core_champion_promoted") is not False
-            or fx_gate.get("passed_variants") != []
-        ):
-            raise AutomationError(
-                "V5 publication must preserve the Markov champion and FX non-promotion"
-            )
+        _validate_v5_champion_evidence(payload, latest=latest)
     return payload
 
 
@@ -1678,6 +1784,8 @@ def _build_candidate(
                 "scripts/promote_v5_publication.py",
                 "--candidate",
                 str(settings.payload),
+                "--v5-artifacts",
+                str(settings.artifacts),
                 "--comparison",
                 str(settings.comparison_path),
                 "--output",

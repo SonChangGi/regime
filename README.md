@@ -16,22 +16,22 @@
 - 동일한 walk-forward 조건에서 비교한 next-state·전환위험 모델 leaderboard
 - `dataAsOf`, 미국 동부시간 cutoff, source freshness·권리·장애 상태
 
-대시보드는 Python 결과를 다시 계산하지 않습니다. Python 파이프라인이
-`web/data/regime-results.json`을 만들고, dependency-free 정적 웹 앱이 그
-계약을 읽습니다. GitHub Pages는 원자료나 DB가 아니라 별도로 검증된
-`publication/live/regime-results.json`, hash-bound V5/V4 비교 sidecar와 정적 자산
+대시보드는 Python 결과를 다시 계산하지 않습니다. Python 파이프라인이 계약에 맞는
+결과를 만들고, dependency-free 정적 웹 앱이 그 결과를 읽습니다. 로컬 `serve`의
+기본 입력은 검토된 `publication/live/regime-results.json`이다. GitHub Pages는
+원자료나 DB가 아니라 이 payload, hash-bound V5/V4 비교 sidecar와 정적 자산
 allowlist만 배포합니다.
 
 공개 live 파생 결과: [sonchanggi.github.io/regime](https://sonchanggi.github.io/regime/)
 
-## v5 운영·연구 계약
+## V5 운영·연구 계약
 
-주간 자동화와 공개 계약은 v5다. 수동 `build`·`demo` CLI 기본값은 V4 재현을 위해
-유지하며, raw V5 후보 생성은 `--contract v5`를 명시해야 한다. 첫 실제 표준 실행의
-matched OOS 검토에서 Markov는
-frozen v4 Markov와 정확히 일치해 champion을 유지했다. 다중 기억 앙상블과 FX
-ablation은 사전등록 gate를 통과하지 못해 core 예측에 승격하지 않았다. 공개
-payload에는 검토 결정을 기록하고, 비교 결과는 파생값 전용 sidecar로 함께 배포한다.
+최신 공개 페이지와 주간 자동화의 운영 계약은 V5다. V4는 이전 계산과의 회귀를
+검증하는 동결 비교 기준이며 현재 서비스 버전이 아니다. 첫 V5 표준 실행에서는
+당시 gate 결과에 따라 Markov가 champion으로 선정됐다. 이후 V5 공식 모델은 이름으로
+고정하지 않고 동일 OOS 표본의 selection gate를 통과한 단일 champion을 사용한다.
+공개 payload에는 선정 근거와 검토 결정을 기록하고, V4 비교 결과는 파생값 전용
+sidecar로 함께 배포한다.
 
 ```bash
 .venv/bin/regime-lab demo --contract v5 \
@@ -104,21 +104,17 @@ python3 -m venv .venv
 # Apple Silicon에서 XGBoost가 요구하는 OpenMP runtime
 brew install libomp
 .venv/bin/pip install -e '.[test,hmm]'
-.venv/bin/regime-lab demo \
+.venv/bin/regime-lab demo --contract v5 \
   --output build/public-demo-source/regime-results.json \
   --artifacts build/public-demo-artifacts
-.venv/bin/python scripts/package_public_demo.py \
-  --payload build/public-demo-source/regime-results.json \
-  --output dist/public-demo
-.venv/bin/python -m http.server 8765 --directory dist/public-demo
+.venv/bin/regime-lab serve \
+  --payload build/public-demo-source/regime-results.json
 ```
 
 브라우저에서 `http://127.0.0.1:8765/`를 엽니다. 데모는 UI와 전체 분석
 경로를 재현하기 위한 고정 seed 모의 자료이며, 실제 미국 시장 판단으로
-표시되거나 사용되지 않습니다. 패키징 스크립트는 `index.html`, `styles.css`,
-`app.js`와 검증된 synthetic payload만 새 디렉터리에 복사합니다. payload가
-`meta.mode=demo`가 아니거나 모든 source가 `synthetic_fixture`가 아니면 실패하며,
-기존 출력 디렉터리를 덮어쓰지 않습니다.
+표시되거나 사용되지 않습니다. `build`와 `demo`의 기본 계약은 현재 운영 계약인
+V5다. 동결 V4 회귀 결과가 필요한 경우에만 `--contract v4`를 명시합니다.
 
 ## 공개 live 파생 결과 갱신
 
@@ -208,8 +204,8 @@ feature와 expanding walk-forward split으로 비교합니다. Gaussian HMM은 `
 프로필에서만 추가합니다. v4는 사전등록한 `xgb_hazard_destination`과
 `causal_dynamic_ensemble`을 더해 standard 16개, full 17개를 같은
 walk-forward gate에서 비교합니다. V5 standard는
-`causal_multiscale_ensemble`을 추가한 17개이며, 실제 검토에서는 Markov가
-champion을 유지했습니다. V5 full은 Gaussian HMM을 더한 18개입니다. Deep learning은 현재 범위에서 제외하며,
+`causal_multiscale_ensemble`을 추가한 17개이며, V5 full은 Gaussian HMM을 더한
+18개입니다. 공식 champion은 이 후보군의 검증된 selection 성과로 결정합니다. Deep learning은 현재 범위에서 제외하며,
 HMM의 full-sample smoothed path는 label이나 실시간 판정에 쓰지 않습니다.
 
 V6 opt-in 연구 후보는 최근 정보에 더 큰 가중치를 두는
@@ -220,10 +216,11 @@ V6 opt-in 연구 후보는 최근 정보에 더 큰 가중치를 두는
 
 2023년 이전의 이용 가능한 OOS origin 전체만으로 provisional champion을
 고정합니다. 각 challenger는 가장 좋은 probabilistic baseline보다 selection
-Log loss가 최소 0.05 낮고, fallback이 없고, Brier가 0.01보다 더 악화되지
+Log loss가 최소 0.01 낮고, fallback이 없고, Brier가 0.01보다 더 악화되지
 않아야 합니다. 주별 paired loss에는 13주 circular moving-block bootstrap
 (seed 17, 1,999회)과 one-sided Holm 다중비교 보정을 적용합니다. 통과 모델이
-없으면 Markov 등 가장 좋은 probabilistic baseline을 유지합니다.
+없으면 가장 좋은 probabilistic baseline을 유지합니다. V4 동결 비교에는 당시의
+0.05 기준을 그대로 보존합니다.
 
 이 프로젝트에서 2023년 이후 결과는 이전 후보군을 대상으로 이미 확인한
 적이 있으므로, v3 후보군에 대해 더 이상 `untouched holdout`이라고
@@ -305,7 +302,7 @@ SHA-256은 `8ef3778cc8c36faff0c80e2bf094f1f11bd6966ab3b7b2d6edb84ba292aff6b9`입
 
 ```bash
 .venv/bin/regime-lab demo --profile quick
-.venv/bin/regime-lab validate web/data/regime-results.json
+.venv/bin/regime-lab validate publication/live/regime-results.json
 .venv/bin/python scripts/audit_outputs.py
 .venv/bin/pytest
 ```

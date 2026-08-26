@@ -6,14 +6,21 @@ from __future__ import annotations
 import argparse
 from datetime import datetime, timezone
 import hashlib
+import importlib.util
 import json
+import math
 from pathlib import Path
 import sys
+from types import ModuleType
 from typing import Any, Mapping
 
 from regime_lab.contract_v5 import (
+    V5_MINIMUM_PROMOTION_LOG_LOSS_IMPROVEMENT,
+    V5_MULTISCALE_MODEL,
     V5_PUBLICATION_REVIEW_SCHEMA,
     V5_PUBLICATION_STATUS,
+    V5ContractError,
+    validate_v5_champion_selection_evidence,
 )
 from regime_lab.io import write_json_atomic
 from regime_lab.schema import ContractError, validate_dashboard_payload
@@ -41,6 +48,77 @@ def _read_json(path: Path, *, label: str) -> dict[str, Any]:
 
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _canonical_json_bytes(value: object) -> bytes:
+    return (
+        json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        + "\n"
+    ).encode("utf-8")
+
+
+def _comparison_builder_module() -> ModuleType:
+    module_name = "_regime_v5_comparison_for_promotion"
+    loaded = sys.modules.get(module_name)
+    if isinstance(loaded, ModuleType):
+        return loaded
+    script = Path(__file__).with_name("compare_v5_to_frozen_v4.py")
+    spec = importlib.util.spec_from_file_location(module_name, script)
+    if spec is None or spec.loader is None:
+        raise PromotionError("V5 comparison builder could not be loaded")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)
+    except Exception:
+        sys.modules.pop(module_name, None)
+        raise
+    return module
+
+
+def _build_expected_comparison(
+    *,
+    v5_artifacts: Path,
+    candidate_path: Path,
+) -> dict[str, Any]:
+    module = _comparison_builder_module()
+    try:
+        report = module.build_comparison(
+            v5_artifacts,
+            v5_payload=candidate_path,
+        )
+    except Exception as exc:
+        comparison_error = getattr(module, "ComparisonError", ())
+        if comparison_error and isinstance(exc, comparison_error):
+            raise PromotionError(
+                f"candidate artifact comparison could not be independently reproduced: {exc}"
+            ) from exc
+        raise
+    if not isinstance(report, dict):
+        raise PromotionError("independently reproduced comparison is invalid")
+    return report
+
+
+def _validate_reproducible_comparison(
+    supplied: Mapping[str, Any],
+    *,
+    v5_artifacts: Path,
+    candidate_path: Path,
+) -> None:
+    expected = _build_expected_comparison(
+        v5_artifacts=v5_artifacts,
+        candidate_path=candidate_path,
+    )
+    if _canonical_json_bytes(supplied) != _canonical_json_bytes(expected):
+        raise PromotionError(
+            "supplied comparison differs from the independently reproduced artifact comparison"
+        )
 
 
 def _mapping(value: object, *, label: str) -> Mapping[str, Any]:
@@ -116,8 +194,29 @@ def _validate_review_evidence(
         raise PromotionError("candidate must be a current live result")
     if meta.get("publication_status") is not None or meta.get("publication_review") is not None:
         raise PromotionError("candidate is already marked for publication")
-    if model.get("profile") != "standard" or model.get("champion") != "markov":
-        raise PromotionError("candidate must retain the reviewed standard Markov champion")
+    if model.get("profile") != "standard":
+        raise PromotionError("candidate must use the reviewed standard profile")
+    diagnostics = model.get("selection_diagnostics")
+    if not isinstance(diagnostics, list):
+        raise PromotionError("candidate selection diagnostics are missing")
+    for position, value in enumerate(diagnostics):
+        row = _mapping(
+            value,
+            label=f"candidate.model.selection_diagnostics[{position}]",
+        )
+        threshold = row.get("minimum_log_loss_improvement")
+        if (
+            type(threshold) not in {int, float}
+            or not math.isfinite(threshold)
+            or float(threshold) != V5_MINIMUM_PROMOTION_LOG_LOSS_IMPROVEMENT
+        ):
+            raise PromotionError(
+                "new V5 promotion candidates must use minimum_log_loss_improvement=0.01"
+            )
+    try:
+        validate_v5_champion_selection_evidence(model)
+    except V5ContractError as exc:
+        raise PromotionError(f"candidate champion selection evidence failed: {exc}") from exc
     _validate_publication_health(meta, model)
     if model.get("latest_forecast_fallback") is not False:
         raise PromotionError("candidate latest forecast must not use fallback")
@@ -144,20 +243,29 @@ def _validate_review_evidence(
         or fx_gate.get("passed_variants") != []
     ):
         raise PromotionError("FX must remain a non-promoted shadow evaluation")
-    diagnostics = model.get("selection_diagnostics")
-    if not isinstance(diagnostics, list):
-        raise PromotionError("candidate selection diagnostics are missing")
-    multiscale = next(
-        (
-            row
-            for row in diagnostics
-            if isinstance(row, Mapping)
-            and row.get("model") == "causal_multiscale_ensemble"
-        ),
-        None,
-    )
-    if not isinstance(multiscale, Mapping) or multiscale.get("gate_passed") is not False:
-        raise PromotionError("Multiscale must remain non-promoted")
+    diagnostic_index: dict[str, Mapping[str, Any]] = {}
+    for position, value in enumerate(diagnostics):
+        row = _mapping(
+            value,
+            label=f"candidate.model.selection_diagnostics[{position}]",
+        )
+        name = row.get("model")
+        if not isinstance(name, str) or not name or name in diagnostic_index:
+            raise PromotionError("candidate selection diagnostics model names are invalid")
+        diagnostic_index[name] = row
+
+    multiscale = diagnostic_index.get(V5_MULTISCALE_MODEL)
+    if multiscale is None:
+        raise PromotionError("Multiscale selection diagnostics are missing")
+    champion = model.get("champion")
+    if not isinstance(champion, str) or champion not in diagnostic_index:
+        raise PromotionError("candidate champion selection diagnostics are missing")
+    champion_reference = diagnostic_index[champion].get("reference_model")
+    if (
+        not isinstance(champion_reference, str)
+        or champion_reference not in diagnostic_index
+    ):
+        raise PromotionError("candidate champion reference diagnostics are missing")
 
     if (
         comparison.get("schema_version") != COMPARISON_SCHEMA
@@ -190,13 +298,76 @@ def _validate_review_evidence(
         multiscale_comparison.get("selection_gate_crosscheck"),
         label="comparison Multiscale gate",
     )
-    if gate.get("pairwise_gate_against_markov") is not False:
-        raise PromotionError("comparison unexpectedly promotes Multiscale")
+    if gate.get("artifact_role") != "selection_family_independently_recomputed":
+        raise PromotionError("comparison selection-family audit role is invalid")
+    selection_reference_gate = gate.get(
+        "multiscale_gate_against_selection_reference"
+    )
+    if not isinstance(selection_reference_gate, bool):
+        raise PromotionError("comparison Multiscale selection-reference gate is invalid")
+    if selection_reference_gate is not multiscale.get("gate_passed"):
+        raise PromotionError(
+            "comparison Multiscale selection-reference gate differs from candidate evidence"
+        )
+    gate_models = _mapping(
+        gate.get("models"),
+        label="comparison Multiscale gate models",
+    )
+    required_gate_models = {
+        V5_MULTISCALE_MODEL,
+        "markov",
+        champion,
+        champion_reference,
+    }
+    if set(gate_models) != required_gate_models:
+        raise PromotionError(
+            "comparison gate models do not bind the champion and its reference"
+        )
+    for name in sorted(required_gate_models):
+        comparison_row = _mapping(
+            gate_models.get(name),
+            label=f"comparison selection gate model {name}",
+        )
+        candidate_row = diagnostic_index[name]
+        if comparison_row.get("matched_metric_crosscheck") is not True:
+            raise PromotionError(
+                f"comparison selection metrics are not cross-checked for {name}"
+            )
+        for field in (
+            "reference_model",
+            "selected",
+            "gate_passed",
+            "gate_reason",
+            "fallback_count",
+            "n_predictions",
+        ):
+            if comparison_row.get(field) != candidate_row.get(field):
+                raise PromotionError(
+                    f"comparison selection {field} differs from candidate evidence for {name}"
+                )
+        for field in ("log_loss", "brier"):
+            try:
+                candidate_value = float(candidate_row[field])
+                comparison_value = float(comparison_row[field])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise PromotionError(
+                    f"comparison selection {field} is invalid for {name}"
+                ) from exc
+            if not math.isclose(
+                comparison_value,
+                candidate_value,
+                abs_tol=1e-8,
+                rel_tol=0.0,
+            ):
+                raise PromotionError(
+                    f"comparison selection {field} differs from candidate evidence for {name}"
+                )
 
 
 def promote(
     *,
     candidate_path: Path,
+    v5_artifacts: Path,
     comparison_path: Path,
     output_path: Path,
     reviewed_at: datetime,
@@ -212,6 +383,11 @@ def promote(
     except ContractError as exc:
         raise PromotionError(f"candidate contract failed: {exc}") from exc
     candidate_sha256 = _sha256(candidate_path)
+    _validate_reproducible_comparison(
+        comparison,
+        v5_artifacts=v5_artifacts,
+        candidate_path=candidate_path,
+    )
     _validate_review_evidence(
         candidate,
         comparison,
@@ -220,6 +396,7 @@ def promote(
 
     meta = _mapping(candidate["meta"], label="candidate.meta")
     model = _mapping(candidate["model"], label="candidate.model")
+    multiscale_promoted = model["champion"] == V5_MULTISCALE_MODEL
     meta["publication_status"] = V5_PUBLICATION_STATUS  # type: ignore[index]
     meta["publication_review"] = {  # type: ignore[index]
         "schema_version": V5_PUBLICATION_REVIEW_SCHEMA,
@@ -227,7 +404,7 @@ def promote(
         "reviewed_at": reviewed_at.astimezone(UTC).isoformat(),
         "reviewed_candidate_sha256": candidate_sha256,
         "champion": model["champion"],
-        "multiscale_promoted": False,
+        "multiscale_promoted": multiscale_promoted,
         "fx_promoted": False,
     }
     try:
@@ -242,7 +419,7 @@ def promote(
         "publication_sha256": _sha256(output_path),
         "reviewed_at": reviewed_at.astimezone(UTC).isoformat(),
         "champion": model["champion"],
-        "multiscale_promoted": False,
+        "multiscale_promoted": multiscale_promoted,
         "fx_promoted": False,
     }
 
@@ -252,6 +429,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         description="Promote an audited V5 candidate to a reviewed public research snapshot"
     )
     parser.add_argument("--candidate", type=Path, required=True)
+    parser.add_argument(
+        "--v5-artifacts",
+        type=Path,
+        required=True,
+        help="private V5 artifacts used to independently reproduce all selection evidence",
+    )
     parser.add_argument("--comparison", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument(
@@ -271,6 +454,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         result = promote(
             candidate_path=args.candidate,
+            v5_artifacts=args.v5_artifacts,
             comparison_path=args.comparison,
             output_path=args.output,
             reviewed_at=reviewed_at,

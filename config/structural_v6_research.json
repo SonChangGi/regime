@@ -29,17 +29,29 @@
   "selection_policy": {
     "id": "selection-policy-v2",
     "effective_date": "2026-08-25",
-    "application": "prospective_v6_runs_only",
-    "retroactive_reselection": false,
+    "application": "active_v5_and_prospective_v6_runs",
+    "reselection_scope": {
+      "v4": "prohibited_frozen",
+      "legacy_reviewed_v5_snapshot": "preserved_exact_only",
+      "new_v5_and_v6_runs": "required_current_policy"
+    },
     "minimum_log_loss_improvement": 0.01,
     "unchanged_gates": {
       "holm_alpha": 0.05,
       "maximum_brier_degradation": 0.01,
       "fallback_count_required": 0
     },
-    "frozen_prior_contracts": {
-      "v4_v5_minimum_log_loss_improvement": 0.05,
-      "v4_v5_reselection": false
+    "version_contracts": {
+      "v4": {
+        "status": "frozen_regression_baseline",
+        "minimum_log_loss_improvement": 0.05,
+        "champion_name_locked": true
+      },
+      "v5": {
+        "status": "active_operating_contract",
+        "minimum_log_loss_improvement": 0.01,
+        "champion_name_locked": false
+      }
     }
   },
   "evaluation": {

@@ -327,6 +327,13 @@ def test_archive_bounds_and_non_friday_cutoff_fail_before_provider(
         "H10Client",
         lambda: pytest.fail("invalid CLI contract must stop before provider setup"),
     )
+    monkeypatch.setattr(
+        cli,
+        "_backup_database_before_mutation",
+        lambda *_args, **_kwargs: pytest.fail(
+            "invalid CLI contract must stop before database backup"
+        ),
+    )
     bounded_without_opt_in = cli.build_parser().parse_args(
         [
             "collect-h10",

@@ -920,9 +920,10 @@ def augment_benchmark_with_structural_models(
 ) -> BenchmarkResult:
     """Return a common-origin BenchmarkResult with v4 candidates recomputed.
 
-    Selection diagnostics and the champion are recomputed with the existing
-    0.05 log-loss, Holm, Brier, and zero-fallback gate.  Holdout rows remain
-    retrospective diagnostics and cannot change the selected champion.
+    Selection diagnostics and the champion are recomputed with the benchmark's
+    run-level log-loss materiality threshold plus the existing Holm, Brier, and
+    zero-fallback gates.  Holdout rows remain retrospective diagnostics and
+    cannot change the selected champion.
     """
 
     # Local import keeps validation's public re-export free of an import cycle.
@@ -1025,6 +1026,9 @@ def augment_benchmark_with_structural_models(
         champion, selection_diagnostics = select_champion_with_diagnostics(
             selection_leaderboard,
             selection_predictions,
+            minimum_log_loss_improvement=(
+                benchmark.minimum_log_loss_improvement
+            ),
             random_state=random_state,
         )
         selection_leaderboard.insert(
@@ -1045,6 +1049,22 @@ def augment_benchmark_with_structural_models(
             selection_metrics, on="model", how="left", validate="one_to_one"
         )
         leaderboard.insert(2, "evaluation_split", "holdout")
+
+        selected_tables = {
+            "selection leaderboard": selection_leaderboard,
+            "holdout leaderboard": holdout_leaderboard,
+            "combined leaderboard": leaderboard,
+            "selection diagnostics": selection_diagnostics,
+        }
+        for context, table in selected_tables.items():
+            selected_models = table.loc[
+                table["selected"].astype(bool), "model"
+            ].astype(str).tolist()
+            if selected_models != [champion]:
+                raise RuntimeError(
+                    f"{context} selected model differs from champion: "
+                    f"{selected_models!r} != {[champion]!r}"
+                )
 
     split_audit = benchmark.split_audit.copy()
     if not split_audit.empty and {"origin_date", "target_date"}.issubset(

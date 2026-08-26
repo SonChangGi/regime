@@ -363,7 +363,7 @@ def valid_payload() -> dict[str, object]:
         "fallback": False,
         "fallback_reason": "",
     }
-    return {
+    payload = {
         "meta": {
             "schema_version": "2.0.0",
             "result_version": "weekly-regime-result-v5",
@@ -400,7 +400,16 @@ def valid_payload() -> dict[str, object]:
             "candidate_manifest_sha256": candidate_manifest_sha256,
             "structural_models": _structural_models(),
             "leaderboard": [
-                {"name": name} for name in V5_FORECAST_COMPARISON_MODELS
+                {
+                    "name": name,
+                    "selected": name == "markov",
+                    "is_champion": name == "markov",
+                }
+                for name in V5_FORECAST_COMPARISON_MODELS
+            ],
+            "selection_diagnostics": [
+                _selection_gate_row(name, champion="markov")
+                for name in V5_FORECAST_COMPARISON_MODELS
             ],
             "forecast_comparison": {
                 "role": "research_comparison",
@@ -561,12 +570,26 @@ def valid_payload() -> dict[str, object]:
             }
         },
     }
+    _add_model_conditioned_stats(payload)
+    return payload
 
 
 def test_valid_v5_payload() -> None:
     payload = valid_payload()
     validate_v5_payload(payload)
     validate_dashboard_payload(payload)
+
+
+def test_unreviewed_v5_rejects_legacy_005_selection_policy() -> None:
+    payload = valid_payload()
+    for row in payload["model"]["selection_diagnostics"]:
+        row["minimum_log_loss_improvement"] = 0.05
+
+    with pytest.raises(
+        V5ContractError,
+        match=r"selection threshold must be exactly 0\.01",
+    ):
+        validate_v5_payload(payload)
 
 
 def test_valid_v5_payload_with_model_conditioned_stats() -> None:
@@ -583,13 +606,31 @@ def test_tracked_public_v5_snapshot_still_validates() -> None:
     validate_v5_payload(payload)
 
 
-def test_v5_forecast_comparison_remains_optional_for_older_payloads() -> None:
+def test_legacy_reviewed_005_exception_is_bound_to_exact_public_snapshot() -> None:
+    path = Path(__file__).parents[1] / "publication" / "live" / "regime-results.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["weekly"][-1]["summary"] += " "
+    for row in payload["model"]["selection_diagnostics"]:
+        row["minimum_log_loss_improvement"] = 0.05
+        if row["selected"] and row["model"] != row["reference_model"]:
+            row["log_loss"] = row["reference_log_loss"] - 0.06
+            row["absolute_log_loss_improvement"] = 0.06
+
+    with pytest.raises(
+        V5ContractError,
+        match=r"selection threshold must be exactly 0\.01",
+    ):
+        validate_v5_payload(payload)
+
+
+def test_v5_forecast_comparison_is_required() -> None:
     payload = valid_payload()
     payload["model"].pop("forecast_comparison")
     for week in payload["weekly"]:
         week.pop("model_forecasts")
 
-    validate_v5_payload(payload)
+    with pytest.raises(V5ContractError, match="forecast_comparison is required"):
+        validate_v5_payload(payload)
 
 
 @pytest.mark.parametrize(
@@ -644,7 +685,7 @@ def test_v5_forecast_comparison_rejects_metadata_order_and_orphan_rows() -> None
 
     payload = valid_payload()
     payload["model"].pop("forecast_comparison")
-    with pytest.raises(V5ContractError, match="requires model forecast_comparison"):
+    with pytest.raises(V5ContractError, match="forecast_comparison is required"):
         validate_v5_payload(payload)
 
 
@@ -759,6 +800,22 @@ def test_v5_live_contract_rejects_quick_profile() -> None:
     )
 
     with pytest.raises(V5ContractError, match="does not permit the quick profile"):
+        validate_v5_payload(payload)
+
+
+def test_model_conditioned_outcomes_may_be_empty_only_for_demo() -> None:
+    payload = valid_payload()
+    payload["model"]["research_artifacts"][
+        "model_conditioned_asset_outcomes"
+    ]["row_count"] = 0
+
+    validate_v5_payload(payload)
+
+    payload["meta"]["mode"] = "live"
+    with pytest.raises(
+        V5ContractError,
+        match="model_conditioned_asset_outcomes.row_count must be at least 1",
+    ):
         validate_v5_payload(payload)
 
 
@@ -974,7 +1031,66 @@ def test_v5_contract_rejects_unreviewed_extension_fields(location: str) -> None:
         validate_v5_payload(value)
 
 
-def _review_contract() -> tuple[dict[str, object], dict[str, object]]:
+def test_v5_contract_rejects_unreviewed_champion_evidence_drift() -> None:
+    value = valid_payload()
+    value["model"]["champion"] = "xgboost"
+    with pytest.raises(
+        V5ContractError,
+        match="leaderboard must select exactly the declared champion",
+    ):
+        validate_v5_payload(value)
+
+
+def _selection_gate_row(
+    model: str,
+    *,
+    champion: str,
+) -> dict[str, object]:
+    is_reference = model == "markov"
+    selected = model == champion
+    gate_passed = is_reference or selected
+    if is_reference:
+        log_loss = reference_log_loss = 0.36
+        brier = reference_brier = 0.18
+        raw_p_value = holm_adjusted_p_value = None
+    elif selected:
+        log_loss, reference_log_loss = 0.34, 0.36
+        brier, reference_brier = 0.17, 0.18
+        raw_p_value, holm_adjusted_p_value = 0.001, 0.01
+    else:
+        log_loss, reference_log_loss = 0.355, 0.36
+        brier, reference_brier = 0.179, 0.18
+        raw_p_value, holm_adjusted_p_value = 0.2, 0.4
+    return {
+        "model": model,
+        "reference_model": "markov",
+        "selected": selected,
+        "gate_passed": gate_passed,
+        "gate_reason": "passed" if gate_passed else "insufficient_log_loss_improvement",
+        "log_loss": log_loss,
+        "reference_log_loss": reference_log_loss,
+        "absolute_log_loss_improvement": reference_log_loss - log_loss,
+        "brier": brier,
+        "reference_brier": reference_brier,
+        "brier_difference": brier - reference_brier,
+        "fallback_count": 0,
+        "n_predictions": 365,
+        "bootstrap_block_weeks": 13,
+        "bootstrap_effective_block_weeks": 13,
+        "bootstrap_resamples": 1_999,
+        "bootstrap_seed": 17,
+        "raw_p_value": raw_p_value,
+        "holm_adjusted_p_value": holm_adjusted_p_value,
+        "alpha": 0.05,
+        "minimum_log_loss_improvement": 0.01,
+        "brier_tolerance": 0.01,
+    }
+
+
+def _review_contract(
+    champion: str = "markov",
+) -> tuple[dict[str, object], dict[str, object]]:
+    model_names = ("markov", "xgboost", "causal_multiscale_ensemble")
     meta: dict[str, object] = {
         "publication_status": "reviewed_publication",
         "publication_review": {
@@ -982,59 +1098,86 @@ def _review_contract() -> tuple[dict[str, object], dict[str, object]]:
             "decision": "publish_v5_research_snapshot",
             "reviewed_at": "2026-08-23T02:11:21+00:00",
             "reviewed_candidate_sha256": "a" * 64,
-            "champion": "markov",
-            "multiscale_promoted": False,
+            "champion": champion,
+            "multiscale_promoted": champion == "causal_multiscale_ensemble",
             "fx_promoted": False,
         },
     }
     model: dict[str, object] = {
-        "champion": "markov",
+        "champion": champion,
         "leaderboard": [
-            {"name": "markov", "selected": True, "is_champion": True},
             {
-                "name": "causal_multiscale_ensemble",
-                "selected": False,
-                "is_champion": False,
-            },
+                "name": name,
+                "selected": name == champion,
+                "is_champion": name == champion,
+            }
+            for name in model_names
         ],
         "selection_diagnostics": [
-            {"model": "markov", "selected": True, "gate_passed": True},
-            {
-                "model": "causal_multiscale_ensemble",
-                "selected": False,
-                "gate_passed": False,
-            },
+            _selection_gate_row(name, champion=champion) for name in model_names
         ],
     }
     return meta, model
 
 
-def test_reviewed_v5_contract_binds_markov_decision_evidence() -> None:
-    meta, model = _review_contract()
+@pytest.mark.parametrize(
+    "champion",
+    ("markov", "xgboost", "causal_multiscale_ensemble"),
+)
+def test_reviewed_v5_contract_binds_dynamic_champion_decision_evidence(
+    champion: str,
+) -> None:
+    meta, model = _review_contract(champion)
     _validate_publication_review(meta, model, mode="live")
+
+
+def test_reviewed_v5_contract_rejects_new_005_selection_policy() -> None:
+    meta, model = _review_contract("markov")
+    for row in model["selection_diagnostics"]:
+        row["minimum_log_loss_improvement"] = 0.05
+
+    with pytest.raises(
+        V5ContractError,
+        match=r"selection threshold must be exactly 0\.01",
+    ):
+        _validate_publication_review(meta, model, mode="live")
 
 
 @pytest.mark.parametrize(
     ("mutate", "match"),
     (
         (
-            lambda meta, model: (
-                model.__setitem__("champion", "not_a_model"),
-                meta["publication_review"].__setitem__("champion", "not_a_model"),
+            lambda meta, _model: meta["publication_review"].__setitem__(
+                "champion", "xgboost"
             ),
-            "Markov champion",
+            "must match payload.model.champion",
         ),
         (
             lambda _meta, model: model["leaderboard"][1].__setitem__(
                 "selected", True
+            )
+            or model["leaderboard"][1].__setitem__(
+                "is_champion", True
             ),
-            "leaderboard must select exactly one Markov",
+            "leaderboard must select exactly the declared champion",
         ),
         (
-            lambda _meta, model: model["selection_diagnostics"][1].__setitem__(
-                "gate_passed", True
+            lambda _meta, model: model["selection_diagnostics"][0].__setitem__(
+                "gate_passed", False
             ),
-            "Multiscale diagnostic must remain non-promoted",
+            "selected model must have passed its gate",
+        ),
+        (
+            lambda _meta, model: model["selection_diagnostics"][0].__setitem__(
+                "absolute_log_loss_improvement", 0.5
+            ),
+            "absolute_log_loss_improvement is inconsistent",
+        ),
+        (
+            lambda meta, _model: meta["publication_review"].__setitem__(
+                "multiscale_promoted", True
+            ),
+            "multiscale_promoted is inconsistent",
         ),
     ),
 )
@@ -1042,4 +1185,28 @@ def test_reviewed_v5_contract_rejects_decision_drift(mutate, match: str) -> None
     meta, model = _review_contract()
     mutate(meta, model)
     with pytest.raises(V5ContractError, match=match):
+        _validate_publication_review(meta, model, mode="live")
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("holm_adjusted_p_value", 0.051),
+        ("absolute_log_loss_improvement", 0.005),
+        ("brier_difference", 0.011),
+        ("fallback_count", 1),
+        ("minimum_log_loss_improvement", 0.02),
+        ("minimum_log_loss_improvement", 999),
+    ),
+)
+def test_reviewed_v5_contract_recomputes_selected_challenger_gate(
+    field: str,
+    value: object,
+) -> None:
+    meta, model = _review_contract("xgboost")
+    model["selection_diagnostics"][1][field] = value
+    with pytest.raises(
+        V5ContractError,
+        match="gate evidence|inconsistent|must be zero|approved threshold",
+    ):
         _validate_publication_review(meta, model, mode="live")

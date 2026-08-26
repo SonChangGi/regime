@@ -109,6 +109,8 @@ STRUCTURAL_MODEL_CONTRACT = {
 }
 ABLATION_CONTRACT = FEATURE_ABLATION_CONTRACT
 MATERIAL_HOLDOUT_LOG_LOSS_REGRET = 0.05
+DEFAULT_SELECTION_MINIMUM_LOG_LOSS_IMPROVEMENT = 0.05
+V5_SELECTION_MINIMUM_LOG_LOSS_IMPROVEMENT = 0.01
 
 
 def _profile(name: str, row_count: int) -> BenchmarkProfile:
@@ -631,12 +633,13 @@ def build_dashboard_result(
     warnings: Sequence[str] = (),
     selection_end: str | pd.Timestamp | None = None,
     progress: Callable[[str], None] | None = None,
-    contract_version: str = "v4",
+    contract_version: str = "v5",
     fx_result: Any | None = None,
     latest_fx_context: Mapping[str, Any] | None = None,
     h10_source: Mapping[str, Any] | None = None,
     checkpoint_directory: str | Path | None = None,
     source_fingerprint_sha256: str | None = None,
+    minimum_log_loss_improvement: float | None = None,
 ) -> tuple[dict[str, Any], Any]:
     if contract_version not in {"v4", "v5"}:
         raise ValueError("contract_version must be v4 or v5")
@@ -651,6 +654,26 @@ def build_dashboard_result(
         )
     if contract_version == "v5":
         verify_frozen_v4_baseline()
+    contract_minimum_log_loss_improvement = (
+        V5_SELECTION_MINIMUM_LOG_LOSS_IMPROVEMENT
+        if contract_version == "v5"
+        else DEFAULT_SELECTION_MINIMUM_LOG_LOSS_IMPROVEMENT
+    )
+    resolved_minimum_log_loss_improvement = (
+        contract_minimum_log_loss_improvement
+        if minimum_log_loss_improvement is None
+        else float(minimum_log_loss_improvement)
+    )
+    if not np.isclose(
+        resolved_minimum_log_loss_improvement,
+        contract_minimum_log_loss_improvement,
+        rtol=0.0,
+        atol=1e-12,
+    ):
+        raise ValueError(
+            f"{contract_version} minimum_log_loss_improvement must be "
+            f"{contract_minimum_log_loss_improvement:.2f}"
+        )
     canonical = dataset.canonical.loc[dataset.canonical["spy_close"].notna()].copy()
     features = dataset.features.reindex(canonical.index)
     if len(canonical) < 650:
@@ -712,6 +735,9 @@ def build_dashboard_result(
         model_workers=1 if profile_name == "quick" else 4,
         minimum_selection_predictions=split_prediction_minimum,
         minimum_holdout_predictions=split_prediction_minimum,
+        minimum_log_loss_improvement=(
+            resolved_minimum_log_loss_improvement
+        ),
         progress=progress,
         checkpoint_directory=checkpoint_directory,
         source_fingerprint_sha256=source_fingerprint_sha256,

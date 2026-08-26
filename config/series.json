@@ -124,6 +124,7 @@
     "gap_weeks": 1,
     "final_holdout_start": "2023-01-01",
     "selection_metric": "log_loss",
+    "minimum_log_loss_improvement": 0.01,
     "transition_selection_metric": "binary_log_loss",
     "transition_models": [
       "empirical_hazard",

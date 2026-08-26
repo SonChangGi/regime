@@ -173,7 +173,7 @@ def test_research_model_suite_matches_preregistration() -> None:
     assert document["feature_set_version"] == V6_RESEARCH_FEATURE_SET_VERSION
 
 
-def test_v6_selection_policy_is_prospective_and_preserves_other_gates() -> None:
+def test_v5_v6_selection_policy_preserves_frozen_v4_and_other_gates() -> None:
     document = json.loads(
         Path("config/structural_v6_research.json").read_text(encoding="utf-8")
     )
@@ -183,17 +183,29 @@ def test_v6_selection_policy_is_prospective_and_preserves_other_gates() -> None:
     assert policy == {
         "id": "selection-policy-v2",
         "effective_date": "2026-08-25",
-        "application": "prospective_v6_runs_only",
-        "retroactive_reselection": False,
+        "application": "active_v5_and_prospective_v6_runs",
+        "reselection_scope": {
+            "v4": "prohibited_frozen",
+            "legacy_reviewed_v5_snapshot": "preserved_exact_only",
+            "new_v5_and_v6_runs": "required_current_policy",
+        },
         "minimum_log_loss_improvement": 0.01,
         "unchanged_gates": {
             "holm_alpha": 0.05,
             "maximum_brier_degradation": 0.01,
             "fallback_count_required": 0,
         },
-        "frozen_prior_contracts": {
-            "v4_v5_minimum_log_loss_improvement": 0.05,
-            "v4_v5_reselection": False,
+        "version_contracts": {
+            "v4": {
+                "status": "frozen_regression_baseline",
+                "minimum_log_loss_improvement": 0.05,
+                "champion_name_locked": True,
+            },
+            "v5": {
+                "status": "active_operating_contract",
+                "minimum_log_loss_improvement": 0.01,
+                "champion_name_locked": False,
+            },
         },
     }
     assert evaluation["minimum_log_loss_improvement"] == 0.01
@@ -202,8 +214,12 @@ def test_v6_selection_policy_is_prospective_and_preserves_other_gates() -> None:
     assert research_comparison_module._preregistered_selection_policy(document) == {
         "id": "selection-policy-v2",
         "effective_date": "2026-08-25",
-        "application": "prospective_v6_runs_only",
-        "retroactive_reselection": False,
+        "application": "active_v5_and_prospective_v6_runs",
+        "reselection_scope": {
+            "v4": "prohibited_frozen",
+            "legacy_reviewed_v5_snapshot": "preserved_exact_only",
+            "new_v5_and_v6_runs": "required_current_policy",
+        },
         "minimum_log_loss_improvement": 0.01,
         "holm_alpha": 0.05,
         "maximum_brier_degradation": 0.01,
@@ -257,6 +273,30 @@ def test_v6_selection_policy_rejects_evaluation_gate_mismatch() -> None:
     document["evaluation"]["holm_alpha"] = 0.04
 
     with pytest.raises(RuntimeError, match="Holm alpha"):
+        research_comparison_module._preregistered_selection_policy(document)
+
+
+@pytest.mark.parametrize(
+    ("version", "field", "value", "message"),
+    (
+        ("v4", "minimum_log_loss_improvement", 0.01, "V4 frozen"),
+        ("v4", "champion_name_locked", False, "V4 frozen"),
+        ("v5", "minimum_log_loss_improvement", 0.05, "V5 active"),
+        ("v5", "champion_name_locked", True, "V5 active"),
+    ),
+)
+def test_v6_selection_policy_keeps_v4_frozen_and_v5_dynamic(
+    version: str,
+    field: str,
+    value: object,
+    message: str,
+) -> None:
+    document = json.loads(
+        Path("config/structural_v6_research.json").read_text(encoding="utf-8")
+    )
+    document["selection_policy"]["version_contracts"][version][field] = value
+
+    with pytest.raises(RuntimeError, match=message):
         research_comparison_module._preregistered_selection_policy(document)
 
 

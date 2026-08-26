@@ -7,7 +7,13 @@ import json
 from pathlib import Path
 import sys
 
+import pandas as pd
 import pytest
+
+from regime_lab.analysis.validation import (
+    evaluate_predictions,
+    select_champion_with_diagnostics,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "compare_v5_to_frozen_v4.py"
@@ -44,8 +50,8 @@ def _write_csv(path: Path, rows: list[dict[str, object]], fields: tuple[str, ...
 
 def _prediction_rows() -> tuple[list[dict[str, object]], list[dict[str, object]]]:
     cases = (
-        ("2024-01-05 21:00:00+00:00", "2024-01-12 21:00:00+00:00", "selection", "risk_on", ("0.7", "0.2", "0.1"), ("0.8", "0.1", "0.1")),
-        ("2024-01-12 21:00:00+00:00", "2024-01-19 21:00:00+00:00", "selection", "risk_off", ("0.2", "0.2", "0.6"), ("0.1", "0.2", "0.7")),
+        ("2024-01-05 21:00:00+00:00", "2024-01-12 21:00:00+00:00", "selection", "risk_on", ("0.7", "0.2", "0.1"), ("0.5", "0.3", "0.2")),
+        ("2024-01-12 21:00:00+00:00", "2024-01-19 21:00:00+00:00", "selection", "risk_off", ("0.2", "0.2", "0.6"), ("0.3", "0.3", "0.4")),
         ("2024-01-19 21:00:00+00:00", "2024-01-26 21:00:00+00:00", "holdout", "transition", ("0.2", "0.6", "0.2"), ("0.2", "0.7", "0.1")),
         ("2024-01-26 21:00:00+00:00", "2024-02-02 21:00:00+00:00", "holdout", "risk_on", ("0.6", "0.3", "0.1"), ("0.7", "0.2", "0.1")),
     )
@@ -92,36 +98,24 @@ def _refresh_frozen_inventory(
 
 
 def _selection_rows(v5_oos: Path) -> list[dict[str, object]]:
-    predictions, _ = comparison._read_predictions(v5_oos, context="fixture V5 OOS")
-    output: list[dict[str, object]] = []
-    for model in ("causal_multiscale_ensemble", "markov"):
-        metrics = comparison._metrics(
-            [
-                row
-                for row in predictions
-                if row.model == model and row.evaluation_split == "selection"
-            ]
-        )
-        reference_log_loss = float(metrics["log_loss"]) + 0.1
-        reference_brier = float(metrics["brier"]) - 0.01
-        output.append(
-            {
-                "model": model,
-                "reference_model": "persistence",
-                "selected": "False",
-                "gate_passed": "False",
-                "gate_reason": "holm_not_significant",
-                "log_loss": metrics["log_loss"],
-                "reference_log_loss": reference_log_loss,
-                "absolute_log_loss_improvement": reference_log_loss - float(metrics["log_loss"]),
-                "brier": metrics["brier"],
-                "reference_brier": reference_brier,
-                "brier_difference": float(metrics["brier"]) - reference_brier,
-                "fallback_count": metrics["fallback_count"],
-                "n_predictions": metrics["n"],
-            }
-        )
-    return output
+    frame = pd.read_csv(v5_oos)
+    frame["fallback"] = frame["fallback"].map(
+        lambda value: value if isinstance(value, bool) else value == "True"
+    )
+    selection = frame.loc[frame["evaluation_split"].eq("selection")].copy()
+    leaderboard = evaluate_predictions(selection)
+    _, diagnostics = select_champion_with_diagnostics(
+        leaderboard,
+        selection,
+        minimum_log_loss_improvement=0.01,
+    )
+    return [
+        {
+            field: "" if pd.isna(value) else value
+            for field, value in row.items()
+        }
+        for row in diagnostics.to_dict(orient="records")
+    ]
 
 
 def _refresh_v5_payload(directory: Path, *, fx_ablation: dict[str, object] | None = None) -> None:
@@ -135,9 +129,15 @@ def _refresh_v5_payload(directory: Path, *, fx_ablation: dict[str, object] | Non
             "row_count": sum(1 for _ in fx_sidecar.open(encoding="utf-8")) - 1,
             "sha256": _sha256(fx_sidecar),
         }
+    parsed_diagnostics, _ = comparison._read_selection_diagnostics(diagnostics)
+    selection_rows = list(parsed_diagnostics.values())
+    selected = [row["model"] for row in selection_rows if row["selected"] is True]
+    assert len(selected) == 1
     payload = {
         "meta": {"result_version": "weekly-regime-result-v5", "mode": "live"},
         "model": {
+            "champion": selected[0],
+            "selection_diagnostics": selection_rows,
             "core_artifacts": {
                 "oos_predictions": {
                     "path": oos.name,
@@ -283,24 +283,11 @@ def _fixture(
     v4_rows, v5_rows = _prediction_rows()
     _write_csv(v4 / "oos-predictions.csv", v4_rows, FIELDS)
     _write_csv(v5 / "oos-predictions.csv", v5_rows, FIELDS)
+    selection_rows = _selection_rows(v5 / "oos-predictions.csv")
     _write_csv(
         v5 / "selection-diagnostics.csv",
-        _selection_rows(v5 / "oos-predictions.csv"),
-        (
-            "model",
-            "reference_model",
-            "selected",
-            "gate_passed",
-            "gate_reason",
-            "log_loss",
-            "reference_log_loss",
-            "absolute_log_loss_improvement",
-            "brier",
-            "reference_brier",
-            "brier_difference",
-            "fallback_count",
-            "n_predictions",
-        ),
+        selection_rows,
+        tuple(selection_rows[0]),
     )
     _refresh_v5_payload(v5)
     _refresh_frozen_inventory(v4, monkeypatch)
@@ -327,8 +314,92 @@ def test_report_is_deterministic_split_matched_and_derived_only(
     assert markov["primary_selection"]["delta_left_minus_right"]["log_loss"] == 0.0
     multiscale = first["v5_causal_multiscale_ensemble_vs_v5_markov"]
     assert multiscale["selection_gate_crosscheck"]["models"]["causal_multiscale_ensemble"]["matched_metric_crosscheck"] is True
+    gate = multiscale["selection_gate_crosscheck"]
+    assert gate["artifact_role"] == "selection_family_independently_recomputed"
+    assert gate["multiscale_gate_against_selection_reference"] is False
     assert first["fx_ablation"]["comparison_status"] == "unavailable"
     assert len(first["inputs"]["v5"]["oos_predictions"]["sha256"]) == 64
+
+
+def test_selection_gate_crosscheck_reflects_multiscale_gate_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    v5, v4 = _fixture(tmp_path, monkeypatch)
+    oos_path = v5 / "oos-predictions.csv"
+    oos_rows = list(csv.DictReader(oos_path.open(encoding="utf-8")))
+    for row in oos_rows:
+        if row["model"] != "causal_multiscale_ensemble" or row["evaluation_split"] != "selection":
+            continue
+        probabilities = {
+            "risk_on": ("0.999", "0.0005", "0.0005"),
+            "transition": ("0.0005", "0.999", "0.0005"),
+            "risk_off": ("0.0005", "0.0005", "0.999"),
+        }[row["actual"]]
+        row.update(dict(zip(comparison.PROBABILITY_COLUMNS, probabilities, strict=True)))
+    _write_csv(oos_path, oos_rows, FIELDS)
+    path = v5 / "selection-diagnostics.csv"
+    rows = _selection_rows(oos_path)
+    _write_csv(path, rows, tuple(rows[0]))
+    _refresh_v5_payload(v5)
+
+    report = comparison.build_comparison(v5, v4)
+
+    gate = report["v5_causal_multiscale_ensemble_vs_v5_markov"][
+        "selection_gate_crosscheck"
+    ]
+    assert gate["multiscale_gate_against_selection_reference"] is True
+    assert gate["models"]["causal_multiscale_ensemble"]["selected"] is True
+
+
+def test_selection_gate_crosscheck_binds_non_markov_champion_and_reference(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    v5, v4 = _fixture(tmp_path, monkeypatch)
+    oos_path = v5 / "oos-predictions.csv"
+    rows = list(csv.DictReader(oos_path.open(encoding="utf-8")))
+    markov_rows = [row for row in rows if row["model"] == "markov"]
+    rows.extend(
+        {
+            **row,
+            "model": "xgboost",
+            **dict(
+                zip(
+                    comparison.PROBABILITY_COLUMNS,
+                    {
+                        "risk_on": ("0.999", "0.0005", "0.0005"),
+                        "transition": ("0.0005", "0.999", "0.0005"),
+                        "risk_off": ("0.0005", "0.0005", "0.999"),
+                    }[row["actual"]],
+                    strict=True,
+                )
+            ),
+        }
+        for row in markov_rows
+    )
+    _write_csv(oos_path, rows, FIELDS)
+
+    diagnostics_path = v5 / "selection-diagnostics.csv"
+    diagnostics = _selection_rows(oos_path)
+    _write_csv(diagnostics_path, diagnostics, tuple(diagnostics[0]))
+    _refresh_v5_payload(v5)
+
+    report = comparison.build_comparison(v5, v4)
+
+    models = report["v5_causal_multiscale_ensemble_vs_v5_markov"][
+        "selection_gate_crosscheck"
+    ]["models"]
+    assert set(models) == {"causal_multiscale_ensemble", "markov", "xgboost"}
+    assert models["xgboost"]["reference_model"] == "markov"
+    assert models["xgboost"]["selected"] is True
+    assert models["xgboost"]["gate_passed"] is True
+    assert models["xgboost"]["gate_reason"] == "passed"
+    assert models["xgboost"]["n_predictions"] == 2
+    assert models["xgboost"]["fallback_count"] == 0
+    assert models["xgboost"]["log_loss"] < models["markov"]["log_loss"]
+    assert models["xgboost"]["brier"] < models["markov"]["brier"]
+    assert models["xgboost"]["matched_metric_crosscheck"] is True
 
 
 def test_probability_token_bytes_and_numeric_parity_are_separate(
@@ -349,8 +420,8 @@ def test_probability_token_bytes_and_numeric_parity_are_separate(
 
 
 @pytest.mark.parametrize("field,new_value,error", [
-    ("actual", "transition", "actual mismatch"),
-    ("evaluation_split", "holdout", "evaluation_split mismatch"),
+    ("actual", "transition", "origins/outcomes differ"),
+    ("evaluation_split", "holdout", "origins/outcomes differ"),
 ])
 def test_common_key_label_or_split_mismatch_fails_closed(
     tmp_path: Path,
@@ -419,6 +490,50 @@ def test_selection_gate_metric_drift_fails_closed(
     _refresh_v5_payload(v5)
 
     with pytest.raises(comparison.ComparisonError, match="log_loss mismatch"):
+        comparison.build_comparison(v5, v4)
+
+
+@pytest.mark.parametrize("field", ("raw_p_value", "holm_adjusted_p_value"))
+def test_selection_family_bootstrap_or_holm_tampering_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+) -> None:
+    v5, v4 = _fixture(tmp_path, monkeypatch)
+    path = v5 / "selection-diagnostics.csv"
+    rows = list(csv.DictReader(path.open(encoding="utf-8")))
+    challenger = next(
+        row for row in rows if row["model"] == "causal_multiscale_ensemble"
+    )
+    challenger[field] = str(float(challenger[field]) + 0.0005)
+    _write_csv(path, rows, tuple(rows[0]))
+    # Refresh both the artifact manifest and payload diagnostics so only an
+    # independent OOS-family recomputation can detect the forged evidence.
+    _refresh_v5_payload(v5)
+
+    with pytest.raises(comparison.ComparisonError, match=rf"{field} mismatch"):
+        comparison.build_comparison(v5, v4)
+
+
+def test_payload_only_selection_family_tampering_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    v5, v4 = _fixture(tmp_path, monkeypatch)
+    payload_path = v5 / "regime-results.json"
+    payload = json.loads(payload_path.read_text(encoding="utf-8"))
+    challenger = next(
+        row
+        for row in payload["model"]["selection_diagnostics"]
+        if row["model"] == "causal_multiscale_ensemble"
+    )
+    challenger["raw_p_value"] += 0.0005
+    payload_path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+
+    with pytest.raises(
+        comparison.ComparisonError,
+        match="payload selection diagnostics raw_p_value mismatch",
+    ):
         comparison.build_comparison(v5, v4)
 
 

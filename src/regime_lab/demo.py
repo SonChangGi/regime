@@ -166,7 +166,7 @@ def generate_demo_payload(
     *,
     profile_name: str = "quick",
     progress: Callable[[str], None] | None = None,
-    contract_version: str = "v4",
+    contract_version: str = "v5",
 ) -> tuple[dict[str, Any], Any]:
     cutoffs, observations = _simulate_inputs(config)
     dataset = build_weekly_dataset(config, cutoffs, observations)

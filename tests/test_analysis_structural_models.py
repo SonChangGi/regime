@@ -370,6 +370,7 @@ def test_augment_recomputes_common_origin_gate_and_stores_weight_artifact() -> N
         split_audit=split_audit,
         profile=BenchmarkProfile.quick(),
         selection_end=pd.Timestamp("2021-08-01"),
+        minimum_log_loss_improvement=0.01,
         selection_leaderboard=selection_leaderboard,
         holdout_leaderboard=holdout_leaderboard,
     )
@@ -389,6 +390,19 @@ def test_augment_recomputes_common_origin_gate_and_stores_weight_artifact() -> N
         result.selection_diagnostics["selected"], "model"
     ].iloc[0] == result.champion
     assert set(result.selection_diagnostics["n_predictions"]) == {30}
+    assert set(
+        result.selection_diagnostics["minimum_log_loss_improvement"]
+    ) == {0.01}
+    for table in (
+        result.selection_leaderboard,
+        result.holdout_leaderboard,
+        result.leaderboard,
+        result.selection_diagnostics,
+    ):
+        assert table is not None
+        assert table.loc[table["selected"], "model"].tolist() == [
+            result.champion
+        ]
     origin_counts = result.predictions.groupby("model")["origin_date"].nunique()
     assert origin_counts.nunique() == 1
     assert int(origin_counts.iloc[0]) == 40

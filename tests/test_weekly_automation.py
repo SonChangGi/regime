@@ -384,6 +384,86 @@ def test_current_weak_generalization_live_payload_is_publishable() -> None:
     assert payload["model"]["holdout_diagnostic"]["status"] == "weak_generalization"
 
 
+def test_current_reviewed_v5_candidate_remains_accepted() -> None:
+    raw = (ROOT / automation.PUBLICATION_PATH).read_bytes()
+    document = json.loads(raw)
+    payload = automation.validate_automation_candidate(
+        raw,
+        target=datetime.fromisoformat(document["meta"]["data_as_of"]),
+        expected_contract="v5",
+    )
+
+    champion = payload["model"]["champion"]
+    assert payload["meta"]["publication_review"]["champion"] == champion
+    assert [
+        row["name"] for row in payload["model"]["leaderboard"] if row["selected"]
+    ] == [champion]
+
+
+def test_automation_rejects_new_reviewed_v5_with_legacy_005_policy() -> None:
+    document = json.loads((ROOT / automation.PUBLICATION_PATH).read_bytes())
+    document["weekly"][-1]["summary"] += " "
+    for row in document["model"]["selection_diagnostics"]:
+        row["minimum_log_loss_improvement"] = 0.05
+        if row["selected"] and row["model"] != row["reference_model"]:
+            row["log_loss"] = row["reference_log_loss"] - 0.06
+            row["absolute_log_loss_improvement"] = 0.06
+    raw = (json.dumps(document, ensure_ascii=False) + "\n").encode()
+
+    with pytest.raises(
+        automation.AutomationError,
+        match=r"selection threshold must be exactly 0\.01",
+    ):
+        automation.validate_automation_candidate(
+            raw,
+            target=datetime.fromisoformat(document["meta"]["data_as_of"]),
+            expected_contract="v5",
+        )
+
+
+def test_v5_champion_evidence_accepts_a_non_markov_selected_model() -> None:
+    payload = json.loads((ROOT / automation.PUBLICATION_PATH).read_bytes())
+    champion = "xgboost"
+    payload["model"]["champion"] = champion
+    payload["meta"]["publication_review"]["champion"] = champion
+    for row in payload["model"]["leaderboard"]:
+        selected = row["name"] == champion
+        row["selected"] = selected
+        row["is_champion"] = selected
+    for row in payload["model"]["selection_diagnostics"]:
+        selected = row["model"] == champion
+        row["selected"] = selected
+        if selected:
+            row["gate_passed"] = True
+            row["gate_reason"] = "passed"
+    latest = payload["weekly"][-1]
+    selected_forecast = next(
+        row for row in latest["model_forecasts"] if row["model"] == champion
+    )
+    for field in (
+        "state",
+        "probabilities",
+        "confidence",
+        "entropy",
+        "date",
+        "model",
+        "fallback",
+        "fallback_reason",
+    ):
+        latest["next_week"][field] = selected_forecast[field]
+
+    automation._validate_v5_champion_evidence(payload, latest=latest)
+
+
+def test_v5_champion_evidence_rejects_a_review_selection_mismatch() -> None:
+    payload = json.loads((ROOT / automation.PUBLICATION_PATH).read_bytes())
+    latest = payload["weekly"][-1]
+    payload["meta"]["publication_review"]["champion"] = "xgboost"
+
+    with pytest.raises(automation.AutomationError, match="publication review"):
+        automation._validate_v5_champion_evidence(payload, latest=latest)
+
+
 def test_candidate_gate_accepts_current_week_holiday_thursday_alpha_period() -> None:
     payload = json.loads(LIVE_PAYLOAD)
     payload["sources"][0]["available_at"] = "2026-08-06T20:00:00+00:00"
@@ -1275,6 +1355,44 @@ def test_build_refuses_change_during_audit_before_cache(
             target=LIVE_TARGET,
             context=CANDIDATE_CONTEXT,
         )
+
+
+def test_v5_promotion_rebuild_receives_private_artifact_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = replace(_settings(tmp_path), contract="v5")
+    commands: list[tuple[str, ...]] = []
+
+    def run(args, **_kwargs) -> bytes:
+        command = tuple(str(value) for value in args)
+        commands.append(command)
+        if "scripts/promote_v5_publication.py" in command:
+            raise automation.AutomationError("promotion command captured")
+        return b""
+
+    monkeypatch.setattr(automation, "_run", run)
+    monkeypatch.setattr(
+        automation,
+        "_candidate_context",
+        lambda _settings: CANDIDATE_CONTEXT,
+    )
+    monkeypatch.setattr(automation, "_sqlite_quick_check", lambda _path: None)
+
+    with pytest.raises(automation.AutomationError, match="promotion command captured"):
+        automation._build_candidate(
+            settings,
+            target=LIVE_TARGET,
+            context=CANDIDATE_CONTEXT,
+        )
+
+    promotion = next(
+        command
+        for command in commands
+        if "scripts/promote_v5_publication.py" in command
+    )
+    artifacts_position = promotion.index("--v5-artifacts")
+    assert promotion[artifacts_position + 1] == str(settings.artifacts)
 
 
 def test_launch_agent_bootstrap_happens_after_weekly_lock_release(
