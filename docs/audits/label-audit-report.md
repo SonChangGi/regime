@@ -113,7 +113,7 @@ raw close와 그 시점까지 알려진 배당·분할 이벤트로 재구성한
 ## 6. 현재 판정
 
 - **공식 유지**: `v1_spy_hysteresis`.
-- **현행 로컬 publication**: generation `20260826T184946.198911Z`의 `operational_oos`·dynamic champion·manifest/2이며, label spec은 여전히 `market-causal-3state-v1`이다. [`build/pages-workflow-package-final-20260827`](../../build/pages-workflow-package-final-20260827) local browser QA는 통과했지만 원격 배포·public readback은 미실행이다.
+- **현행 publication**: generation `20260826T184946.198911Z`의 `operational_oos`·dynamic champion·manifest/2이며, label spec은 여전히 `market-causal-3state-v1`이다. [`build/pages-workflow-package-final-20260827`](../../build/pages-workflow-package-final-20260827)은 local browser QA와 공개 8파일 byte readback을 통과했다. CI·Pages·브라우저·자동화 증거는 [`release-evidence.md`](release-evidence.md)에 분리해 기록한다.
 - **연구 진행 가능**: `v2_spy_pit_total_return`, `v2_broad_equity`.
 - **승격 불가 사유**: matched-origin reconstructed 표는 생성됐지만 exact split/당시 first-seen을 포함한 operational PIT panel은 없다. composite PIT는 v1 adjusted return을 대수적으로 재현했고, broad label은 flip이 두 배 이상 늘었으며 전체 sensitivity grid·정답지별 모델 ablation도 미완료다.
 - **표현 원칙**: canonical을 “SPY 추세·변동성·낙폭 기반 3국면”으로 표시하고, broad market·거시는 predictor/challenger로 표시한다.

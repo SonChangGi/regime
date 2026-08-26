@@ -10,7 +10,7 @@
 
 그러나 “하드코딩 제거 완료”라고 판정할 단계는 아니다. 3상태 순서, 일부 상태명, V5 비교모델군과 `0.01` 정책 값은 여러 Python·JavaScript 검증 계층에 남아 있다. 일부는 fail-closed schema 검증에 필요한 의도적 중복이지만, 실행 source of truth와 독립적으로 변하면 drift가 재발할 수 있다. 다만 현재 repo-local reviewed generation `20260826T184946.198911Z`는 generic `selection-family-audit/v2`를 `regime-generation-manifest/2`에 결속했다. 구형 `regime-v5-v4-matched-comparison/1`은 frozen V4 parity 전용 sidecar로 함께 보존되며 generic 전체 후보 감사를 대신하지 않는다.
 
-이번 감사에서 발견된 불리한 결함도 보존한다. 당시 [`scripts/audit_outputs.py`](../../scripts/audit_outputs.py)의 active V5 경로가 schema `2.0.0`, 과거 모델군 및 복잡도 표를 자체 보유하고 있었다. 현재 작업트리에서는 V5 schema·roster·복잡도를 typed 계약에서 읽도록 수정됐고 관련 targeted tests가 통과했다. repo-local `publication/live`와 최종 local package는 V5 dynamic·manifest/2·generic sidecar로 마이그레이션됐지만, 개발용 [`web/data/regime-results.json`](../../web/data/regime-results.json)은 frozen V4 Markov fallback으로 남아 있다. 원격 배포·공개 readback은 아직 수행하지 않았다.
+이번 감사에서 발견된 불리한 결함도 보존한다. 당시 [`scripts/audit_outputs.py`](../../scripts/audit_outputs.py)의 active V5 경로가 schema `2.0.0`, 과거 모델군 및 복잡도 표를 자체 보유하고 있었다. 현재 작업트리에서는 V5 schema·roster·복잡도를 typed 계약에서 읽도록 수정됐고 관련 targeted tests가 통과했다. repo-local `publication/live`와 최종 local package는 V5 dynamic·manifest/2·generic sidecar로 마이그레이션됐고, 개발용 [`web/data/regime-results.json`](../../web/data/regime-results.json)은 frozen V4 Markov fallback으로 남아 있다. 최종 live-derived package는 원격 배포·공개 byte readback과 실제 브라우저 QA까지 완료했다([`release-evidence.md`](release-evidence.md)).
 
 2026-08-27의 private research 실행은 artifact 상태 계약이 실제 산출물에서도 fail-closed임을 추가 확인했다. 최종 source-bound composite label generation은 `complete`이지만 `reconstructed_oos`, `automatic_promotion_eligible=false`, `operating_pipeline_mutated=false`이고, exact-split generation은 `blocked_input_contract`다. shadow audit와 555-origin standard mechanism ablation도 `automatic_promotion_eligible=false`, `public_release_eligible=false`다. 이들 private build를 `publication/live` 세대나 operational evidence로 간주하지 않는다.
 
@@ -25,7 +25,7 @@
 | lifecycle·semantic hash | [`src/regime_lab/integrity.py`](../../src/regime_lab/integrity.py) | promotion, packaging, audit | canonical JSON·허용 상태조합 검증 |
 | run lifecycle | [`src/regime_lab/run_registry.py`](../../src/regime_lab/run_registry.py) | local run orchestration | append-only JSONL 상태전이 구현·synthetic 검증 |
 | publication generation | [`publication/live/generation-manifest.json`](../../publication/live/generation-manifest.json) | integrity validator·audit CLI | repo-local 현행 generation 결속 검증 |
-| selection-family 보조 감사 | [`publication/live/selection-family-audit.json`](../../publication/live/selection-family-audit.json) | generation·promotion·packaging·audit 재구성 검증 | manifest/2 현행 generation 결속, 11후보·365 matched selection origin·`operational_oos`; local predeployment |
+| selection-family 보조 감사 | [`publication/live/selection-family-audit.json`](../../publication/live/selection-family-audit.json) | generation·promotion·packaging·audit 재구성 검증 | manifest/2 현행 generation 결속, 11후보·365 matched selection origin·`operational_oos`; 공개 readback 완료 |
 | private research generation | [`label-bakeoff generation manifest`](../../build/label-bakeoff-final-20260827-r3/runs/20260826T160035.092517Z-80388cd7/generation-manifest.json), [`strict generation manifest`](../../build/label-bakeoff-strict-final-20260827-r3/runs/20260826T155922.233456Z-92120dc9/generation-manifest.json), [`standard mechanism report`](../../build/mechanism-ablation-standard-final-20260827-r2/runs/20260826T163113.864460Z-223b1830/mechanism-ablation-report.json) | label/PIT·mechanism research builder | complete와 blocked 상태 모두 보존; derived-only·private·자동 승격 불가 |
 | 웹 상태 표현 | payload `states[]` | [`web/app.js`](../../web/app.js) | payload 우선, frozen legacy fallback만 유지 |
 
@@ -80,7 +80,7 @@ generation manifest는 다음 edge를 한 세대로 묶는다.
 
 promotion의 reviewed-candidate hash도 publication 필드를 deterministic pre-publication 상태로 정규화한 뒤 같은 canonical serializer를 사용한다. packaging은 최종 public candidate와 sidecar·manifest를 다시 검증하고, asset cache key는 [`scripts/package_public_demo.py`](../../scripts/package_public_demo.py)가 실제 packaged `app.js`·`styles.css` bytes의 전체 SHA-256으로 생성한다.
 
-현재 repo-local [`publication/live/regime-results.json`](../../publication/live/regime-results.json)은 schema `2.1.0`, generation `20260826T184946.198911Z`, dynamic champion, `selected_by_gate + operating + reviewed_publication`, `evidence_track=operational_oos`다. 명시적 `publication-live` audit와 manifest/2 결속이 통과했고, [`build/pages-workflow-package-final-20260827`](../../build/pages-workflow-package-final-20260827)의 네 data file은 `publication/live`의 payload·generation manifest·두 sidecar와 byte-identical하다. 반면 source-tree 개발용 [`web/data/regime-results.json`](../../web/data/regime-results.json)은 schema `1.0.0`의 frozen V4 Markov fallback이다. [Pages workflow](../../.github/workflows/pages.yml)의 최종 형태를 로컬 package로 검증했지만 원격 배포·사이트 readback은 실행하지 않았다. 따라서 **local predeployment migration은 확인됐고 remote migration은 미확인**이다.
+현재 repo-local [`publication/live/regime-results.json`](../../publication/live/regime-results.json)은 schema `2.1.0`, generation `20260826T184946.198911Z`, dynamic champion, `selected_by_gate + operating + reviewed_publication`, `evidence_track=operational_oos`다. 명시적 `publication-live` audit와 manifest/2 결속이 통과했고, [`build/pages-workflow-package-final-20260827`](../../build/pages-workflow-package-final-20260827)의 네 data file은 `publication/live`의 payload·generation manifest·두 sidecar와 byte-identical하다. 반면 source-tree 개발용 [`web/data/regime-results.json`](../../web/data/regime-results.json)은 schema `1.0.0`의 frozen V4 Markov fallback이다. [Pages workflow](../../.github/workflows/pages.yml)은 CI·allowlist 검증·배포를 통과했고 공개 8파일 readback도 로컬 승인 패키지와 일치했다. 따라서 **live-derived remote migration까지 확인됐다**([`release-evidence.md`](release-evidence.md)).
 
 ## 4. lifecycle 모순 제거
 
@@ -128,7 +128,7 @@ immutable preregistration, 운영정책, 실행 상태도 분리됐다.
 - origin, 실제 decision 시각, target, 남은 horizon
 - target이 지난 forecast의 만료 안내
 
-DOM·계약·접근성 테스트와 JavaScript syntax 검사에 더해, 최종 [`build/pages-workflow-package-final-20260827`](../../build/pages-workflow-package-final-20260827)을 실제 로컬 브라우저에서 확인했다. 이 package는 manifest/2와 `selection-family-audit/v2`를 포함해 optional fallback 없이 current generation을 읽으며, payload·generation manifest·selection-family sidecar·V5–V4 comparison이 `publication/live`와 byte-identical하다. 기존 viewport·dark mode·keyboard·예측 시계·소속도/확률 분리·console error 검사는 최종 live-derived package에서 통과했다. 현재 target은 유효하므로 만료 forecast 숨김은 DOM 계약 테스트 증거다. source `web/`를 직접 띄우면 frozen V4 fallback을 읽지만 최종 package의 data path와는 다르다. 원격 배포·readback은 수행하지 않았다.
+DOM·계약·접근성 테스트와 JavaScript syntax 검사에 더해, 최종 [`build/pages-workflow-package-final-20260827`](../../build/pages-workflow-package-final-20260827)을 실제 로컬 브라우저에서 확인했다. 이 package는 manifest/2와 `selection-family-audit/v2`를 포함해 optional fallback 없이 current generation을 읽으며, payload·generation manifest·selection-family sidecar·V5–V4 comparison이 `publication/live`와 byte-identical하다. 기존 viewport·dark mode·keyboard·예측 시계·소속도/확률 분리·console error 검사는 최종 live-derived package에서 통과했다. 현재 target은 유효하므로 만료 forecast 숨김은 DOM 계약 테스트 증거다. source `web/`를 직접 띄우면 frozen V4 fallback을 읽지만 최종 package의 data path와는 다르다. 같은 검사를 공개 URL에서 1280·1024·390px, light/dark, console error 0으로 다시 통과했다.
 
 ## 7. 완료 게이트
 
@@ -149,8 +149,8 @@ DOM·계약·접근성 테스트와 JavaScript syntax 검사에 더해, 최종 [
 - stale active audit 문제: **발견 내용 보존, 현재 작업트리에서 수정·targeted test 검증됨**.
 - lifecycle 모순: **Python·browser fail-closed 계약으로 수정됨**.
 - 웹 상태 메타: **payload 우선으로 수정, frozen fallback 유지**.
-- migration 상태: **repo-local `publication/live`와 최종 local package는 V5 dynamic·operational_oos·manifest/2로 결속; `web/data`는 frozen V4 fallback; remote 미검증**.
+- migration 상태: **repo-local `publication/live`와 최종 local package는 V5 dynamic·operational_oos·manifest/2로 결속; `web/data`는 frozen V4 fallback; live-derived remote 배포·readback 검증 완료**.
 - generic selection-family sidecar: **builder·validator·generation/promotion/package/audit 결속 구현, current reviewed generation과 최종 package에 통합; 11후보·365-origin 보조평가가 champion을 바꾸지 않음**.
 - private label·shadow·standard-ablation artifact: **source-bound reconstructed/private 계약으로 생성됐으며 publication generation과 분리됨; 555-origin standard ablation과 strict exact-split run의 차단 상태를 모두 보존**.
 - Python·JavaScript 하드코딩: **감소했으나 일부 중복 남음**.
-- 원격 배포·public readback: **미수행; local predeployment를 deployed current로 표현 금지**.
+- 원격 배포·public readback: **CI·Pages·8파일 byte parity·실제 브라우저 QA 완료**.

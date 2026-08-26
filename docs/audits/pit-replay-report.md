@@ -10,7 +10,7 @@
 
 가장 중요한 결함은 통계 코드의 단순한 `shift` 오류가 아니라 **시장자료 운영 빈티지**였다. 과거 Alpha Vantage 신규 weekly bar를 금요일 cutoff 시각으로 소급하면, 실제로는 며칠 뒤 처음 받은 값으로 과거 상태와 확률을 다시 만들 수 있었다. 이 결과는 pseudo-OOS이지 당시 발행 예측이 아니다.
 
-이번 변경은 네 개의 시간축, source/operational as-of join, append-only ledger와 generation manifest를 구현했다. 이후 composite replay는 실제 수집된 close·dividend·adjusted-close 행으로 1,077주 reconstructed panel을 만들었지만, provider-current adjusted close에서 implied split을 구성했기 때문에 historical PIT 또는 operational OOS가 아니다. exact split을 요구한 strict replay는 12개 ETF의 split series 누락을 숨기지 않고 차단됐다. 별도로 repo-local reviewed generation `20260826T184946.198911Z`는 `operational_oos` 입력으로 생성돼 ledger 1건과 completed run-registry 이력을 남겼고, 공식 label과 dynamic champion을 유지했다. 이는 로컬 predeployment 운영 증거이며 원격 배포나 장기 prospective 성능 증거는 아니다.
+이번 변경은 네 개의 시간축, source/operational as-of join, append-only ledger와 generation manifest를 구현했다. 이후 composite replay는 실제 수집된 close·dividend·adjusted-close 행으로 1,077주 reconstructed panel을 만들었지만, provider-current adjusted close에서 implied split을 구성했기 때문에 historical PIT 또는 operational OOS가 아니다. exact split을 요구한 strict replay는 12개 ETF의 split series 누락을 숨기지 않고 차단됐다. 별도로 reviewed generation `20260826T184946.198911Z`는 `operational_oos` 입력으로 생성돼 ledger 1건과 completed run-registry 이력을 남겼고, 공식 label과 dynamic champion을 유지했다. 이 generation은 이후 CI·Pages·8파일 byte readback과 실제 브라우저 QA를 통과했다([`release-evidence.md`](release-evidence.md)). 이는 실제 공개 전달 증거이지만 장기 prospective 성능 증거는 아니다.
 
 ## 1. `t → t+1` 학습 경계
 
@@ -97,7 +97,7 @@ Philadelphia Fed RTDSM의 real-time vintage 원칙을 적용하되([RTDSM](https
 
 현재 repo-local [`publication/live/regime-results.json`](../../publication/live/regime-results.json)은 schema `2.1.0`, generation `20260826T184946.198911Z`, `evidence_track=operational_oos`, `origin_at=2026-08-21T20:00:00Z`, `decision_at=2026-08-26T18:49:46.198911Z`, `target_at=2026-08-28T20:00:00Z`다. 공식 champion은 `causal_dynamic_ensemble`이고 lifecycle은 `selected_by_gate + operating + reviewed_publication`이다. [`publication/live/generation-manifest.json`](../../publication/live/generation-manifest.json)은 schema `regime-generation-manifest/2`로 payload, V5–V4 comparison, [`selection-family-audit/v2`](../../publication/live/selection-family-audit.json), 39-file artifact inventory, input snapshot, label spec, execution spec을 같은 generation에 묶는다.
 
-[`build/pages-workflow-package-final-20260827`](../../build/pages-workflow-package-final-20260827)은 위 네 data file을 `publication/live`와 byte-identical하게 담은 최종 로컬 `personal_noncommercial_live_derived` 패키지이며 raw observation을 포함하지 않는다. 이 패키지의 로컬 브라우저 QA는 통과했다. 개발용 [`web/data/regime-results.json`](../../web/data/regime-results.json)이 frozen V4인 것은 source-tree legacy fallback과 최종 패키지 입력이 다르기 때문이다. **원격 배포와 외부 public readback은 아직 실행하지 않았으므로 deployed current라고 표현하면 안 된다.**
+[`build/pages-workflow-package-final-20260827`](../../build/pages-workflow-package-final-20260827)은 위 네 data file을 `publication/live`와 byte-identical하게 담은 최종 로컬 `personal_noncommercial_live_derived` 패키지이며 raw observation을 포함하지 않는다. 이 패키지는 로컬 브라우저 QA 뒤 Pages에 배포됐고, 공개 URL에서 다시 받은 8개 파일도 전부 byte-identical했다([`release-evidence.md`](release-evidence.md)). 개발용 [`web/data/regime-results.json`](../../web/data/regime-results.json)이 frozen V4인 것은 source-tree legacy fallback과 최종 패키지 입력이 다르기 때문이다.
 
 ## 5. append-only forecast ledger
 
@@ -147,7 +147,7 @@ payload의 manifest back-reference와 sidecar의 payload raw-byte binding도 재
 5. 같은 입력을 `reconstructed_oos`로 재생할 때 별도 revision/산출물로 기록되는지 확인한다.
 6. 휴장일, DST 전환, 월말, same-day release, 16:00/16:15 경계, late response를 full pipeline까지 통과시킨다.
 7. target이 지난 latest forecast는 UI 현재 카드에서 숨기고 역사에는 남는지 DOM 계약 테스트로 확인한다. 실제 브라우저에서는 아직 유효한 현재 target과 남은 horizon 표시를 확인한다.
-8. local tests, CI, package, 공개 배포, public readback을 별도 증거로 남긴다. 이번 변경은 local 구현·회귀, 최종 local package, local browser QA까지 확인했으며 원격 배포·public readback은 미실행이다.
+8. local tests, CI, package, 공개 배포, public readback을 별도 증거로 남긴다. 이번 변경은 local 구현·회귀, 최종 local package·browser QA, 원격 CI·Pages, 공개 byte readback까지 각각 확인했다.
 
 ## 8. 현재 판정
 
@@ -157,6 +157,6 @@ payload의 manifest back-reference와 sidecar의 payload raw-byte binding도 재
 - raw-close/dividend/split PIT 재구성: **코드·synthetic 검증됨; 12개 ETF dividend 각 1,077행과 reconstructed composite panel은 생성됨. 그러나 exact split strict replay는 12/12 입력 누락으로 차단됐고 operational eligible row는 0**.
 - 2026-08-14 pseudo-OOS 문제: **불리한 사례로 보존됨**.
 - append-only ledger: **구현·synthetic 검증 및 단일 operational forecast row 확인됨; 장기 누적·revision 불변성 운영 증거는 아직 부족**.
-- 현재 repo-local reviewed generation: **`operational_oos`, dynamic champion, manifest/2·selection-family-audit/v2 결속 확인; local predeployment**.
+- 현재 reviewed generation: **`operational_oos`, dynamic champion, manifest/2·selection-family-audit/v2 결속 및 공개 배포·readback 확인**.
 - historical label·shadow·5-track 연구: **계속 reconstructed OOS이며 operational generation과 혼합 금지**.
-- 원격 배포·public readback 및 실제 prospective 성능 주장: **아직 불가**.
+- 원격 배포·public readback: **완료**. 실제 prospective 성능 주장: **아직 불가**.

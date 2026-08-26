@@ -15,7 +15,7 @@
 
 ## 1. 공식 dynamic champion과 frozen V4 Markov
 
-현재 source of truth는 [`config/operating-contract.json`](../../config/operating-contract.json)이다. repo-local reviewed source인 [`publication/live/regime-results.json`](../../publication/live/regime-results.json)도 generation `20260826T184946.198911Z`의 dynamic champion과 `operational_oos`를 가리킨다. [`build/pages-workflow-package-final-20260827`](../../build/pages-workflow-package-final-20260827)은 이 payload와 manifest/2·두 sidecar를 byte-identical하게 패키징했고 local browser QA를 통과했다. 다만 개발용 [`web/data/regime-results.json`](../../web/data/regime-results.json)은 frozen V4 fallback이고 원격 배포·readback은 없으므로, 모델 identity·local predeployment·remote deployment를 분리해 해석해야 한다.
+현재 source of truth는 [`config/operating-contract.json`](../../config/operating-contract.json)이다. repo-local reviewed source인 [`publication/live/regime-results.json`](../../publication/live/regime-results.json)도 generation `20260826T184946.198911Z`의 dynamic champion과 `operational_oos`를 가리킨다. [`build/pages-workflow-package-final-20260827`](../../build/pages-workflow-package-final-20260827)은 이 payload와 manifest/2·두 sidecar를 byte-identical하게 패키징했고 local browser QA, CI·Pages와 공개 8파일 readback을 통과했다([`release-evidence.md`](release-evidence.md)). 개발용 [`web/data/regime-results.json`](../../web/data/regime-results.json)은 계속 frozen V4 fallback이므로 source-tree fallback과 실제 remote deployment를 분리해 해석해야 한다.
 
 | 역할 | 모델 | 현재 의미 |
 |---|---|---|
@@ -133,7 +133,7 @@ fixed-XGBoost feature-track의 190-origin holdout 결과는 다음과 같다. de
 
 [`src/regime_lab/selection_family_audit.py`](../../src/regime_lab/selection_family_audit.py)는 `selection-family-audit/v2`를 구현한다. 전체 candidate, gate, complexity rank, champion, runner-up, fallback, policy hash와 공통 origin hash를 한 sidecar에 묶는다. `evaluation_split=selection`만 허용하고, 모든 target이 동결된 `selection_end`보다 앞서야 하며, 후보별 origin·target·actual·current state·train size·gap이 하나라도 다르면 실패한다. supplemental document에는 `holdout_rows_used=0`, `selection_effect=none`, `role=supplemental_not_selection_gate`를 고정한다.
 
-새 V5 generation 경로는 [`cli.py`](../../src/regime_lab/cli.py)에서 source CSV를 쓴 뒤 `selection-family-audit.json`을 만들고 artifact inventory와 `generation-manifest.json`에 결속한다. integrity audit는 sidecar를 `selection-diagnostics.csv`와 `oos-predictions.csv`에서 다시 만들어 semantic equality를 확인한다. promotion·packaging도 sidecar가 같은 generation·candidate manifest에 묶이지 않으면 실패한다. 이 계약은 현재 [`publication/live/selection-family-audit.json`](../../publication/live/selection-family-audit.json)과 manifest/2에 실제 반영됐고 최종 local package에도 포함됐다. 원격 공개 배포는 아직 하지 않았다.
+새 V5 generation 경로는 [`cli.py`](../../src/regime_lab/cli.py)에서 source CSV를 쓴 뒤 `selection-family-audit.json`을 만들고 artifact inventory와 `generation-manifest.json`에 결속한다. integrity audit는 sidecar를 `selection-diagnostics.csv`와 `oos-predictions.csv`에서 다시 만들어 semantic equality를 확인한다. promotion·packaging도 sidecar가 같은 generation·candidate manifest에 묶이지 않으면 실패한다. 이 계약은 현재 [`publication/live/selection-family-audit.json`](../../publication/live/selection-family-audit.json)과 manifest/2에 실제 반영됐고 최종 local package와 공개 readback에도 포함됐다.
 
 [`src/regime_lab/analysis/model_confidence_set.py`](../../src/regime_lab/analysis/model_confidence_set.py)는 Hansen–Lunde–Nason range-statistic MCS를 구현했다. 기본값은 alpha `0.10`, circular moving block 13주, 1,999 bootstrap, seed 17이며 완전한 wide matched-loss matrix만 받는다. 공통 bootstrap draw, centered/studentized differential, 순차 제거와 finite-resample `+1` p-value를 보존한다. [`tests/test_model_confidence_set.py`](../../tests/test_model_confidence_set.py)는 deterministic·degenerate·invalid input을 synthetic으로 검증했다.
 
@@ -163,7 +163,7 @@ fixed-XGBoost feature-track의 190-origin holdout 결과는 다음과 같다. de
 
 전환 진단은 불리한 결과도 그대로 보존한다. 실제 전환 event 36건 중 destination을 다음 전환 전까지 탐지한 건은 34건, 미탐지는 2건이었다. 그러나 **동시점 destination 탐지는 0건**이었고, 탐지된 34건의 평균·중앙·최대 지연은 모두 1 forecast week였다. false alarm은 약 6.995년 노출에서 2건, 연환산 `0.28590411`건이었다. 이는 dynamic이 해당 matched selection sample에서 전환 시점에는 대체로 기존 상태를 유지 예측하고 한 주 뒤 destination을 인식했다는 뜻이며, 미래 전환 탐지 보장이 아니다.
 
-기존 expected calibration error·accuracy·balanced accuracy·macro F1·transition precision/recall, fallback, paired block bootstrap·Holm은 원래 selection evidence에 남는다. 새 지표는 이를 교체하지 않고 같은 selection-only 행에서 독립 검산한 보조 산출물이다. current reviewed publication과 최종 local package에는 sidecar가 포함됐지만, 단일 predeployment generation은 장기 prospective 성능이나 원격 사이트 상태를 증명하지 않는다.
+기존 expected calibration error·accuracy·balanced accuracy·macro F1·transition precision/recall, fallback, paired block bootstrap·Holm은 원래 selection evidence에 남는다. 새 지표는 이를 교체하지 않고 같은 selection-only 행에서 독립 검산한 보조 산출물이다. current reviewed publication과 공개 package에는 sidecar가 포함됐지만, 단일 deployed generation은 장기 prospective 성능을 증명하지 않는다.
 
 ## 8. 신규 데이터 catalog는 수집 결과가 아니다
 
@@ -216,7 +216,7 @@ fixed-XGBoost feature-track의 190-origin holdout 결과는 다음과 같다. de
 
 - 공식 모델: **`causal_dynamic_ensemble`**.
 - frozen V4 Markov: **정확 재현된 regression baseline, 공식 champion 아님**.
-- migration 상태: **repo-local reviewed source와 최종 local package는 dynamic·operational_oos·manifest/2·selection-family-audit/v2로 결속; 개발용 web data는 V4 fallback; remote deploy·readback 미실행**.
+- migration 상태: **repo-local reviewed source와 최종 local package는 dynamic·operational_oos·manifest/2·selection-family-audit/v2로 결속; 개발용 web data는 V4 fallback; remote deploy·8파일 readback 완료**.
 - dynamic 선택 증거: **현행 sidecar의 365 matched selection origin에서 기존 gate 통과; MCS는 보조 진단이며 champion 변경 없음**.
 - recency-weighted XGBoost holdout 우위: **불리한 post-selection 결과로 보존, regret 0.00673901; 재선택 근거로 사용하지 않음**.
 - 새 weekly core roster: **계약·validator 및 11-model 실제 weekly full generation 완료; 장기 prospective 증거는 아직 부족**.
