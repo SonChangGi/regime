@@ -152,8 +152,10 @@
   const DEFAULT_SNAP_NOTE = "비관측일은 직전 관측 주로 이동합니다.";
   const CHART_DIMENSIONS = Object.freeze({
     width: 1200,
-    height: 300,
-    margin: Object.freeze({ top: 18, right: 18, bottom: 42, left: 54 }),
+    height: 560,
+    margin: Object.freeze({ top: 42, right: 18, bottom: 76, left: 60 }),
+    panelGap: 64,
+    outcomeOffset: 26,
   });
   const STATE_META = Object.freeze({
     risk_on: Object.freeze({ label: "Risk-on", ko: "위험 선호", symbol: "↗", short: "↗" }),
@@ -232,7 +234,6 @@
     outcomeHorizon: 13,
     outcomeBasis: "observed",
     comparisonModel: null,
-    historySeries: "observed",
   };
 
   const dom = {};
@@ -2457,28 +2458,6 @@
     return probability(risk);
   }
 
-  function forecastHistorySupported(payload = state.raw, requestedModel = state.comparisonModel) {
-    const models = forecastComparisonModels(payload);
-    const name = typeof requestedModel === "string" ? requestedModel : "";
-    const weekly = isObject(payload) && Array.isArray(payload.weekly)
-      ? payload.weekly
-      : state.weekly;
-    return Boolean(
-      name
-      && models.includes(name)
-      && weekly.length
-      && weekly.every((week) => (
-        Array.isArray(week && week.model_forecasts)
-        && week.model_forecasts.some((row) => isObject(row) && row.model === name)
-      )),
-    );
-  }
-
-  function historyUsesForecast() {
-    return state.historySeries === "forecast"
-      && forecastHistorySupported(state.raw, state.comparisonModel);
-  }
-
   function historyMeasureForWeek(
     week,
     code,
@@ -2510,24 +2489,69 @@
     return isObject(result) && STATE_ORDER.includes(result.state) ? result.state : null;
   }
 
-  function historySeriesMeasure(week, code) {
+  function observedHistoryMeasure(week, code) {
     return historyMeasureForWeek(
       week,
       code,
-      historyUsesForecast() ? "forecast" : "observed",
+      "observed",
       state.comparisonModel,
       state.raw,
       resultVersion(),
     );
   }
 
-  function historySeriesState(week) {
-    return historyStateForWeek(
+  function forecastHistoryMeasure(week, code) {
+    return historyMeasureForWeek(
       week,
-      historyUsesForecast() ? "forecast" : "observed",
+      code,
+      "forecast",
       state.comparisonModel,
       state.raw,
+      resultVersion(),
     );
+  }
+
+  function actualNextWeekForWeek(
+    week,
+    requestedModel = state.comparisonModel,
+    payload = state.raw,
+    weekly = null,
+  ) {
+    const forecast = forecastForWeek(week, requestedModel, payload);
+    const targetDate = firstValue(forecast, ["date", "target_date", "period_end"]);
+    const rows = Array.isArray(weekly)
+      ? weekly
+      : isObject(payload) && Array.isArray(payload.weekly)
+        ? payload.weekly
+        : state.weekly;
+    const matched = typeof targetDate === "string"
+      ? rows.find((row) => isObject(row) && row.date === targetDate)
+      : null;
+    const actualState = isObject(matched) && isObject(matched.current)
+      && STATE_ORDER.includes(matched.current.state)
+      ? matched.current.state
+      : null;
+    const latestDate = rows.reduce(
+      (latest, row) => isObject(row) && typeof row.date === "string" && row.date > latest ? row.date : latest,
+      "",
+    );
+    const status = actualState
+      ? "available"
+      : typeof targetDate !== "string"
+        ? "unavailable"
+        : latestDate && targetDate > latestDate
+          ? "pending"
+          : "missing";
+    return { date: typeof targetDate === "string" ? targetDate : null, state: actualState, status };
+  }
+
+  function forecastEntropyForWeek(
+    week,
+    requestedModel = state.comparisonModel,
+    payload = state.raw,
+  ) {
+    const forecast = forecastForWeek(week, requestedModel, payload);
+    return probability(isObject(forecast) ? forecast.entropy : null);
   }
 
   function isHistoricalSelection() {
@@ -2577,7 +2601,7 @@
       "app-state", "loading-state", "error-state", "empty-state", "error-title", "error-detail", "retry-button",
       "dashboard", "header-result-identity", "header-analysis-date", "header-data-as-of", "header-model-health", "theme-toggle",
       "theme-toggle-text", "dashboard-subtitle", "date-form", "analysis-date", "week-select",
-      "snap-note", "previous-week", "next-week", "latest-week", "history-window", "history-series-select",
+      "snap-note", "previous-week", "next-week", "latest-week", "history-window",
       "current-regime-card", "current-horizon", "current-regime-symbol", "current-regime-name",
       "current-regime-confidence", "current-probabilities", "current-entropy", "next-regime-card", "next-horizon",
       "next-regime-symbol", "next-regime-name", "next-regime-confidence",
@@ -2586,8 +2610,11 @@
       "transition-horizon-bars", "transition-risk-detail", "probability-chart",
       "probability-chart-wrap", "chart-tooltip", "history-caption",
       "chart-selection-readout", "chart-interaction-hint",
-      "chart-readout-date", "chart-readout-risk-on", "chart-readout-transition", "chart-readout-risk-off",
-      "history-data-body", "probability-chart-title", "history-chart-legend", "history-table-scroll", "history-table-caption",
+      "chart-readout-date", "chart-readout-target-date", "chart-readout-observed-label", "chart-readout-risk-on", "chart-readout-transition", "chart-readout-risk-off",
+      "chart-readout-forecast-label", "chart-readout-forecast-risk-on", "chart-readout-forecast-transition",
+      "chart-readout-forecast-risk-off", "chart-readout-predicted", "chart-readout-actual", "chart-readout-entropy",
+      "history-data-body", "history-observed-group-label", "history-forecast-group-label", "probability-chart-title", "history-chart-legend",
+      "history-table-scroll", "history-table-caption",
       "factor-title", "factor-axis", "factor-caption", "factor-scores", "timeline-title", "regime-timeline", "timeline-start",
       "timeline-end", "drivers-title", "drivers-caption", "top-drivers", "market-context",
       "duration-context-card", "duration-context-caption", "duration-context", "duration-baselines", "duration-research-detail",
@@ -2745,22 +2772,6 @@
       renderHistory();
       renderTimeline();
     });
-    if (dom["history-series-select"]) {
-      dom["history-series-select"].addEventListener("change", () => {
-        const requested = dom["history-series-select"].value;
-        state.historySeries = requested === "forecast"
-          && forecastHistorySupported(state.raw, state.comparisonModel)
-          ? "forecast"
-          : "observed";
-        dom["history-series-select"].value = state.historySeries;
-        renderSemanticLabels();
-        renderHistory();
-        renderTimeline();
-        dom["screen-reader-status"].textContent = historyUsesForecast()
-          ? `${modelForecastLabel(state.comparisonModel)} 1주 예측 히스토리로 변경했습니다.`
-          : "관측 국면 소속도 히스토리로 변경했습니다.";
-      });
-    }
     dom["transition-horizon-select"].addEventListener("change", () => {
       const requested = Number(dom["transition-horizon-select"].value);
       state.transitionHorizon = TRANSITION_HORIZONS.includes(requested) ? requested : 1;
@@ -2841,22 +2852,6 @@
     }
   }
 
-  function syncHistorySeriesControl() {
-    const select = dom["history-series-select"];
-    if (!select) return;
-    const supported = forecastHistorySupported(state.raw, state.comparisonModel);
-    const forecastOption = [...select.options].find((option) => option.value === "forecast");
-    if (forecastOption) forecastOption.disabled = !supported;
-    if (!supported && state.historySeries === "forecast") state.historySeries = "observed";
-    select.value = state.historySeries;
-    select.setAttribute(
-      "aria-label",
-      supported
-        ? `히스토리 시계열 · ${modelForecastLabel(state.comparisonModel)} 1주 예측 선택 가능`
-        : "히스토리 시계열 · 관측 국면",
-    );
-  }
-
   function renderNextForecastSurface(week) {
     const forecast = forecastForWeek(week, state.comparisonModel);
     const forecastDate = firstValue(forecast, ["date", "target_date", "period_end"]);
@@ -2887,13 +2882,8 @@
     const forecast = renderNextForecastSurface(week);
     renderTransition(week, forecast);
     renderModelForecast();
-    const historyWasForecast = state.historySeries === "forecast";
-    syncHistorySeriesControl();
-    if (historyWasForecast || historyUsesForecast()) {
-      renderSemanticLabels();
-      renderHistory();
-      renderTimeline();
-    }
+    renderSemanticLabels();
+    renderHistory();
     const outcomeWasForecast = state.outcomeBasis === "forecast";
     syncConditionalBasisControl();
     if (outcomeWasForecast || state.outcomeBasis === "forecast") {
@@ -2915,7 +2905,6 @@
     renderRegime("current", week.current, week.date);
     const forecast = renderNextForecastSurface(week);
     renderTransition(week, forecast);
-    syncHistorySeriesControl();
     renderSemanticLabels();
     renderHistory();
     renderTimeline();
@@ -2928,28 +2917,16 @@
     renderModelForecast();
   }
 
-  function historySeriesMeta() {
-    if (historyUsesForecast()) {
-      const model = modelForecastLabel(state.comparisonModel);
-      return {
-        title: `${model} 1주 예측 히스토리`,
-        measure: "예측확률",
-        emptyMeasure: "예측확률",
-        legendLabel: `${model} 다음 주 국면 예측확률 선 범례`,
-        tableLabel: `${model} 관측 주별 다음 주 국면 예측확률 표`,
-        tableCaption: `${model} 과거 OOS·최신 1주 예측확률`,
-        timelineTitle: `${model} 예측 타임라인`,
-        timelineLabel: `${model} 관측 주별 다음 주 예측 국면`,
-      };
-    }
+  function historyComparisonMeta() {
     const membership = isV5Payload();
+    const model = modelForecastLabel(state.comparisonModel);
     return {
-      title: membership ? "관측 국면 소속도 히스토리" : "관측 국면 확률 히스토리",
-      measure: membership ? "소속도" : "확률",
-      emptyMeasure: membership ? "소속도" : "확률",
-      legendLabel: membership ? "관측 국면 소속도 선 범례" : "관측 국면 확률 선 범례",
-      tableLabel: membership ? "표시 기간의 관측 국면 소속도 표" : "표시 기간의 관측 국면 확률 표",
-      tableCaption: membership ? "표시 기간의 관측 국면 소속도" : "표시 기간의 관측 국면 확률",
+      title: membership ? "관측 소속도와 1주 예측확률" : "관측 확률과 1주 예측확률",
+      observedMeasure: membership ? "관측 소속도" : "관측 확률",
+      model,
+      legendLabel: "상하 패널의 Risk-on 실선, Transition 파선, Risk-off 점선 범례",
+      tableLabel: `${model} ${membership ? "관측 소속도" : "관측 확률"}와 다음 주 예측확률 및 실제 결과 표`,
+      tableCaption: `${model} ${membership ? "관측 소속도" : "관측 확률"}·1주 예측확률·실제 다음 주 결과·정규화 예측 엔트로피`,
       timelineTitle: "관측 국면 타임라인",
       timelineLabel: "주간 관측 국면",
     };
@@ -2957,7 +2934,7 @@
 
   function renderSemanticLabels() {
     const membership = isV5Payload();
-    const historyMeta = historySeriesMeta();
+    const historyMeta = historyComparisonMeta();
     setText(dom["probability-chart-title"], historyMeta.title);
     setText(dom["factor-title"], membership ? "시장 맥락 점수" : "국면 팩터");
     setText(dom["factor-caption"], membership ? "52주 표준화 기반 합성점수" : "52주 표준점수");
@@ -2967,6 +2944,10 @@
     dom["history-table-scroll"].setAttribute("aria-label", historyMeta.tableLabel);
     dom["probability-chart-wrap"].setAttribute("aria-label", historyMeta.tableLabel);
     setText(dom["history-table-caption"], historyMeta.tableCaption);
+    setText(dom["history-observed-group-label"], `${historyMeta.observedMeasure} · t`);
+    setText(dom["chart-readout-observed-label"], `${historyMeta.observedMeasure} · t`);
+    setText(dom["history-forecast-group-label"], `${historyMeta.model} 예측확률 · t→t+1`);
+    setText(dom["chart-readout-forecast-label"], `${historyMeta.model} 예측확률 · t→t+1`);
     setText(dom["timeline-title"], historyMeta.timelineTitle);
     dom["regime-timeline"].setAttribute("aria-label", historyMeta.timelineLabel);
   }
@@ -3168,6 +3149,19 @@
     return margin.left + (count === 1 ? plotWidth / 2 : (index / (count - 1)) * plotWidth);
   }
 
+  function chartPanelLayout() {
+    const { height, margin, panelGap, outcomeOffset } = CHART_DIMENSIONS;
+    const panelHeight = (height - margin.top - margin.bottom - panelGap) / 2;
+    const observedTop = margin.top;
+    const forecastTop = observedTop + panelHeight + panelGap;
+    return {
+      panelHeight,
+      observedTop,
+      forecastTop,
+      outcomeY: forecastTop + panelHeight + outcomeOffset,
+    };
+  }
+
   function updateChartCursor(index) {
     const cursor = dom["probability-chart"].querySelector('[data-chart-cursor="true"]');
     if (!cursor || index < 0 || index >= state.chartHistory.length) return;
@@ -3191,20 +3185,50 @@
   function renderChartReadout(date) {
     const index = chartIndexForDate(date);
     const week = index >= 0 ? state.chartHistory[index] : null;
-    const historyMeta = historySeriesMeta();
+    const historyMeta = historyComparisonMeta();
+    const forecast = week ? forecastForWeek(week, state.comparisonModel, state.raw) : null;
+    const actual = week ? actualNextWeekForWeek(week) : { date: null, state: null, status: "unavailable" };
+    const predictedState = isObject(forecast) && STATE_ORDER.includes(forecast.state) ? forecast.state : null;
+    const entropy = week ? forecastEntropyForWeek(week) : null;
     setText(dom["chart-readout-date"], week ? formatDate(week.date) : "—");
+    setText(
+      dom["chart-readout-target-date"],
+      actual.date ? `예측 대상 ${formatDate(actual.date, false)}` : "예측 대상 —",
+    );
     for (const code of STATE_ORDER) {
       const readout = dom[`chart-readout-${code.replaceAll("_", "-")}`];
-      if (readout) setText(readout, week ? formatPercent(historySeriesMeasure(week, code)) : "—");
+      if (readout) setText(readout, week ? formatPercent(observedHistoryMeasure(week, code)) : "—");
+      const forecastReadout = dom[`chart-readout-forecast-${code.replaceAll("_", "-")}`];
+      if (forecastReadout) setText(forecastReadout, week ? formatPercent(forecastHistoryMeasure(week, code)) : "—");
+    }
+    setText(dom["chart-readout-predicted"], predictedState ? STATE_META[predictedState].label : "—");
+    const actualText = actual.status === "available"
+      ? `${STATE_META[actual.state].label}${predictedState ? ` · ${actual.state === predictedState ? "일치" : "불일치"}` : ""}`
+      : actual.status === "pending"
+        ? "결과 대기"
+        : actual.status === "missing"
+          ? "결과 없음"
+          : "—";
+    setText(dom["chart-readout-actual"], actualText);
+    setText(dom["chart-readout-entropy"], formatNumber(entropy, 3));
+    dom["chart-readout-entropy"].title = "0은 한 국면에 집중, 1은 세 국면에 균등";
+    dom["chart-readout-actual"].classList.remove("is-match", "is-miss", "is-pending");
+    if (actual.status === "available" && predictedState) {
+      dom["chart-readout-actual"].classList.add(actual.state === predictedState ? "is-match" : "is-miss");
+    } else if (actual.status === "pending") {
+      dom["chart-readout-actual"].classList.add("is-pending");
     }
     if (week) updateChartCursor(index);
     for (const point of dom["probability-chart"].querySelectorAll(".chart-point")) {
       point.classList.toggle("is-active", Boolean(week) && point.dataset.date === week.date);
     }
+    for (const marker of dom["probability-chart"].querySelectorAll(".actual-outcome-marker")) {
+      marker.classList.toggle("is-active", Boolean(week) && marker.dataset.date === week.date);
+    }
 
     if (dom["chart-selection-readout"]) {
       const summary = week
-        ? `${formatDate(week.date)} 관측 기준 ${historyMeta.measure}. Risk-on ${formatPercent(historySeriesMeasure(week, "risk_on"))}, Transition ${formatPercent(historySeriesMeasure(week, "transition"))}, Risk-off ${formatPercent(historySeriesMeasure(week, "risk_off"))}.`
+        ? `${formatDate(week.date)} 관측 기준. ${historyMeta.observedMeasure}: Risk-on ${formatPercent(observedHistoryMeasure(week, "risk_on"))}, Transition ${formatPercent(observedHistoryMeasure(week, "transition"))}, Risk-off ${formatPercent(observedHistoryMeasure(week, "risk_off"))}. ${historyMeta.model} 1주 예측확률: Risk-on ${formatPercent(forecastHistoryMeasure(week, "risk_on"))}, Transition ${formatPercent(forecastHistoryMeasure(week, "transition"))}, Risk-off ${formatPercent(forecastHistoryMeasure(week, "risk_off"))}. 실제 다음 주 ${actualText}. 정규화 예측 엔트로피 ${formatNumber(entropy, 3)}.`
         : "선택된 차트 날짜가 없습니다.";
       dom["chart-selection-readout"].setAttribute("aria-label", summary);
     }
@@ -3212,13 +3236,22 @@
 
   function showChartTooltipForWeek(event, week) {
     const tooltip = dom["chart-tooltip"];
-    const historyMeta = historySeriesMeta();
-    tooltip.textContent = `${formatDate(week.date)} 관측 · ${historyMeta.measure} · Risk-on ${formatPercent(historySeriesMeasure(week, "risk_on"))} · Transition ${formatPercent(historySeriesMeasure(week, "transition"))} · Risk-off ${formatPercent(historySeriesMeasure(week, "risk_off"))}`;
+    const forecast = forecastForWeek(week, state.comparisonModel, state.raw);
+    const actual = actualNextWeekForWeek(week);
+    const predictedState = isObject(forecast) && STATE_ORDER.includes(forecast.state) ? forecast.state : null;
+    const actualText = actual.status === "available"
+      ? `${STATE_META[actual.state].label}${predictedState ? ` (${actual.state === predictedState ? "일치" : "불일치"})` : ""}`
+      : actual.status === "pending"
+        ? "결과 대기"
+        : actual.status === "missing"
+          ? "결과 없음"
+          : "—";
+    tooltip.textContent = `${formatDate(week.date)} 관측\n관측 · ${STATE_ORDER.map((code) => `${STATE_META[code].label} ${formatPercent(observedHistoryMeasure(week, code))}`).join(" · ")}\n${modelForecastLabel(state.comparisonModel)} 예측 · ${STATE_ORDER.map((code) => `${STATE_META[code].label} ${formatPercent(forecastHistoryMeasure(week, code))}`).join(" · ")}\n실제 t+1 ${actualText} · 엔트로피 ${formatNumber(forecastEntropyForWeek(week), 3)}`;
     tooltip.hidden = false;
     const wrapRect = dom["probability-chart-wrap"].getBoundingClientRect();
     const left = finiteNumber(event.clientX) === null ? 8 : event.clientX - wrapRect.left + 10;
     const top = finiteNumber(event.clientY) === null ? 8 : event.clientY - wrapRect.top - 42;
-    const maxLeft = Math.max(8, wrapRect.width - 290);
+    const maxLeft = Math.max(8, wrapRect.width - 380);
     tooltip.style.left = `${Math.max(8, Math.min(left, maxLeft))}px`;
     tooltip.style.top = `${Math.max(4, top)}px`;
   }
@@ -3287,9 +3320,36 @@
     hideChartTooltip();
   }
 
+  function createActualOutcomeMarker(actual, x, y, date) {
+    const common = {
+      class: `actual-outcome-marker ${actual.state || actual.status}`,
+      "data-date": date,
+      focusable: "false",
+      "aria-hidden": "true",
+    };
+    if (actual.state === "transition") {
+      return createSvg("path", {
+        ...common,
+        d: `M${x.toFixed(2)},${(y - 4.5).toFixed(2)} L${(x + 4.5).toFixed(2)},${y.toFixed(2)} L${x.toFixed(2)},${(y + 4.5).toFixed(2)} L${(x - 4.5).toFixed(2)},${y.toFixed(2)} Z`,
+      });
+    }
+    if (actual.state === "risk_off") {
+      return createSvg("path", {
+        ...common,
+        d: `M${(x - 4.8).toFixed(2)},${(y - 3.6).toFixed(2)} L${(x + 4.8).toFixed(2)},${(y - 3.6).toFixed(2)} L${x.toFixed(2)},${(y + 5).toFixed(2)} Z`,
+      });
+    }
+    return createSvg("circle", {
+      ...common,
+      cx: x,
+      cy: y,
+      r: actual.state === "risk_on" ? 4 : 3.8,
+    });
+  }
+
   function renderHistory() {
     const history = selectedHistory();
-    const historyMeta = historySeriesMeta();
+    const historyMeta = historyComparisonMeta();
     state.chartHistory = history;
     state.chartPreviewDate = null;
     renderHistoryTable(history);
@@ -3306,24 +3366,65 @@
         "text-anchor": "middle",
         class: "chart-axis-label",
       });
-      empty.textContent = `표시할 ${historyMeta.emptyMeasure} 히스토리가 없습니다.`;
+      empty.textContent = "표시할 관측·예측 히스토리가 없습니다.";
       svg.append(empty);
       return;
     }
 
     const { width, height, margin } = CHART_DIMENSIONS;
-    const plotWidth = width - margin.left - margin.right;
-    const plotHeight = height - margin.top - margin.bottom;
+    const layout = chartPanelLayout();
     const x = (index) => chartX(index, history.length);
-    const y = (value) => margin.top + (1 - value) * plotHeight;
+    const panels = [
+      {
+        key: "observed",
+        top: layout.observedTop,
+        title: `${historyMeta.observedMeasure} · t`,
+        measure: observedHistoryMeasure,
+      },
+      {
+        key: "forecast",
+        top: layout.forecastTop,
+        title: `${historyMeta.model} 1주 예측확률 · t→t+1`,
+        measure: forecastHistoryMeasure,
+      },
+    ];
 
-    for (const tick of [0, 0.25, 0.5, 0.75, 1]) {
-      const tickY = y(tick);
-      svg.append(createSvg("line", { x1: margin.left, y1: tickY, x2: width - margin.right, y2: tickY, class: "chart-grid-line" }));
-      const label = createSvg("text", { x: margin.left - 10, y: tickY + 4, "text-anchor": "end", class: "chart-axis-label" });
-      label.textContent = `${Math.round(tick * 100)}%`;
-      svg.append(label);
+    for (const panel of panels) {
+      const title = createSvg("text", {
+        x: margin.left,
+        y: panel.top - 15,
+        class: "chart-panel-title",
+      });
+      title.textContent = panel.title;
+      svg.append(title);
+      for (const tick of [0, 0.25, 0.5, 0.75, 1]) {
+        const tickY = panel.top + (1 - tick) * layout.panelHeight;
+        svg.append(createSvg("line", {
+          x1: margin.left,
+          y1: tickY,
+          x2: width - margin.right,
+          y2: tickY,
+          class: "chart-grid-line",
+        }));
+        const label = createSvg("text", {
+          x: margin.left - 10,
+          y: tickY + 4,
+          "text-anchor": "end",
+          class: "chart-axis-label",
+        });
+        label.textContent = `${Math.round(tick * 100)}%`;
+        svg.append(label);
+      }
     }
+
+    svg.append(createSvg("line", {
+      x1: margin.left,
+      y1: layout.observedTop + layout.panelHeight + CHART_DIMENSIONS.panelGap / 2,
+      x2: width - margin.right,
+      y2: layout.observedTop + layout.panelHeight + CHART_DIMENSIONS.panelGap / 2,
+      class: "chart-panel-separator",
+      "aria-hidden": "true",
+    }));
 
     const desiredTicks = Math.min(7, history.length);
     const tickIndexes = new Set();
@@ -3332,7 +3433,7 @@
     }
     for (const index of tickIndexes) {
       const label = createSvg("text", {
-        x: x(index), y: height - 15, "text-anchor": index === 0 ? "start" : index === history.length - 1 ? "end" : "middle", class: "chart-date-label",
+        x: x(index), y: height - 8, "text-anchor": index === 0 ? "start" : index === history.length - 1 ? "end" : "middle", class: "chart-date-label",
       });
       label.textContent = history[index].date;
       svg.append(label);
@@ -3345,49 +3446,76 @@
       x1: cursorX,
       y1: margin.top,
       x2: cursorX,
-      y2: height - margin.bottom,
+      y2: layout.outcomeY + 8,
       class: "chart-selected-line",
       "data-chart-cursor": "true",
       "aria-hidden": "true",
     }));
 
-    let validPointCount = 0;
-    for (const code of STATE_ORDER) {
-      const points = history.map((week, index) => {
-        const value = historySeriesMeasure(week, code);
-        return { week, value, x: x(index), y: value === null ? null : y(value), index };
-      });
-      const pathData = makeLinePath(points);
-      if (pathData) {
-        svg.append(createSvg("path", { d: pathData, class: `chart-series ${code}` }));
-      }
-
-      for (const point of points) {
-        if (point.value === null) continue;
-        validPointCount += 1;
-        const circle = createSvg("circle", {
-          cx: point.x,
-          cy: point.y,
-          r: 2.5,
-          class: `chart-point ${code}`,
-          "data-date": point.week.date,
-          focusable: "false",
-          "aria-hidden": "true",
+    for (const panel of panels) {
+      let validPointCount = 0;
+      const y = (value) => panel.top + (1 - value) * layout.panelHeight;
+      for (const code of STATE_ORDER) {
+        const points = history.map((week, index) => {
+          const value = panel.measure(week, code);
+          return { week, value, x: x(index), y: value === null ? null : y(value), index };
         });
-        svg.append(circle);
+        const pathData = makeLinePath(points);
+        if (pathData) {
+          svg.append(createSvg("path", {
+            d: pathData,
+            class: `chart-series ${code} ${panel.key}`,
+            "data-chart-panel": panel.key,
+          }));
+        }
+        for (const point of points) {
+          if (point.value === null) continue;
+          validPointCount += 1;
+          svg.append(createSvg("circle", {
+            cx: point.x,
+            cy: point.y,
+            r: 2.5,
+            class: `chart-point ${code} ${panel.key}`,
+            "data-date": point.week.date,
+            focusable: "false",
+            "aria-hidden": "true",
+          }));
+        }
+      }
+      if (!validPointCount) {
+        const empty = createSvg("text", {
+          x: width / 2,
+          y: panel.top + layout.panelHeight / 2,
+          "text-anchor": "middle",
+          class: "chart-axis-label",
+        });
+        empty.textContent = panel.key === "observed" ? "관측 값이 없습니다." : "예측 값이 없습니다.";
+        svg.append(empty);
       }
     }
 
-    if (!validPointCount) {
-      const empty = createSvg("text", { x: width / 2, y: height / 2, "text-anchor": "middle", class: "chart-axis-label" });
-      empty.textContent = `이 기간에는 유효한 ${historyMeta.emptyMeasure} 값이 없습니다.`;
-      svg.append(empty);
+    const actualLabel = createSvg("text", {
+      x: margin.left - 10,
+      y: layout.outcomeY + 4,
+      "text-anchor": "end",
+      class: "chart-outcome-label",
+    });
+    actualLabel.textContent = "실제 t+1";
+    svg.append(actualLabel);
+    svg.append(createSvg("line", {
+      x1: margin.left,
+      y1: layout.outcomeY,
+      x2: width - margin.right,
+      y2: layout.outcomeY,
+      class: "chart-outcome-baseline",
+      "aria-hidden": "true",
+    }));
+    for (const [index, week] of history.entries()) {
+      svg.append(createActualOutcomeMarker(actualNextWeekForWeek(week), x(index), layout.outcomeY, week.date));
     }
 
     const range = `${formatDate(history[0].date)}–${formatDate(history[history.length - 1].date)}`;
-    dom["history-caption"].textContent = historyUsesForecast()
-      ? `${range} · 과거 OOS·최신 1주 예측 · 관측일 기준 t+1 ${modelForecastLabel(state.comparisonModel)} 예측확률 · 0–100% 축`
-      : `${range} · ${history.length}주 관측 · 현재 국면 ${historyMeta.measure} · 0–100% 축`;
+    dom["history-caption"].textContent = `${range} · ${history.length}주 · 상단 ${historyMeta.observedMeasure}, 하단 ${historyMeta.model} 1주 예측확률 · 하단 마커는 실제 다음 주 국면 · 두 패널 모두 0–100% 축`;
     renderChartReadout(state.chartPinnedDate);
     requestAnimationFrame(() => scrollChartDateIntoView(state.chartPinnedDate));
   }
@@ -3401,7 +3529,7 @@
     if (!history.length) {
       const row = createElement("tr");
       const cell = createElement("td", null, "표시할 값이 없습니다.");
-      cell.colSpan = 4;
+      cell.colSpan = 11;
       row.append(cell);
       dom["history-data-body"].append(row);
       return;
@@ -3409,7 +3537,22 @@
     for (const week of history) {
       const row = createElement("tr");
       row.append(createElement("td", null, week.date));
-      for (const code of STATE_ORDER) row.append(createElement("td", null, formatPercent(historySeriesMeasure(week, code))));
+      for (const code of STATE_ORDER) row.append(createElement("td", null, formatPercent(observedHistoryMeasure(week, code))));
+      const forecast = forecastForWeek(week, state.comparisonModel, state.raw);
+      const actual = actualNextWeekForWeek(week);
+      row.append(createElement("td", null, actual.date || "—"));
+      for (const code of STATE_ORDER) row.append(createElement("td", null, formatPercent(forecastHistoryMeasure(week, code))));
+      const predictedState = isObject(forecast) && STATE_ORDER.includes(forecast.state) ? forecast.state : null;
+      row.append(createElement("td", null, predictedState ? STATE_META[predictedState].label : "—"));
+      const actualText = actual.status === "available"
+        ? `${STATE_META[actual.state].label}${predictedState ? ` · ${actual.state === predictedState ? "일치" : "불일치"}` : ""}`
+        : actual.status === "pending"
+          ? "결과 대기"
+          : actual.status === "missing"
+            ? "결과 없음"
+            : "—";
+      row.append(createElement("td", null, actualText));
+      row.append(createElement("td", null, formatNumber(forecastEntropyForWeek(week), 3)));
       dom["history-data-body"].append(row);
     }
   }
@@ -3470,12 +3613,12 @@
     }
 
     for (const week of history) {
-      const code = historySeriesState(week);
+      const code = historyStateForWeek(week, "observed", state.comparisonModel, state.raw);
       const meta = stateMeta(code);
       const button = createElement("button", `timeline-cell ${STATE_ORDER.includes(code) ? code : "unknown"}`, week.date);
       button.type = "button";
       button.dataset.date = week.date;
-      const seriesLabel = historyUsesForecast() ? "관측 기준 다음 주 예측 국면" : "관측 국면";
+      const seriesLabel = "관측 국면";
       button.setAttribute("aria-label", `${formatDate(week.date)} ${seriesLabel} ${meta.ko}`);
       button.title = `${week.date} · ${seriesLabel} · ${meta.ko}`;
       const isSelected = week.date === selectedWeek().date;
@@ -4701,11 +4844,6 @@
       state.validationWarnings = validation.warnings;
       state.comparisonModel = modelName(payload.model && payload.model.champion);
       state.outcomeBasis = "observed";
-      state.historySeries = dom["history-series-select"]
-        && dom["history-series-select"].value === "forecast"
-        && forecastHistorySupported(payload, state.comparisonModel)
-        ? "forecast"
-        : "observed";
       state.preferredHistoryWindow = dom["history-window"].value === "all"
         ? "all"
         : Number(dom["history-window"].value);
@@ -4776,6 +4914,8 @@
     oneWeekDepartureProbability,
     historyMeasureForWeek,
     historyStateForWeek,
+    actualNextWeekForWeek,
+    forecastEntropyForWeek,
     modelConditionedAssetRows,
     modelConditionedAssetRowsComplete,
     conditionalStatsRowsForBasis,

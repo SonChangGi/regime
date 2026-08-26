@@ -9,8 +9,8 @@
       content="선택한 시점까지 공개된 정보로 미국 증시 국면을 판단하고 다음 주 국면 확률을 보여주는 연구 대시보드"
     >
     <title>US Market Regime Lab | Quant Research</title>
-    <link rel="stylesheet" href="./styles.css?v=20260826-v5-10">
-    <script src="./app.js?v=20260826-v5-10" defer></script>
+    <link rel="stylesheet" href="./styles.css?v=20260826-v5-11">
+    <script src="./app.js?v=20260826-v5-11" defer></script>
   </head>
   <body id="top">
     <a class="skip-link" href="#main-content">본문으로 건너뛰기</a>
@@ -197,19 +197,12 @@
           <article class="chart-card card wide-card" aria-labelledby="probability-chart-title">
             <div class="card-heading">
               <div>
-                <h2 id="probability-chart-title">국면 상태 히스토리</h2>
+                <h2 id="probability-chart-title">관측 소속도와 1주 예측확률</h2>
                 <p id="history-caption" class="sr-only">
-                  세 국면의 현재 상태 값을 0–100% 축에서 비교합니다.
+                  같은 관측일을 기준으로 현재 국면 소속도와 선택 모델의 다음 주 예측확률을 상하로 비교합니다.
                 </p>
               </div>
               <div class="history-heading-controls">
-                <div class="field-group inline-field history-series-field">
-                  <label for="history-series-select">히스토리 기준</label>
-                  <select id="history-series-select" aria-controls="probability-chart history-data-body regime-timeline">
-                    <option value="observed" selected>관측 소속도</option>
-                    <option value="forecast">선택 모델 1주 예측</option>
-                  </select>
-                </div>
                 <div class="field-group inline-field">
                   <label for="history-window">표시 기간</label>
                   <select id="history-window">
@@ -227,17 +220,37 @@
                 <span><i class="legend-line risk-on-line" aria-hidden="true"></i>Risk-on · 실선</span>
                 <span><i class="legend-line transition-line" aria-hidden="true"></i>Transition · 파선</span>
                 <span><i class="legend-line risk-off-line" aria-hidden="true"></i>Risk-off · 점선</span>
+                <span><i class="legend-outcome-markers" aria-hidden="true">● ◆ ▼</i>실제 t+1 결과</span>
               </div>
               <div id="chart-selection-readout" class="chart-selection-readout" aria-live="polite">
                 <div class="chart-readout-date">
-                  <span>차트 선택일</span>
+                  <span>관측일</span>
                   <strong id="chart-readout-date">—</strong>
+                  <small id="chart-readout-target-date">예측 대상 —</small>
                 </div>
-                <dl>
-                  <div><dt>Risk-on</dt><dd id="chart-readout-risk-on">—</dd></div>
-                  <div><dt>Transition</dt><dd id="chart-readout-transition">—</dd></div>
-                  <div><dt>Risk-off</dt><dd id="chart-readout-risk-off">—</dd></div>
-                </dl>
+                <div class="chart-readout-grid">
+                  <div class="chart-readout-series observed">
+                    <span id="chart-readout-observed-label" class="chart-readout-series-label">관측 소속도 · t</span>
+                    <dl>
+                      <div><dt>Risk-on</dt><dd id="chart-readout-risk-on">—</dd></div>
+                      <div><dt>Transition</dt><dd id="chart-readout-transition">—</dd></div>
+                      <div><dt>Risk-off</dt><dd id="chart-readout-risk-off">—</dd></div>
+                    </dl>
+                  </div>
+                  <div class="chart-readout-series forecast">
+                    <span id="chart-readout-forecast-label" class="chart-readout-series-label">1주 예측확률 · t→t+1</span>
+                    <dl>
+                      <div><dt>Risk-on</dt><dd id="chart-readout-forecast-risk-on">—</dd></div>
+                      <div><dt>Transition</dt><dd id="chart-readout-forecast-transition">—</dd></div>
+                      <div><dt>Risk-off</dt><dd id="chart-readout-forecast-risk-off">—</dd></div>
+                    </dl>
+                  </div>
+                  <dl class="chart-readout-diagnostics">
+                    <div><dt>예측 국면</dt><dd id="chart-readout-predicted">—</dd></div>
+                    <div><dt>실제 다음 주</dt><dd id="chart-readout-actual">—</dd></div>
+                    <div><dt>예측 엔트로피 (0–1)</dt><dd id="chart-readout-entropy">—</dd></div>
+                  </dl>
+                </div>
               </div>
             </div>
 
@@ -252,7 +265,7 @@
               <svg
                 id="probability-chart"
                 class="probability-chart"
-                viewBox="0 0 1200 300"
+                viewBox="0 0 1200 560"
                 role="img"
                 aria-labelledby="probability-chart-title history-caption"
               ></svg>
@@ -267,7 +280,18 @@
                   <caption id="history-table-caption" class="sr-only">표시 기간의 현재 국면 상태 값</caption>
                   <thead>
                     <tr>
-                      <th scope="col">관측일</th>
+                      <th scope="col" rowspan="2">관측일</th>
+                      <th id="history-observed-group-label" scope="colgroup" colspan="3">관측 소속도 · t</th>
+                      <th scope="col" rowspan="2">예측일</th>
+                      <th id="history-forecast-group-label" scope="colgroup" colspan="3">1주 예측확률 · t→t+1</th>
+                      <th scope="col" rowspan="2">예측 국면</th>
+                      <th scope="col" rowspan="2">실제 다음 주</th>
+                      <th scope="col" rowspan="2">엔트로피 (0–1)</th>
+                    </tr>
+                    <tr>
+                      <th scope="col">Risk-on</th>
+                      <th scope="col">Transition</th>
+                      <th scope="col">Risk-off</th>
                       <th scope="col">Risk-on</th>
                       <th scope="col">Transition</th>
                       <th scope="col">Risk-off</th>

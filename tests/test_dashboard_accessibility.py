@@ -24,7 +24,6 @@ def test_interactive_controls_have_accessible_names() -> None:
     assert '<label for="analysis-date">' in HTML
     assert '<label for="week-select">' in HTML
     assert '<label for="history-window">' in HTML
-    assert '<label for="history-series-select">히스토리 기준</label>' in HTML
     assert '<label for="transition-horizon-select">' in HTML
     assert '<label for="model-forecast-select">1주 예측 모델</label>' in HTML
     assert 'id="model-forecast-select"' in HTML
@@ -35,10 +34,11 @@ def test_interactive_controls_have_accessible_names() -> None:
     assert 'aria-describedby="model-forecast-scope"' in HTML
     assert 'id="model-forecast-scope" class="sr-only"' in HTML
     assert "선택 모델의 1주 예측 레이어" in HTML
-    assert (
-        'id="history-series-select" '
-        'aria-controls="probability-chart history-data-body regime-timeline"'
-    ) in HTML
+    assert 'id="history-series-select"' not in HTML
+    assert 'id="chart-readout-actual"' in HTML
+    assert 'id="chart-readout-entropy"' in HTML
+    assert 'id="chart-readout-observed-label"' in HTML
+    assert 'id="history-observed-group-label"' in HTML
     assert '<label for="conditional-basis-select">국면 기준</label>' in HTML
     assert 'id="conditional-basis-select"' in HTML
     assert 'aria-controls="conditional-stat-grid conditional-stat-body"' in HTML
@@ -59,14 +59,18 @@ def test_visuals_have_semantic_fallbacks_and_non_color_encoding() -> None:
     assert "Risk-on · 실선" in HTML
     assert "Transition · 파선" in HTML
     assert "Risk-off · 점선" in HTML
+    assert "실제 t+1 결과" in HTML
     assert 'id="chart-selection-readout"' in HTML and 'aria-live="polite"' in HTML
     assert 'id="probability-chart-wrap"' in HTML and 'tabindex="0"' in HTML
     assert "방향키로 날짜 이동" in HTML
     assert "↗" in HTML and "◆" in HTML and "↘" in HTML
     assert "현재 t" not in HTML and "예측 t+1" not in HTML
-    assert 'membership ? "관측 국면 소속도 히스토리" : "관측 국면 확률 히스토리"' in JS
-    assert 'title: `${model} 1주 예측 히스토리`' in JS
-    assert 'tableCaption: `${model} 과거 OOS·최신 1주 예측확률`' in JS
+    assert 'membership ? "관측 소속도와 1주 예측확률" : "관측 확률과 1주 예측확률"' in JS
+    assert "function actualNextWeekForWeek(" in JS
+    assert "function forecastEntropyForWeek(" in JS
+    assert 'tableCaption: `${model} ${membership ? "관측 소속도" : "관측 확률"}·1주 예측확률·실제 다음 주 결과·정규화 예측 엔트로피`' in JS
+    assert 'setText(dom["history-observed-group-label"], `${historyMeta.observedMeasure} · t`)' in JS
+    assert 'setText(dom["chart-readout-observed-label"], `${historyMeta.observedMeasure} · t`)' in JS
     assert 'isCurrent && isV5Payload() ? "소속도"' in JS
     assert '"예측확률"' in JS
     assert "최초 이탈 방향" in JS
@@ -197,5 +201,5 @@ def test_result_identity_is_compact_without_general_warning_surface() -> None:
 def test_probability_chart_declares_honest_fixed_axis() -> None:
     assert "for (const tick of [0, 0.25, 0.5, 0.75, 1])" in JS
     assert '`${Math.round(tick * 100)}%`' in JS
-    assert '현재 국면 ${historyMeta.measure} · 0–100% 축' in JS
-    assert "관측일 기준 t+1" in JS
+    assert "두 패널 모두 0–100% 축" in JS
+    assert "상단 ${historyMeta.observedMeasure}, 하단 ${historyMeta.model} 1주 예측확률" in JS

@@ -770,7 +770,7 @@ def test_dashboard_assets_are_local_and_present() -> None:
         ]
     }
     assert len(asset_versions) == 1
-    assert asset_versions == {"20260826-v5-10"}
+    assert asset_versions == {"20260826-v5-11"}
 
     assert all(not str(script.get("src", "")).startswith(("http://", "https://", "//")) for script in parser.scripts)
     assert all(not str(link.get("href", "")).startswith(("http://", "https://", "//")) for link in parser.links)
@@ -820,7 +820,16 @@ def test_required_result_surfaces_exist() -> None:
         "probability-chart-wrap",
         "chart-selection-readout",
         "chart-readout-date",
+        "chart-readout-target-date",
+        "chart-readout-forecast-label",
+        "chart-readout-forecast-risk-on",
+        "chart-readout-forecast-transition",
+        "chart-readout-forecast-risk-off",
+        "chart-readout-predicted",
+        "chart-readout-actual",
+        "chart-readout-entropy",
         "history-data-body",
+        "history-forecast-group-label",
         "factor-scores",
         "regime-timeline",
         "top-drivers",
@@ -949,9 +958,10 @@ def test_model_forecast_selector_controls_the_one_week_forecast_layer() -> None:
         'id="model-forecast-scope" class="sr-only">'
         "선택 모델의 1주 예측 레이어"
     ) in document
-    assert '<label for="history-series-select">히스토리 기준</label>' in document
-    assert '<option value="observed" selected>관측 소속도</option>' in document
-    assert '<option value="forecast">선택 모델 1주 예측</option>' in document
+    assert "관측 소속도와 1주 예측확률" in document
+    assert 'id="chart-readout-actual"' in document
+    assert 'id="chart-readout-entropy"' in document
+    assert 'id="history-series-select"' not in document
     assert 'id="model-forecast-explorer"' in document
     assert 'aria-labelledby="model-forecast-title"' in document
     assert 'id="model-forecast-probabilities"' in document
@@ -961,7 +971,8 @@ def test_model_forecast_selector_controls_the_one_week_forecast_layer() -> None:
     assert "function forecastForWeek(" in script
     assert "function oneWeekDepartureProbability(" in script
     assert 'dom["model-forecast-select"].addEventListener("change"' in script
-    assert 'dom["history-series-select"].addEventListener("change"' in script
+    assert "function actualNextWeekForWeek(" in script
+    assert "function forecastEntropyForWeek(" in script
     assert "recency_weighted_xgboost_208w" in script
     assert "recency_weighted_ridge_logistic_208w" in script
     assert "pca_ridge_logistic" in script
@@ -997,8 +1008,9 @@ def test_results_first_layout_keeps_equal_cards_and_wide_history() -> None:
     assert 'id="duration-context-card" class="card v5-only"' in document
     assert 'id="fx-context-card" class="card v5-only"' in document
     assert 'id="conditional-stats" class="dashboard-section conditional-stats-section card v5-only"' in document
-    assert 'viewBox="0 0 1200 300"' in document
+    assert 'viewBox="0 0 1200 560"' in document
     assert "width: 1200" in script
+    assert "panelGap: 64" in script
     assert "const desiredTicks = Math.min(7, history.length)" in script
     assert "function scrollChartDateIntoView" in script
     assert "requestAnimationFrame(() => scrollChartDateIntoView(state.chartPinnedDate))" in script
@@ -1596,6 +1608,7 @@ const payload = {{
   }}
 }};
 const week = {{
+  date: "2026-08-14",
   current: {{
     state: "transition",
     memberships: {{risk_on: 0.2, transition: 0.7, risk_off: 0.1}}
@@ -1603,22 +1616,40 @@ const week = {{
   next_week: {{
     state: "transition",
     model: "markov",
+    date: "2026-08-21",
+    entropy: 0.4,
     probabilities: {{risk_on: 0.1, transition: 0.8, risk_off: 0.1}}
   }},
   model_forecasts: [
     {{
       state: "transition",
       model: "markov",
+      date: "2026-08-21",
+      entropy: 0.4,
       probabilities: {{risk_on: 0.1, transition: 0.8, risk_off: 0.1}}
     }},
     {{
       state: "risk_on",
       model: "xgboost",
+      date: "2026-08-21",
+      entropy: 0.25,
       probabilities: {{risk_on: 0.6, transition: 0.3, risk_off: 0.1}}
     }}
   ]
 }};
+const actualWeek = {{date: "2026-08-21", current: {{state: "transition"}}}};
+payload.weekly = [week, actualWeek];
+const pendingOrigin = {{
+  date: "2026-08-21",
+  next_week: {{state: "transition", model: "markov", date: "2026-08-28", entropy: 0.5}},
+  model_forecasts: [
+    {{state: "risk_on", model: "xgboost", date: "2026-08-28", entropy: 0.3,
+      probabilities: {{risk_on: 0.6, transition: 0.3, risk_off: 0.1}}}}
+  ]
+}};
 const selected = api.forecastForWeek(week, "xgboost", payload);
+const actual = api.actualNextWeekForWeek(week, "xgboost", payload);
+const pending = api.actualNextWeekForWeek(pendingOrigin, "xgboost", payload);
 process.stdout.write(JSON.stringify({{
   models: api.forecastComparisonModels(payload),
   model: selected.model,
@@ -1632,6 +1663,9 @@ process.stdout.write(JSON.stringify({{
   ),
   observedState: api.historyStateForWeek(week, "observed", "xgboost", payload),
   forecastState: api.historyStateForWeek(week, "forecast", "xgboost", payload),
+  actual,
+  pending,
+  entropy: api.forecastEntropyForWeek(week, "xgboost", payload),
   invalidModelFallback: api.forecastForWeek(week, "missing", payload).model,
   legacyFallback: api.forecastForWeek(
     {{next_week: {{model: "legacy"}}}}, "missing", {{}}
@@ -1650,6 +1684,9 @@ process.stdout.write(JSON.stringify({{
         "forecastRiskOn": 0.6,
         "observedState": "transition",
         "forecastState": "risk_on",
+        "actual": {"date": "2026-08-21", "state": "transition", "status": "available"},
+        "pending": {"date": "2026-08-28", "state": None, "status": "pending"},
+        "entropy": 0.25,
         "invalidModelFallback": "markov",
         "legacyFallback": "legacy",
     }
@@ -1730,8 +1767,8 @@ def test_forecast_rerender_does_not_touch_observed_context_surfaces() -> None:
         "renderNextForecastSurface(week)",
         "renderTransition(week, forecast)",
         "renderModelForecast()",
+        "renderSemanticLabels()",
         "renderHistory()",
-        "renderTimeline()",
         "syncConditionalBasisControl()",
         "renderConditionalComparison()",
         "renderConditionalDetail()",
@@ -1743,6 +1780,7 @@ def test_forecast_rerender_does_not_touch_observed_context_surfaces() -> None:
         "renderDurationContext(",
         "renderFxContext(",
         "renderConditionalStats(",
+        "renderTimeline()",
     ):
         assert fixed_surface not in body
 
@@ -2074,7 +2112,7 @@ def test_history_window_never_claims_more_weeks_than_are_available() -> None:
     assert "const requested = state.preferredHistoryWindow" in script
     assert 'option.textContent = available ? `전체 · ${available}주` : "전체"' in script
     assert "option.disabled = weeks > available" in script
-    assert "`${range} · ${history.length}주 관측" in script
+    assert "`${range} · ${history.length}주 · 상단" in script
 
 
 def test_three_state_and_health_contracts_are_explicit() -> None:
