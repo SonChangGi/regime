@@ -199,22 +199,36 @@ def test_label_spec_hash_is_deterministic_and_mutation_needs_version_bump(
         load_label_spec_registry(shadow_path)
 
 
-def test_v1_default_output_remains_bit_for_bit_frozen() -> None:
+def test_v1_default_output_remains_frozen_at_contract_precision() -> None:
     frame = _legacy_v1_frame()
     labeler = CausalRegimeLabeler().fit(frame.iloc[:120])
-    digest = hashlib.sha256()
-    digest.update(
-        np.asarray(
-            [labeler.lower_threshold_, labeler.upper_threshold_], dtype="<f8"
-        ).tobytes()
+    labels = labeler.transform(frame)
+    assert hashlib.sha256(
+        "|".join(labels.tolist()).encode("utf-8")
+    ).hexdigest() == (
+        "999b845d5caba658f939968668e4fbabc0d21b45f32e444be6ea8d2145cbc576"
     )
-    digest.update("|".join(labeler.transform(frame).tolist()).encode("utf-8"))
-    digest.update(labeler.score_frame(frame).to_numpy(dtype="<f8").tobytes())
-    digest.update(
-        labeler.state_probabilities(frame).to_numpy(dtype="<f8").tobytes()
+
+    # NumPy delegates transcendental functions to the platform libm, so raw
+    # IEEE-754 bytes can differ in their final bits between macOS and Linux.
+    # Freeze every numeric output at a much tighter precision than the public
+    # payload while keeping state assignments exactly byte-stable above.
+    numeric_values = np.concatenate(
+        (
+            np.asarray(
+                [labeler.lower_threshold_, labeler.upper_threshold_],
+                dtype=float,
+            ),
+            labeler.score_frame(frame).to_numpy(dtype=float).ravel(),
+            labeler.state_probabilities(frame).to_numpy(dtype=float).ravel(),
+        )
     )
-    assert digest.hexdigest() == (
-        "c9d2ec1df9403f525565ea1c8df716483dd7246567bae0c03b5ab36b30b4cbcd"
+    canonical_numeric = "|".join(
+        "nan" if not np.isfinite(value) else format(float(value), ".10e")
+        for value in numeric_values
+    )
+    assert hashlib.sha256(canonical_numeric.encode("ascii")).hexdigest() == (
+        "36038e89713d82c77cca7dc162741adfedf1a6df2759b85696551a77dfbc2e04"
     )
     assert_frame_equal(
         labeler.state_probabilities(frame),

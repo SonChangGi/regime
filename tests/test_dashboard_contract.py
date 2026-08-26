@@ -2465,7 +2465,13 @@ const staleHashSource = {json.dumps(stale_hash_source)};
   process.exitCode = 1;
 }});
 """
-    completed = subprocess.run(["node", "-e", program], text=True, capture_output=True, check=True)
+    completed = subprocess.run(
+        ["node", "-"],
+        input=program,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
     result = json.loads(completed.stdout)
     assert result["accepted"]["source"] == "selection-family-audit/v2"
     assert result["accepted"]["candidateCount"] == len(payload["selection"]["candidate_set"])
