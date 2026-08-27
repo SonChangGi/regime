@@ -15,6 +15,7 @@ from regime_lab.collection import (
     _alfred_request_params,
     _fetch_alfred_series,
     _identify_alpha_transport_failure,
+    _group_existing_records,
     _realtime_year_chunks,
     _source_row,
     _validate_initial_alpha_baseline,
@@ -44,6 +45,47 @@ ALPHA_TEST_FIELDS = (
     "adjusted_close",
     "volume",
 )
+
+
+def test_existing_record_grouping_preserves_single_read_order_and_parity() -> None:
+    retrieved = datetime(2026, 8, 27, tzinfo=timezone.utc)
+    records = tuple(
+        Observation(
+            source=source,
+            series_id=series,
+            observed_period_end=date(2026, 8, 21),
+            released_at=retrieved,
+            available_at=retrieved,
+            vintage_date=retrieved.date(),
+            retrieved_at=retrieved,
+            revision_seq=index,
+            value=float(index),
+            raw_sha256=str(index),
+        )
+        for index, (source, series) in enumerate(
+            (
+                ("alfred", "A"),
+                ("alpha_vantage", "SPY.close"),
+                ("alfred", "B"),
+                ("alfred", "A"),
+            )
+        )
+    )
+
+    by_source, by_series = _group_existing_records(records)
+
+    assert by_source == {
+        source: tuple(row for row in records if row.source == source)
+        for source in {row.source for row in records}
+    }
+    assert by_series == {
+        key: tuple(
+            row
+            for row in records
+            if (row.source, row.series_id) == key
+        )
+        for key in {(row.source, row.series_id) for row in records}
+    }
 
 
 @pytest.mark.parametrize(

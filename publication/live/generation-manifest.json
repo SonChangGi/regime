@@ -1,9 +1,9 @@
 {
   "schema_version": "regime-generation-manifest/2",
-  "generation_id": "20260826T184946.198911Z",
+  "generation_id": "20260827T150939.045526Z",
   "payload": {
     "path": "publication/live/regime-results.json",
-    "payload_contract_sha256": "ecd89093ed249f24cd0ae855530b11450b5a5abee72d902b749587cdacec4fd7"
+    "payload_contract_sha256": "246d6b22caa5b8d03979481606ef454f61f7c1ce724b23fc7a7facd684faf673"
   },
   "comparison_sidecar": {
     "path": "publication/live/v5-vs-v4-comparison.json",
@@ -11,10 +11,10 @@
   },
   "selection_family_sidecar": {
     "path": "publication/live/selection-family-audit.json",
-    "selection_family_contract_sha256": "1758b0da29874ad6fcf40f2b02b91e853883c6525a85662f39329672555b18d4"
+    "selection_family_contract_sha256": "c6298f00ff6c9077350171e28e2efa80b4656aecfd82f49fc3c5c5698ab3dcc9"
   },
   "artifact_inventory": {
-    "sha256": "a152a3a54b722002dbda5039196264149e13521883058b6f101e4f546a721168",
+    "sha256": "0e9f2e51b46a8044359c6efdf706425d449a5beb63e30001b5abbf436247e7f1",
     "file_count": 39
   },
   "input_snapshot": {
@@ -30,5 +30,29 @@
   },
   "execution_spec": {
     "sha256": "28d9695f0d0a04d660803165e89012af0d15225d26291f7f5944f0d6e088f011"
+  },
+  "runtime_fingerprint": {
+    "schema_version": "regime-runtime-fingerprint/1",
+    "python": "3.13.13",
+    "platform": {
+      "system": "Darwin",
+      "release": "25.5.0",
+      "machine": "arm64"
+    },
+    "lockfile": {
+      "path": "requirements-ci.lock",
+      "sha256": "75a33ab34babddd7018e4557cd27d8f968966af2951f2a66243384da3d57ffac"
+    },
+    "packages": {
+      "numpy": "2.5.2",
+      "pandas": "2.3.3",
+      "scipy": "1.18.0",
+      "scikit-learn": "1.9.0",
+      "xgboost": "3.4.0",
+      "hmmlearn": "0.3.3",
+      "joblib": "1.5.3",
+      "threadpoolctl": "3.6.0"
+    },
+    "sha256": "2f95cfb20ddfac479d6ae9c0e148743d68c16230f791acd8c96cc7c3f8d3b67d"
   }
 }

@@ -46,6 +46,7 @@ from regime_lab.feature_quality import (
 from regime_lab.forecast_ledger import (
     ForecastLedger,
     ForecastLedgerEntry,
+    ForecastLedgerKey,
     OperationalInput,
     operational_input_manifest_sha256,
 )
@@ -934,6 +935,24 @@ def _publish_active_generation(
                 ) from exc
             if not isinstance(selection_family, Mapping):
                 raise RuntimeError("staged selection-family audit must be an object")
+            mcs = (
+                selection_family.get("supplemental_evaluation", {})
+                .get("model_confidence_set", {})
+            )
+            retained_models = (
+                mcs.get("retained_models") if isinstance(mcs, Mapping) else None
+            )
+            if isinstance(retained_models, list) and retained_models:
+                payload_selection = payload.get("selection")
+                if isinstance(payload_selection, dict) and (
+                    "statistically_indistinguishable_models" in payload_selection
+                ):
+                    payload_selection[
+                        "statistically_indistinguishable_models"
+                    ] = [str(name) for name in retained_models]
+                    payload_selection[
+                        "statistical_equivalence_status"
+                    ] = "completed_selection_mcs"
             generation_manifest = build_generation_manifest(
                 payload=payload,
                 payload_path=output,
@@ -1547,6 +1566,33 @@ def command_build(args: argparse.Namespace) -> int:
                 else configured_forecast_ledger,
                 label="forecast ledger",
             )
+            prospective_key = ForecastLedgerKey(
+                origin_week=date.fromisoformat(str(payload["weekly"][-1]["date"])),
+                decision_at=datetime.fromisoformat(str(forecast_contract["decision_at"])),
+                target_at=datetime.fromisoformat(str(forecast_contract["target_at"])),
+                label_spec_sha256=str(payload["label"]["spec_sha256"]),
+                model_manifest_sha256=str(
+                    payload["model"]["candidate_manifest_sha256"]
+                ),
+                input_snapshot_sha256=input_snapshot_sha256,
+            )
+            with ForecastLedger(forecast_ledger_path) as ledger:
+                ledger_summary = ledger.public_summary(
+                    pending_key=prospective_key
+                )
+                payload["forecast"]["prospective_ledger"] = ledger_summary
+                decision_shadow = payload.get("research", {}).get(
+                    "prospective_decision_shadow"
+                )
+                if isinstance(decision_shadow, dict) and isinstance(
+                    decision_shadow.get("prospective_ledger"), dict
+                ):
+                    decision_shadow["prospective_ledger"].update(
+                        {
+                            "status": "ledger_recorded_outcomes_pending",
+                            "ledger_entry_count": ledger_summary["entry_count"],
+                        }
+                    )
 
             def append_forecast_ledger(bound_payload: dict[str, Any]) -> None:
                 entry = _forecast_ledger_entry(

@@ -29,6 +29,7 @@ def _settings(tmp_path: Path) -> automation.AutomationSettings:
         json.dumps({"schema_version": 1, "providers": {}}),
         encoding="utf-8",
     )
+    (root / "requirements-ci.lock").write_text("locked-test-runtime\n", encoding="utf-8")
     python = root / ".venv/bin/python"
     python.parent.mkdir(parents=True)
     python.touch()

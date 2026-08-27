@@ -13,6 +13,7 @@ WEB = ROOT / "web"
 HTML_PATH = WEB / "index.html"
 CSS_PATH = WEB / "styles.css"
 JS_PATH = WEB / "app.js"
+OPERATING_CONTRACT_JS_PATH = WEB / "operating-contract.generated.js"
 
 V5_FORECAST_COMPARISON_MODELS = [
     "markov",
@@ -963,7 +964,13 @@ def test_dashboard_assets_are_local_and_present() -> None:
     assert HTML_PATH.is_file()
     assert CSS_PATH.is_file()
     assert JS_PATH.is_file()
+    assert OPERATING_CONTRACT_JS_PATH.is_file()
     assert any(str(script.get("src", "")).startswith("./app.js?") and "defer" in script for script in parser.scripts)
+    assert any(
+        str(script.get("src", "")).startswith("./operating-contract.generated.js?")
+        and "defer" in script
+        for script in parser.scripts
+    )
     assert any(str(link.get("href", "")).startswith("./styles.css?") for link in parser.links)
     app_version = next(
         str(script["src"]).split("?v=", 1)[1]
@@ -975,8 +982,28 @@ def test_dashboard_assets_are_local_and_present() -> None:
         for link in parser.links
         if str(link.get("href", "")).startswith("./styles.css?v=")
     )
+    contract_version = next(
+        str(script["src"]).split("?v=", 1)[1]
+        for script in parser.scripts
+        if str(script.get("src", "")).startswith(
+            "./operating-contract.generated.js?v="
+        )
+    )
     assert app_version == hashlib.sha256(JS_PATH.read_bytes()).hexdigest()
     assert styles_version == hashlib.sha256(CSS_PATH.read_bytes()).hexdigest()
+    assert contract_version == hashlib.sha256(
+        OPERATING_CONTRACT_JS_PATH.read_bytes()
+    ).hexdigest()
+    sources = [str(script.get("src", "")) for script in parser.scripts]
+    assert next(
+        index
+        for index, source in enumerate(sources)
+        if source.startswith("./operating-contract.generated.js?")
+    ) < next(
+        index
+        for index, source in enumerate(sources)
+        if source.startswith("./app.js?")
+    )
 
     assert all(not str(script.get("src", "")).startswith(("http://", "https://", "//")) for script in parser.scripts)
     assert all(not str(link.get("href", "")).startswith(("http://", "https://", "//")) for link in parser.links)
@@ -1070,6 +1097,11 @@ def test_required_result_surfaces_exist() -> None:
         "model-forecast-calibration",
         "model-evidence-summary",
         "transition-horizon-bars",
+        "copy-view-link",
+        "history-scroll-guide",
+        "history-range-labels",
+        "history-range-start",
+        "history-range-end",
         "transition-model-section",
         "transition-horizon-select",
         "transition-model-summary",
@@ -1084,6 +1116,11 @@ def test_required_result_surfaces_exist() -> None:
         "conditional-horizon-select",
         "conditional-stat-grid",
         "conditional-stat-body",
+        "conditional-unavailable",
+        "conditional-results",
+        "research-sidecar-unavailable",
+        "decision-shadow-block",
+        "decision-shadow-grid",
     }
     assert required_ids <= parsed_html().ids
 
@@ -1129,6 +1166,8 @@ def test_shared_navigation_and_theme_contract_are_explicit() -> None:
     assert 'class="section-nav"' in document
     for anchor in ("#overview", "#history", "#evidence", "#models", "#data-health"):
         assert f'href="{anchor}"' in document
+    assert 'id="copy-view-link"' in document
+    assert 'class="page-jump-nav"' not in document
     assert 'const THEME_STORAGE_KEY = "quant-research-theme"' in script
 
 
@@ -1251,7 +1290,13 @@ def test_label_copy_forecast_disclosure_and_model_section_stay_clear() -> None:
     assert "V4 동결 기준선" not in document
     assert "현재 payload · 공개 운영" not in script
     assert "function renderModelRoles" not in script
-    assert document.index('id="conditional-stats"') < document.index('id="models"')
+    assert (
+        document.index('id="overview"')
+        < document.index('id="conditional-stats"')
+        < document.index('id="history"')
+        < document.index('id="evidence"')
+        < document.index('id="models"')
+    )
     assert ".contract-overview-grid" in styles
     assert ".forecast-window-section" in styles
     assert ".forecast-window-body .forecast-timing" in styles
@@ -2492,7 +2537,7 @@ def test_v5_decision_evidence_is_collapsed_at_the_bottom_and_semantically_distin
     assert research_position < document.index('id="data-health"')
     assert 'id="research-evidence-details"' in document
     assert 'id="research-evidence-details" open' not in document
-    assert document.index('id="model-evidence-summary"') > research_position
+    assert document.index('id="model-evidence-summary"') < research_position
     assert document.index('id="fx-ablation-status"') > research_position
     for phrase in (
         "가용 공통",
@@ -2538,7 +2583,11 @@ def test_conditional_performance_leads_with_asset_class_mean_comparison() -> Non
     assert '<option value="observed" selected>관측 국면</option>' in document
     assert '<option value="forecast">선택 모델 예측</option>' in document
     assert '<label for="conditional-asset-select">상세 자산</label>' in document
-    assert "자산군별 평균 수익률" in document
+    assert '<option value="1" selected>1주</option>' in document
+    assert '<option value="13">13주</option>' in document
+    assert "평균과 95% 구간" in document
+    assert "전체 주 B&amp;H 대비" in document
+    assert "관측 후 1주 뒤 진입" in document
     assert "평균 95% CI" in document
     assert "연율 하방 변동성" in document
     assert 'id="conditional-comparison-caption"' in document
@@ -2559,15 +2608,246 @@ def test_conditional_performance_leads_with_asset_class_mean_comparison() -> Non
     assert 'createElement("article", "conditional-asset-card")' in script
     assert 'createElement("div", "conditional-regime-list")' in script
     assert 'createElement("span", "conditional-return-track")' in script
+    assert 'createElement("span", `conditional-return-ci state-${code}`)' in script
+    assert 'createElement("span", `conditional-return-point state-${code}`)' in script
+    assert 'createElement("span", "conditional-return-benchmark")' in script
     assert 'track.setAttribute("aria-hidden", "true")' in script
     assert '`${value > 0 ? "+" : ""}${formatSignedPercent(value, comparisonDigits)}`' in script
-    assert 'createElement("small", null, statusLabel || `n ${sample}`)' in script
+    assert 'createElement("small", null, statusLabel || `주차 ${sample} · ep ${episodes}`)' in script
+    assert "unconditional_benchmark_mean_return" in script
+    assert "excess_mean_return" in script
     assert "표본 부족" in script
     assert "값 없음" in script
-    assert 'renderConditionalDetail();\n      dom["screen-reader-status"]' in script
+    assert 'renderConditionalDetail();\n      syncViewUrl();\n      dom["screen-reader-status"]' in script
     assert ".conditional-regime-row" in styles
     assert ".conditional-regime-legend" in styles
     assert ".conditional-return-track::after" in styles
+
+
+def test_url_view_state_core_split_and_optional_benchmark_helpers() -> None:
+    payload = _valid_v5_browser_payload()
+    core_payload = deepcopy(payload)
+    research = core_payload.pop("research")
+    source_sha = "a" * 64
+    core = {
+        "schema_version": "regime-dashboard-core/1",
+        "generation_id": core_payload["meta"]["generation_id"],
+        "source_payload_sha256": source_sha,
+        "payload": core_payload,
+        "research_sidecar": {"path": "regime-research.json", "sha256": "b" * 64},
+    }
+    program = f"""
+const api = require({json.dumps(str(JS_PATH))});
+const payload = {json.dumps(payload)};
+const core = {json.dumps(core)};
+const valid = api.parseViewState(
+  "?week=2026-08-07&model=xgboost&window=104&basis=forecast&horizon=4&assets=TLT,INVALID",
+  payload,
+  payload.weekly
+);
+const invalid = api.parseViewState(
+  "?week=bad&model=missing&window=9&basis=bad&horizon=99&assets=INVALID",
+  payload,
+  payload.weekly
+);
+const grouped = api.groupContextExtremes([
+  {{feature: "dgs30__z_52w", label: "DGS30", z_score: 2.2, position: "high"}},
+  {{feature: "dgs10__z_52w", label: "DGS10", z_score: 1.8, position: "high"}},
+  {{feature: "cpiaucsl__z_52w", label: "CPIAUCSL", z_score: -2.4, position: "low"}},
+  {{feature: "pcepi__z_52w", label: "PCEPI", z_score: -1.9, position: "low"}}
+]);
+const fallbackRows = [
+  {{asset: "SPY", state: "risk_on", horizon_weeks: 13, status: "ok", mean_return: 0.10, n: 2}},
+  {{asset: "SPY", state: "transition", horizon_weeks: 13, status: "ok", mean_return: -0.02, n: 8}}
+];
+const publishedRows = [{{...fallbackRows[0], unconditional_benchmark_mean_return: 0.03}}];
+const validCore = api.validateCoreEnvelope(core);
+const badCore = JSON.parse(JSON.stringify(core));
+badCore.payload.research = {json.dumps(research)};
+process.stdout.write(JSON.stringify({{
+  valid,
+  invalid,
+  coreSource: validCore && validCore.source,
+  badCore: api.validateCoreEnvelope(badCore),
+  families: grouped.map((item) => [item.family.id, item.members.length, item.representative.feature]),
+  fallbackBenchmark: api.conditionalBenchmarkForAsset({{}}, "observed", "markov", "SPY", 13, fallbackRows),
+  publishedBenchmark: api.conditionalBenchmarkForAsset({{}}, "observed", "markov", "SPY", 13, publishedRows),
+  lateRole: api.transitionHorizonRole({{}}, 1, "late_nowcast"),
+  independentRole: api.transitionHorizonRole({{}}, 13)
+}}));
+"""
+    completed = subprocess.run(
+        ["node", "-e", program], text=True, capture_output=True, check=True
+    )
+    result = json.loads(completed.stdout)
+    assert result["valid"] == {
+        "week": "2026-08-07",
+        "model": "xgboost",
+        "window": 104,
+        "basis": "forecast",
+        "horizon": 4,
+        "asset": "TLT",
+    }
+    assert result["invalid"]["week"] == payload["weekly"][-1]["date"]
+    assert result["invalid"]["window"] == 52
+    assert result["invalid"]["basis"] == "observed"
+    assert result["invalid"]["horizon"] == 1
+    assert result["invalid"]["asset"] == "SPY"
+    assert result["coreSource"] == "core"
+    assert result["badCore"] is None
+    assert result["families"] == [
+        ["inflation", 2, "cpiaucsl__z_52w"],
+        ["nominal_curve", 2, "dgs30__z_52w"],
+    ]
+    assert result["fallbackBenchmark"]["source"] == "weighted_regime_rows"
+    assert abs(result["fallbackBenchmark"]["value"] - 0.004) < 1e-12
+    assert result["publishedBenchmark"] == {"value": 0.03, "source": "published"}
+    assert result["lateRole"] == "늦은 nowcast"
+    assert result["independentRole"] == "독립 horizon"
+
+
+def test_mobile_history_defaults_to_overview_and_expands_only_on_request() -> None:
+    document = HTML_PATH.read_text(encoding="utf-8")
+    script = JS_PATH.read_text(encoding="utf-8")
+    styles = CSS_PATH.read_text(encoding="utf-8")
+    assert '<option value="26" selected>26주</option>' in document
+    assert '<option value="52">52주</option>' in document
+    assert '<option value="104">104주</option>' in document
+    assert '<option value="all">전체</option>' in document
+    assert 'window.matchMedia("(max-width: 760px)").matches' in script
+    assert "const expanded = mobile && history.length > 26 && state.historyWindow !== 26" in script
+    assert 'wrap.classList.toggle("is-scroll-mode", expanded)' in script
+    assert 'id="history-scroll-guide"' in document
+    assert 'id="history-range-start"' in document and 'id="history-range-end"' in document
+    assert "#history .probability-chart {\n    width: 100%;\n    min-width: 0;" in styles
+    assert "#history .svg-chart-wrap.is-scroll-mode .probability-chart" in styles
+
+
+def test_research_sidecar_requires_hash_generation_and_source_binding() -> None:
+    payload = _valid_v5_browser_payload()
+    generation_id = payload["meta"]["generation_id"]
+    source_sha = "a" * 64
+    sidecar = {
+        "schema_version": "regime-dashboard-research/1",
+        "generation_id": generation_id,
+        "source_payload_sha256": source_sha,
+        "research": payload["research"],
+    }
+    raw = json.dumps(
+        sidecar,
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    sidecar_sha = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    source = {
+        "source": "core",
+        "payload": {"model": payload["model"]},
+        "generationId": generation_id,
+        "sourcePayloadSha256": source_sha,
+        "researchSidecar": {"path": "regime-research.json", "sha256": sidecar_sha},
+    }
+    program = f"""
+const api = require({json.dumps(str(JS_PATH))});
+const raw = {json.dumps(raw)};
+const source = {json.dumps(source)};
+globalThis.fetch = async () => ({{ok: true, text: async () => raw}});
+(async () => {{
+  const valid = await api.loadResearchSidecar(source);
+  const wrongGeneration = await api.loadResearchSidecar({{...source, generationId: "other"}});
+  const wrongHash = await api.loadResearchSidecar({{
+    ...source,
+    researchSidecar: {{...source.researchSidecar, sha256: "0".repeat(64)}}
+  }});
+  process.stdout.write(JSON.stringify({{
+    valid: Boolean(valid && valid.conditional_asset_stats),
+    wrongGeneration,
+    wrongHash
+  }}));
+}})();
+"""
+    completed = subprocess.run(
+        ["node", "-"], input=program, text=True, capture_output=True, check=True
+    )
+    assert json.loads(completed.stdout) == {
+        "valid": True,
+        "wrongGeneration": None,
+        "wrongHash": None,
+    }
+
+
+def test_core_render_completes_before_deferred_sidecars_settle() -> None:
+    program = f"""
+const api = require({json.dumps(str(JS_PATH))});
+let releaseSidecar;
+let settled = false;
+const events = [];
+const deferred = new Promise((resolve) => {{ releaseSidecar = resolve; }});
+const flow = api.renderCoreThenSettleSidecars(
+  () => events.push("core-rendered"),
+  [deferred],
+  async () => events.push("core-painted")
+).then((result) => {{ settled = true; return result; }});
+(async () => {{
+  await Promise.resolve();
+  const beforeRelease = {{events: [...events], settled}};
+  releaseSidecar("research-ready");
+  const results = await flow;
+  process.stdout.write(JSON.stringify({{beforeRelease, results}}));
+}})();
+"""
+    completed = subprocess.run(
+        ["node", "-"], input=program, text=True, capture_output=True, check=True
+    )
+    result = json.loads(completed.stdout)
+    assert result["beforeRelease"] == {
+        "events": ["core-rendered", "core-painted"],
+        "settled": False,
+    }
+    assert result["results"] == [{"status": "fulfilled", "value": "research-ready"}]
+
+
+def test_live_selection_sidecar_exposes_the_mcs_top_set() -> None:
+    payload_path = ROOT / "publication" / "live" / "regime-results.json"
+    sidecar_path = ROOT / "publication" / "live" / "selection-family-audit.json"
+    program = f"""
+const fs = require("fs");
+const api = require({json.dumps(str(JS_PATH))});
+const payload = JSON.parse(fs.readFileSync({json.dumps(str(payload_path))}, "utf8"));
+const sidecar = JSON.parse(fs.readFileSync({json.dumps(str(sidecar_path))}, "utf8"));
+const result = api.validateSelectionFamilyAuditSemantics(sidecar, payload);
+process.stdout.write(JSON.stringify(result));
+"""
+    completed = subprocess.run(
+        ["node", "-e", program], text=True, capture_output=True, check=True
+    )
+    result = json.loads(completed.stdout)
+    assert result["source"] == "selection-family-audit/v2"
+    assert result["retainedModels"] == [
+        "xgb_hazard_destination",
+        "causal_multiscale_ensemble",
+        "causal_dynamic_ensemble",
+        "xgboost",
+        "recency_weighted_xgboost_208w",
+    ]
+
+
+def test_decision_shadow_stays_in_collapsed_research_and_names_benchmarks() -> None:
+    document = HTML_PATH.read_text(encoding="utf-8")
+    script = JS_PATH.read_text(encoding="utf-8")
+    research_position = document.index('id="research-evidence"')
+    decision_position = document.index('id="decision-shadow-block"')
+    assert decision_position > research_position
+    assert 'id="research-evidence-details" class="research-notice-details' in document
+    assert 'id="research-evidence-details" class="research-notice-details operations-details research-evidence-details" open' not in document
+    assert "확률 shadow" in script
+    assert "SPY B&H" in script
+    assert "고정 60/40" in script
+    assert "변동성 조절 60/40" in script
+    assert "공식 예측·선정 미반영" in script
+    assert '["회전율", formatSignedPercent(metrics.annualized_turnover)]' in script
+    assert "연 회전율 ${formatSignedPercent(metrics.annualized_turnover)}" in script
 
 
 def test_operations_are_collapsed_below_results_without_warning_surfaces() -> None:

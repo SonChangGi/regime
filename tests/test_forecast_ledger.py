@@ -141,6 +141,30 @@ def test_forecast_ledger_roundtrip_is_append_only_and_private(tmp_path: Path) ->
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
 
 
+def test_public_summary_hashes_only_ordered_primary_keys_and_can_bind_pending() -> None:
+    first = _entry()
+    second = replace(
+        _entry(
+            decision_at=datetime(2026, 8, 28, 20, 0, tzinfo=UTC),
+            target_at=datetime(2026, 9, 4, 20, 0, tzinfo=UTC),
+        ),
+        origin_week=date(2026, 8, 21),
+    )
+    with ForecastLedger(":memory:", clock=lambda: DECISION) as ledger:
+        empty = ledger.public_summary()
+        pending = ledger.public_summary(pending_key=first.key)
+        ledger.append(first)
+        recorded = ledger.public_summary()
+        two = ledger.public_summary(pending_key=second.key)
+
+    assert empty["entry_count"] == 0
+    assert pending == recorded
+    assert recorded["entry_count"] == 1
+    assert recorded["hash_scope"] == "ordered_ledger_primary_keys_only"
+    assert two["entry_count"] == 2
+    assert two["key_manifest_sha256"] != recorded["key_manifest_sha256"]
+
+
 def test_2026_08_14_input_cannot_be_claimed_before_its_first_seen_clock() -> None:
     with pytest.raises(
         ValueError,

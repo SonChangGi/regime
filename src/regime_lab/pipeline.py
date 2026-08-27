@@ -278,10 +278,20 @@ def _leaderboard_rows(table: pd.DataFrame) -> list[dict[str, Any]]:
             "transition_precision",
             "transition_recall",
             "calibration_error",
+            "false_alarms_per_year",
+            "mean_detection_delay_forecast_weeks",
+            "exposure_years",
         ):
             values[name] = _json_number(row.get(name))
-        values["n_predictions"] = int(row.get("n_predictions", 0))
-        values["fallback_count"] = int(row.get("fallback_count", 0))
+        for name in (
+            "n_predictions",
+            "fallback_count",
+            "transition_event_count",
+            "on_time_departure_count",
+            "false_alarm_count",
+            "detected_event_count",
+        ):
+            values[name] = int(row.get(name, 0))
         values["selection_log_loss"] = _json_number(
             row.get("selection_log_loss")
         )
@@ -744,6 +754,13 @@ def build_dashboard_result(
     )
     if progress is not None:
         progress("1·4·13주 국면 이탈 위험 워크포워드 시작")
+    transition_selection_max_origins = (
+        split_prediction_minimum
+        + max(TRANSITION_HORIZONS)
+        - min(TRANSITION_HORIZONS)
+        if profile_name == "quick" and contract_version == "v5"
+        else (3 if profile_name == "quick" else None)
+    )
     transition_benchmark = run_transition_benchmark(
         features,
         states,
@@ -753,7 +770,7 @@ def build_dashboard_result(
         include_joint_survival=True,
         minimum_train_weeks=benchmark_profile.minimum_train_weeks,
         selection_end=benchmark_selection_end,
-        selection_max_origins=3 if profile_name == "quick" else None,
+        selection_max_origins=transition_selection_max_origins,
         minimum_selection_predictions=split_prediction_minimum,
         minimum_diagnostic_predictions=split_prediction_minimum,
         minimum_inner_predictions=split_prediction_minimum,
@@ -1386,6 +1403,11 @@ def build_dashboard_result(
             features=features,
             states=states,
             directional=directional,
+            transition_selection_predictions=transition_benchmark.predictions,
+            transition_champions_by_horizon=(
+                transition_benchmark.champions_by_horizon
+            ),
+            transition_selection_end=transition_benchmark.selection_end,
             baseline_v4=FROZEN_V5_BASELINE_V4,
             structural_preregistration_sha256=(
                 STRUCTURAL_V5_PREREGISTRATION_SHA256

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date, datetime, timezone
 from pathlib import Path
 import sqlite3
@@ -35,6 +36,26 @@ def test_read_only_snapshot_store_does_not_initialize_or_mutate_database(
 
     after = (path.stat().st_size, path.stat().st_mtime_ns, path.read_bytes())
     assert after == before
+
+
+def test_schema_migration_runs_once_and_records_user_version(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "data.sqlite3"
+    with SQLiteSnapshotStore(path) as store:
+        assert store._connection.execute("PRAGMA user_version").fetchone()[0] == 1
+
+    def forbidden(_self: SQLiteSnapshotStore) -> None:
+        pytest.fail("completed bitemporal migration must not run again")
+
+    monkeypatch.setattr(
+        SQLiteSnapshotStore,
+        "_ensure_bitemporal_observation_columns",
+        forbidden,
+    )
+    with SQLiteSnapshotStore(path) as store:
+        assert store._connection.execute("PRAGMA user_version").fetchone()[0] == 1
 
 
 def test_snapshot_store_roundtrip_preserves_pit_fields_and_redacts_secrets(
@@ -106,6 +127,55 @@ def test_snapshot_store_roundtrip_preserves_pit_fields_and_redacts_secrets(
     assert b"metadata-secret" not in database_bytes
     assert b"url-secret" not in database_bytes
     assert b"issue-secret" not in database_bytes
+
+
+def test_last_good_series_filter_is_pushed_into_sql_with_exact_parity(
+    tmp_path: Path,
+) -> None:
+    retrieved = datetime(2024, 2, 1, tzinfo=UTC)
+    base = Observation(
+        source="alfred",
+        series_id="SERIES_A",
+        observed_period_end=date(2023, 12, 31),
+        released_at=retrieved,
+        available_at=retrieved,
+        vintage_date=retrieved.date(),
+        retrieved_at=retrieved,
+        revision_seq=0,
+        value=1.0,
+        raw_sha256="a",
+    )
+    provenance = SnapshotProvenance(
+        source="alfred",
+        dataset="panel",
+        cutoff=retrieved,
+        requested_at=retrieved,
+        retrieved_at=retrieved,
+        quality_status=HealthStatus.OK,
+        request_params={"snapshot_mode": SnapshotMode.FULL.value},
+        response_sha256="response",
+    )
+    path = tmp_path / "data.sqlite3"
+    with SQLiteSnapshotStore(path) as store:
+        store.write_snapshot(
+            [
+                base,
+                replace(base, series_id="SERIES_B", value=2.0, raw_sha256="b"),
+            ],
+            provenance,
+        )
+        statements: list[str] = []
+        store._connection.set_trace_callback(statements.append)
+        filtered = store.read_last_good_observations(
+            source="alfred",
+            series_ids=("SERIES_A",),
+        )
+        store._connection.set_trace_callback(None)
+        complete = store.read_last_good_observations()
+
+    assert filtered == tuple(row for row in complete if row.series_id == "SERIES_A")
+    assert any("source = 'alfred'" in statement for statement in statements)
+    assert any("o.series_id IN" in statement for statement in statements)
 
 
 def test_store_available_as_of_filter_is_inclusive_and_leakage_safe(tmp_path: Path) -> None:

@@ -1,0 +1,12 @@
+{
+  "schema_version": "regime-recovery-policy/1",
+  "automatic_deletion": false,
+  "retention_valid_generations": 4,
+  "max_source_bytes": 8589934592,
+  "max_total_backup_bytes": 68719476736,
+  "minimum_free_bytes_after_backup": 2147483648,
+  "max_backup_seconds": 1800,
+  "minimum_assumed_bytes_per_second": 5242880,
+  "restore_drill_max_seconds": 900,
+  "restore_drill_max_age_hours": 720
+}

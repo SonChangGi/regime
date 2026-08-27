@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from regime_lab.integrity import reviewed_candidate_sha256_v1
+from regime_lab.web_contract import render_browser_contract_javascript
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -51,10 +52,15 @@ def _web_root(tmp_path: Path) -> Path:
     web.mkdir()
     (web / "index.html").write_text(
         '<link rel="stylesheet" href="./styles.css?v=manual">\n'
-        '<main>demo</main><script src="./app.js?v=manual"></script>\n',
+        '<main>demo</main>'
+        '<script src="./operating-contract.generated.js?v=manual"></script>\n'
+        '<script src="./app.js?v=manual"></script>\n',
         encoding="utf-8",
     )
     (web / "styles.css").write_text("main { color: black; }\n", encoding="utf-8")
+    (web / "operating-contract.generated.js").write_bytes(
+        render_browser_contract_javascript()
+    )
     (web / "app.js").write_text("console.log('demo');\n", encoding="utf-8")
     return web
 
@@ -135,6 +141,7 @@ def _minimal_v5_payload(tmp_path: Path) -> Path:
             "mode": "live",
             "result_version": package_public_demo.V5_RESULT_VERSION,
             "data_as_of": "2026-08-21T20:00:00+00:00",
+            "generation_id": "test-generation-v5",
         },
         "model": {
             "champion": "markov",
@@ -213,6 +220,7 @@ def _minimal_v5_payload(tmp_path: Path) -> Path:
             )
         ],
         "weekly": [{"date": f"week-{index:02d}"} for index in range(52)],
+        "research": {"fixture": "research-sidecar-" * 2_000},
     }
     payload["meta"]["publication_status"] = "reviewed_publication"
     payload["meta"]["publication_review"] = {
@@ -570,7 +578,47 @@ def test_verifier_accepts_exact_v5_live_package_with_comparison(
     )
     assert result["ok"] is True
     assert result["comparison_included"] is True
+    assert result["core_research_split_included"] is True
     assert package_public_demo.V5_COMPARISON_DESTINATION in result["files"]
+
+
+def test_verifier_refuses_research_sidecar_tamper_with_refreshed_manifest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = _package_v5(tmp_path, monkeypatch)
+    sidecar_path = output / package_public_demo.RESEARCH_SIDECAR_DESTINATION
+    sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    sidecar["research"]["tampered"] = True
+    sidecar_path.write_bytes(_json_bytes(sidecar))
+    _refresh_manifest_record(
+        output,
+        package_public_demo.RESEARCH_SIDECAR_DESTINATION,
+    )
+
+    with pytest.raises(
+        verify_public_package.VerificationError,
+        match="research sidecar differs|research sidecar hash mismatch",
+    ):
+        verify_public_package.verify_public_package(output)
+
+
+def test_verifier_refuses_core_generation_tamper_with_refreshed_manifest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = _package_v5(tmp_path, monkeypatch)
+    core_path = output / package_public_demo.CORE_PAYLOAD_DESTINATION
+    core = json.loads(core_path.read_text(encoding="utf-8"))
+    core["generation_id"] = "foreign-generation"
+    core_path.write_bytes(_json_bytes(core))
+    _refresh_manifest_record(output, package_public_demo.CORE_PAYLOAD_DESTINATION)
+
+    with pytest.raises(
+        verify_public_package.VerificationError,
+        match="generation_id mismatch",
+    ):
+        verify_public_package.verify_public_package(output)
 
 
 def test_verifier_refuses_v5_parity_tamper_even_with_matching_manifest(

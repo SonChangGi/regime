@@ -9,6 +9,7 @@ import pytest
 
 from regime_lab import publication_contract
 from regime_lab.integrity import reviewed_candidate_sha256_v1
+from regime_lab.web_contract import render_browser_contract_javascript
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -121,10 +122,15 @@ def _web_root(tmp_path: Path) -> Path:
     root.mkdir()
     (root / "index.html").write_text(
         '<link rel="stylesheet" href="./styles.css?v=manual">\n'
-        '<main>demo</main><script src="./app.js?v=manual"></script>\n',
+        '<main>demo</main>'
+        '<script src="./operating-contract.generated.js?v=manual"></script>\n'
+        '<script src="./app.js?v=manual"></script>\n',
         encoding="utf-8",
     )
     (root / "styles.css").write_text("main { color: black; }\n", encoding="utf-8")
+    (root / "operating-contract.generated.js").write_bytes(
+        render_browser_contract_javascript()
+    )
     (root / "app.js").write_text("console.log('demo');\n", encoding="utf-8")
     return root
 
@@ -209,6 +215,8 @@ def _minimal_live_payload(tmp_path: Path, *, result_version: str) -> Path:
         "weekly": [{"date": f"week-{index:02d}"} for index in range(52)],
     }
     if result_version == package_public_demo.V5_RESULT_VERSION:
+        payload["meta"]["generation_id"] = "test-generation-v5"
+        payload["research"] = {"fixture": "research-sidecar-" * 2_000}
         payload["model"].update(
             {
                 "selection_status": "selected_by_gate",
@@ -740,6 +748,7 @@ def test_package_copies_only_allowlisted_assets_and_synthetic_payload(tmp_path: 
     assert packaged == {
         "index.html",
         "styles.css",
+        "operating-contract.generated.js",
         "app.js",
         "data/regime-results.json",
         "publication-manifest.json",
@@ -759,6 +768,9 @@ def test_package_copies_only_allowlisted_assets_and_synthetic_payload(tmp_path: 
     assert hashlib.sha256((output / "app.js").read_bytes()).hexdigest() in (
         packaged_index
     )
+    assert hashlib.sha256(
+        (output / "operating-contract.generated.js").read_bytes()
+    ).hexdigest() in packaged_index
 
 
 def test_package_refuses_live_payload_without_creating_output(tmp_path: Path) -> None:
@@ -815,6 +827,16 @@ def test_package_copies_only_allowlisted_assets_and_live_derived_snapshot(
     payload = json.loads((output / "data/regime-results.json").read_text())
     assert payload["meta"]["mode"] == "live"
     assert len(payload["weekly"]) >= 52
+    if result_version == package_public_demo.V5_RESULT_VERSION:
+        full_raw = (output / package_public_demo.PAYLOAD_DESTINATION).read_bytes()
+        core_raw = (
+            output / package_public_demo.CORE_PAYLOAD_DESTINATION
+        ).read_bytes()
+        assert len(core_raw) < len(full_raw)
+        assert len(core_raw) <= package_public_demo.MAX_CORE_PAYLOAD_BYTES
+        assert len(core_raw) / len(full_raw) <= (
+            package_public_demo.MAX_CORE_TO_SOURCE_RATIO
+        )
 
 
 def test_v4_live_package_remains_compatible_without_comparison_sidecar(
@@ -877,6 +899,29 @@ def test_v5_live_package_requires_and_includes_reviewed_comparison_sidecar(
         "bytes": len(copied),
         "sha256": hashlib.sha256(copied).hexdigest(),
     }
+    source_raw = payload.read_bytes()
+    core_raw = (output / package_public_demo.CORE_PAYLOAD_DESTINATION).read_bytes()
+    research_raw = (
+        output / package_public_demo.RESEARCH_SIDECAR_DESTINATION
+    ).read_bytes()
+    core = json.loads(core_raw)
+    research = json.loads(research_raw)
+    assert "research" not in core["payload"]
+    assert core["source_payload_sha256"] == hashlib.sha256(source_raw).hexdigest()
+    assert core["generation_id"] == json.loads(source_raw)["meta"]["generation_id"]
+    assert core["research_sidecar"] == {
+        "path": "regime-research.json",
+        "sha256": hashlib.sha256(research_raw).hexdigest(),
+    }
+    assert research["research"] == json.loads(source_raw)["research"]
+    for relative_path, raw in (
+        (package_public_demo.CORE_PAYLOAD_DESTINATION, core_raw),
+        (package_public_demo.RESEARCH_SIDECAR_DESTINATION, research_raw),
+    ):
+        assert manifest["files"][relative_path] == {
+            "bytes": len(raw),
+            "sha256": hashlib.sha256(raw).hexdigest(),
+        }
 
 
 def test_v5_live_package_refuses_unreviewed_candidate(

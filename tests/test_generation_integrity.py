@@ -11,6 +11,7 @@ import pytest
 
 from regime_lab.artifact_inventory import write_artifact_inventory
 from regime_lab import integrity
+from regime_lab.web_contract import render_browser_contract_javascript
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -32,6 +33,7 @@ def _generation(
     label_path.parent.mkdir(parents=True)
     label_raw = b'{"version":"market-causal-3state-v1"}\n'
     label_path.write_bytes(label_raw)
+    (project / "requirements-ci.lock").write_text("locked-test-runtime\n", encoding="utf-8")
     monkeypatch.setattr(integrity, "project_root", lambda: project)
 
     generation_id = "20260826T000000.000000Z"
@@ -111,6 +113,7 @@ def _generation(
             "spec_sha256": "b" * 64,
         },
         "execution_spec": {"sha256": "e" * 64},
+        "runtime_fingerprint": integrity.build_runtime_fingerprint(project),
     }
     payload["meta"]["generation_manifest_sha256"] = (
         integrity.canonical_json_sha256_v1(manifest)
@@ -173,6 +176,7 @@ def test_current_manifest_can_require_selection_family_while_legacy_remains_read
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["schema_version"] = integrity.LEGACY_GENERATION_MANIFEST_SCHEMA_VERSION
     manifest.pop("selection_family_sidecar")
+    manifest.pop("runtime_fingerprint")
     payload = json.loads(paths["payload"].read_text(encoding="utf-8"))
     payload["meta"]["generation_manifest_sha256"] = (
         integrity.canonical_json_sha256_v1(manifest)
@@ -513,6 +517,9 @@ def test_packaging_requires_manifest_when_payload_carries_generation_binding(
     web.mkdir()
     (web / "index.html").write_text("<main>test</main>\n", encoding="utf-8")
     (web / "styles.css").write_text("main {}\n", encoding="utf-8")
+    (web / "operating-contract.generated.js").write_bytes(
+        render_browser_contract_javascript()
+    )
     (web / "app.js").write_text("'use strict';\n", encoding="utf-8")
     payload_path = tmp_path / "regime-results.json"
     payload_path.write_bytes(

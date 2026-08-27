@@ -2,18 +2,23 @@ from __future__ import annotations
 
 import hashlib
 import json
+from copy import deepcopy
 from datetime import timedelta
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from regime_lab.contract_v5 import (
+    V5ContractError,
     V5_FORECAST_COMPARISON_MODELS,
     V5_STANDARD_CORE_MODELS,
     validate_v5_payload,
 )
 from regime_lab.frozen_v4 import FROZEN_V4_BASELINE
 from regime_lab.v5 import (
+    _anchored_isotonic_transition_risk,
+    _forecast_contract,
     _model_conditioned_research,
     build_v5_payload,
     run_v5_directional_benchmark,
@@ -65,6 +70,34 @@ def _transition_risk(origin: pd.Timestamp, current_state: str):
         }
         for horizon, probability in probabilities.items()
     }
+
+
+def _transition_selection_predictions(
+    index: pd.DatetimeIndex,
+    states: pd.Series,
+) -> pd.DataFrame:
+    rows: list[dict[str, object]] = []
+    positions = (520, 521, 522)
+    probabilities = {1: 0.25, 4: 0.55, 13: 0.45}
+    for position in positions:
+        origin_state = str(states.iloc[position])
+        for horizon in (1, 4, 13):
+            actual = any(
+                str(value) != origin_state
+                for value in states.iloc[position + 1 : position + horizon + 1]
+            )
+            rows.append(
+                {
+                    "origin_date": index[position],
+                    "target_end": index[position + horizon],
+                    "horizon": horizon,
+                    "model": "markov_hazard",
+                    "evaluation_split": "selection",
+                    "actual_change": actual,
+                    "p_change": probabilities[horizon],
+                }
+            )
+    return pd.DataFrame(rows)
 
 
 def _model_forecasts(official: dict[str, object]) -> list[dict[str, object]]:
@@ -251,6 +284,13 @@ def test_v5_composer_changes_semantics_without_allocation_output() -> None:
         features=features,
         states=states,
         directional=directional,
+        transition_selection_predictions=_transition_selection_predictions(
+            index, states
+        ),
+        transition_champions_by_horizon={
+            horizon: "markov_hazard" for horizon in (1, 4, 13)
+        },
+        transition_selection_end="2023-01-01",
         baseline_v4=baseline,
         structural_preregistration_sha256=prereg_sha,
         duration_bootstrap_resamples=1,
@@ -367,6 +407,90 @@ def test_v5_composer_changes_semantics_without_allocation_output() -> None:
         **payload["weekly"][-1]["next_week"],
         "method": "model_comparison_walk_forward_probability",
     }
+    assert payload["forecast"]["forecast_evidence_track"] == "reconstructed_oos"
+    assert payload["selection"]["selection_evidence_track"] == "reconstructed_oos"
+    assert payload["selection"]["evidence_status"] == "historical_reconstructed_oos"
+    assert payload["selection"]["statistical_equivalence_status"] == (
+        "pending_selection_sidecar"
+    )
+    latest_risk = payload["weekly"][-1]["transition_risk"]
+    assert latest_risk["1w"]["probability"] <= latest_risk["4w"]["probability"]
+    assert latest_risk["4w"]["probability"] <= latest_risk["13w"]["probability"]
+    term_evidence = payload["model"]["transition_term_structure_evidence"]
+    assert term_evidence["source_artifact"] == "transition-oos-predictions.csv"
+    assert term_evidence["matched_origin_count"] == 3
+    assert term_evidence["matched_probability_count"] == 9
+    assert term_evidence["raw_brier"] is not None
+    assert term_evidence["projected_brier"] is not None
+    empty_term_evidence = deepcopy(payload)
+    empty_term_evidence["model"]["transition_term_structure_evidence"].update(
+        {
+            "matched_origin_count": 0,
+            "matched_probability_count": 0,
+            "raw_brier": None,
+            "projected_brier": None,
+            "brier_difference_projected_minus_raw": None,
+        }
+    )
+    with pytest.raises(V5ContractError, match="matched_origin_count"):
+        validate_v5_payload(empty_term_evidence)
+    assert payload["model"]["probability_health"]["status"] in {
+        "ok", "review_due", "insufficient_evidence"
+    }
+    assert payload["model"]["early_warning_health"]["status"] in {
+        "ok", "review_due", "insufficient_evidence"
+    }
+    assert payload["weekly"][-1]["context_score_coverage"]["macro"] == {
+        "available_count": 0,
+        "expected_count": 8,
+        "minimum_required_count": 6,
+        "status": "insufficient_coverage",
+    }
+    assert payload["weekly"][-1]["context_scores"]["macro"] is None
+    decision_shadow = payload["research"]["prospective_decision_shadow"]
+    assert decision_shadow["historical_reconstructed_shadow"]["evidence_track"] == (
+        "reconstructed_oos"
+    )
+    assert decision_shadow["prospective_ledger"]["affects_champion_selection"] is False
+    assert payload["research"]["label_sensitivity"]["control"][
+        "remains_operating_control"
+    ] is True
+
+
+def test_term_structure_uses_anchored_l2_isotonic_projection_not_cumulative_max() -> None:
+    risk = {
+        "1w": {"probability": 0.30},
+        "4w": {"probability": 0.70},
+        "13w": {"probability": 0.50},
+    }
+
+    projected, metadata = _anchored_isotonic_transition_risk(risk)
+
+    assert projected["1w"]["probability"] == 0.30
+    assert projected["4w"]["probability"] == 0.60
+    assert projected["13w"]["probability"] == 0.60
+    assert metadata["raw_probabilities"] == {"1w": 0.3, "4w": 0.7, "13w": 0.5}
+    assert metadata["coherence_method"] == (
+        "one_week_anchored_l2_isotonic_projection_v1"
+    )
+    assert metadata["adjusted"] is True
+
+
+def test_forecast_timing_handles_dst_and_marks_late_nowcast() -> None:
+    latest = {"date": "2026-03-06", "next_week": {"date": "2026-03-13"}}
+    generated = pd.Timestamp("2026-03-12T18:00:00Z").to_pydatetime()
+
+    forecast = _forecast_contract(
+        latest,
+        generated_at=generated,
+        mode="live",
+        evidence_track="operational_oos",
+    )
+
+    assert forecast["scheduled_horizon_seconds"] == 7 * 86_400 - 3_600
+    assert forecast["timing_status"] == "late_nowcast"
+    assert forecast["issue_latency_seconds"] > 0
+    assert forecast["prospective_ledger"]["status"] == "pending_append"
 
 
 def test_model_conditioned_asset_statistics_use_completed_oos_forecasts() -> None:

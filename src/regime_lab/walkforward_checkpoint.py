@@ -34,10 +34,13 @@ from regime_lab.analysis.models import model_manifest_sha256
 from regime_lab.io import write_json_atomic
 
 
-MANIFEST_SCHEMA_VERSION = "regime-v5-base-walkforward-checkpoint-manifest/1"
-RECORD_SCHEMA_VERSION = "regime-v5-base-walkforward-checkpoint-origin/1"
+LEGACY_MANIFEST_SCHEMA_VERSION = "regime-v5-base-walkforward-checkpoint-manifest/1"
+MANIFEST_SCHEMA_VERSION = "regime-v5-base-walkforward-checkpoint-manifest/2"
+LEGACY_RECORD_SCHEMA_VERSION = "regime-v5-base-walkforward-checkpoint-origin/1"
+RECORD_SCHEMA_VERSION = "regime-v5-base-walkforward-checkpoint-origin/2"
 CHECKPOINT_KIND = "private_v5_base_run_benchmark"
-CHECKPOINT_IMPLEMENTATION_VERSION = "1"
+LEGACY_CHECKPOINT_IMPLEMENTATION_VERSION = "1"
+CHECKPOINT_IMPLEMENTATION_VERSION = "2"
 
 PREDICTION_COLUMNS: tuple[str, ...] = (
     "origin_date",
@@ -82,7 +85,7 @@ _IDENTITY_KEYS = frozenset(
         "origins",
     }
 )
-_ORIGIN_MANIFEST_KEYS = frozenset(
+_LEGACY_ORIGIN_MANIFEST_KEYS = frozenset(
     {
         "sequence",
         "origin_date",
@@ -98,6 +101,9 @@ _ORIGIN_MANIFEST_KEYS = frozenset(
         "signature",
         "record_file",
     }
+)
+_ORIGIN_MANIFEST_KEYS = frozenset(
+    {*_LEGACY_ORIGIN_MANIFEST_KEYS, "training_slice_sha256"}
 )
 _RECORD_KEYS = frozenset(
     {
@@ -449,6 +455,62 @@ def _canonical_data_identity(
     return canonical_features, canonical_states, feature_identity, state_identity
 
 
+def _training_slice_identities(
+    features: pd.DataFrame,
+    states: pd.Series,
+    *,
+    parameter_manifest: Mapping[str, Any],
+    source_fingerprint_sha256: str | None,
+) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...], str]:
+    """Hash causal prefixes once so each origin can be reused independently."""
+
+    feature_prefix = hashlib.sha256()
+    _hash_token(feature_prefix, "regime-v5-training-feature-prefix/1")
+    for column in features.columns:
+        _hash_token(feature_prefix, str(column))
+    feature_prefixes: list[str] = []
+    feature_rows: list[str] = []
+    for at, values in features.iterrows():
+        row_digest = hashlib.sha256()
+        _hash_token(row_digest, "regime-v5-training-feature-row/1")
+        _hash_timestamp(row_digest, pd.Timestamp(at))
+        for value in values.to_numpy(dtype=float):
+            number = float(value)
+            token = (
+                "nan"
+                if math.isnan(number)
+                else "+inf"
+                if math.isinf(number) and number > 0
+                else "-inf"
+                if math.isinf(number)
+                else number.hex()
+            )
+            _hash_token(row_digest, token)
+            _hash_token(feature_prefix, token)
+        _hash_timestamp(feature_prefix, pd.Timestamp(at))
+        feature_rows.append(row_digest.hexdigest())
+        feature_prefixes.append(feature_prefix.copy().hexdigest())
+
+    state_prefix = hashlib.sha256()
+    _hash_token(state_prefix, "regime-v5-training-state-prefix/1")
+    state_prefixes: list[str] = []
+    for at, state in states.items():
+        _hash_timestamp(state_prefix, pd.Timestamp(at))
+        _hash_token(state_prefix, str(state))
+        state_prefixes.append(state_prefix.copy().hexdigest())
+    return (
+        tuple(feature_prefixes),
+        tuple(feature_rows),
+        tuple(state_prefixes),
+        _sha256_document(
+            {
+                "benchmark_parameters": dict(parameter_manifest),
+                "source_fingerprint_sha256": source_fingerprint_sha256,
+            }
+        ),
+    )
+
+
 def _normalize_selection_end(
     value: str | pd.Timestamp | None,
     index: pd.DatetimeIndex,
@@ -603,11 +665,12 @@ class CheckpointOrigin:
     gap: int
     current_state: str
     actual: str
+    training_slice_sha256: str | None
     signature: str
     record_file: str
 
     def public_manifest(self) -> dict[str, Any]:
-        return {
+        document = {
             "sequence": self.sequence,
             "origin_date": _timestamp_document(self.origin_date),
             "target_date": _timestamp_document(self.target_date),
@@ -626,6 +689,9 @@ class CheckpointOrigin:
             "signature": self.signature,
             "record_file": self.record_file,
         }
+        if self.training_slice_sha256 is not None:
+            document["training_slice_sha256"] = self.training_slice_sha256
+        return document
 
 
 def _resolve_test_positions(
@@ -748,6 +814,18 @@ class BenchmarkCheckpointIdentity:
             canonical_features.index,
             parameters,
         )
+        parameter_manifest = parameters.manifest(canonical_features.index)
+        (
+            feature_prefixes,
+            feature_rows,
+            state_prefixes,
+            runtime_model_source_sha256,
+        ) = _training_slice_identities(
+            canonical_features,
+            canonical_states,
+            parameter_manifest=parameter_manifest,
+            source_fingerprint_sha256=fingerprint,
+        )
         origins: list[CheckpointOrigin] = []
         origin_manifests: list[dict[str, Any]] = []
         for sequence, position in enumerate(positions, start=1):
@@ -760,6 +838,23 @@ class BenchmarkCheckpointIdentity:
                 cutoff=cutoff,
                 gap=parameters.gap,
             )
+            train_stop = position - parameters.gap
+            training_slice_sha256 = _sha256_document(
+                {
+                    "schema_version": "regime-v5-origin-training-slice/1",
+                    "training_feature_prefix_sha256": feature_prefixes[
+                        train_stop - 1
+                    ],
+                    "prediction_feature_row_sha256": feature_rows[position],
+                    "training_state_prefix_sha256": state_prefixes[train_stop],
+                    "runtime_model_source_sha256": runtime_model_source_sha256,
+                    "origin_date": core["origin_date"],
+                    "target_date": core["target_date"],
+                    "current_state": core["current_state"],
+                    "actual": core["actual"],
+                }
+            )
+            core["training_slice_sha256"] = training_slice_sha256
             signature = _sha256_document(core)
             record_file = f"{sequence:06d}.json"
             origin = CheckpointOrigin(
@@ -780,13 +875,13 @@ class BenchmarkCheckpointIdentity:
                 gap=int(core["gap"]),
                 current_state=str(core["current_state"]),
                 actual=str(core["actual"]),
+                training_slice_sha256=training_slice_sha256,
                 signature=signature,
                 record_file=record_file,
             )
             origins.append(origin)
             origin_manifests.append(origin.public_manifest())
 
-        parameter_manifest = parameters.manifest(canonical_features.index)
         identity_core = {
             "checkpoint_kind": CHECKPOINT_KIND,
             "implementation_version": CHECKPOINT_IMPLEMENTATION_VERSION,
@@ -941,6 +1036,7 @@ def _require_private_mode(path: Path, *, directory: bool) -> None:
 @dataclass(frozen=True)
 class _StoredCheckpointInspection:
     run_signature: str
+    implementation_version: str
     model_names: tuple[str, ...]
     origins: tuple[CheckpointOrigin, ...]
 
@@ -954,7 +1050,10 @@ def _require_real_private_directory(path: Path, *, label: str) -> None:
 
 
 def _stored_origin(value: Any, *, expected_sequence: int) -> CheckpointOrigin:
-    if not isinstance(value, Mapping) or set(value) != _ORIGIN_MANIFEST_KEYS:
+    if not isinstance(value, Mapping):
+        raise CheckpointCorruptionError("checkpoint origin manifest keys are invalid")
+    origin_keys = frozenset(value)
+    if origin_keys not in {_LEGACY_ORIGIN_MANIFEST_KEYS, _ORIGIN_MANIFEST_KEYS}:
         raise CheckpointCorruptionError("checkpoint origin manifest keys are invalid")
     sequence = value.get("sequence")
     if type(sequence) is not int or sequence != expected_sequence:
@@ -978,6 +1077,14 @@ def _stored_origin(value: Any, *, expected_sequence: int) -> CheckpointOrigin:
     signature = value.get("signature")
     if not isinstance(signature, str) or not _SHA256_PATTERN.fullmatch(signature):
         raise CheckpointCorruptionError("checkpoint origin signature is invalid")
+    training_slice_sha256 = value.get("training_slice_sha256")
+    if training_slice_sha256 is not None and (
+        not isinstance(training_slice_sha256, str)
+        or not _SHA256_PATTERN.fullmatch(training_slice_sha256)
+    ):
+        raise CheckpointCorruptionError(
+            "checkpoint origin training slice signature is invalid"
+        )
     record_file = value.get("record_file")
     if record_file != f"{sequence:06d}.json":
         raise CheckpointCorruptionError("checkpoint origin record file is invalid")
@@ -1016,6 +1123,7 @@ def _stored_origin(value: Any, *, expected_sequence: int) -> CheckpointOrigin:
         # them back to ``signature`` before it can be accepted below.
         current_state="transition",
         actual="transition",
+        training_slice_sha256=training_slice_sha256,
         signature=signature,
         record_file=record_file,
     )
@@ -1030,12 +1138,15 @@ def _validate_stored_record(
     run_signature: str,
     model_names: tuple[str, ...],
     stored_origin: CheckpointOrigin,
-) -> None:
+) -> CompletedCheckpointOrigin:
     _require_private_mode(path, directory=False)
     document = _read_json_strict(path)
     if not isinstance(document, Mapping) or set(document) != _RECORD_KEYS:
         raise CheckpointCorruptionError("checkpoint record keys are invalid")
-    if document.get("schema_version") != RECORD_SCHEMA_VERSION:
+    if document.get("schema_version") not in {
+        LEGACY_RECORD_SCHEMA_VERSION,
+        RECORD_SCHEMA_VERSION,
+    }:
         raise CheckpointCorruptionError("checkpoint record schema mismatch")
     body = {key: document[key] for key in _RECORD_KEYS if key != "record_sha256"}
     stored_sha256 = document.get("record_sha256")
@@ -1075,6 +1186,7 @@ def _validate_stored_record(
         gap=stored_origin.gap,
         current_state=current_state,
         actual=actual,
+        training_slice_sha256=stored_origin.training_slice_sha256,
         signature=stored_origin.signature,
         record_file=stored_origin.record_file,
     )
@@ -1097,6 +1209,10 @@ def _validate_stored_record(
         "current_state": bound_origin.current_state,
         "actual": bound_origin.actual,
     }
+    if bound_origin.training_slice_sha256 is not None:
+        origin_core["training_slice_sha256"] = (
+            bound_origin.training_slice_sha256
+        )
     if _sha256_document(origin_core) != bound_origin.signature:
         raise CheckpointCorruptionError("checkpoint origin signature mismatch")
     stored_identity = BenchmarkCheckpointIdentity(
@@ -1109,6 +1225,11 @@ def _validate_stored_record(
         run_signature=run_signature,
     )
     _validate_completed_origin(stored_identity, bound_origin, predictions, split)
+    return CompletedCheckpointOrigin(
+        origin=bound_origin,
+        prediction_rows=predictions,
+        split_audit=split,
+    )
 
 
 def _inspect_stored_checkpoint(root: Path) -> _StoredCheckpointInspection:
@@ -1133,17 +1254,25 @@ def _inspect_stored_checkpoint(root: Path) -> _StoredCheckpointInspection:
     manifest = _read_json_strict(manifest_path)
     if not isinstance(manifest, Mapping) or set(manifest) != _MANIFEST_KEYS:
         raise CheckpointCorruptionError("checkpoint manifest keys are invalid")
-    if manifest.get("schema_version") != MANIFEST_SCHEMA_VERSION:
+    manifest_schema = manifest.get("schema_version")
+    if manifest_schema not in {
+        LEGACY_MANIFEST_SCHEMA_VERSION,
+        MANIFEST_SCHEMA_VERSION,
+    }:
         raise CheckpointCorruptionError("checkpoint manifest schema mismatch")
     identity = manifest.get("identity")
     if manifest.get("visibility") != "private" or not isinstance(identity, Mapping):
         raise CheckpointCorruptionError("checkpoint manifest is not private and valid")
     if set(identity) != _IDENTITY_KEYS:
         raise CheckpointCorruptionError("checkpoint identity keys are invalid")
+    expected_implementation = (
+        LEGACY_CHECKPOINT_IMPLEMENTATION_VERSION
+        if manifest_schema == LEGACY_MANIFEST_SCHEMA_VERSION
+        else CHECKPOINT_IMPLEMENTATION_VERSION
+    )
     if (
         identity.get("checkpoint_kind") != CHECKPOINT_KIND
-        or identity.get("implementation_version")
-        != CHECKPOINT_IMPLEMENTATION_VERSION
+        or identity.get("implementation_version") != expected_implementation
     ):
         raise CheckpointCorruptionError("checkpoint identity kind is invalid")
     run_signature = manifest.get("run_signature")
@@ -1226,9 +1355,74 @@ def _inspect_stored_checkpoint(root: Path) -> _StoredCheckpointInspection:
 
     return _StoredCheckpointInspection(
         run_signature=run_signature,
+        implementation_version=expected_implementation,
         model_names=model_names,
         origins=origins,
     )
+
+
+def _checkpoint_namespaces(root: Path) -> tuple[Path, ...]:
+    namespaces = [root]
+    runs = root / "runs"
+    if runs.is_dir() and not runs.is_symlink():
+        namespaces.extend(
+            sorted(
+                (
+                    path
+                    for path in runs.iterdir()
+                    if path.is_dir() and not path.is_symlink()
+                ),
+                key=lambda path: path.name,
+            )
+        )
+    return tuple(namespaces)
+
+
+def _reuse_compatible_origins(
+    root: Path,
+    target: "WalkForwardCheckpoint",
+) -> None:
+    reusable: dict[str, CompletedCheckpointOrigin] = {}
+    for namespace in _checkpoint_namespaces(root):
+        if namespace.resolve() == target.root.resolve():
+            continue
+        inspection = _inspect_stored_checkpoint(namespace)
+        if (
+            inspection.implementation_version
+            != CHECKPOINT_IMPLEMENTATION_VERSION
+            or inspection.model_names != target.identity.model_names
+        ):
+            continue
+        for stored_origin in inspection.origins:
+            training_hash = stored_origin.training_slice_sha256
+            if training_hash is None:
+                continue
+            record_path = namespace / "origins" / stored_origin.record_file
+            if not record_path.exists():
+                continue
+            reusable.setdefault(
+                training_hash,
+                _validate_stored_record(
+                    record_path,
+                    run_signature=inspection.run_signature,
+                    model_names=inspection.model_names,
+                    stored_origin=stored_origin,
+                ),
+            )
+
+    for origin in target.identity.origins:
+        if origin.training_slice_sha256 is None:
+            continue
+        if (target.records_root / origin.record_file).exists():
+            continue
+        completed = reusable.get(origin.training_slice_sha256)
+        if completed is None:
+            continue
+        target.save_origin(
+            origin.sequence,
+            completed.prediction_rows,
+            completed.split_audit,
+        )
 
 
 class WalkForwardCheckpoint:
@@ -1327,14 +1521,18 @@ class WalkForwardCheckpoint:
             raise CheckpointPrivacyError("versioned checkpoint run must not be a symlink")
         if child.exists() and child.is_dir() and not any(child.iterdir()):
             os.chmod(child, 0o700)
-            return cls.open(child, identity)
+            checkpoint = cls.open(child, identity)
+            _reuse_compatible_origins(resolved, checkpoint)
+            return checkpoint
         if child.exists():
             child_stored = _inspect_stored_checkpoint(child)
             if child_stored.run_signature != identity.run_signature:
                 raise CheckpointCorruptionError(
                     "versioned checkpoint manifest does not match its namespace"
                 )
-        return cls.open(child, identity)
+        checkpoint = cls.open(child, identity)
+        _reuse_compatible_origins(resolved, checkpoint)
+        return checkpoint
 
     def _open_manifest(self) -> None:
         path = self.root / "manifest.json"

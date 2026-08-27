@@ -19,6 +19,7 @@ import os
 from pathlib import Path
 import plistlib
 import re
+import signal
 import sqlite3
 import subprocess
 import sys
@@ -61,6 +62,22 @@ from regime_lab.selection_family_audit import (
     validate_selection_family_payload_binding,
 )
 from regime_lab.data import DailyRequestBudget, SQLiteSnapshotStore
+from regime_lab.dashboard_split import build_dashboard_split
+from regime_lab.run_registry import (
+    RunRegistryError,
+    append_run_event,
+    completed_run_for_generation,
+    current_run_status,
+)
+from regime_lab.runtime_fingerprint import (
+    RuntimeFingerprintError,
+    build_runtime_fingerprint,
+    validate_runtime_fingerprint,
+)
+from regime_lab.web_contract import (
+    BrowserContractError,
+    validate_generated_browser_contract,
+)
 
 
 UTC = timezone.utc
@@ -69,11 +86,18 @@ PUBLICATION_COMPARISON_PATH = "publication/live/v5-vs-v4-comparison.json"
 PUBLICATION_GENERATION_MANIFEST_PATH = "publication/live/generation-manifest.json"
 PUBLICATION_SELECTION_FAMILY_PATH = "publication/live/selection-family-audit.json"
 PUBLIC_PAYLOAD_PATH = "data/regime-results.json"
+PUBLIC_CORE_PAYLOAD_PATH = "data/regime-core.json"
+PUBLIC_RESEARCH_SIDECAR_PATH = "data/regime-research.json"
 PUBLIC_COMPARISON_PATH = "data/v5-vs-v4-comparison.json"
 PUBLIC_GENERATION_MANIFEST_PATH = "data/generation-manifest.json"
 PUBLIC_SELECTION_FAMILY_PATH = "data/selection-family-audit.json"
 PUBLIC_MANIFEST_PATH = "publication-manifest.json"
-PUBLIC_STATIC_ASSET_PATHS = ("index.html", "styles.css", "app.js")
+PUBLIC_STATIC_ASSET_PATHS = (
+    "index.html",
+    "styles.css",
+    "operating-contract.generated.js",
+    "app.js",
+)
 AUTOMATION_LABEL = "com.sonchanggi.regime.weekly-release"
 AUTOMATION_TRAILER = "Regime-Automation: weekly-release-v1"
 ALLOWED_REMOTE_DRIFT = frozenset(
@@ -85,7 +109,7 @@ ALLOWED_REMOTE_DRIFT = frozenset(
     }
 )
 DEFAULT_RETRY_HOURS = (3, 9, 15, 21)
-HEALTH_SCHEMA_VERSION = 4
+HEALTH_SCHEMA_VERSION = 5
 GIT_NETWORK_TIMEOUT_SECONDS = 300.0
 GIT_NONINTERACTIVE_ENV = {
     "GIT_TERMINAL_PROMPT": "0",
@@ -148,6 +172,7 @@ class AutomationSettings:
     heartbeat_interval: timedelta = timedelta(minutes=2)
     stale_heartbeat_after: timedelta = timedelta(minutes=15)
     notification_dedupe: timedelta = timedelta(hours=24)
+    no_progress_timeout: timedelta = timedelta(minutes=45)
 
     @classmethod
     def load(cls, path: str | Path | None = None) -> "AutomationSettings":
@@ -179,6 +204,9 @@ class AutomationSettings:
             notification_dedupe_hours = int(
                 schedule.get("notification_dedupe_hours", 24)
             )
+            no_progress_minutes = int(
+                schedule.get("no_progress_timeout_minutes", 45)
+            )
         except (KeyError, TypeError, ValueError) as exc:
             raise AutomationError("automation config fields are invalid") from exc
         if not 0 <= hour <= 23 or not 0 <= minute <= 59:
@@ -192,6 +220,7 @@ class AutomationSettings:
             or heartbeat_seconds < 30
             or stale_heartbeat_minutes < 2
             or notification_dedupe_hours < 1
+            or no_progress_minutes < 5
         ):
             raise AutomationError("automation retry and health timing values are invalid")
         if type(schedule.get("require_ac_power", True)) is not bool:
@@ -249,6 +278,7 @@ class AutomationSettings:
             heartbeat_interval=timedelta(seconds=heartbeat_seconds),
             stale_heartbeat_after=timedelta(minutes=stale_heartbeat_minutes),
             notification_dedupe=timedelta(hours=notification_dedupe_hours),
+            no_progress_timeout=timedelta(minutes=no_progress_minutes),
         )
 
     @property
@@ -314,6 +344,14 @@ class AutomationSettings:
     @property
     def notification_state_path(self) -> Path:
         return self.state_directory / "notification-state.json"
+
+    @property
+    def run_registry_path(self) -> Path:
+        return self.payload.with_name("run-registry.jsonl")
+
+    @property
+    def checkpoint_directory(self) -> Path:
+        return self.payload.parent / ".private-checkpoints" / "base-walk-forward"
 
 
 @dataclass(frozen=True)
@@ -645,6 +683,7 @@ def _run(
             stdout=subprocess.PIPE if capture else None,
             stderr=subprocess.PIPE if capture else None,
             env=process_env,
+            start_new_session=True,
         )
         deadline = time.monotonic() + timeout if timeout is not None else None
         while True:
@@ -663,7 +702,19 @@ def _run(
                 stdout, stderr = process.communicate(timeout=wait_for)
                 break
             except subprocess.TimeoutExpired:
-                heartbeat()
+                try:
+                    heartbeat()
+                except BaseException:
+                    try:
+                        os.killpg(process.pid, signal.SIGTERM)
+                        process.wait(timeout=10)
+                    except (ProcessLookupError, subprocess.TimeoutExpired):
+                        try:
+                            os.killpg(process.pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+                        process.wait()
+                    raise
         completed = subprocess.CompletedProcess(
             list(args), process.returncode, stdout or b"", stderr or b""
         )
@@ -718,6 +769,7 @@ def _status_document(
     recovery_fingerprint: str | None = None,
     notification: Mapping[str, Any] | None = None,
     failed_stage: str | None = None,
+    progress: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     now = datetime.now(UTC)
     previous = _read_status(settings)
@@ -741,6 +793,32 @@ def _status_document(
     last_check_at = previous.get("last_check_at")
     last_public_verification_at = previous.get("last_public_verification_at")
     last_failure_at = previous.get("last_failure_at")
+    completed_origins = previous.get("completed_origins")
+    total_origins = previous.get("total_origins")
+    last_progress_at = previous.get("last_progress_at")
+    current_origin = previous.get("current_origin")
+    current_model = previous.get("current_model")
+    if previous.get("run_id") != selected_run_id and stage == "preflight":
+        completed_origins = None
+        total_origins = None
+        last_progress_at = None
+        current_origin = None
+        current_model = None
+    if progress is not None:
+        new_completed = progress.get("completed_origins")
+        new_total = progress.get("total_origins")
+        if (
+            type(new_completed) is int
+            and new_completed >= 0
+            and type(new_total) is int
+            and new_total >= new_completed
+        ):
+            if new_completed != completed_origins or new_total != total_origins:
+                last_progress_at = now.isoformat()
+            completed_origins = new_completed
+            total_origins = new_total
+        current_origin = progress.get("current_origin")
+        current_model = progress.get("current_model")
     raw_stage_successes = previous.get("last_stage_successes", {})
     last_stage_successes = (
         dict(raw_stage_successes)
@@ -789,6 +867,12 @@ def _status_document(
     elif status == "failed":
         consecutive_failures += 1
         last_failure_at = now.isoformat()
+    try:
+        runtime_fingerprint_sha256 = build_runtime_fingerprint(settings.root)["sha256"]
+    except RuntimeFingerprintError:
+        runtime_fingerprint_sha256 = None
+    publication_current = bool(last_public_verification_at and public_data_as_of)
+    end_to_end_proven = bool(last_full_success_at)
     return {
         "schema_version": HEALTH_SCHEMA_VERSION,
         "automation_id": settings.automation_id,
@@ -819,6 +903,14 @@ def _status_document(
         "last_public_verification_at": last_public_verification_at,
         "last_failure_at": last_failure_at,
         "last_stage_successes": last_stage_successes,
+        "publication_current": publication_current,
+        "end_to_end_proven": end_to_end_proven,
+        "completed_origins": completed_origins,
+        "total_origins": total_origins,
+        "last_progress_at": last_progress_at,
+        "current_origin": current_origin,
+        "current_model": current_model,
+        "runtime_fingerprint_sha256": runtime_fingerprint_sha256,
         "consecutive_failures": consecutive_failures,
         "commit_sha": commit_sha,
         "workflow_url": workflow_url,
@@ -857,6 +949,7 @@ def _heartbeat_status(
     settings: AutomationSettings,
     *,
     stage: str | None = None,
+    progress: Mapping[str, Any] | None = None,
 ) -> None:
     document = _read_status(settings)
     if not document:
@@ -883,6 +976,24 @@ def _heartbeat_status(
         document["stage_started_at"] = now
     document["heartbeat_at"] = now
     document["updated_at"] = now
+    if progress is not None:
+        new_completed = progress.get("completed_origins")
+        new_total = progress.get("total_origins")
+        if (
+            type(new_completed) is int
+            and new_completed >= 0
+            and type(new_total) is int
+            and new_total >= new_completed
+        ):
+            if (
+                document.get("completed_origins") != new_completed
+                or document.get("total_origins") != new_total
+            ):
+                document["last_progress_at"] = now
+            document["completed_origins"] = new_completed
+            document["total_origins"] = new_total
+        document["current_origin"] = progress.get("current_origin")
+        document["current_model"] = progress.get("current_model")
     write_json_atomic(settings.status_path, document)
 
 
@@ -961,6 +1072,20 @@ def _validate_local_authorization_document(
     current = now.astimezone(UTC)
     if reviewed_at > current or review_after <= current:
         raise AutomationError("local automation authorization requires renewal")
+    stored_runtime = document.get("runtime_fingerprint")
+    if not isinstance(stored_runtime, Mapping):
+        raise AutomationError(
+            "local automation authorization predates runtime binding; reinstall it"
+        )
+    try:
+        validate_runtime_fingerprint(stored_runtime)
+        current_runtime = build_runtime_fingerprint(settings.root)
+    except RuntimeFingerprintError as exc:
+        raise AutomationError(str(exc)) from exc
+    if dict(stored_runtime) != current_runtime:
+        raise AutomationError(
+            "locked model runtime differs from the authorized environment"
+        )
 
 
 def _write_local_authorization(
@@ -979,6 +1104,10 @@ def _write_local_authorization(
             "install requires explicit personal noncommercial derived-publication permission"
         )
     reviewed_at = (now or datetime.now(UTC)).astimezone(UTC)
+    try:
+        runtime_fingerprint = build_runtime_fingerprint(settings.root)
+    except RuntimeFingerprintError as exc:
+        raise AutomationError(str(exc)) from exc
     write_json_atomic(
         settings.authorization,
         {
@@ -992,6 +1121,7 @@ def _write_local_authorization(
             "reviewed_at": reviewed_at.isoformat(),
             "review_after": (reviewed_at + timedelta(days=180)).isoformat(),
             "contains_credentials": False,
+            "runtime_fingerprint": runtime_fingerprint,
         },
     )
     os.chmod(settings.authorization, 0o600)
@@ -1571,7 +1701,11 @@ def validate_automation_candidate(
         if is_v5:
             health = payload.get("model", {}).get("model_health", {})
             reasons = health.get("reasons") if isinstance(health, dict) else None
-            allowed_reasons = {"weak_generalization", "calibration_drift"}
+            allowed_reasons = {
+                "weak_generalization",
+                "calibration_drift",
+                "low_transition_recall",
+            }
             if (
                 health.get("status") != "review_due"
                 or not isinstance(reasons, list)
@@ -1698,6 +1832,10 @@ def _candidate_context(settings: AutomationSettings) -> dict[str, str]:
         except OSError as exc:
             raise AutomationError(f"{label} is unavailable") from exc
 
+    try:
+        runtime_fingerprint = build_runtime_fingerprint(settings.root)
+    except RuntimeFingerprintError as exc:
+        raise AutomationError(str(exc)) from exc
     return {
         "source_tree_sha256": hashlib.sha256(
             ("\n".join(retained) + "\n").encode("utf-8")
@@ -1709,7 +1847,52 @@ def _candidate_context(settings: AutomationSettings) -> dict[str, str]:
         "automation_config_sha256": file_sha256(
             settings.config_path, "automation config"
         ),
+        "runtime_fingerprint_sha256": str(runtime_fingerprint["sha256"]),
     }
+
+
+def _advance_generation_registry(
+    settings: AutomationSettings,
+    *,
+    generation_id: str,
+    status: str,
+    detail: Mapping[str, Any],
+) -> str | None:
+    try:
+        build_run_id = completed_run_for_generation(
+            settings.run_registry_path,
+            generation_id,
+        )
+    except RunRegistryError as exc:
+        raise AutomationError(f"run registry is invalid: {exc}") from exc
+    if build_run_id is None:
+        return None
+    try:
+        current = current_run_status(settings.run_registry_path, build_run_id)
+        if status == "publication_reviewed":
+            if current in {"publication_reviewed", "published"}:
+                return build_run_id
+            if current != "completed":
+                raise AutomationError(
+                    f"generation run is not reviewable from status {current!r}"
+                )
+        elif status == "published":
+            if current == "published":
+                return build_run_id
+            if current != "publication_reviewed":
+                raise AutomationError(
+                    f"generation run is not publishable from status {current!r}"
+                )
+        append_run_event(
+            settings.run_registry_path,
+            run_id=build_run_id,
+            status=status,
+            generation_id=generation_id,
+            detail=detail,
+        )
+    except RunRegistryError as exc:
+        raise AutomationError(f"run registry transition failed: {exc}") from exc
+    return build_run_id
 
 
 def _cache_candidate(
@@ -1786,6 +1969,19 @@ def _cache_candidate(
         )
     else:
         settings.candidate_selection_family_path.unlink(missing_ok=True)
+    build_run_id = _advance_generation_registry(
+        settings,
+        generation_id=generation_id,
+        status="publication_reviewed",
+        detail={
+            "payload_sha256": hashlib.sha256(raw).hexdigest(),
+            "generation_manifest_sha256": (
+                hashlib.sha256(generation_manifest_raw).hexdigest()
+                if generation_manifest_raw is not None
+                else None
+            ),
+        },
+    )
     write_json_atomic(
         settings.candidate_metadata_path,
         {
@@ -1809,6 +2005,7 @@ def _cache_candidate(
                 else None
             ),
             "generation_id": generation_id,
+            "build_run_id": build_run_id,
             **context,
             "cached_at": datetime.now(UTC).isoformat(),
         },
@@ -1907,6 +2104,44 @@ def _load_cached_candidate(
     return raw
 
 
+def _record_candidate_published(
+    settings: AutomationSettings,
+    *,
+    candidate: bytes,
+    generation_manifest: bytes | None,
+    commit_sha: str,
+    workflow_url: str | None,
+) -> None:
+    try:
+        metadata = json.loads(
+            settings.candidate_metadata_path.read_text(encoding="utf-8")
+        )
+        payload = json.loads(candidate)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return
+    if not isinstance(metadata, Mapping) or not isinstance(payload, Mapping):
+        return
+    generation_id = str(payload.get("meta", {}).get("generation_id", ""))
+    if not generation_id or metadata.get("generation_id") != generation_id:
+        return
+    _advance_generation_registry(
+        settings,
+        generation_id=generation_id,
+        status="published",
+        detail={
+            "commit_sha": commit_sha,
+            "workflow_url": workflow_url,
+            "public_root": settings.public_root,
+            "generation_manifest_sha256": (
+                hashlib.sha256(generation_manifest).hexdigest()
+                if generation_manifest is not None
+                else None
+            ),
+            "readback_verified": True,
+        },
+    )
+
+
 def _load_collection_report(
     settings: AutomationSettings,
     *,
@@ -1985,6 +2220,55 @@ def _collection_failure(
     )
 
 
+def _walkforward_checkpoint_progress(
+    settings: AutomationSettings,
+) -> dict[str, Any] | None:
+    root = settings.checkpoint_directory
+    candidates = [root / "manifest.json"]
+    runs = root / "runs"
+    if runs.is_dir() and not runs.is_symlink():
+        candidates.extend(
+            path / "manifest.json"
+            for path in runs.iterdir()
+            if path.is_dir() and not path.is_symlink()
+        )
+    manifests = [path for path in candidates if path.is_file() and not path.is_symlink()]
+    if not manifests:
+        return None
+    manifest_path = max(manifests, key=lambda path: path.stat().st_mtime_ns)
+    try:
+        document = json.loads(manifest_path.read_text(encoding="utf-8"))
+        origins = document["identity"]["origins"]
+    except (OSError, KeyError, TypeError, json.JSONDecodeError):
+        return None
+    if not isinstance(origins, list):
+        return None
+    records_root = manifest_path.parent / "origins"
+    completed_sequences = {
+        int(match.group(1))
+        for path in records_root.glob("*.json")
+        if (match := re.fullmatch(r"(\d{6})\.json", path.name)) is not None
+        and path.is_file()
+        and not path.is_symlink()
+    }
+    next_origin: object = None
+    for origin in origins:
+        if not isinstance(origin, Mapping):
+            continue
+        sequence = origin.get("sequence")
+        if type(sequence) is int and sequence not in completed_sequences:
+            next_origin = origin.get("origin_date")
+            break
+    return {
+        "completed_origins": len(completed_sequences),
+        "total_origins": len(origins),
+        "current_origin": next_origin,
+        "current_model": (
+            "base_model_suite" if len(completed_sequences) < len(origins) else None
+        ),
+    }
+
+
 def _build_candidate(
     settings: AutomationSettings,
     *,
@@ -2001,10 +2285,32 @@ def _build_candidate(
     settings.reviewed_generation_manifest_path.unlink(missing_ok=True)
     settings.reviewed_selection_family_path.unlink(missing_ok=True)
 
+    last_progress_count: int | None = None
+    last_progress_monotonic = time.monotonic()
+
     def heartbeat() -> None:
+        nonlocal last_progress_count, last_progress_monotonic
         report = _load_collection_report(settings, target=target)
         stage = "train_models" if report and report.get("ready_for_training") else "collect_live_data"
-        _heartbeat_status(settings, stage=stage)
+        progress = (
+            _walkforward_checkpoint_progress(settings)
+            if stage == "train_models"
+            else None
+        )
+        if progress is not None:
+            completed = int(progress["completed_origins"])
+            if completed != last_progress_count:
+                last_progress_count = completed
+                last_progress_monotonic = time.monotonic()
+        _heartbeat_status(settings, stage=stage, progress=progress)
+        if (
+            stage == "train_models"
+            and time.monotonic() - last_progress_monotonic
+            > settings.no_progress_timeout.total_seconds()
+        ):
+            raise AutomationError(
+                "model training made no checkpoint progress within the configured timeout"
+            )
 
     command = [
         sys.executable,
@@ -2048,6 +2354,12 @@ def _build_candidate(
             heartbeat=heartbeat if started_at is not None else None,
             heartbeat_interval=settings.heartbeat_interval.total_seconds(),
         )
+        if started_at is not None:
+            _heartbeat_status(
+                settings,
+                stage="train_models",
+                progress=_walkforward_checkpoint_progress(settings),
+            )
     except AutomationError as exc:
         report = _load_collection_report(settings, target=target)
         if report is not None and report.get("ready_for_training") is not True:
@@ -2436,12 +2748,16 @@ def _expected_static_assets(settings: AutomationSettings) -> dict[str, bytes]:
             )
         assets[relative_path] = source.read_bytes()
     try:
+        operating_contract_raw = validate_generated_browser_contract(
+            settings.root / "web" / "operating-contract.generated.js"
+        )
         assets["index.html"] = rewrite_index_asset_versions(
             assets["index.html"],
             styles_raw=assets["styles.css"],
             app_raw=assets["app.js"],
+            operating_contract_raw=operating_contract_raw,
         )
-    except PublicContractError as exc:
+    except (BrowserContractError, PublicContractError) as exc:
         raise AutomationError(f"expected dashboard assets are invalid: {exc}") from exc
     return assets
 
@@ -2457,10 +2773,12 @@ def verify_public_readback(
     fetch: Callable[[str], bytes] = _fetch_url,
 ) -> None:
     expected = _json_object(expected_payload, label="expected public payload")
-    if (
+    is_v5 = (
         expected.get("meta", {}).get("result_version")
         == "weekly-regime-result-v5"
-        and expected_comparison is None
+    )
+    if (
+        is_v5 and expected_comparison is None
     ):
         raise AutomationError("V5 public readback requires an expected comparison")
     if expected_comparison is not None:
@@ -2493,6 +2811,21 @@ def verify_public_readback(
             label="expected publication",
             selection_family_raw=expected_selection_family,
         )
+    expected_split: dict[str, bytes] = {}
+    if is_v5:
+        try:
+            expected_core, expected_research = build_dashboard_split(
+                expected,
+                payload_raw=expected_payload,
+            )
+        except (PublicContractError, TypeError, ValueError) as exc:
+            raise AutomationError(
+                f"expected publication core/research split is invalid: {exc}"
+            ) from exc
+        expected_split = {
+            PUBLIC_CORE_PAYLOAD_PATH: expected_core,
+            PUBLIC_RESEARCH_SIDECAR_PATH: expected_research,
+        }
     checkout_assets = (
         _expected_static_assets(settings)
         if expected_assets is None
@@ -2510,6 +2843,7 @@ def verify_public_readback(
     )
     manifest_files = manifest.get("files")
     expected_files = {*PUBLIC_STATIC_ASSET_PATHS, PUBLIC_PAYLOAD_PATH}
+    expected_files.update(expected_split)
     if expected_comparison is not None:
         expected_files.add(PUBLIC_COMPARISON_PATH)
     if expected_generation_manifest is not None:
@@ -2524,6 +2858,18 @@ def verify_public_readback(
     if record.get("bytes") != len(public_payload):
         raise AutomationError("public manifest payload byte count is incorrect")
     fetched_files: dict[str, bytes] = {PUBLIC_PAYLOAD_PATH: public_payload}
+    for relative_path, expected_raw in expected_split.items():
+        public_raw = fetch(urljoin(settings.public_root, relative_path))
+        if public_raw != expected_raw:
+            raise AutomationError(
+                f"public {relative_path} does not match the expected generation"
+            )
+        split_record = manifest_files.get(relative_path, {})
+        if split_record.get("bytes") != len(public_raw):
+            raise AutomationError(f"public {relative_path} byte count is incorrect")
+        if split_record.get("sha256") != hashlib.sha256(public_raw).hexdigest():
+            raise AutomationError(f"public {relative_path} SHA-256 is incorrect")
+        fetched_files[relative_path] = public_raw
     if expected_comparison is not None:
         public_comparison = fetch(
             urljoin(settings.public_root, PUBLIC_COMPARISON_PATH)
@@ -2944,6 +3290,13 @@ def run_weekly_release(
                     settings, stage="wait_for_pages"
                 ),
             )
+            _record_candidate_published(
+                settings,
+                candidate=candidate,
+                generation_manifest=candidate_generation_manifest,
+                commit_sha=commit_sha,
+                workflow_url=workflow_url,
+            )
             result = _write_status(
                 settings,
                 status="succeeded",
@@ -3267,7 +3620,7 @@ def launch_agent_status(settings: AutomationSettings) -> dict[str, Any]:
                 health_stale = True
             if health_stale:
                 health_ok = False
-    operational = bool(
+    scheduler_healthy = bool(
         installed
         and loaded
         and configuration["configuration_matches"]
@@ -3275,9 +3628,24 @@ def launch_agent_status(settings: AutomationSettings) -> dict[str, Any]:
         and provider_rights_ok
         and authorization_ok
     )
+    publication_current = bool(
+        health
+        and health.get("publication_current") is True
+        and not health_stale
+    )
+    end_to_end_proven = bool(
+        health
+        and health.get("end_to_end_proven") is True
+        and health.get("last_full_success_at")
+    )
     return {
-        "ok": operational,
-        "operational": operational,
+        "ok": scheduler_healthy,
+        # Compatibility alias; callers should migrate to the three explicit
+        # status dimensions below.
+        "operational": scheduler_healthy,
+        "scheduler_healthy": scheduler_healthy,
+        "publication_current": publication_current,
+        "end_to_end_proven": end_to_end_proven,
         "installed": installed,
         "loaded": loaded,
         "label": AUTOMATION_LABEL,

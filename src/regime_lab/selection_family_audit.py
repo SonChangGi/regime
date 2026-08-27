@@ -727,8 +727,17 @@ def validate_selection_family_payload_binding(
         document,
         expected_generation_id=generation_id,
     )
+    selection_track = str(
+        selection.get(
+            "selection_evidence_track",
+            # Reviewed schema-2.1 snapshots predate the split and retain their
+            # byte-bound legacy alias.  Newly generated payloads always carry
+            # selection_evidence_track explicitly.
+            forecast.get("evidence_track"),
+        )
+    )
     expected_status = _supplemental_evidence_status(
-        evidence_track=str(forecast.get("evidence_track")),
+        evidence_track=selection_track,
         payload_mode=str(meta.get("mode")) if meta.get("mode") is not None else None,
     )
     exact_pairs = (
@@ -738,7 +747,7 @@ def validate_selection_family_payload_binding(
         ("selection_reason", selection.get("selection_reason")),
         ("policy_sha256", selection.get("policy_sha256")),
         ("candidate_set", selection.get("candidate_set")),
-        ("evidence_track", forecast.get("evidence_track")),
+        ("evidence_track", selection_track),
         ("evidence_status", expected_status),
     )
     for field, expected in exact_pairs:
@@ -866,7 +875,11 @@ def build_selection_family_audit_from_artifacts(
         selection_predictions,
         diagnostics,
         evidence_status=_supplemental_evidence_status(
-            evidence_track=str(forecast.get("evidence_track")),
+            evidence_track=str(
+                selection.get(
+                    "selection_evidence_track", forecast.get("evidence_track")
+                )
+            ),
             payload_mode=str(meta.get("mode")) if meta.get("mode") is not None else None,
         ),
     )
@@ -884,7 +897,11 @@ def build_selection_family_audit_from_artifacts(
         selection_reason=str(selection.get("selection_reason")),
         policy_sha256=str(selection.get("policy_sha256")),
         complexity_registry=complexity,
-        evidence_track=str(forecast.get("evidence_track")),
+        evidence_track=str(
+            selection.get(
+                "selection_evidence_track", forecast.get("evidence_track")
+            )
+        ),
         generation_id=generation_id,
         candidate_manifest_sha256=candidate_manifest_sha256,
         declared_selection_period=str(model.get("selection_period")),

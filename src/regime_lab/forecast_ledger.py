@@ -261,6 +261,16 @@ class ForecastLedgerKey:
             self.input_snapshot_sha256,
         )
 
+    def as_dict(self) -> dict[str, str]:
+        return {
+            "origin_week": self.origin_week.isoformat(),
+            "decision_at": self.decision_at.isoformat(),
+            "target_at": self.target_at.isoformat(),
+            "label_spec_sha256": self.label_spec_sha256,
+            "model_manifest_sha256": self.model_manifest_sha256,
+            "input_snapshot_sha256": self.input_snapshot_sha256,
+        }
+
 
 @dataclass(frozen=True, slots=True)
 class ForecastLedgerEntry:
@@ -542,6 +552,35 @@ class ForecastLedger:
                 """
             ).fetchall()
         return tuple(self._row_to_entry(row) for row in rows)
+
+    def public_summary(
+        self,
+        *,
+        pending_key: ForecastLedgerKey | None = None,
+    ) -> dict[str, Any]:
+        """Return a raw-data-free count/hash over immutable primary keys.
+
+        ``pending_key`` lets publication bind the exact key that will be
+        appended by the rollback-protected finalization callback.  Forecast
+        values and provider input identities are deliberately excluded.
+        """
+
+        if pending_key is not None and not isinstance(pending_key, ForecastLedgerKey):
+            raise TypeError("pending_key must be a ForecastLedgerKey or None")
+        keys = [entry.key for entry in self.list_entries()]
+        if pending_key is not None and pending_key.as_sql_tuple() not in {
+            key.as_sql_tuple() for key in keys
+        }:
+            keys.append(pending_key)
+        keys.sort(key=lambda key: key.as_sql_tuple())
+        manifest = [key.as_dict() for key in keys]
+        return {
+            "schema_version": "regime-prospective-ledger-summary/1",
+            "status": "recorded" if manifest else "empty",
+            "entry_count": len(manifest),
+            "key_manifest_sha256": _json_sha256(manifest),
+            "hash_scope": "ordered_ledger_primary_keys_only",
+        }
 
     @staticmethod
     def _row_to_entry(row: sqlite3.Row) -> ForecastLedgerEntry:

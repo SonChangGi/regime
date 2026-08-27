@@ -1,42 +1,43 @@
-# V5 공개 결정 — 2026-08-23
-
-> 이 문서는 당시 검토 결정을 보존하는 이력 기록이다. 2026-08-24 사용자 확인으로
-> FRED/ALFRED·Alpha Vantage의 프로젝트별 로컬 수집·저장·학습은 재개할 수 있다.
-> 2026-08-25 확인으로 원자료를 제외한 개인·비상업 파생 결과 공개도 허용한다.
-> 아래 수치는 새 모델의 성과 근거가 아니다.
+# V5 공개 결정 — 2026-08-28
 
 ## 결정
 
-검토 완료 V5 파생 스냅샷을 주간 자동화와 GitHub Pages의 공개 계약으로 사용한다.
-core champion은 Markov를 유지한다. `causal_multiscale_ensemble`과 H.10 FX 변형은
-승격하지 않는다. 수동 build/demo의 기본 계약은 frozen V4 재현을 위해 그대로 둔다.
+검토 완료 generation `20260827T150939.045526Z`를 주간 운영·공개 스냅샷으로
+사용한다. 운영 champion은 `causal_dynamic_ensemble`, frozen 회귀 기준은 Markov로
+분리한다. 멀티스케일·구조 확장·FX 맥락은 연구 결과로 유지하며 자동 승격하지 않는다.
 
-## 실데이터 검증 결과
+## 모델·확률 근거
 
-- 표준 V5 payload: `data_as_of=2026-08-21T20:00:00+00:00`, 190 공개 주,
-  latest forecast fallback 없음
-- V5 Markov 대 frozen V4 Markov: 공통 OOS 552개, selection 365개와 diagnostic
-  187개에서 확률 float·직렬화 token과 Log loss·Brier·balanced accuracy가 모두
-  정확히 일치
-- 다중 기억 앙상블: selection Log loss 개선 0.0310996563으로 사전등록 최소 0.05에
-  미달해 비승격. diagnostic 개선은 선택 근거로 사용하지 않음
-- FX ablation: 59개 공통 OOS origin에서 Broad·bilateral·전체 FX 세 변형 모두
-  control보다 Log loss가 악화해 0/3 통과, 비승격
-- model health: `review_due`; `weak_generalization`, `calibration_drift`를 공개 상태에
-  보존
+- 기준 데이터: `2026-08-21T20:00:00+00:00`, 공개 190주, latest fallback 0건
+- matched selection OOS: 365 origins. 동적 앙상블 Log loss `0.326616`, Markov
+  `0.357517`, 개선 `0.030901`, Holm 보정 p-value `0.024`, fallback 0건
+- runner-up 멀티스케일 앙상블과의 차이는 단순성 허용범위 안이어서 사전등록된
+  simplicity tie-break로 동적 앙상블을 유지
+- 1·4·13주 이탈확률은 341 matched origins, 1,023 probabilities에서 독립 재계산.
+  순서 제약 투영 전후 Brier는 모두 `0.179021`
+- 확률 품질: Log loss `0.484861`, Brier `0.294723`, calibration error `0.058874`
+- 조기경보: 실제 이탈 39건 중 정시 탐지 3건, recall `7.7%`, precision `60.0%`,
+  false alarms `0.55/년`. 이 경고는 공개 화면의 모델 상태에 유지
+
+## 경제적 해석
+
+10bp 편도 비용과 1주 실행 지연을 반영한 188주 재구성 OOS에서 확률 shadow의
+연환산 수익률은 `7.8%`, Sharpe `0.78`, CER `6.2%`, 최대 낙폭 `-12.0%`, 연
+회전율 `656.2%`였다. 같은 구간 SPY B&H는 연환산 수익률 `21.3%`, Sharpe
+`1.43`, CER `18.3%`였다. 따라서 확률 shadow는 투자전략으로 승격하지 않고
+prospective ledger에서만 계속 기록한다.
 
 ## 공개 결속
 
-- raw candidate SHA-256:
-  `7523a617600cb858ec26a1ed737fc03e5012ff0f34a6a968949f54ac39ddbd85`
 - reviewed publication SHA-256:
-  `042ed7eeeac7d038b723ad6c0031cb728d14a2bd09f4848a2f2b2d39f14cb105`
-- reviewed comparison SHA-256:
-  `380fb236b16c01a53e0ee565d6d71d3e977d1a403e8d0ed08d7db170b13b355f`
-- frozen V4 payload SHA-256:
-  `e58eda3f5519e1c3c340c671e6c6c1c69279dae068f9c21f9bedfde22e03b96b`
+  `b05deacbf914c13629f912838a112514fb72644126c5d0580e390f69ded05ff3`
+- V5/V4 comparison SHA-256:
+  `66385e06970fa4752bc91be348aa3d10f1f24416bd21038ea540de941a8fa3f2`
+- selection-family audit SHA-256:
+  `8d4c38fb5b6090ee04a49c456354e433a53e5baa6f1b3f0af66ce9cad3c17a5f`
+- generation manifest SHA-256:
+  `835e470d5ae10bce4093772b57738e4f042b3f04c2e69fc26bd9d222f165df3f`
 
-공개 payload의 `publication_review`가 검토 시각·candidate hash·champion·두 비승격
-결정을 기록한다. `v5-vs-v4-comparison.json`은 공개 payload bytes와 frozen V4
-inventory에 결속된 파생 진단만 포함한다. 원 H.10/Alpha/ALFRED 관측과 로컬 DB,
-모델 artifact는 공개하지 않는다.
+공개 패키지는 allowlist 11개 파일과 파생 결과만 포함한다. 첫 화면은 core
+`3,384,259` bytes로 렌더링하고 research `1,467,587` bytes는 독립 검증 후
+지연 결합한다.

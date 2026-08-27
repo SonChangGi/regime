@@ -82,6 +82,21 @@ V5_PUBLICATION_MANIFEST_META_FIELDS = frozenset(
 STATE_ORDER = ("risk_on", "transition", "risk_off")
 HORIZONS = (1, 4, 13)
 OUTCOME_ASSETS = ("SPY", "QQQ", "IWM", "TLT", "HYG", "UUP")
+ENHANCED_CONDITIONAL_STATISTICS_FIELDS = frozenset(
+    {
+        "unconditional_benchmark_method",
+        "unconditional_benchmark_n",
+        "unconditional_benchmark_mean_return",
+        "excess_mean_return",
+        "episode_equal_mean_return",
+        "episode_equal_excess_return",
+        "episode_bootstrap_method",
+        "episode_bootstrap_resamples",
+        "episode_bootstrap_seed",
+        "episode_equal_mean_return_ci95_lower",
+        "episode_equal_mean_return_ci95_upper",
+    }
+)
 FX_VARIANTS = (
     "v4_control",
     "v4_plus_broad_index",
@@ -293,7 +308,7 @@ def _validate_label_contract(value: Any) -> None:
 def _validate_forecast_contract(value: Any, *, mode: str) -> tuple[datetime, datetime]:
     context = "payload.forecast"
     forecast = _mapping(value, context)
-    expected = {
+    legacy_expected = {
         "status",
         "origin_at",
         "decision_at",
@@ -301,7 +316,18 @@ def _validate_forecast_contract(value: Any, *, mode: str) -> tuple[datetime, dat
         "remaining_horizon",
         "evidence_track",
     }
-    if set(forecast) != expected:
+    enhanced_expected = {
+        *legacy_expected,
+        "forecast_evidence_track",
+        "issue_latency_seconds",
+        "scheduled_horizon_seconds",
+        "remaining_horizon_fraction",
+        "minimum_full_horizon_remaining_fraction",
+        "timing_status",
+        "prospective_ledger",
+    }
+    enhanced = set(forecast) == enhanced_expected
+    if set(forecast) not in (legacy_expected, enhanced_expected):
         raise V5ContractError(f"{context} fields are invalid")
     status = forecast.get("status")
     if status not in {"active", "expired"}:
@@ -310,7 +336,12 @@ def _validate_forecast_contract(value: Any, *, mode: str) -> tuple[datetime, dat
         raise V5ContractError(f"{context}.evidence_track is invalid")
     origin = _iso_datetime(forecast.get("origin_at"), f"{context}.origin_at")
     target = _iso_datetime(forecast.get("target_at"), f"{context}.target_at")
-    if target <= origin or (target - origin).total_seconds() != 7 * 86_400:
+    scheduled_seconds = int((target - origin).total_seconds())
+    if target <= origin or scheduled_seconds not in {
+        7 * 86_400 - 3_600,
+        7 * 86_400,
+        7 * 86_400 + 3_600,
+    }:
         raise V5ContractError(f"{context} origin/target horizon is invalid")
     remaining = _integer(
         forecast.get("remaining_horizon"),
@@ -332,13 +363,91 @@ def _validate_forecast_contract(value: Any, *, mode: str) -> tuple[datetime, dat
             raise V5ContractError(f"{context} expired state is inconsistent")
         if mode == "live":
             raise V5ContractError("live payload cannot expose an expired current forecast")
+    if enhanced:
+        if forecast.get("forecast_evidence_track") != forecast.get("evidence_track"):
+            raise V5ContractError(
+                f"{context}.forecast_evidence_track differs from legacy alias"
+            )
+        if forecast.get("scheduled_horizon_seconds") != scheduled_seconds:
+            raise V5ContractError(f"{context}.scheduled_horizon_seconds is invalid")
+        minimum_fraction = _number(
+            forecast.get("minimum_full_horizon_remaining_fraction"),
+            f"{context}.minimum_full_horizon_remaining_fraction",
+            minimum=0.0,
+            maximum=1.0,
+        )
+        if not math.isclose(minimum_fraction, 4.0 / 7.0, abs_tol=1e-12):
+            raise V5ContractError(f"{context} full-horizon threshold is invalid")
+        fraction = _number(
+            forecast.get("remaining_horizon_fraction"),
+            f"{context}.remaining_horizon_fraction",
+            minimum=0.0,
+            maximum=1.0,
+        )
+        expected_fraction = remaining / scheduled_seconds if status == "active" else 0.0
+        if not math.isclose(fraction, expected_fraction, abs_tol=1e-8):
+            raise V5ContractError(f"{context}.remaining_horizon_fraction is inconsistent")
+        expected_timing = (
+            "expired"
+            if status == "expired"
+            else (
+                "full_horizon_forecast"
+                if fraction + 1e-12 >= minimum_fraction
+                else "late_nowcast"
+            )
+        )
+        if forecast.get("timing_status") != expected_timing:
+            raise V5ContractError(f"{context}.timing_status is inconsistent")
+        latency = forecast.get("issue_latency_seconds")
+        if status == "active":
+            if latency != int((decision - origin).total_seconds()):
+                raise V5ContractError(f"{context}.issue_latency_seconds is inconsistent")
+        elif latency is not None:
+            raise V5ContractError(f"{context}.issue_latency_seconds must be null")
+        ledger = _mapping(
+            forecast.get("prospective_ledger"), f"{context}.prospective_ledger"
+        )
+        if set(ledger) != {
+            "schema_version",
+            "status",
+            "entry_count",
+            "key_manifest_sha256",
+            "hash_scope",
+        }:
+            raise V5ContractError(f"{context}.prospective_ledger fields are invalid")
+        if ledger.get("schema_version") != "regime-prospective-ledger-summary/1":
+            raise V5ContractError(f"{context}.prospective_ledger schema is invalid")
+        if ledger.get("hash_scope") != "ordered_ledger_primary_keys_only":
+            raise V5ContractError(f"{context}.prospective_ledger hash scope is invalid")
+        if ledger.get("status") == "not_applicable":
+            if ledger.get("entry_count") != 0:
+                raise V5ContractError(f"{context}.prospective_ledger count is invalid")
+            _sha256(
+                ledger.get("key_manifest_sha256"),
+                f"{context}.prospective_ledger.key_manifest_sha256",
+            )
+        elif ledger.get("status") == "pending_append":
+            if ledger.get("entry_count") is not None or ledger.get("key_manifest_sha256") is not None:
+                raise V5ContractError(f"{context}.prospective_ledger pending state is invalid")
+        elif ledger.get("status") == "recorded":
+            _integer(
+                ledger.get("entry_count"),
+                f"{context}.prospective_ledger.entry_count",
+                minimum=1,
+            )
+            _sha256(
+                ledger.get("key_manifest_sha256"),
+                f"{context}.prospective_ledger.key_manifest_sha256",
+            )
+        else:
+            raise V5ContractError(f"{context}.prospective_ledger status is invalid")
     return origin, target
 
 
 def _validate_selection_contract(value: Any, model: Mapping[str, Any]) -> None:
     context = "payload.selection"
     selection = _mapping(value, context)
-    expected = {
+    legacy_expected = {
         "schema_version",
         "status",
         "policy_sha256",
@@ -350,7 +459,26 @@ def _validate_selection_contract(value: Any, model: Mapping[str, Any]) -> None:
         "tie_break_order",
         "operating_champion",
     }
-    if set(selection) != expected:
+    enhanced_expected = {
+        *legacy_expected,
+        "selection_evidence_track",
+        "evidence_status",
+    }
+    decision_grade_expected = {
+        *enhanced_expected,
+        "selected_champion",
+        "statistically_indistinguishable_models",
+        "statistical_equivalence_status",
+        "release_epoch_registry",
+        "multiplicity_defense",
+    }
+    enhanced = set(selection) in (enhanced_expected, decision_grade_expected)
+    decision_grade = set(selection) == decision_grade_expected
+    if set(selection) not in (
+        legacy_expected,
+        enhanced_expected,
+        decision_grade_expected,
+    ):
         raise V5ContractError(f"{context} fields are invalid")
     if selection.get("schema_version") != "regime-selection-evidence/1":
         raise V5ContractError(f"{context}.schema_version is invalid")
@@ -358,6 +486,39 @@ def _validate_selection_contract(value: Any, model: Mapping[str, Any]) -> None:
         raise V5ContractError(f"{context}.status is invalid")
     if selection.get("status") != model.get("selection_status"):
         raise V5ContractError(f"{context}.status differs from model alias")
+    if enhanced and (
+        selection.get("selection_evidence_track") != "reconstructed_oos"
+        or selection.get("evidence_status") != "historical_reconstructed_oos"
+    ):
+        raise V5ContractError(f"{context} historical evidence identity is invalid")
+    if decision_grade:
+        if selection.get("selected_champion") != model.get("champion"):
+            raise V5ContractError(f"{context}.selected_champion is inconsistent")
+        indistinguishable = list(
+            _sequence(
+                selection.get("statistically_indistinguishable_models"),
+                f"{context}.statistically_indistinguishable_models",
+            )
+        )
+        if any(name not in selection.get("candidate_set", ()) for name in indistinguishable):
+            raise V5ContractError(f"{context} indistinguishable set is invalid")
+        status = selection.get("statistical_equivalence_status")
+        if status not in {"pending_selection_sidecar", "completed_selection_mcs"}:
+            raise V5ContractError(f"{context}.statistical_equivalence_status is invalid")
+        registry = _mapping(
+            selection.get("release_epoch_registry"), f"{context}.release_epoch_registry"
+        )
+        if registry.get("mode") != "append_only":
+            raise V5ContractError(f"{context}.release_epoch_registry mode is invalid")
+        _sha256(registry.get("sha256"), f"{context}.release_epoch_registry.sha256")
+        _integer(registry.get("epoch_count"), f"{context}.release_epoch_registry.epoch_count")
+        multiplicity = _mapping(
+            selection.get("multiplicity_defense"), f"{context}.multiplicity_defense"
+        )
+        if multiplicity.get("current_epoch_method") != (
+            "holm_step_down_plus_model_confidence_set"
+        ) or multiplicity.get("automatic_promotion_eligible") is not False:
+            raise V5ContractError(f"{context}.multiplicity_defense is invalid")
     policy = _OPERATING_CONTRACT.selection_policy
     if selection.get("policy_sha256") != _OPERATING_CONTRACT.selection_policy_sha256:
         raise V5ContractError(f"{context}.policy_sha256 is invalid")
@@ -577,6 +738,102 @@ def _validate_transition_risk(
             raise V5ContractError(f"{context}.{key}.target_end is inconsistent")
         probabilities[horizon] = probability
     return probabilities
+
+
+def _validate_transition_term_structure(
+    value: Any,
+    context: str,
+    *,
+    probabilities: Mapping[int, float],
+) -> None:
+    term = _mapping(value, context)
+    expected = {
+        "semantics",
+        "coherence_method",
+        "one_week_anchor",
+        "raw_probabilities",
+        "adjusted",
+    }
+    if set(term) != expected:
+        raise V5ContractError(f"{context} fields are invalid")
+    if term.get("semantics") != "cumulative_first_departure_probability":
+        raise V5ContractError(f"{context}.semantics is invalid")
+    if term.get("coherence_method") != (
+        "one_week_anchored_l2_isotonic_projection_v1"
+    ):
+        raise V5ContractError(f"{context}.coherence_method is invalid")
+    if term.get("one_week_anchor") != "official_multiclass_departure_probability":
+        raise V5ContractError(f"{context}.one_week_anchor is invalid")
+    raw = _mapping(term.get("raw_probabilities"), f"{context}.raw_probabilities")
+    if set(raw) != {"1w", "4w", "13w"}:
+        raise V5ContractError(f"{context}.raw_probabilities fields are invalid")
+    raw_values = {
+        horizon: _number(
+            raw[f"{horizon}w"],
+            f"{context}.raw_probabilities.{horizon}w",
+            minimum=0.0,
+            maximum=1.0,
+        )
+        for horizon in HORIZONS
+    }
+    if not isinstance(term.get("adjusted"), bool):
+        raise V5ContractError(f"{context}.adjusted must be boolean")
+    if not math.isclose(probabilities[1], raw_values[1], abs_tol=1e-8):
+        raise V5ContractError(f"{context} changed the one-week anchor")
+    if not (
+        probabilities[1] <= probabilities[4] + 1e-12
+        and probabilities[4] <= probabilities[13] + 1e-12
+    ):
+        raise V5ContractError(f"{context} cumulative probabilities are not monotone")
+    expected_adjusted = any(
+        not math.isclose(probabilities[horizon], raw_values[horizon], abs_tol=1e-8)
+        for horizon in HORIZONS
+    )
+    if term.get("adjusted") is not expected_adjusted:
+        raise V5ContractError(f"{context}.adjusted is inconsistent")
+
+
+def _validate_context_score_coverage(
+    scores: Mapping[str, Any],
+    value: Any,
+    context: str,
+) -> None:
+    coverage = _mapping(value, context)
+    expected_names = {"trend", "stress", "macro", "financial_conditions"}
+    if set(coverage) != expected_names:
+        raise V5ContractError(f"{context} keys are invalid")
+    for name in expected_names:
+        row_context = f"{context}.{name}"
+        row = _mapping(coverage[name], row_context)
+        if set(row) != {
+            "available_count",
+            "expected_count",
+            "minimum_required_count",
+            "status",
+        }:
+            raise V5ContractError(f"{row_context} fields are invalid")
+        available = _integer(row.get("available_count"), f"{row_context}.available_count")
+        expected = _integer(
+            row.get("expected_count"), f"{row_context}.expected_count", minimum=1
+        )
+        minimum = _integer(
+            row.get("minimum_required_count"),
+            f"{row_context}.minimum_required_count",
+            minimum=1,
+        )
+        if available > expected or minimum > expected:
+            raise V5ContractError(f"{row_context} counts are inconsistent")
+        sufficient = available >= minimum
+        expected_status = "sufficient" if sufficient else "insufficient_coverage"
+        if row.get("status") != expected_status:
+            raise V5ContractError(f"{row_context}.status is inconsistent")
+        score = scores.get(name)
+        if sufficient:
+            _number(score, f"payload weekly context_scores.{name}", minimum=-1.0, maximum=1.0)
+        elif score is not None:
+            raise V5ContractError(
+                f"payload weekly context_scores.{name} must be null when coverage is insufficient"
+            )
 
 
 def _validate_directional_risk(
@@ -1764,6 +2021,156 @@ def _validate_model(model: Any, *, mode: str) -> int:
     if health.get("status") not in {"ok", "review_due"}:
         raise V5ContractError("payload.model.model_health.status is invalid")
     _sequence(_require(health, "reasons", "payload.model.model_health"), "payload.model.model_health.reasons")
+    for field in ("probability_health", "early_warning_health"):
+        if field not in model:
+            continue
+        track = _mapping(model[field], f"payload.model.{field}")
+        if track.get("status") not in {"ok", "review_due", "insufficient_evidence"}:
+            raise V5ContractError(f"payload.model.{field}.status is invalid")
+        _sequence(
+            _require(track, "reasons", f"payload.model.{field}"),
+            f"payload.model.{field}.reasons",
+        )
+        if track.get("champion") != model.get("champion"):
+            raise V5ContractError(f"payload.model.{field}.champion is inconsistent")
+    probability_health = model.get("probability_health")
+    if isinstance(probability_health, Mapping):
+        if probability_health.get("calibration_method") != (
+            "top_label_ece_10_equal_width_bins"
+        ):
+            raise V5ContractError(
+                "payload.model.probability_health.calibration_method is invalid"
+            )
+        for field in (
+            "calibration_error",
+            "selection_calibration_error",
+            "calibration_drift",
+            "log_loss",
+            "brier",
+        ):
+            _optional_number(
+                probability_health.get(field),
+                f"payload.model.probability_health.{field}",
+            )
+        _integer(
+            probability_health.get("n_predictions"),
+            "payload.model.probability_health.n_predictions",
+        )
+    early_warning_health = model.get("early_warning_health")
+    if isinstance(early_warning_health, Mapping):
+        for field in (
+            "event_count",
+            "on_time_departure_count",
+            "false_alarm_count",
+            "detected_event_count",
+            "minimum_event_count",
+            "n_predictions",
+        ):
+            _integer(
+                early_warning_health.get(field),
+                f"payload.model.early_warning_health.{field}",
+            )
+        for field in (
+            "on_time_recall",
+            "precision",
+            "false_alarms_per_year",
+            "mean_detection_delay_forecast_weeks",
+            "exposure_years",
+        ):
+            _optional_number(
+                early_warning_health.get(field),
+                f"payload.model.early_warning_health.{field}",
+                minimum=0.0,
+            )
+        events = int(early_warning_health.get("event_count", 0))
+        on_time = int(early_warning_health.get("on_time_departure_count", 0))
+        if on_time > events:
+            raise V5ContractError(
+                "payload.model.early_warning_health on-time count exceeds events"
+            )
+        recall = early_warning_health.get("on_time_recall")
+        if events > 0 and recall is not None and not math.isclose(
+            float(recall), on_time / events, abs_tol=1e-8
+        ):
+            raise V5ContractError(
+                "payload.model.early_warning_health recall is inconsistent"
+            )
+        false_alarms = int(early_warning_health.get("false_alarm_count", 0))
+        predicted_departures = on_time + false_alarms
+        precision = early_warning_health.get("precision")
+        if predicted_departures > 0 and precision is not None and not math.isclose(
+            float(precision), on_time / predicted_departures, abs_tol=1e-8
+        ):
+            raise V5ContractError(
+                "payload.model.early_warning_health precision is inconsistent"
+            )
+    term_evidence = model.get("transition_term_structure_evidence")
+    if term_evidence is not None:
+        term_evidence = _mapping(
+            term_evidence, "payload.model.transition_term_structure_evidence"
+        )
+        if set(term_evidence) != {
+            "evidence_track",
+            "evidence_status",
+            "evaluation_split",
+            "selection_end",
+            "source_artifact",
+            "probability_source",
+            "projection_fit",
+            "matched_origin_count",
+            "matched_probability_count",
+            "raw_brier",
+            "projected_brier",
+            "brier_difference_projected_minus_raw",
+            "selection_effect",
+        }:
+            raise V5ContractError(
+                "payload.model.transition_term_structure_evidence fields are invalid"
+            )
+        if (
+            term_evidence.get("evidence_track") != "reconstructed_oos"
+            or term_evidence.get("evidence_status")
+            != "historical_reconstructed_oos"
+            or term_evidence.get("evaluation_split") != "selection"
+            or term_evidence.get("source_artifact")
+            != "transition-oos-predictions.csv"
+            or term_evidence.get("probability_source")
+            != "selected_horizon_champion_calibrated_p_change"
+            or term_evidence.get("projection_fit")
+            != "parameter_free_fixed_l2_order_constraint"
+            or term_evidence.get("selection_effect")
+            != "semantic_coherence_only_no_model_selection"
+        ):
+            raise V5ContractError(
+                "payload.model.transition_term_structure_evidence identity is invalid"
+            )
+        origin_count = _integer(
+            term_evidence.get("matched_origin_count"),
+            "payload.model.transition_term_structure_evidence.matched_origin_count",
+            minimum=1,
+        )
+        probability_count = _integer(
+            term_evidence.get("matched_probability_count"),
+            "payload.model.transition_term_structure_evidence.matched_probability_count",
+        )
+        if probability_count != len((1, 4, 13)) * origin_count:
+            raise V5ContractError(
+                "payload.model.transition_term_structure_evidence coverage is inconsistent"
+            )
+        for field in ("raw_brier", "projected_brier"):
+            _number(
+                term_evidence.get(field),
+                f"payload.model.transition_term_structure_evidence.{field}",
+                minimum=0.0,
+                maximum=1.0,
+            )
+        _number(
+            term_evidence.get("brier_difference_projected_minus_raw"),
+            "payload.model.transition_term_structure_evidence."
+            "brier_difference_projected_minus_raw",
+            minimum=-1.0,
+            maximum=1.0,
+        )
     if model.get("champion_core_feature_set_version") != "weekly-pit-structural-v4":
         raise V5ContractError(
             "payload.model.champion_core_feature_set_version is invalid"
@@ -2301,7 +2708,14 @@ def _validate_conditional_stats(value: Any, *, expected_resamples: int) -> None:
         row = _mapping(raw, context)
         if forbidden.intersection(row):
             raise V5ContractError(f"{context} contains an allocation field")
-        if set(row) != set(CONDITIONAL_STATISTICS_COLUMNS):
+        enhanced_fields = set(CONDITIONAL_STATISTICS_COLUMNS)
+        legacy_fields = enhanced_fields.difference(
+            ENHANCED_CONDITIONAL_STATISTICS_FIELDS
+        )
+        if frozenset(row) not in {
+            frozenset(legacy_fields),
+            frozenset(enhanced_fields),
+        }:
             raise V5ContractError(f"{context} fields are invalid")
         if row.get("asset") not in OUTCOME_ASSETS or row.get("state") not in STATE_ORDER:
             raise V5ContractError(f"{context} asset/state is invalid")
@@ -2336,6 +2750,46 @@ def _validate_conditional_stats(value: Any, *, expected_resamples: int) -> None:
             raise V5ContractError(f"{context}.minimum_unique_episodes is invalid")
         _integer(_require(row, "n", context), f"{context}.n")
         _integer(_require(row, "unique_episodes", context), f"{context}.unique_episodes")
+        if ENHANCED_CONDITIONAL_STATISTICS_FIELDS.issubset(row):
+            if row.get("unconditional_benchmark_method") != (
+                "same_asset_horizon_all_origins_buy_and_hold"
+            ):
+                raise V5ContractError(
+                    f"{context}.unconditional_benchmark_method is invalid"
+                )
+            _integer(
+                row.get("unconditional_benchmark_n"),
+                f"{context}.unconditional_benchmark_n",
+            )
+            for field in (
+                "unconditional_benchmark_mean_return",
+                "excess_mean_return",
+                "episode_equal_mean_return",
+                "episode_equal_excess_return",
+            ):
+                _optional_number(row.get(field), f"{context}.{field}")
+            if row.get("episode_bootstrap_method") != "whole_episode_resampling":
+                raise V5ContractError(f"{context}.episode_bootstrap_method is invalid")
+            if row.get("episode_bootstrap_resamples") != expected_resamples:
+                raise V5ContractError(
+                    f"{context}.episode_bootstrap_resamples is inconsistent"
+                )
+            _integer(
+                row.get("episode_bootstrap_seed"),
+                f"{context}.episode_bootstrap_seed",
+            )
+            episode_lower = _optional_number(
+                row.get("episode_equal_mean_return_ci95_lower"),
+                f"{context}.episode_equal_mean_return_ci95_lower",
+            )
+            episode_upper = _optional_number(
+                row.get("episode_equal_mean_return_ci95_upper"),
+                f"{context}.episode_equal_mean_return_ci95_upper",
+            )
+            if (episode_lower is None) != (episode_upper is None):
+                raise V5ContractError(f"{context} episode CI must share nullability")
+            if episode_lower is not None and episode_upper < episode_lower:
+                raise V5ContractError(f"{context} episode CI is reversed")
         for field in (
             "mean_return",
             "median_return",
@@ -2442,7 +2896,14 @@ def _validate_model_conditioned_stats(
         for index, raw_row in enumerate(rows):
             row_context = f"{context}.rows[{index}]"
             row = _mapping(raw_row, row_context)
-            if set(row) != set(MODEL_CONDITIONED_STATISTICS_COLUMNS):
+            enhanced_model_fields = frozenset(MODEL_CONDITIONED_STATISTICS_COLUMNS)
+            legacy_model_fields = enhanced_model_fields.difference(
+                ENHANCED_CONDITIONAL_STATISTICS_FIELDS
+            )
+            if frozenset(row) not in {
+                enhanced_model_fields,
+                legacy_model_fields,
+            }:
                 raise V5ContractError(f"{row_context} fields are invalid")
             if row.get("conditioning_model") != name:
                 continue
@@ -2476,6 +2937,149 @@ def _validate_model_conditioned_stats(
         raise V5ContractError(
             "model-conditioned asset statistics artifact row count is inconsistent"
         )
+
+
+def _validate_decision_shadow(research: Mapping[str, Any]) -> None:
+    raw = research.get("prospective_decision_shadow")
+    if raw is None:
+        # Backward-compatible with reviewed schema-2.1 snapshots.
+        return
+    context = "payload.research.prospective_decision_shadow"
+    shadow = _mapping(raw, context)
+    if set(shadow) != {
+        "schema_version",
+        "role",
+        "spec",
+        "execution_contract",
+        "historical_reconstructed_shadow",
+        "prospective_ledger",
+    }:
+        raise V5ContractError(f"{context} fields are invalid")
+    if (
+        shadow.get("schema_version") != "regime-prospective-decision-shadow/1"
+        or shadow.get("role") != "research_only_no_forecast_or_champion_effect"
+    ):
+        raise V5ContractError(f"{context} identity is invalid")
+    spec = _mapping(shadow.get("spec"), f"{context}.spec")
+    if spec.get("path") != "config/decision-shadow.json":
+        raise V5ContractError(f"{context}.spec.path is invalid")
+    _sha256(spec.get("sha256"), f"{context}.spec.sha256")
+    execution = _mapping(
+        shadow.get("execution_contract"), f"{context}.execution_contract"
+    )
+    if (
+        execution.get("first_tradable_point")
+        != "next_completed_weekly_close"
+        or execution.get("execution_lag_weeks") != 1
+        or execution.get("holding_period_weeks") != 1
+    ):
+        raise V5ContractError(f"{context}.execution_contract is invalid")
+    historical = _mapping(
+        shadow.get("historical_reconstructed_shadow"),
+        f"{context}.historical_reconstructed_shadow",
+    )
+    if (
+        historical.get("evidence_track") != "reconstructed_oos"
+        or historical.get("evidence_status") != "historical_reconstructed_shadow"
+        or historical.get("status") not in {"completed", "insufficient_history"}
+    ):
+        raise V5ContractError(f"{context} historical evidence identity is invalid")
+    strategies = _mapping(
+        historical.get("strategies"),
+        f"{context}.historical_reconstructed_shadow.strategies",
+    )
+    if set(strategies) != {
+        "probability_shadow",
+        "spy_buy_and_hold",
+        "static_60_40",
+        "vol_target_60_40",
+    }:
+        raise V5ContractError(f"{context} benchmark set is invalid")
+    for name, raw_metrics in strategies.items():
+        metrics = _mapping(raw_metrics, f"{context}.strategies.{name}")
+        _integer(metrics.get("weeks"), f"{context}.strategies.{name}.weeks")
+        for field in (
+            "cumulative_return",
+            "annualized_return",
+            "annualized_volatility",
+            "sharpe",
+            "certainty_equivalent_return",
+            "maximum_drawdown",
+            "annualized_turnover",
+            "gross_cumulative_return",
+            "total_transaction_cost",
+            "transaction_cost_bps",
+        ):
+            _optional_number(metrics.get(field), f"{context}.strategies.{name}.{field}")
+    prospective = _mapping(
+        shadow.get("prospective_ledger"), f"{context}.prospective_ledger"
+    )
+    if (
+        prospective.get("evidence_track") != "operational_oos"
+        or prospective.get("affects_official_forecast") is not False
+        or prospective.get("affects_champion_selection") is not False
+    ):
+        raise V5ContractError(f"{context} prospective isolation is invalid")
+    _integer(
+        prospective.get("ledger_entry_count"),
+        f"{context}.prospective_ledger.ledger_entry_count",
+    )
+    _integer(
+        prospective.get("realized_evaluation_count"),
+        f"{context}.prospective_ledger.realized_evaluation_count",
+    )
+
+
+def _validate_label_sensitivity(research: Mapping[str, Any], label: Mapping[str, Any]) -> None:
+    raw = research.get("label_sensitivity")
+    if raw is None:
+        return
+    context = "payload.research.label_sensitivity"
+    summary = _mapping(raw, context)
+    if (
+        summary.get("schema_version") != "regime-label-sensitivity-summary/1"
+        or summary.get("status") not in {
+            "preregistered_pending_execution",
+            "completed",
+        }
+        or summary.get("evidence_track") != "reconstructed_oos"
+        or summary.get("evaluation_split") != "selection_only"
+        or summary.get("automatic_promotion_eligible") is not False
+    ):
+        raise V5ContractError(f"{context} identity is invalid")
+    control = _mapping(summary.get("control"), f"{context}.control")
+    if (
+        control.get("spec_id") != label.get("spec_id")
+        or control.get("spec_version") != label.get("spec_version")
+        or control.get("spec_sha256") != label.get("spec_sha256")
+        or control.get("remains_operating_control") is not True
+    ):
+        raise V5ContractError(f"{context}.control differs from payload.label")
+    grid = _mapping(summary.get("grid"), f"{context}.grid")
+    _sha256(grid.get("sha256"), f"{context}.grid.sha256")
+    execution = _mapping(
+        summary.get("execution_summary"), f"{context}.execution_summary"
+    )
+    required = {
+        "evaluated_spec_count",
+        "state_occupancy",
+        "episode_count",
+        "weekly_flip_rate",
+        "transition_jaccard",
+        "forward_return_separation",
+        "model_rank_robustness",
+    }
+    if set(execution) != required:
+        raise V5ContractError(f"{context}.execution_summary fields are invalid")
+    evaluated = _integer(
+        execution.get("evaluated_spec_count"),
+        f"{context}.execution_summary.evaluated_spec_count",
+    )
+    if summary.get("status") == "preregistered_pending_execution" and (
+        evaluated != 0
+        or any(execution[field] is not None for field in required if field != "evaluated_spec_count")
+    ):
+        raise V5ContractError(f"{context} pending execution summary is inconsistent")
 
 
 def validate_v5_payload(payload: Mapping[str, Any]) -> None:
@@ -2628,6 +3232,12 @@ def validate_v5_payload(payload: Mapping[str, Any]) -> None:
             f"{context}.transition_risk",
             origin=origin,
         )
+        if "transition_term_structure" in row:
+            _validate_transition_term_structure(
+                row["transition_term_structure"],
+                f"{context}.transition_term_structure",
+                probabilities=departure,
+            )
         transition_alias = _number(
             _require(row, "transition_probability", context),
             f"{context}.transition_probability",
@@ -2648,8 +3258,20 @@ def validate_v5_payload(payload: Mapping[str, Any]) -> None:
         scores = _mapping(_require(row, "context_scores", context), f"{context}.context_scores")
         if set(scores) != {"trend", "stress", "macro", "financial_conditions"}:
             raise V5ContractError(f"{context}.context_scores keys are invalid")
-        for name, value in scores.items():
-            _number(value, f"{context}.context_scores.{name}", minimum=-1.0, maximum=1.0)
+        if "context_score_coverage" in row:
+            _validate_context_score_coverage(
+                scores,
+                row["context_score_coverage"],
+                f"{context}.context_score_coverage",
+            )
+        else:
+            for name, value in scores.items():
+                _number(
+                    value,
+                    f"{context}.context_scores.{name}",
+                    minimum=-1.0,
+                    maximum=1.0,
+                )
         extremes = _sequence(_require(row, "extreme_context", context), f"{context}.extreme_context")
         for position, raw_extreme in enumerate(extremes):
             extreme_context = f"{context}.extreme_context[{position}]"
@@ -2821,6 +3443,13 @@ def validate_v5_payload(payload: Mapping[str, Any]) -> None:
     _validate_conditional_stats(
         _require(payload, "research", "payload"),
         expected_resamples=expected_outcome_resamples,
+    )
+    _validate_decision_shadow(
+        _mapping(_require(payload, "research", "payload"), "payload.research")
+    )
+    _validate_label_sensitivity(
+        _mapping(_require(payload, "research", "payload"), "payload.research"),
+        _mapping(_require(payload, "label", "payload"), "payload.label"),
     )
     _validate_model_conditioned_stats(
         _require(payload, "research", "payload"),

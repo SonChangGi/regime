@@ -191,7 +191,7 @@ def _validate_publication_health(
     meta: Mapping[str, Any],
     model: Mapping[str, Any],
 ) -> None:
-    """Allow only healthy output or the two pre-reviewed model-only warnings."""
+    """Allow only healthy output or pre-reviewed model-only warnings."""
 
     health = _mapping(model.get("model_health"), label="candidate.model.model_health")
     reasons = health.get("reasons")
@@ -204,7 +204,11 @@ def _validate_publication_health(
         if health.get("status") != "ok" or reasons:
             raise PromotionError("candidate ok status requires healthy model diagnostics")
         return
-    allowed_reasons = {"weak_generalization", "calibration_drift"}
+    allowed_reasons = {
+        "weak_generalization",
+        "calibration_drift",
+        "low_transition_recall",
+    }
     if (
         status != "degraded"
         or health.get("status") != "review_due"

@@ -1,9 +1,9 @@
 {
   "schema_version": "selection-family-audit/v2",
   "status": "completed",
-  "generation_id": "20260826T184946.198911Z",
-  "evidence_track": "operational_oos",
-  "evidence_status": "operational_oos",
+  "generation_id": "20260827T150939.045526Z",
+  "evidence_track": "reconstructed_oos",
+  "evidence_status": "historical_reconstructed_oos",
   "candidate_manifest_sha256": "c167514c2f5daa8353dc3a2ba951f7a8cc0aca16076ad78c3b77e611258093ca",
   "selection_period": {
     "role": "predeployment_selection_only",
@@ -347,7 +347,7 @@
   "supplemental_evaluation": {
     "schema_version": "regime-selection-evaluation/1",
     "status": "completed",
-    "evidence_status": "operational_oos",
+    "evidence_status": "historical_reconstructed_oos",
     "role": "supplemental_not_selection_gate",
     "evaluation_split": "selection",
     "holdout_rows_used": 0,
@@ -5135,7 +5135,7 @@
         }
       ]
     },
-    "sha256": "a5a3d54092d7ffa7d47bcec0d600c6a9267212c4416faf6c8e939982f345fcb8"
+    "sha256": "8fd3f7454b59575bb1b2019f1bdc1619bfa6c0a4f69456b5d83bcf9d3619ef97"
   },
-  "sha256": "a3c23c5fa50bd7ad03c36086cd6897fcba5174f5860e8a2ae6ad2bab12e4e3a2"
+  "sha256": "aef7b7a4b338e7a6ead3009129d41755c863f354aff91711fca6137e44d76472"
 }

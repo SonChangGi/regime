@@ -13,8 +13,16 @@ import shutil
 import sqlite3
 import stat
 import tempfile
+import time
 from typing import Any, Mapping, Sequence
 from uuid import uuid4
+
+from regime_lab.recovery_policy import (
+    RecoveryPolicy,
+    RecoveryPolicyError,
+    backup_capacity_preflight,
+    load_recovery_policy,
+)
 
 
 BACKUP_SCHEMA_VERSION = "regime.database-backup.v2"
@@ -74,6 +82,7 @@ def create_database_backup(
     core_tables: Sequence[str] = DEFAULT_CORE_TABLES,
     source_code_fingerprint_sha256: str | None = None,
     created_at: datetime | None = None,
+    recovery_policy: RecoveryPolicy | None = None,
 ) -> BackupGeneration:
     """Create and atomically commit a consistent online SQLite backup.
 
@@ -92,10 +101,13 @@ def create_database_backup(
     )
     source = _safe_source_database(source_database)
     backup_root = _safe_backup_root(backup_directory, source=source, create=True)
-    # A matching symlink is never ignored because rotation must not be usable
-    # as a path traversal primitive.
+    # A matching symlink is never ignored because inventory and backup writes
+    # must not be usable as path traversal primitives.
     _reject_generation_symlinks(backup_root)
-
+    policy = recovery_policy or load_recovery_policy()
+    preflight = backup_capacity_preflight(source, backup_root, policy=policy)
+    started_monotonic = time.monotonic()
+    deadline_monotonic = started_monotonic + policy.max_backup_seconds
     moment = created_at or datetime.now(timezone.utc)
     if moment.tzinfo is None or moment.utcoffset() is None:
         raise ValueError("created_at must be timezone-aware")
@@ -120,6 +132,7 @@ def create_database_backup(
             source,
             temporary_database,
             core_tables=tables,
+            deadline_monotonic=deadline_monotonic,
         )
         os.chmod(temporary_database, 0o600)
         _fsync_file(temporary_database)
@@ -164,6 +177,11 @@ def create_database_backup(
                 **backup_checks,
                 **backup_summary,
             },
+            "recovery_policy": {
+                **policy.as_document(),
+                "requested_retention_valid_generations": retain,
+            },
+            "capacity_preflight": preflight,
         }
         _write_private_json(temporary_manifest, manifest)
         _fsync_directory(temporary_path)
@@ -180,7 +198,11 @@ def create_database_backup(
             core_tables=tables,
             allow_staging_path=True,
         )
-        _verify_restore_copy(temporary_generation, core_tables=tables)
+        _verify_restore_copy(
+            temporary_generation,
+            core_tables=tables,
+            deadline_monotonic=deadline_monotonic,
+        )
 
         os.replace(temporary_path, final_path)
         _fsync_directory(backup_root)
@@ -191,7 +213,8 @@ def create_database_backup(
             manifest_path=final_path / _MANIFEST_FILENAME,
             manifest=manifest,
         )
-        _rotate_generations(backup_root, retain=retain, core_tables=tables)
+        # Retention is deliberately advisory.  Recovery points are inventoried
+        # and reported as over target, never deleted by routine backup work.
         return committed
     except Exception:
         # Never touch an older generation on a failed create.  The random
@@ -228,6 +251,7 @@ def verify_database_restore(
     generation: BackupGeneration | str | Path,
     *,
     core_tables: Sequence[str] = DEFAULT_CORE_TABLES,
+    max_duration_seconds: int | None = None,
 ) -> RestoreVerification:
     """Copy a backup to an isolated temporary DB and verify it can restore."""
 
@@ -236,7 +260,53 @@ def verify_database_restore(
         generation.path if isinstance(generation, BackupGeneration) else Path(generation)
     )
     _validate_generation(loaded, core_tables=tables)
-    return _verify_restore_copy(loaded, core_tables=tables)
+    if max_duration_seconds is not None and (
+        not isinstance(max_duration_seconds, int)
+        or isinstance(max_duration_seconds, bool)
+        or max_duration_seconds <= 0
+    ):
+        raise ValueError("max_duration_seconds must be a positive integer")
+    deadline = (
+        None
+        if max_duration_seconds is None
+        else time.monotonic() + max_duration_seconds
+    )
+    return _verify_restore_copy(
+        loaded,
+        core_tables=tables,
+        deadline_monotonic=deadline,
+    )
+
+
+def classify_database_backup(
+    generation_path: str | Path,
+    *,
+    core_tables: Sequence[str] = DEFAULT_CORE_TABLES,
+) -> tuple[str, str | None]:
+    """Classify one preserved generation without hiding unusable evidence."""
+
+    path = Path(generation_path)
+    manifest_path = path / _MANIFEST_FILENAME
+    try:
+        document = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        return "corrupt", f"manifest_unreadable:{type(exc).__name__}"
+    if not isinstance(document, dict):
+        return "corrupt", "manifest_root_invalid"
+    schema = document.get("schema_version")
+    if schema != BACKUP_SCHEMA_VERSION:
+        if isinstance(schema, str) and schema.startswith("regime.database-backup."):
+            return "legacy", schema
+        return "corrupt", "manifest_schema_invalid"
+    try:
+        generation = _load_generation(path)
+        _validate_generation(
+            generation,
+            core_tables=_validated_core_tables(core_tables),
+        )
+    except (DatabaseBackupError, OSError, ValueError) as exc:
+        return "corrupt", type(exc).__name__
+    return "valid-current", None
 
 
 def _safe_source_database(value: str | Path) -> Path:
@@ -357,6 +427,7 @@ def _online_backup(
     destination: Path,
     *,
     core_tables: tuple[str, ...],
+    deadline_monotonic: float | None = None,
 ) -> tuple[dict[str, str], dict[str, Any]]:
     try:
         with _readonly_connection(source) as source_connection:
@@ -367,7 +438,18 @@ def _online_backup(
             checks = _sqlite_checks(source_connection, label="source")
             summary = _sqlite_summary(source_connection, core_tables=core_tables)
             with sqlite3.connect(destination, timeout=30) as destination_connection:
-                source_connection.backup(destination_connection)
+                def progress(_status: int, _remaining: int, _total: int) -> None:
+                    _require_before_deadline(
+                        deadline_monotonic,
+                        context="SQLite online backup",
+                    )
+
+                source_connection.backup(
+                    destination_connection,
+                    pages=256,
+                    progress=progress,
+                    sleep=0.01,
+                )
                 destination_connection.commit()
                 # A source in WAL mode transfers that persistent journal-mode
                 # setting into the copy.  Backups are immutable generations;
@@ -622,6 +704,7 @@ def _verify_restore_copy(
     generation: BackupGeneration,
     *,
     core_tables: tuple[str, ...],
+    deadline_monotonic: float | None = None,
 ) -> RestoreVerification:
     with tempfile.TemporaryDirectory(
         prefix=".restore-verification-",
@@ -632,7 +715,15 @@ def _verify_restore_copy(
         restored = temporary_root / "restored.sqlite3"
         with generation.database_path.open("rb") as source, restored.open("xb") as destination:
             os.chmod(restored, 0o600)
-            shutil.copyfileobj(source, destination, length=1024 * 1024)
+            while True:
+                _require_before_deadline(
+                    deadline_monotonic,
+                    context="backup restore drill",
+                )
+                chunk = source.read(1024 * 1024)
+                if not chunk:
+                    break
+                destination.write(chunk)
             destination.flush()
             os.fsync(destination.fileno())
         restored_sha, restored_bytes = _hash_file(restored)
@@ -643,6 +734,10 @@ def _verify_restore_copy(
         ):
             raise DatabaseBackupIntegrityError("trial restore copy hash mismatch")
         checks, summary = _inspect_database(restored, core_tables=core_tables)
+        _require_before_deadline(
+            deadline_monotonic,
+            context="backup restore drill",
+        )
         sqlite_document = generation.manifest["sqlite"]
         for field in (
             "schema_sha256",
@@ -666,6 +761,11 @@ def _verify_restore_copy(
         )
 
 
+def _require_before_deadline(deadline_monotonic: float | None, *, context: str) -> None:
+    if deadline_monotonic is not None and time.monotonic() > deadline_monotonic:
+        raise RecoveryPolicyError(f"{context} exceeded time ceiling")
+
+
 def _structural_generation_paths(root: Path) -> tuple[Path, ...]:
     paths = []
     for entry in root.iterdir():
@@ -675,68 +775,6 @@ def _structural_generation_paths(root: Path) -> tuple[Path, ...]:
             if entry.is_dir():
                 paths.append(entry)
     return tuple(sorted(paths, key=lambda path: path.name, reverse=True))
-
-
-def _rotate_generations(
-    root: Path,
-    *,
-    retain: int,
-    core_tables: tuple[str, ...],
-) -> None:
-    paths = _structural_generation_paths(root)
-    valid: list[BackupGeneration] = []
-    # Corrupt state is preserved for diagnosis and never consumes a usable
-    # recovery slot.  Validate every candidate before retention selection.
-    for path in paths:
-        try:
-            generation = _load_generation(path)
-            _validate_generation(generation, core_tables=core_tables)
-        except DatabaseBackupIntegrityError:
-            continue
-        valid.append(generation)
-
-    # Prefer temporal diversity so repeated same-day retries do not evict all
-    # older recovery points.  Keep the newest valid generation for each UTC
-    # day first, then fill any unused slots with the next-newest valid copies.
-    retained: set[str] = set()
-    retained_days: set[str] = set()
-    for generation in valid:
-        raw_created_at = generation.manifest.get("created_at")
-        try:
-            day = datetime.fromisoformat(
-                str(raw_created_at).replace("Z", "+00:00")
-            ).astimezone(timezone.utc).date().isoformat()
-        except (TypeError, ValueError) as exc:
-            raise DatabaseBackupIntegrityError(
-                "backup created_at is invalid during rotation"
-            ) from exc
-        if day in retained_days:
-            continue
-        retained.add(generation.generation_id)
-        retained_days.add(day)
-        if len(retained) == retain:
-            break
-    if len(retained) < retain:
-        for generation in valid:
-            retained.add(generation.generation_id)
-            if len(retained) == retain:
-                break
-    for generation in valid:
-        if generation.generation_id not in retained:
-            _delete_valid_generation(root, generation)
-    _fsync_directory(root)
-
-
-def _delete_valid_generation(root: Path, generation: BackupGeneration) -> None:
-    if generation.path.parent != root or generation.path.resolve(strict=True).parent != root:
-        raise DatabaseBackupPathError("rotation target escaped the backup directory")
-    if generation.path.is_symlink() or _GENERATION_RE.fullmatch(generation.path.name) is None:
-        raise DatabaseBackupPathError("rotation target is unsafe")
-    # Validation guarantees the directory contains exactly two private regular
-    # files.  Unlink explicitly rather than recursively following surprises.
-    generation.database_path.unlink()
-    generation.manifest_path.unlink()
-    generation.path.rmdir()
 
 
 def _fsync_file(path: Path) -> None:
@@ -762,6 +800,7 @@ __all__ = [
     "DatabaseBackupIntegrityError",
     "DatabaseBackupPathError",
     "RestoreVerification",
+    "classify_database_backup",
     "create_database_backup",
     "list_database_backups",
     "verify_database_restore",

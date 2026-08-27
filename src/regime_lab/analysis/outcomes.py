@@ -45,6 +45,12 @@ POINT_METRICS: tuple[str, ...] = (
     "cvar_5",
     "mean_max_drawdown",
 )
+DECISION_USEFULNESS_METRICS: tuple[str, ...] = (
+    "unconditional_benchmark_mean_return",
+    "excess_mean_return",
+    "episode_equal_mean_return",
+    "episode_equal_excess_return",
+)
 
 
 @dataclass(frozen=True)
@@ -314,6 +320,44 @@ def _block_bootstrap_intervals(
     }
 
 
+def _episode_equal_mean(frame: pd.DataFrame) -> float:
+    """Give each contiguous regime episode one vote, irrespective of length."""
+
+    if frame.empty:
+        return float("nan")
+    episode_means = frame.groupby("episode_id", sort=False)["forward_return"].mean()
+    return float(episode_means.mean())
+
+
+def _whole_episode_bootstrap_interval(
+    frame: pd.DataFrame,
+    *,
+    resamples: int,
+    seed: int,
+) -> tuple[float, float]:
+    """Bootstrap whole episodes and retain episode-equal weighting.
+
+    Rows are never split across bootstrap units.  This complements the legacy
+    weekly-origin block bootstrap rather than changing its certified estimates.
+    """
+
+    if resamples == 0 or frame.empty:
+        return float("nan"), float("nan")
+    episode_means = (
+        frame.groupby("episode_id", sort=False)["forward_return"]
+        .mean()
+        .to_numpy(dtype=float)
+    )
+    if len(episode_means) == 0:
+        return float("nan"), float("nan")
+    generator = np.random.default_rng(seed)
+    draws = [
+        float(np.mean(episode_means[generator.integers(0, len(episode_means), len(episode_means))]))
+        for _ in range(resamples)
+    ]
+    return _percentile_interval(draws)
+
+
 def summarize_conditional_outcomes(
     outcomes: pd.DataFrame,
     *,
@@ -361,6 +405,12 @@ def summarize_conditional_outcomes(
     )
 
     rows: list[dict[str, Any]] = []
+    unconditional = {
+        (str(asset), int(horizon)): group.sort_values("origin_position")
+        for (asset, horizon), group in outcomes.groupby(
+            ["asset", "horizon_weeks"], sort=False
+        )
+    }
     for state_index, state in enumerate(resolved_states):
         for asset_index, asset in enumerate(resolved_assets):
             for horizon in resolved_horizons:
@@ -394,6 +444,22 @@ def summarize_conditional_outcomes(
                         for metric in POINT_METRICS
                     }
                 )
+                benchmark = unconditional.get((asset, horizon), outcomes.iloc[0:0])
+                benchmark_mean = (
+                    float(benchmark["forward_return"].mean())
+                    if len(benchmark)
+                    else float("nan")
+                )
+                episode_equal_mean = _episode_equal_mean(group)
+                episode_interval = (
+                    _whole_episode_bootstrap_interval(
+                        group,
+                        resamples=resamples,
+                        seed=group_seed + 1_000_000,
+                    )
+                    if supported
+                    else (float("nan"), float("nan"))
+                )
                 row: dict[str, Any] = {
                     "state": state,
                     "asset": asset,
@@ -419,6 +485,28 @@ def summarize_conditional_outcomes(
                     "bootstrap_block_weeks": block_length,
                     "bootstrap_resamples": resamples,
                     "bootstrap_seed": group_seed,
+                    "unconditional_benchmark_method": (
+                        "same_asset_horizon_all_origins_buy_and_hold"
+                    ),
+                    "unconditional_benchmark_n": int(len(benchmark)),
+                    "unconditional_benchmark_mean_return": benchmark_mean,
+                    "excess_mean_return": (
+                        float(metrics["mean_return"] - benchmark_mean)
+                        if count and np.isfinite(benchmark_mean)
+                        else float("nan")
+                    ),
+                    "episode_equal_mean_return": episode_equal_mean,
+                    "episode_equal_excess_return": (
+                        float(episode_equal_mean - benchmark_mean)
+                        if np.isfinite(episode_equal_mean)
+                        and np.isfinite(benchmark_mean)
+                        else float("nan")
+                    ),
+                    "episode_bootstrap_method": "whole_episode_resampling",
+                    "episode_bootstrap_resamples": resamples,
+                    "episode_bootstrap_seed": group_seed + 1_000_000,
+                    "episode_equal_mean_return_ci95_lower": episode_interval[0],
+                    "episode_equal_mean_return_ci95_upper": episode_interval[1],
                     **metrics,
                 }
                 for metric, (lower, upper) in intervals.items():
@@ -464,6 +552,7 @@ __all__ = [
     "ASSETS",
     "ConditionalOutcomeResult",
     "DEFAULT_ASSET_COLUMNS",
+    "DECISION_USEFULNESS_METRICS",
     "HORIZONS",
     "OUTCOME_COLUMNS",
     "POINT_METRICS",

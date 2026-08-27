@@ -19,7 +19,9 @@ SPEC.loader.exec_module(promote_v5_publication)
     [
         ["weak_generalization"],
         ["calibration_drift"],
+        ["low_transition_recall"],
         ["weak_generalization", "calibration_drift"],
+        ["calibration_drift", "low_transition_recall"],
     ],
 )
 def test_publication_health_accepts_only_reviewed_model_warnings(

@@ -1,0 +1,38 @@
+{
+  "schema_version": "regime-decision-shadow-spec/1",
+  "spec_id": "spy-tlt-probability-shadow-v1",
+  "role": "research_only_no_forecast_or_champion_effect",
+  "assets": ["SPY", "TLT"],
+  "probability_weight_mapping": {
+    "risk_on": {"SPY": 0.8, "TLT": 0.2},
+    "transition": {"SPY": 0.5, "TLT": 0.5},
+    "risk_off": {"SPY": 0.2, "TLT": 0.8}
+  },
+  "execution": {
+    "first_tradable_point": "next_completed_weekly_close",
+    "execution_lag_weeks": 1,
+    "holding_period_weeks": 1
+  },
+  "cost": {
+    "one_way_turnover_bps": 10.0,
+    "turnover_definition": "sum_absolute_weight_change",
+    "initial_allocation_costed_from_cash": true
+  },
+  "benchmarks": {
+    "buy_and_hold": {"SPY": 1.0, "TLT": 0.0},
+    "static_60_40": {"SPY": 0.6, "TLT": 0.4},
+    "vol_target_60_40": {
+      "base": {"SPY": 0.6, "TLT": 0.4},
+      "annual_target": 0.1,
+      "lookback_weeks": 26,
+      "minimum_observations": 13,
+      "maximum_gross_exposure": 1.0
+    }
+  },
+  "metrics": {
+    "annualization_weeks": 52.1775,
+    "risk_free_rate": 0.0,
+    "certainty_equivalent_risk_aversion": 3.0,
+    "minimum_evaluation_weeks": 52
+  }
+}

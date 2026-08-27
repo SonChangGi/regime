@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import math
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -23,6 +24,7 @@ from regime_lab.analysis.directional import (
     run_directional_transition_benchmark,
 )
 from regime_lab.analysis.duration import duration_context
+from regime_lab.analysis.decision_shadow import build_decision_shadow
 from regime_lab.analysis.fx import FXFeatureResult, fx_context_at, unavailable_fx_context
 from regime_lab.analysis.fx_ablation import (
     FX_ABLATION_OOS_COLUMNS,
@@ -47,7 +49,42 @@ STATE_LABELS_KO = {
 MATERIAL_CALIBRATION_DRIFT = 0.05
 MINIMUM_TRANSITION_EVENTS_FOR_HEALTH = 12
 LOW_TRANSITION_RECALL = 0.20
+MINIMUM_FULL_HORIZON_REMAINING_FRACTION = 4.0 / 7.0
+MINIMUM_CONTEXT_COVERAGE_FRACTION = 0.75
+MACRO_CONTEXT_COLUMNS = (
+    "payems__z_52w",
+    "indpro__z_52w",
+    "rsafs__z_52w",
+    "houst__z_52w",
+    "gdpc1__z_52w",
+    "unrate__z_52w",
+    "icsa__z_52w",
+    "ccsa__z_52w",
+)
+FINANCIAL_CONTEXT_COLUMNS = (
+    "nfci__z_52w",
+    "nfcirisk__z_52w",
+    "nfcicredit__z_52w",
+    "nfcileverage__z_52w",
+    "nfcinonfinleverage__z_52w",
+    "stlfsi4__z_52w",
+    "t10y2y__z_52w",
+    "walcl__z_52w",
+)
 _OPERATING_CONTRACT = load_operating_contract()
+
+
+def _config_document(name: str) -> tuple[dict[str, Any], str]:
+    path = Path(__file__).resolve().parents[2] / "config" / name
+    document = json.loads(path.read_text(encoding="utf-8"))
+    return document, hashlib.sha256(
+        json.dumps(
+            document,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+    ).hexdigest()
 
 
 def _json_value(value: Any, *, digits: int = 8) -> Any:
@@ -123,6 +160,17 @@ def _selection_contract(model: Mapping[str, Any]) -> dict[str, Any]:
         reason = "simplicity_tiebreak_within_tolerance"
     else:
         reason = "best_gate_passing_log_loss"
+    registry, registry_sha256 = _config_document("selection-release-epochs.json")
+    manifest_sha256 = model.get("candidate_manifest_sha256")
+    epoch = next(
+        (
+            row
+            for row in registry.get("epochs", ())
+            if isinstance(row, Mapping)
+            and row.get("candidate_manifest_sha256") == manifest_sha256
+        ),
+        None,
+    )
     return {
         "schema_version": "regime-selection-evidence/1",
         "status": "selected_by_gate",
@@ -138,6 +186,36 @@ def _selection_contract(model: Mapping[str, Any]) -> dict[str, Any]:
         "operating_champion": str(
             _OPERATING_CONTRACT.document["models"]["official_champion"]
         ),
+        # Selection rows are reconstructed from the frozen historical
+        # selection window.  A live forecast clock must never relabel them as
+        # prospective operational evidence.
+        "selection_evidence_track": "reconstructed_oos",
+        "evidence_status": "historical_reconstructed_oos",
+        "selected_champion": champion,
+        "statistically_indistinguishable_models": [],
+        "statistical_equivalence_status": "pending_selection_sidecar",
+        "release_epoch_registry": {
+            "path": "config/selection-release-epochs.json",
+            "sha256": registry_sha256,
+            "mode": "append_only",
+            "epoch_count": len(registry.get("epochs", ())),
+            "current_epoch_id": None if epoch is None else epoch.get("epoch_id"),
+            "current_epoch_status": (
+                "unregistered_candidate_manifest"
+                if epoch is None
+                else epoch.get("status")
+            ),
+        },
+        "multiplicity_defense": {
+            "current_epoch_method": "holm_step_down_plus_model_confidence_set",
+            "cumulative_status": (
+                "legacy_not_alpha_spent"
+                if epoch is not None
+                else "future_epoch_registration_required"
+            ),
+            "future_policy": dict(registry["future_epoch_policy"]),
+            "automatic_promotion_eligible": False,
+        },
     }
 
 
@@ -160,16 +238,265 @@ def _forecast_contract(
     origin = origin.tz_convert("UTC")
     target = target.tz_convert("UTC")
     active = decision < target
+    scheduled_horizon = int((target - origin).total_seconds())
+    remaining_horizon = int((target - decision).total_seconds()) if active else 0
+    issue_latency = int((decision - origin).total_seconds()) if active else None
+    remaining_fraction = (
+        float(remaining_horizon / scheduled_horizon)
+        if active and scheduled_horizon > 0
+        else 0.0
+    )
+    timing_status = (
+        "expired"
+        if not active
+        else (
+            "full_horizon_forecast"
+            if remaining_fraction + 1e-12
+            >= MINIMUM_FULL_HORIZON_REMAINING_FRACTION
+            else "late_nowcast"
+        )
+    )
+    empty_ledger_hash = hashlib.sha256(b"[]").hexdigest()
     return {
         "status": "active" if active else "expired",
         "origin_at": origin.isoformat(),
         "decision_at": decision.isoformat() if active else None,
         "target_at": target.isoformat(),
-        "remaining_horizon": (
-            int((target - decision).total_seconds()) if active else 0
-        ),
+        "remaining_horizon": remaining_horizon,
         "evidence_track": str(evidence_track),
+        "forecast_evidence_track": str(evidence_track),
+        "issue_latency_seconds": issue_latency,
+        "scheduled_horizon_seconds": scheduled_horizon,
+        "remaining_horizon_fraction": round(remaining_fraction, 8),
+        "minimum_full_horizon_remaining_fraction": (
+            MINIMUM_FULL_HORIZON_REMAINING_FRACTION
+        ),
+        "timing_status": timing_status,
+        "prospective_ledger": {
+            "schema_version": "regime-prospective-ledger-summary/1",
+            "status": "pending_append" if evidence_track == "operational_oos" else "not_applicable",
+            "entry_count": None if evidence_track == "operational_oos" else 0,
+            "key_manifest_sha256": (
+                None if evidence_track == "operational_oos" else empty_ledger_hash
+            ),
+            "hash_scope": "ordered_ledger_primary_keys_only",
+        },
     }
+
+
+def _anchored_isotonic_transition_risk(
+    risk: Mapping[str, Mapping[str, Any]],
+) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
+    """Project 4w/13w cumulative risk onto p1 <= p4 <= p13.
+
+    The official one-week departure probability is an immutable anchor.  The
+    two longer horizons use the exact L2 isotonic solution under that lower
+    bound: apply the anchor bound, then pool an adjacent 4w/13w violation.
+    """
+
+    result = {key: deepcopy(dict(value)) for key, value in risk.items()}
+    raw = {key: float(result[key]["probability"]) for key in ("1w", "4w", "13w")}
+    p1 = raw["1w"]
+    p4 = max(raw["4w"], p1)
+    p13 = max(raw["13w"], p1)
+    if p4 > p13:
+        pooled = (p4 + p13) / 2.0
+        p4 = pooled
+        p13 = pooled
+    projected = {"1w": p1, "4w": p4, "13w": p13}
+    for key, value in projected.items():
+        result[key]["probability"] = round(float(value), 8)
+    metadata = {
+        "semantics": "cumulative_first_departure_probability",
+        "coherence_method": "one_week_anchored_l2_isotonic_projection_v1",
+        "one_week_anchor": "official_multiclass_departure_probability",
+        "raw_probabilities": {key: round(value, 8) for key, value in raw.items()},
+        "adjusted": any(abs(projected[key] - raw[key]) > 1e-12 for key in raw),
+    }
+    return result, metadata
+
+
+def _term_structure_selection_evidence(
+    transition_predictions: pd.DataFrame,
+    champions_by_horizon: Mapping[int, str],
+    *,
+    selection_end: object,
+) -> dict[str, Any]:
+    """Matched selection-only Brier comparison for the shape projection.
+
+    The public weekly payload intentionally contains only the display/history
+    window and can therefore begin after the selection cutoff.  The auditable
+    transition OOS sidecar is the authoritative source for this comparison.
+    Each retained origin must have the selected 1/4/13-week forecast and its
+    realised cumulative departure event; unmatched horizon rows are excluded.
+    """
+
+    required = {
+        "origin_date",
+        "target_end",
+        "horizon",
+        "model",
+        "evaluation_split",
+        "actual_change",
+        "p_change",
+    }
+    missing = sorted(required.difference(transition_predictions.columns))
+    if missing:
+        raise ValueError(
+            "transition selection evidence is missing columns: "
+            + ", ".join(missing)
+        )
+    if set(champions_by_horizon) != set(HORIZONS):
+        raise ValueError("transition champions must cover exactly 1/4/13 weeks")
+
+    cutoff = pd.Timestamp(selection_end).date()
+    selection = transition_predictions.loc[
+        transition_predictions["evaluation_split"].astype(str).eq("selection")
+    ].copy()
+    selection["origin_key"] = selection["origin_date"].map(
+        lambda value: pd.Timestamp(value).date().isoformat()
+    )
+    selection["target_end_key"] = selection["target_end"].map(
+        lambda value: pd.Timestamp(value).date()
+    )
+    selection = selection.loc[selection["target_end_key"] < cutoff]
+    champion_rows: list[pd.DataFrame] = []
+    for horizon in HORIZONS:
+        champion_rows.append(
+            selection.loc[
+                selection["horizon"].astype(int).eq(horizon)
+                & selection["model"].astype(str).eq(
+                    str(champions_by_horizon[horizon])
+                )
+            ]
+        )
+    selected = pd.concat(champion_rows, ignore_index=True)
+    if selected.empty:
+        raise ValueError(
+            "transition selection evidence has no selected champion rows"
+        )
+    if selected.duplicated(["origin_key", "horizon"]).any():
+        raise ValueError(
+            "transition selection evidence has duplicate origin/horizon rows"
+        )
+
+    probability_by_origin = selected.pivot(
+        index="origin_key", columns="horizon", values="p_change"
+    )
+    actual_by_origin = selected.pivot(
+        index="origin_key", columns="horizon", values="actual_change"
+    )
+    if not set(HORIZONS).issubset(probability_by_origin.columns) or not set(
+        HORIZONS
+    ).issubset(actual_by_origin.columns):
+        raise ValueError(
+            "transition selection evidence has no matched 1/4/13-week origin"
+        )
+    common_origins = probability_by_origin.dropna(subset=list(HORIZONS)).index
+    common_origins = common_origins.intersection(
+        actual_by_origin.dropna(subset=list(HORIZONS)).index
+    ).sort_values()
+    if len(common_origins) < 1:
+        raise ValueError(
+            "transition selection evidence has no matched 1/4/13-week origin"
+        )
+
+    raw_losses: list[float] = []
+    projected_losses: list[float] = []
+    for origin_key in common_origins:
+        raw_risk = {
+            f"{horizon}w": {
+                "probability": float(probability_by_origin.loc[origin_key, horizon])
+            }
+            for horizon in HORIZONS
+        }
+        projected_risk, metadata = _anchored_isotonic_transition_risk(
+            raw_risk
+        )
+        realised = [
+            int(bool(actual_by_origin.loc[origin_key, horizon]))
+            for horizon in HORIZONS
+        ]
+        if realised != sorted(realised):
+            raise ValueError(
+                "transition cumulative events are not monotone at origin "
+                f"{origin_key}"
+            )
+        for horizon, actual in zip(HORIZONS, realised, strict=True):
+            raw_probability = float(metadata["raw_probabilities"][f"{horizon}w"])
+            projected_probability = float(
+                projected_risk[f"{horizon}w"]["probability"]
+            )
+            raw_losses.append((raw_probability - actual) ** 2)
+            projected_losses.append((projected_probability - actual) ** 2)
+    return {
+        "evidence_track": "reconstructed_oos",
+        "evidence_status": "historical_reconstructed_oos",
+        "evaluation_split": "selection",
+        "selection_end": cutoff.isoformat(),
+        "source_artifact": "transition-oos-predictions.csv",
+        "probability_source": "selected_horizon_champion_calibrated_p_change",
+        "projection_fit": "parameter_free_fixed_l2_order_constraint",
+        "matched_origin_count": len(common_origins),
+        "matched_probability_count": len(raw_losses),
+        "raw_brier": round(float(np.mean(raw_losses)), 8) if raw_losses else None,
+        "projected_brier": (
+            round(float(np.mean(projected_losses)), 8)
+            if projected_losses
+            else None
+        ),
+        "brier_difference_projected_minus_raw": (
+            round(float(np.mean(projected_losses) - np.mean(raw_losses)), 8)
+            if raw_losses
+            else None
+        ),
+        "selection_effect": "semantic_coherence_only_no_model_selection",
+    }
+
+
+def _context_score_contract(
+    scores: Mapping[str, Any],
+    features: pd.DataFrame,
+    *,
+    at: object,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    timestamp = pd.Timestamp(at)
+    comparable = timestamp
+    if features.index.tz is None and comparable.tzinfo is not None:
+        comparable = comparable.tz_localize(None)
+    elif features.index.tz is not None and comparable.tzinfo is None:
+        comparable = comparable.tz_localize(features.index.tz)
+    elif features.index.tz is not None and comparable.tzinfo is not None:
+        comparable = comparable.tz_convert(features.index.tz)
+    row = features.loc[comparable] if comparable in features.index else pd.Series(dtype=float)
+    output = dict(scores)
+    coverage: dict[str, Any] = {}
+    definitions = {
+        "trend": (),
+        "stress": (),
+        "macro": MACRO_CONTEXT_COLUMNS,
+        "financial_conditions": FINANCIAL_CONTEXT_COLUMNS,
+    }
+    for name, columns in definitions.items():
+        if columns:
+            available = sum(
+                column in row and pd.notna(row[column]) for column in columns
+            )
+            expected = len(columns)
+        else:
+            available = int(pd.notna(output.get(name)))
+            expected = 1
+        minimum = max(1, math.ceil(expected * MINIMUM_CONTEXT_COVERAGE_FRACTION))
+        sufficient = available >= minimum
+        if not sufficient:
+            output[name] = None
+        coverage[name] = {
+            "available_count": int(available),
+            "expected_count": int(expected),
+            "minimum_required_count": int(minimum),
+            "status": "sufficient" if sufficient else "insufficient_coverage",
+        }
+    return output, coverage
 
 
 def _aware_cutoff(value: object) -> pd.Timestamp:
@@ -393,9 +720,12 @@ def _summary(week: Mapping[str, Any]) -> str:
 
 def _model_health(model: Mapping[str, Any]) -> dict[str, Any]:
     reasons: list[str] = []
+    probability_reasons: list[str] = []
+    early_warning_reasons: list[str] = []
     holdout = model.get("holdout_diagnostic", {})
     if isinstance(holdout, Mapping) and holdout.get("status") == "weak_generalization":
         reasons.append("weak_generalization")
+        probability_reasons.append("weak_generalization")
 
     champion = str(model.get("champion", ""))
     leaderboard = model.get("leaderboard", [])
@@ -412,24 +742,85 @@ def _model_health(model: Mapping[str, Any]) -> dict[str, Any]:
             if selection is not None and diagnostic is not None:
                 if float(diagnostic) - float(selection) > MATERIAL_CALIBRATION_DRIFT:
                     reasons.append("calibration_drift")
+                    probability_reasons.append("calibration_drift")
+    else:
+        champion_rows = []
 
-    transition_rows = model.get("transition_leaderboard", [])
-    if isinstance(transition_rows, Sequence):
-        for row in transition_rows:
-            if not isinstance(row, Mapping):
-                continue
-            if (
-                int(row.get("horizon_weeks", 0)) == 1
-                and bool(row.get("selected", False))
-                and row.get("evaluation_split") == "retrospective_diagnostic"
-                and int(row.get("event_count", 0)) >= MINIMUM_TRANSITION_EVENTS_FOR_HEALTH
-                and float(row.get("recall", 1.0)) < LOW_TRANSITION_RECALL
-            ):
-                reasons.append("low_transition_recall")
-                break
+    champion_row = champion_rows[0] if champion_rows else {}
+    calibration_error = champion_row.get("calibration_error")
+    selection_calibration_error = champion_row.get("selection_calibration_error")
+    calibration_drift = (
+        float(calibration_error) - float(selection_calibration_error)
+        if calibration_error is not None and selection_calibration_error is not None
+        else None
+    )
+    probability_health = {
+        "status": (
+            "review_due"
+            if probability_reasons
+            else ("ok" if calibration_error is not None else "insufficient_evidence")
+        ),
+        "reasons": list(dict.fromkeys(probability_reasons)),
+        "champion": champion,
+        "evaluation_split": "retrospective_diagnostic",
+        "calibration_method": "top_label_ece_10_equal_width_bins",
+        "calibration_error": _json_value(calibration_error),
+        "selection_calibration_error": _json_value(selection_calibration_error),
+        "calibration_drift": _json_value(calibration_drift),
+        "log_loss": _json_value(champion_row.get("log_loss")),
+        "brier": _json_value(champion_row.get("brier")),
+        "n_predictions": int(champion_row.get("n_predictions", 0)),
+    }
+
+    event_count = int(champion_row.get("transition_event_count", 0))
+    recall = champion_row.get("transition_recall")
+    precision = champion_row.get("transition_precision")
+    if (
+        event_count >= MINIMUM_TRANSITION_EVENTS_FOR_HEALTH
+        and recall is not None
+        and float(recall) < LOW_TRANSITION_RECALL
+    ):
+        reasons.append("low_transition_recall")
+        early_warning_reasons.append("low_transition_recall")
+    early_warning_health = {
+        "status": (
+            "review_due"
+            if early_warning_reasons
+            else (
+                "ok"
+                if event_count >= MINIMUM_TRANSITION_EVENTS_FOR_HEALTH
+                else "insufficient_evidence"
+            )
+        ),
+        "reasons": list(dict.fromkeys(early_warning_reasons)),
+        "champion": champion,
+        "evaluation_split": "retrospective_diagnostic",
+        "event_definition": "actual_next_state_differs_from_current_state",
+        "n_predictions": int(champion_row.get("n_predictions", 0)),
+        "exposure_years": _json_value(champion_row.get("exposure_years")),
+        "event_count": event_count,
+        "on_time_departure_count": int(
+            champion_row.get("on_time_departure_count", 0)
+        ),
+        "on_time_recall": _json_value(recall),
+        "precision": _json_value(precision),
+        "false_alarm_count": int(champion_row.get("false_alarm_count", 0)),
+        "false_alarms_per_year": _json_value(
+            champion_row.get("false_alarms_per_year")
+        ),
+        "detected_event_count": int(champion_row.get("detected_event_count", 0)),
+        "mean_detection_delay_forecast_weeks": _json_value(
+            champion_row.get("mean_detection_delay_forecast_weeks")
+        ),
+        "minimum_event_count": MINIMUM_TRANSITION_EVENTS_FOR_HEALTH,
+    }
     return {
-        "status": "review_due" if reasons else "ok",
-        "reasons": list(dict.fromkeys(reasons)),
+        "aggregate": {
+            "status": "review_due" if reasons else "ok",
+            "reasons": list(dict.fromkeys(reasons)),
+        },
+        "probability_health": probability_health,
+        "early_warning_health": early_warning_health,
     }
 
 
@@ -589,6 +980,9 @@ def build_v5_payload(
     features: pd.DataFrame,
     states: pd.Series,
     directional: DirectionalBenchmarkResult,
+    transition_selection_predictions: pd.DataFrame,
+    transition_champions_by_horizon: Mapping[int, str],
+    transition_selection_end: str | pd.Timestamp,
     baseline_v4: Mapping[str, Any],
     structural_preregistration_sha256: str,
     label_fit_start: str | pd.Timestamp | None = None,
@@ -638,7 +1032,7 @@ def build_v5_payload(
         if "Top drivers" not in str(warning)
     ]
     meta["warnings"] = warnings
-    if health["status"] == "review_due":
+    if health["aggregate"]["status"] == "review_due":
         meta["status"] = "degraded"
 
     if fx_ablation_evidence_sink is not None and not callable(
@@ -689,7 +1083,9 @@ def build_v5_payload(
                 ),
                 "selection_end": directional.selection_end.date().isoformat(),
             },
-            "model_health": health,
+            "model_health": health["aggregate"],
+            "probability_health": health["probability_health"],
+            "early_warning_health": health["early_warning_health"],
             "fx_role": "context_and_preregistered_shadow_ablation",
             "fx_ablation": fx_ablation,
             "selection_status": "selected_by_gate",
@@ -709,6 +1105,13 @@ def build_v5_payload(
         "automatic_promotion_bypass": False,
     }
     model["structural_models"] = structural_models
+    model["transition_term_structure_evidence"] = (
+        _term_structure_selection_evidence(
+            transition_selection_predictions,
+            transition_champions_by_horizon,
+            selection_end=transition_selection_end,
+        )
+    )
 
     lookup = _directional_lookup(directional)
     latest_date = str(payload["weekly"][-1]["date"])
@@ -716,7 +1119,18 @@ def build_v5_payload(
     for source_week in payload["weekly"]:
         week = deepcopy(dict(source_week))
         week["current"] = _current_membership(source_week["current"])
-        week["context_scores"] = week.pop("scores")
+        reconciled_risk, term_structure = _anchored_isotonic_transition_risk(
+            week["transition_risk"]
+        )
+        week["transition_risk"] = reconciled_risk
+        week["transition_term_structure"] = term_structure
+        week["context_scores"], week["context_score_coverage"] = (
+            _context_score_contract(
+                week.pop("scores"),
+                features,
+                at=week.get("data_as_of", week["date"]),
+            )
+        )
         week["extreme_context"] = _context_extremes(week.pop("top_drivers"))
         week["directional_risk"] = _directional_rows(
             week,
@@ -752,6 +1166,10 @@ def build_v5_payload(
         canonical,
         states,
         bootstrap_resamples=outcome_bootstrap_resamples,
+    )
+    research["prospective_decision_shadow"] = build_decision_shadow(
+        weekly,
+        canonical,
     )
     forecast_comparison = model.get("forecast_comparison", {})
     comparison_models = (
@@ -816,6 +1234,36 @@ def build_v5_payload(
     )
 
     label_spec = load_label_spec()
+    label_grid, label_grid_sha256 = _config_document(
+        "label-sensitivity-grid.json"
+    )
+    research["label_sensitivity"] = {
+        "schema_version": "regime-label-sensitivity-summary/1",
+        "status": "preregistered_pending_execution",
+        "evidence_track": "reconstructed_oos",
+        "evaluation_split": "selection_only",
+        "control": {
+            "spec_id": label_spec.spec_id,
+            "spec_version": label_spec.version,
+            "spec_sha256": label_spec.spec_sha256,
+            "remains_operating_control": True,
+        },
+        "grid": {
+            "path": "config/label-sensitivity-grid.json",
+            "sha256": label_grid_sha256,
+            "dimensions": dict(label_grid["grid"]),
+        },
+        "execution_summary": {
+            "evaluated_spec_count": 0,
+            "state_occupancy": None,
+            "episode_count": None,
+            "weekly_flip_rate": None,
+            "transition_jaccard": None,
+            "forward_return_separation": None,
+            "model_rank_robustness": None,
+        },
+        "automatic_promotion_eligible": False,
+    }
     if label_fit_weeks < 1 or label_fit_weeks > len(canonical):
         raise ValueError("label_fit_weeks is outside the canonical history")
     resolved_fit_start = pd.Timestamp(

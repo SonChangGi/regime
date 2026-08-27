@@ -359,6 +359,71 @@ research artifacts and leaderboard. The displayed 4/13-week values come from
 their horizon-specific selected transition models. Neither quantity is the
 probability of entering the middle `transition` state.
 
+Decision-grade payloads keep the independently fitted raw 1/4/13-week values
+in `transition_term_structure.raw_probabilities`.  Because all three displayed
+quantities are cumulative first-departure probabilities, the 4/13-week pair is
+then projected onto `p1 <= p4 <= p13` by the one-week-anchored least-squares
+isotonic solution.  This is not cumulative-max clipping and it never changes
+the official one-week probability.  The payload also reports a matched,
+selection-only raw-versus-projected Brier comparison sourced from the selected
+horizon champions in `transition-oos-predictions.csv`.  Only origins having all
+three 1/4/13-week calibrated probabilities and realised cumulative events are
+eligible, and the contract rejects a zero-origin comparison.  The v5 quick
+profile therefore retains the minimum 15 selection origins needed to overlap
+its three horizon windows; this does not change the v4 quick path or the
+standard/full limits.  The projection itself is a parameter-free fixed order
+constraint, while this matched comparison discloses its selection-fold scoring
+effect.  Its role is semantic coherence evidence, not model selection or
+post-hoc promotion.
+
+## Evidence clocks, health, and practical decision shadow
+
+The forecast clock and the historical selection clock are separate.  A live
+forecast may use `forecast_evidence_track=operational_oos`, while the selection
+family reconstructed from the frozen 2016--2022 window remains
+`selection_evidence_track=reconstructed_oos` and
+`evidence_status=historical_reconstructed_oos`.  The public prospective-ledger
+summary exposes only an ordered primary-key count and SHA-256; forecast values,
+provider revisions, and raw inputs remain private.  Issue latency, actual
+remaining seconds, remaining-horizon fraction, and `late_nowcast` are computed
+from zoned instants.  A seven-calendar-day New York interval may therefore be
+601,200, 604,800, or 608,400 seconds across DST.
+
+`probability_health` reports the official champion's log loss, Brier score,
+top-label ECE, selection ECE, and drift.  `early_warning_health` separately
+reports that same champion's departure-event count, on-time recall, precision,
+false alarms per year, and destination-recognition delay.  The selected binary
+transition benchmark is not substituted for the official champion in this
+health block.
+
+Conditional asset rows retain the certified weekly-origin estimates and add a
+same-asset/horizon unconditional buy-and-hold benchmark, excess return, and an
+episode-equal estimand.  The latter resamples whole episodes, so one long regime
+cannot dominate merely by contributing more weekly origins.
+
+`prospective_decision_shadow` is a separate research-only schema, not an
+allocation field inside conditional statistics.  Its preregistered mapping is
+the probability-weighted combination of fixed SPY/TLT state portfolios
+(80/20, 50/50, 20/80).  A signal at weekly close `t` is first tradable at the
+next completed weekly close and earns returns only after that point.  It
+deducts 10 bps per one-way turnover and compares a matched period against SPY
+buy-and-hold, static 60/40, and trailing-volatility-targeted 60/40 using return,
+volatility, Sharpe, maximum drawdown, turnover, and certainty-equivalent return
+(risk aversion 3).  Reconstructed history and realized prospective-ledger
+outcomes are separate evidence tracks, and neither can alter the official
+forecast or champion.
+
+The label sensitivity grid is preregistered in
+`config/label-sensitivity-grid.json`; its required output includes occupancy,
+episode count, flip rate, transition Jaccard, forward-return separation, and
+model-rank robustness.  Until that grid is executed on selection-only data the
+summary is explicitly pending and the current label remains the operating
+control.  Candidate release epochs are append-only registered in
+`config/selection-release-epochs.json`.  Legacy epochs disclose that they were
+not cumulatively alpha-spent; future epochs must register a geometric alpha
+spend, retain within-epoch Holm control, and publish the MCS statistically
+indistinguishable set separately from the selected champion.
+
 ## Shadow explicit-duration nowcast
 
 A fixed-parameter explicit-duration filter consumes the canonical three-state

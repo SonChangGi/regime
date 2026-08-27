@@ -325,6 +325,10 @@ SHA-256은 `8ef3778cc8c36faff0c80e2bf094f1f11bd6966ab3b7b2d6edb84ba292aff6b9`입
 .venv/bin/pytest
 ```
 
+주간 상태의 세 축, runtime/generation 결속, origin 체크포인트 재사용 및 비파괴
+backup inventory·restore drill 절차는
+[`docs/operations-recovery.md`](docs/operations-recovery.md)에 정리되어 있습니다.
+
 명령과 화면이 `demo`, `degraded`, `live`를 명시적으로 구분합니다. 핵심
 source가 stale·차단·누락이면 마지막 값을 현재 값처럼 조용히 연장하지 않고
 결과를 `unavailable` 또는 `degraded`로 표시합니다.

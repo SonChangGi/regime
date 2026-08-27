@@ -24,6 +24,7 @@ from .security import sanitize_mapping
 
 
 _EASTERN = ZoneInfo("America/New_York")
+_SCHEMA_USER_VERSION = 1
 
 
 _SCHEMA = """
@@ -131,7 +132,33 @@ class SQLiteSnapshotStore:
         if not self.read_only:
             with self._connection:
                 self._connection.executescript(_SCHEMA)
-                self._ensure_bitemporal_observation_columns()
+                self._migrate_schema()
+
+    def _migrate_schema(self) -> None:
+        version = int(self._connection.execute("PRAGMA user_version").fetchone()[0])
+        if version > _SCHEMA_USER_VERSION:
+            raise RuntimeError(
+                f"snapshot database schema version {version} is newer than supported"
+            )
+        if version < 1:
+            self._ensure_bitemporal_observation_columns()
+            self._connection.execute(f"PRAGMA user_version = {_SCHEMA_USER_VERSION}")
+        else:
+            columns = {
+                str(row[1])
+                for row in self._connection.execute(
+                    "PRAGMA table_info(observations)"
+                ).fetchall()
+            }
+            required = {
+                "source_released_at",
+                "provider_first_seen_at",
+                "system_retrieved_at",
+            }
+            if not required.issubset(columns):
+                raise RuntimeError(
+                    "snapshot database schema version is inconsistent with columns"
+                )
 
     def _ensure_bitemporal_observation_columns(self) -> None:
         """Add explicit clocks while preserving existing snapshot databases.
@@ -422,10 +449,21 @@ class SQLiteSnapshotStore:
                         snapshot["cutoff"],
                     )
                 )
-            as_of_clause = ""
+            observation_clauses: list[str] = []
             if as_of_iso is not None:
-                as_of_clause = "WHERE o.available_at <= ?"
+                observation_clauses.append("o.available_at <= ?")
                 query_values.append(as_of_iso)
+            if allowed_series is not None:
+                placeholders = ",".join("?" for _ in allowed_series)
+                observation_clauses.append(
+                    f"o.series_id IN ({placeholders})"
+                )
+                query_values.extend(sorted(allowed_series))
+            observation_where = (
+                "WHERE " + " AND ".join(observation_clauses)
+                if observation_clauses
+                else ""
+            )
             with self._lock:
                 observation_rows = self._connection.execute(
                     f"""
@@ -435,7 +473,7 @@ class SQLiteSnapshotStore:
                     SELECT o.*, selected.snapshot_rank, selected.snapshot_cutoff
                     FROM observations AS o
                     JOIN selected ON selected.snapshot_id = o.snapshot_id
-                    {as_of_clause}
+                    {observation_where}
                     ORDER BY selected.snapshot_rank, o.source, o.series_id,
                              o.observed_period_end, o.vintage_date,
                              o.available_at, o.revision_seq

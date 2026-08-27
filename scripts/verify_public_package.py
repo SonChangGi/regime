@@ -17,18 +17,27 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from scripts.package_public_demo import (  # noqa: E402
+    CORE_PAYLOAD_DESTINATION,
+    GENERATED_BROWSER_CONTRACT,
     GENERATION_MANIFEST_DESTINATION,
     MANIFEST_DESTINATION,
     PAYLOAD_DESTINATION,
     PUBLICATION_MODE_DEMO,
     PUBLICATION_MODE_LIVE_DERIVED,
+    RESEARCH_SIDECAR_DESTINATION,
     SELECTION_FAMILY_DESTINATION,
     STATIC_ALLOWLIST,
     V5_COMPARISON_DESTINATION,
     V5_RESULT_VERSION,
     PackagingError,
     validate_public_payload,
+    validate_dashboard_split,
     validate_v5_comparison_sidecar,
+)
+from regime_lab.publication_contract import validate_index_asset_versions  # noqa: E402
+from regime_lab.web_contract import (  # noqa: E402
+    BrowserContractError,
+    validate_generated_browser_contract,
 )
 from regime_lab.integrity import (  # noqa: E402
     GENERATION_MANIFEST_SCHEMA_VERSION,
@@ -112,6 +121,8 @@ def verify_public_package(directory: str | Path) -> dict[str, Any]:
     expected_files = set(BASE_EXPECTED_FILES)
     generation_document: dict[str, Any] | None = None
     if result_version == V5_RESULT_VERSION:
+        expected_files.add(CORE_PAYLOAD_DESTINATION)
+        expected_files.add(RESEARCH_SIDECAR_DESTINATION)
         expected_files.add(V5_COMPARISON_DESTINATION)
         if payload.get("meta", {}).get("generation_manifest_sha256") is not None:
             expected_files.add(GENERATION_MANIFEST_DESTINATION)
@@ -189,12 +200,43 @@ def verify_public_package(directory: str | Path) -> dict[str, Any]:
             raise VerificationError(f"credential-like material found: {relative_path}")
 
     try:
+        validate_generated_browser_contract(
+            package_root / GENERATED_BROWSER_CONTRACT
+        )
+        validate_index_asset_versions(
+            (package_root / "index.html").read_bytes(),
+            styles_raw=(package_root / "styles.css").read_bytes(),
+            operating_contract_raw=(
+                package_root / GENERATED_BROWSER_CONTRACT
+            ).read_bytes(),
+            app_raw=(package_root / "app.js").read_bytes(),
+        )
+    except (BrowserContractError, PackagingError) as exc:
+        raise VerificationError(str(exc)) from exc
+
+    try:
         validate_public_payload(
             payload,
             publication_mode=publication_mode,
             rights_acknowledged=publication_mode == PUBLICATION_MODE_LIVE_DERIVED,
         )
         if result_version == V5_RESULT_VERSION:
+            research_raw = (
+                package_root / RESEARCH_SIDECAR_DESTINATION
+            ).read_bytes()
+            validate_dashboard_split(
+                _load_json(
+                    package_root / CORE_PAYLOAD_DESTINATION,
+                    label="dashboard core envelope",
+                ),
+                _load_json(
+                    package_root / RESEARCH_SIDECAR_DESTINATION,
+                    label="dashboard research sidecar",
+                ),
+                payload=payload,
+                payload_raw=payload_raw,
+                research_raw=research_raw,
+            )
             comparison = _load_json(
                 package_root / V5_COMPARISON_DESTINATION,
                 label="V5/V4 comparison sidecar",
@@ -277,6 +319,7 @@ def verify_public_package(directory: str | Path) -> dict[str, Any]:
         "payload_mode": manifest["payload_mode"],
         "payload_data_as_of": manifest.get("payload_data_as_of"),
         "comparison_included": result_version == V5_RESULT_VERSION,
+        "core_research_split_included": result_version == V5_RESULT_VERSION,
         "selection_family_included": (
             SELECTION_FAMILY_DESTINATION in expected_files
         ),

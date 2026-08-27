@@ -831,6 +831,25 @@ def _same_cutoff_alpha_expansion(
     return missing_symbols, metrics
 
 
+def _group_existing_records(
+    records: Sequence[Observation],
+) -> tuple[
+    dict[str, tuple[Observation, ...]],
+    dict[tuple[str, str], tuple[Observation, ...]],
+]:
+    """Index one immutable read so provider loops never rescan all history."""
+
+    by_source_lists: dict[str, list[Observation]] = {}
+    by_series_lists: dict[tuple[str, str], list[Observation]] = {}
+    for record in records:
+        by_source_lists.setdefault(record.source, []).append(record)
+        by_series_lists.setdefault((record.source, record.series_id), []).append(record)
+    return (
+        {key: tuple(value) for key, value in by_source_lists.items()},
+        {key: tuple(value) for key, value in by_series_lists.items()},
+    )
+
+
 def collect_live_data(
     config: Mapping[str, Any],
     *,
@@ -885,6 +904,9 @@ def collect_live_data(
         # schema-changed, or quota-exhausted response is still preserved for
         # audit, but never becomes model input.
         existing_records = store.read_last_good_observations()
+        existing_by_source, existing_by_source_series = _group_existing_records(
+            existing_records
+        )
 
         alpha_cfg = config["alpha_vantage"]
         alpha_symbols = tuple(
@@ -894,9 +916,7 @@ def collect_live_data(
         )
         if not alpha_symbols or len(alpha_symbols) != len(set(alpha_symbols)):
             raise ValueError("alpha_vantage symbols must be non-empty and unique")
-        alpha_all_existing = tuple(
-            item for item in existing_records if item.source == "alpha_vantage"
-        )
+        alpha_all_existing = tuple(existing_by_source.get("alpha_vantage", ()))
         alpha_feature_fields = tuple(
             dict.fromkeys(
                 str(item).strip()
@@ -1332,9 +1352,7 @@ def collect_live_data(
             )
             emit(f"ALFRED {index}/{len(series_config)}: {series_id}")
             existing_series = tuple(
-                item
-                for item in existing_records
-                if item.source == "alfred" and item.series_id == series_id
+                existing_by_source_series.get(("alfred", series_id), ())
             )
             last_good = store.get_last_good_provenance(
                 source="alfred",

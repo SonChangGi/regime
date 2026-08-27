@@ -1,6 +1,7 @@
 """Accessibility and responsive-layout checks that do not require a browser."""
 
 import re
+import json
 from pathlib import Path
 
 
@@ -92,7 +93,7 @@ def test_visuals_have_semantic_fallbacks_and_non_color_encoding() -> None:
     assert "공개 스냅샷" in JS
     assert 'currentFreshness.status === "stale"' in JS
     assert 'id="conditional-stat-grid" class="conditional-stat-grid" role="region"' in HTML
-    assert 'setAttribute("aria-label", `${basisLabel} 자산군 평균 수익률 비교`)' in JS
+    assert 'setAttribute("aria-label", `${basisLabel} 자산군 평균과 95% 구간 및 전체 주 B&H 비교`)' in JS
     assert '`${basisLabel} · 선택 자산과 보유 기간의 국면별 조건부 성과 표 · 가로 스크롤 가능`' in JS
     assert '`${modelForecastLabel(state.comparisonModel)} OOS 예측 국면 기준`' in JS
     assert '"관측 국면 기준"' in JS
@@ -166,6 +167,42 @@ def test_small_status_chips_use_high_contrast_text_tokens() -> None:
     assert "--status-review-text: #805000;" in CSS
     assert "color: var(--status-ok-text);" in CSS
     assert "color: var(--status-review-text);" in CSS
+
+
+def _relative_luminance(color: str) -> float:
+    components = [int(color[index:index + 2], 16) / 255 for index in (1, 3, 5)]
+    linear = [
+        value / 12.92 if value <= 0.04045 else ((value + 0.055) / 1.055) ** 2.4
+        for value in components
+    ]
+    return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+
+
+def _contrast(left: str, right: str) -> float:
+    lighter, darker = sorted((_relative_luminance(left), _relative_luminance(right)), reverse=True)
+    return (lighter + 0.05) / (darker + 0.05)
+
+
+def _css_variables(selector: str) -> dict[str, str]:
+    match = re.search(re.escape(selector) + r"\s*\{([^}]+)\}", CSS)
+    assert match is not None
+    return dict(re.findall(r"(--[a-z0-9-]+):\s*(#[0-9a-fA-F]{6});", match.group(1)))
+
+
+def test_actual_payload_marks_are_separate_from_wcag_text_tokens_in_both_themes() -> None:
+    payload = json.loads((ROOT / "publication" / "live" / "regime-results.json").read_text(encoding="utf-8"))
+    payload_colors = {state["id"].replace("_", "-"): state["color"].lower() for state in payload["states"]}
+    light = _css_variables(":root")
+    dark = _css_variables('html[data-theme="dark"]')
+    for name, payload_color in payload_colors.items():
+        assert light[f"--{name}-mark"].lower() == payload_color
+        assert dark[f"--{name}-mark"].lower() == payload_color
+        assert _contrast(light[f"--{name}-text"], light["--surface"]) >= 4.5
+        assert _contrast(dark[f"--{name}-text"], dark["--surface"]) >= 4.5
+        assert _contrast(payload_color, light["--surface"]) >= 3.0
+        assert _contrast(payload_color, dark["--surface"]) >= 3.0
+    assert 'setProperty(`--${code.replaceAll("_", "-")}-mark`, color)' in JS
+    assert 'setProperty(`--${code.replaceAll("_", "-")}`, color)' not in JS
 
 
 def test_context_and_performance_units_are_explicit() -> None:

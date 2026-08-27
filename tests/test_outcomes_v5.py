@@ -134,6 +134,34 @@ def test_conditional_point_statistics_and_unique_episodes() -> None:
     assert row["downside_volatility"] == pytest.approx(
         np.sqrt((0.20**2 + 0.10**2) / 4) * np.sqrt(52.0)
     )
+    # Weekly-origin and episode-equal estimands are both explicit.  With equal
+    # episode lengths they coincide; the benchmark covers all states/origins.
+    assert row["episode_equal_mean_return"] == pytest.approx(0.0)
+    assert row["unconditional_benchmark_mean_return"] == pytest.approx(0.0)
+    assert row["excess_mean_return"] == pytest.approx(0.0)
+    assert row["episode_bootstrap_method"] == "whole_episode_resampling"
+
+
+def test_episode_equal_statistic_does_not_overweight_a_long_episode() -> None:
+    outcomes = _manual_outcomes(
+        [0.10, 0.10, 0.10, -0.50], episode_ids=[0, 0, 0, 1]
+    )
+
+    statistics = summarize_conditional_outcomes(
+        outcomes,
+        min_observations=1,
+        min_unique_episodes=1,
+        bootstrap_resamples=99,
+    )
+    row = statistics.loc[
+        statistics["state"].eq("risk_on")
+        & statistics["asset"].eq("SPY")
+        & statistics["horizon_weeks"].eq(1)
+    ].iloc[0]
+
+    assert row["mean_return"] == pytest.approx(-0.05)
+    assert row["episode_equal_mean_return"] == pytest.approx(-0.20)
+    assert np.isfinite(row["episode_equal_mean_return_ci95_lower"])
 
 
 def test_episode_bounded_block_bootstrap_is_deterministic() -> None:

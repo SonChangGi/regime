@@ -43,6 +43,15 @@ audit_outputs = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(audit_outputs)
 
 
+def test_anchored_transition_projection_preserves_one_week_and_pools_violations() -> None:
+    assert audit_outputs.anchored_transition_projection(
+        {"1w": 0.30, "4w": 0.20, "13w": 0.50}
+    ) == {"1w": 0.30, "4w": 0.30, "13w": 0.50}
+    assert audit_outputs.anchored_transition_projection(
+        {"1w": 0.10, "4w": 0.70, "13w": 0.30}
+    ) == {"1w": 0.10, "4w": 0.50, "13w": 0.50}
+
+
 def test_calendar_days_preserves_date_only_and_converts_timestamp_to_market_day() -> None:
     values = pd.Series(
         [

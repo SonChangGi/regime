@@ -8,6 +8,7 @@
     "transient_retry_hours": 6,
     "heartbeat_interval_seconds": 120,
     "stale_heartbeat_minutes": 15,
+    "no_progress_timeout_minutes": 45,
     "notification_dedupe_hours": 24,
     "minimum_cutoff_age_hours": 24,
     "require_ac_power": true

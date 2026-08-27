@@ -98,6 +98,7 @@ def rewrite_index_asset_versions(
     *,
     styles_raw: bytes,
     app_raw: bytes,
+    operating_contract_raw: bytes | None = None,
 ) -> bytes:
     """Bind dashboard asset query values to the exact packaged bytes."""
 
@@ -105,10 +106,16 @@ def rewrite_index_asset_versions(
         document = index_raw.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise PublicContractError("index.html must be valid UTF-8") from exc
-    assets = (
+    assets: tuple[tuple[str, str, bytes], ...] = (
         ("href", "styles.css", styles_raw),
         ("src", "app.js", app_raw),
     )
+    if operating_contract_raw is not None:
+        assets = (
+            ("href", "styles.css", styles_raw),
+            ("src", "operating-contract.generated.js", operating_contract_raw),
+            ("src", "app.js", app_raw),
+        )
     counts: list[int] = []
     for attribute, filename, raw in assets:
         pattern = _asset_reference_pattern(attribute=attribute, filename=filename)
@@ -121,16 +128,19 @@ def rewrite_index_asset_versions(
         counts.append(count)
     # Tiny synthetic fixtures may intentionally contain no application shell.
     # A real shell is fail-closed: both references must be singular and bound.
-    if counts != [0, 0] and counts != [1, 1]:
+    empty_counts = [0] * len(assets)
+    bound_counts = [1] * len(assets)
+    if counts != empty_counts and counts != bound_counts:
         raise PublicContractError(
-            "index.html must contain exactly one styles.css and one app.js reference"
+            "index.html must contain exactly one reference for every packaged application asset"
         )
     rewritten = document.encode("utf-8")
-    if counts == [1, 1]:
+    if counts == bound_counts:
         validate_index_asset_versions(
             rewritten,
             styles_raw=styles_raw,
             app_raw=app_raw,
+            operating_contract_raw=operating_contract_raw,
         )
     return rewritten
 
@@ -140,6 +150,7 @@ def validate_index_asset_versions(
     *,
     styles_raw: bytes,
     app_raw: bytes,
+    operating_contract_raw: bytes | None = None,
 ) -> None:
     """Reject a packaged shell whose cache keys are manual or stale."""
 
@@ -147,10 +158,17 @@ def validate_index_asset_versions(
         document = index_raw.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise PublicContractError("index.html must be valid UTF-8") from exc
-    for attribute, filename, raw in (
+    assets: tuple[tuple[str, str, bytes], ...] = (
         ("href", "styles.css", styles_raw),
         ("src", "app.js", app_raw),
-    ):
+    )
+    if operating_contract_raw is not None:
+        assets = (
+            ("href", "styles.css", styles_raw),
+            ("src", "operating-contract.generated.js", operating_contract_raw),
+            ("src", "app.js", app_raw),
+        )
+    for attribute, filename, raw in assets:
         expected = _sha256(raw)
         pattern = _asset_reference_pattern(attribute=attribute, filename=filename)
         matches = list(pattern.finditer(document))

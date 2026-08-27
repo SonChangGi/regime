@@ -366,6 +366,26 @@ def test_artifact_builder_uses_selection_only_and_marks_demo_synthetic(
         validate_selection_family_payload_binding(document, payload)
 
 
+def test_live_forecast_clock_cannot_relabel_historical_selection_as_operational(
+    tmp_path: Path,
+) -> None:
+    artifacts = tmp_path / "artifacts"
+    payload = _artifact_fixture(artifacts)
+    payload["meta"]["mode"] = "live"
+    payload["forecast"] = {
+        "evidence_track": "operational_oos",
+        "forecast_evidence_track": "operational_oos",
+    }
+    payload["selection"]["selection_evidence_track"] = "reconstructed_oos"
+    payload["selection"]["evidence_status"] = "historical_reconstructed_oos"
+
+    document = build_selection_family_audit_from_artifacts(payload, artifacts)
+
+    assert document["evidence_track"] == "reconstructed_oos"
+    assert document["evidence_status"] == "historical_reconstructed_oos"
+    validate_selection_family_payload_binding(document, payload)
+
+
 def test_artifact_builder_rejects_unsupported_split_and_manifest_drift(
     tmp_path: Path,
 ) -> None:
@@ -466,6 +486,10 @@ def test_generation_manifest_binds_selection_family_and_rejects_foreign_generati
     label_path = project / "config" / "label-spec.json"
     label_path.parent.mkdir(parents=True)
     label_path.write_text('{"version":"market-causal-3state-v1"}\n')
+    (project / "requirements-ci.lock").write_text(
+        "test-runtime-lock\n",
+        encoding="utf-8",
+    )
     sidecar = build_selection_family_audit_from_artifacts(payload, artifacts)
     sidecar_path.write_text(json.dumps(sidecar), encoding="utf-8")
     monkeypatch.setattr(integrity, "project_root", lambda: project)

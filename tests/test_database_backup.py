@@ -152,7 +152,7 @@ def test_corrupt_backup_is_not_listed_or_restorable(tmp_path: Path) -> None:
     assert generation.path.exists()
 
 
-def test_rotation_keeps_latest_three_valid_generations_and_source(tmp_path: Path) -> None:
+def test_retention_target_never_deletes_valid_generations_or_source(tmp_path: Path) -> None:
     source = _snapshot_database(tmp_path / "source.sqlite3", observation_count=1)
     backup_root = tmp_path / "backups"
     start = datetime(2026, 8, 20, tzinfo=timezone.utc)
@@ -174,11 +174,13 @@ def test_rotation_keeps_latest_three_valid_generations_and_source(tmp_path: Path
 
     listed = list_database_backups(backup_root)
     assert [item.generation_id for item in listed] == [
-        item.generation_id for item in reversed(created[-3:])
+        item.generation_id for item in reversed(created)
     ]
-    assert not created[0].path.exists()
-    assert not created[1].path.exists()
-    assert all(item.path.exists() for item in created[-3:])
+    assert all(item.path.exists() for item in created)
+    assert all(
+        item.manifest["recovery_policy"]["automatic_deletion"] is False
+        for item in created
+    )
     assert source.exists()
     assert _count(source, "observations") == 6
 
@@ -273,7 +275,7 @@ def test_permission_drift_is_preserved_without_consuming_retention_slot(
     ]
 
 
-def test_rotation_prefers_distinct_days_over_same_day_retries(
+def test_retention_target_preserves_same_day_retries_and_distinct_days(
     tmp_path: Path,
 ) -> None:
     source = _snapshot_database(tmp_path / "source.sqlite3")
@@ -302,7 +304,7 @@ def test_rotation_prefers_distinct_days_over_same_day_retries(
     assert listed_ids == {
         older[0].generation_id,
         older[1].generation_id,
-        same_day[-1].generation_id,
+        *(item.generation_id for item in same_day),
     }
 
 

@@ -1,0 +1,29 @@
+{
+  "schema_version": "regime-label-sensitivity-grid/1",
+  "status": "preregistered",
+  "control": {
+    "spec_id": "v1_spy_hysteresis",
+    "spec_version": "market-causal-3state-v1",
+    "automatic_replacement": false
+  },
+  "grid": {
+    "trend_window_weeks": [8, 13, 26],
+    "stress_window_weeks": [4, 8, 13],
+    "entry_quantile": [0.2, 0.25, 0.3],
+    "exit_quantile": [0.4, 0.5, 0.6],
+    "hysteresis_minimum_weeks": [1, 2, 4]
+  },
+  "evaluation": {
+    "evidence_track": "reconstructed_oos",
+    "split": "selection_only",
+    "required_metrics": [
+      "state_occupancy",
+      "episode_count",
+      "weekly_flip_rate",
+      "transition_jaccard",
+      "forward_return_separation",
+      "model_rank_robustness"
+    ],
+    "promotion_effect": "none_without_independent_review"
+  }
+}

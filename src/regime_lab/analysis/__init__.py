@@ -143,6 +143,7 @@ from .fx_ablation import (
     fx_ablation_variants,
 )
 from .outcomes import ConditionalOutcomeResult, build_conditional_asset_statistics
+from .decision_shadow import build_decision_shadow, load_decision_shadow_spec
 
 __all__ = [
     "STATE_ORDER",
@@ -273,6 +274,8 @@ __all__ = [
     "FX_VARIANT_ORDER",
     "align_fx_features_to_cutoffs",
     "build_conditional_asset_statistics",
+    "build_decision_shadow",
+    "load_decision_shadow_spec",
     "build_fx_features",
     "duration_context",
     "first_departure_targets",

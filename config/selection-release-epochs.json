@@ -1,0 +1,31 @@
+{
+  "schema_version": "regime-selection-release-epoch-registry/1",
+  "registry_mode": "append_only",
+  "epochs": [
+    {
+      "epoch_id": "reviewed-20260825-v1",
+      "opened_at": "2026-08-25T00:00:00+09:00",
+      "status": "closed_legacy",
+      "candidate_manifest_sha256": "98359e1c6c245b46bbdb91d5e46ee23de04ed083aaf7c561ef4e4b2582662052",
+      "within_epoch_method": "holm_step_down_plus_model_confidence_set",
+      "cumulative_multiplicity_status": "legacy_not_alpha_spent"
+    },
+    {
+      "epoch_id": "reviewed-20260826-v2",
+      "opened_at": "2026-08-26T00:00:00+09:00",
+      "status": "closed_legacy",
+      "candidate_manifest_sha256": "c167514c2f5daa8353dc3a2ba951f7a8cc0aca16076ad78c3b77e611258093ca",
+      "within_epoch_method": "holm_step_down_plus_model_confidence_set",
+      "cumulative_multiplicity_status": "legacy_not_alpha_spent"
+    }
+  ],
+  "future_epoch_policy": {
+    "status": "required_before_new_candidate_evaluation",
+    "familywise_alpha_total": 0.05,
+    "spending_rule": "geometric_half_remaining_alpha",
+    "within_epoch_method": "holm_step_down",
+    "indistinguishable_set_method": "model_confidence_set",
+    "grandfathered_epochs_do_not_consume_claimed_alpha": true,
+    "automatic_promotion_when_registry_missing": false
+  }
+}

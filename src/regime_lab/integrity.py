@@ -15,6 +15,11 @@ from regime_lab.artifact_inventory import (
     verify_artifact_inventory,
 )
 from regime_lab.config import project_root
+from regime_lab.runtime_fingerprint import (
+    RuntimeFingerprintError,
+    build_runtime_fingerprint,
+    validate_runtime_fingerprint,
+)
 
 
 CANONICAL_JSON_SHA256_V1 = "canonical_json_sha256_v1"
@@ -495,6 +500,7 @@ def build_generation_manifest(
             "spec_sha256": label_spec_sha256,
         },
         "execution_spec": {"sha256": execution_sha256},
+        "runtime_fingerprint": build_runtime_fingerprint(project_root()),
     }
 
 
@@ -547,15 +553,17 @@ def validate_generation_manifest(
         "execution_spec",
     }
     current_fields = {*legacy_fields, "selection_family_sidecar"}
+    current_runtime_fields = {*current_fields, "runtime_fingerprint"}
     schema_version = manifest.get("schema_version")
-    expected_fields = (
-        legacy_fields
+    allowed_fields = (
+        (legacy_fields,)
         if schema_version == LEGACY_GENERATION_MANIFEST_SCHEMA_VERSION
-        else current_fields
+        else (current_fields, current_runtime_fields)
     )
-    if set(manifest) != expected_fields:
+    if set(manifest) not in allowed_fields:
         raise IntegrityError(
-            f"generation manifest fields must be exactly {sorted(expected_fields)}"
+            "generation manifest fields do not match a supported schema: "
+            f"{sorted(manifest)}"
         )
     if schema_version not in {
         LEGACY_GENERATION_MANIFEST_SCHEMA_VERSION,
@@ -863,6 +871,22 @@ def validate_generation_manifest(
     if execution_parameters.get("sha256") != execution_sha256:
         raise IntegrityError("execution spec hash differs from payload")
 
+    runtime_fingerprint: dict[str, Any] | None = None
+    raw_runtime_fingerprint = manifest.get("runtime_fingerprint")
+    if raw_runtime_fingerprint is not None:
+        runtime_fingerprint = dict(
+            _object(
+                raw_runtime_fingerprint,
+                context="generation manifest.runtime_fingerprint",
+            )
+        )
+        try:
+            validate_runtime_fingerprint(runtime_fingerprint)
+        except RuntimeFingerprintError as exc:
+            raise IntegrityError(
+                f"generation runtime fingerprint is invalid: {exc}"
+            ) from exc
+
     lifecycle = validate_lifecycle_consistency(payload)
     return {
         "ok": True,
@@ -888,6 +912,7 @@ def validate_generation_manifest(
             "registry_verified": label_registry_verified,
         },
         "execution_spec": dict(execution_spec),
+        "runtime_fingerprint": runtime_fingerprint,
         "lifecycle": lifecycle,
     }
 

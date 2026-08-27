@@ -112,6 +112,19 @@ DIRECTIONAL_FORECAST_COLUMNS: tuple[str, ...] = (
     "fallback_reason",
 )
 
+DECISION_USEFULNESS_STATISTICS_COLUMNS: tuple[str, ...] = (
+    "unconditional_benchmark_method",
+    "unconditional_benchmark_n",
+    "unconditional_benchmark_mean_return",
+    "excess_mean_return",
+    "episode_equal_mean_return",
+    "episode_equal_excess_return",
+    "episode_bootstrap_method",
+    "episode_bootstrap_resamples",
+    "episode_bootstrap_seed",
+    "episode_equal_mean_return_ci95_lower",
+    "episode_equal_mean_return_ci95_upper",
+)
 CONDITIONAL_STATISTICS_COLUMNS: tuple[str, ...] = (
     "state",
     "asset",
@@ -129,12 +142,18 @@ CONDITIONAL_STATISTICS_COLUMNS: tuple[str, ...] = (
     "bootstrap_block_weeks",
     "bootstrap_resamples",
     "bootstrap_seed",
+    *DECISION_USEFULNESS_STATISTICS_COLUMNS,
     *POINT_METRICS,
     *(
         field
         for metric in POINT_METRICS
         for field in (f"{metric}_ci95_lower", f"{metric}_ci95_upper")
     ),
+)
+LEGACY_CONDITIONAL_STATISTICS_COLUMNS: tuple[str, ...] = tuple(
+    column
+    for column in CONDITIONAL_STATISTICS_COLUMNS
+    if column not in DECISION_USEFULNESS_STATISTICS_COLUMNS
 )
 MODEL_CONDITIONED_OUTCOME_COLUMNS: tuple[str, ...] = (
     "conditioning_model",
@@ -526,7 +545,14 @@ def verify_staged_v5_research_artifacts(
             raise RuntimeError(
                 f"staged v5 research artifact is not valid UTF-8 CSV: {spec.path}"
             ) from exc
-        if header != spec.columns:
+        allowed_headers = {spec.columns}
+        if key == "conditional_asset_statistics":
+            allowed_headers.add(LEGACY_CONDITIONAL_STATISTICS_COLUMNS)
+        elif key == "model_conditioned_asset_statistics":
+            allowed_headers.add(
+                ("conditioning_model", *LEGACY_CONDITIONAL_STATISTICS_COLUMNS)
+            )
+        if header not in allowed_headers:
             raise RuntimeError(
                 f"staged v5 research artifact header mismatch: {spec.path}"
             )
@@ -535,7 +561,7 @@ def verify_staged_v5_research_artifacts(
         try:
             for row in reader:
                 actual_rows += 1
-                if len(row) != len(spec.columns):
+                if len(row) != len(header):
                     raise RuntimeError(
                         f"staged v5 research artifact row width mismatch: {spec.path}"
                     )
@@ -656,6 +682,8 @@ def verify_staged_v5_core_artifacts(
 
 __all__ = [
     "CONDITIONAL_STATISTICS_COLUMNS",
+    "DECISION_USEFULNESS_STATISTICS_COLUMNS",
+    "LEGACY_CONDITIONAL_STATISTICS_COLUMNS",
     "DIRECTIONAL_FORECAST_COLUMNS",
     "DIRECTIONAL_LEADERBOARD_COLUMNS",
     "DIRECTIONAL_OOS_COLUMNS",

@@ -412,7 +412,7 @@ def test_manifest_schema_corruption_and_identity_drift_fail_closed(tmp_path: Pat
         WalkForwardCheckpoint.open(root, identity)
 
 
-def test_versioned_open_rolls_appended_week_and_preserves_legacy_bytes(
+def test_versioned_open_reuses_matching_origin_and_preserves_prior_bytes(
     tmp_path: Path,
 ) -> None:
     features, states = _inputs()
@@ -442,13 +442,51 @@ def test_versioned_open_rolls_appended_week_and_preserves_legacy_bytes(
     assert rolled.root == (
         root / "runs" / appended_identity.run_signature
     ).resolve()
-    assert rolled.load_completed_origins() == ()
+    assert [
+        record.origin.training_slice_sha256
+        for record in rolled.load_completed_origins()
+    ] == [identity.origins[0].training_slice_sha256]
     assert (root / "manifest.json").read_bytes() == legacy_manifest_bytes
     assert legacy_record.read_bytes() == legacy_record_bytes
     resumed_legacy = WalkForwardCheckpoint.open_versioned(root, identity)
     assert resumed_legacy.root == root.resolve()
     assert resumed_legacy.load_origin(1) is not None
     assert (rolled.root.stat().st_mode & 0o077) == 0
+
+
+def test_versioned_open_refits_origins_affected_by_historical_revision(
+    tmp_path: Path,
+) -> None:
+    features, states = _inputs()
+    parameters = _parameters(models=("majority", "ridge_logistic"))
+    root = tmp_path / "v5-checkpoint"
+    first_identity = BenchmarkCheckpointIdentity.build(
+        features,
+        states,
+        parameters,
+        source_fingerprint_sha256="a" * 64,
+    )
+    first = WalkForwardCheckpoint.open_versioned(root, first_identity)
+    for sequence in range(1, len(first_identity.origins) + 1):
+        rows, split = _rows(first_identity, sequence)
+        first.save_origin(sequence, rows, split)
+
+    revised = features.copy()
+    revised.iloc[0, 0] += 0.25
+    revised_identity = BenchmarkCheckpointIdentity.build(
+        revised,
+        states,
+        parameters,
+        source_fingerprint_sha256="a" * 64,
+    )
+    rolled = WalkForwardCheckpoint.open_versioned(root, revised_identity)
+
+    assert rolled.load_completed_origins() == ()
+    assert {
+        origin.training_slice_sha256 for origin in first_identity.origins
+    }.isdisjoint(
+        {origin.training_slice_sha256 for origin in revised_identity.origins}
+    )
 
 
 @pytest.mark.parametrize("with_origins", [False, True])
@@ -794,6 +832,17 @@ def test_appended_week_versioned_benchmark_is_exact_and_resumes_child(
         root,
         appended_identity,
     )
+    reused_hashes = {
+        record.origin.training_slice_sha256
+        for record in appended_checkpoint.load_completed_origins()
+    }
+    expected_reused_hashes = {
+        origin.training_slice_sha256 for origin in first_identity.origins
+    }.intersection(
+        {origin.training_slice_sha256 for origin in appended_identity.origins}
+    )
+    assert reused_hashes == expected_reused_hashes
+    assert reused_hashes
     expected = run_benchmark(appended_features, appended_states, **arguments)
     actual = run_benchmark(
         appended_features,

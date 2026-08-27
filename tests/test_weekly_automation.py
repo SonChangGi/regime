@@ -15,6 +15,8 @@ import pytest
 
 from regime_lab import automation
 from regime_lab import cli
+from regime_lab.dashboard_split import build_dashboard_split
+from regime_lab.web_contract import render_browser_contract_javascript
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -42,6 +44,10 @@ def _settings(tmp_path: Path, *, root: Path | None = None) -> automation.Automat
         )
         (config_directory / "provider_rights.json").write_text(
             json.dumps({"schema_version": 1, "providers": {}}),
+            encoding="utf-8",
+        )
+        (selected_root / "requirements-ci.lock").write_text(
+            "locked-test-runtime\n",
             encoding="utf-8",
         )
     return automation.AutomationSettings(
@@ -114,6 +120,8 @@ def test_status_separates_health_check_from_full_pipeline_success(
     assert checked["last_public_verification_at"] is not None
     assert checked["last_full_success_at"] is None
     assert checked["last_success_at"] is None
+    assert checked["publication_current"] is True
+    assert checked["end_to_end_proven"] is False
 
     automation.write_json_atomic(settings.status_path, checked)
     full = automation._status_document(
@@ -126,6 +134,151 @@ def test_status_separates_health_check_from_full_pipeline_success(
     assert full["last_full_success_at"] is not None
     assert full["last_full_success_target"] == target.isoformat()
     assert full["last_success_at"] == full["last_full_success_at"]
+    assert full["publication_current"] is True
+    assert full["end_to_end_proven"] is True
+
+
+def test_checkpoint_progress_reports_completed_total_and_next_origin(
+    tmp_path: Path,
+) -> None:
+    settings = _settings(tmp_path)
+    checkpoint = settings.checkpoint_directory
+    (checkpoint / "origins").mkdir(parents=True)
+    (checkpoint / "manifest.json").write_text(
+        json.dumps(
+            {
+                "identity": {
+                    "origins": [
+                        {"sequence": 1, "origin_date": "2026-08-14"},
+                        {"sequence": 2, "origin_date": "2026-08-21"},
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    (checkpoint / "origins/000001.json").write_text("{}", encoding="utf-8")
+
+    assert automation._walkforward_checkpoint_progress(settings) == {
+        "completed_origins": 1,
+        "total_origins": 2,
+        "current_origin": "2026-08-21",
+        "current_model": "base_model_suite",
+    }
+
+
+def test_model_build_watchdog_fails_when_no_checkpoint_progress(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = replace(
+        _settings(tmp_path),
+        no_progress_timeout=timedelta(seconds=1),
+    )
+    monkeypatch.setattr(
+        automation,
+        "_load_collection_report",
+        lambda *_args, **_kwargs: {"ready_for_training": True},
+    )
+    monotonic = iter((0.0, 2.0))
+    monkeypatch.setattr(automation.time, "monotonic", lambda: next(monotonic))
+
+    def stalled_run(*_args, heartbeat=None, **_kwargs) -> bytes:
+        assert heartbeat is not None
+        heartbeat()
+        return b""
+
+    monkeypatch.setattr(automation, "_run", stalled_run)
+
+    with pytest.raises(automation.AutomationError, match="no checkpoint progress"):
+        automation._build_candidate(
+            settings,
+            target=LIVE_TARGET,
+            context=CANDIDATE_CONTEXT,
+            started_at=LIVE_TARGET,
+        )
+
+
+def test_runtime_authorization_drift_blocks_before_quota_or_build(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings(tmp_path)
+    automation._write_local_authorization(
+        settings,
+        alfred_rights_confirmed=True,
+        personal_noncommercial_publication_acknowledged=True,
+        now=LIVE_TARGET,
+    )
+    (settings.root / "requirements-ci.lock").write_text(
+        "changed-runtime-lock\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(automation, "_git_preflight", lambda _settings: _remote())
+    monkeypatch.setattr(
+        automation,
+        "_alpha_quota_preflight",
+        lambda *_args, **_kwargs: pytest.fail("quota must not be mutated"),
+    )
+    monkeypatch.setattr(
+        automation,
+        "_build_candidate",
+        lambda *_args, **_kwargs: pytest.fail("build must not run"),
+    )
+
+    with pytest.raises(automation.AutomationError, match="runtime differs"):
+        automation.run_weekly_release(
+            settings,
+            now=datetime.fromisoformat("2026-08-24T00:00:00+00:00"),
+        )
+
+
+def test_candidate_review_and_public_readback_advance_build_registry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings(tmp_path)
+    generation_id = "generation-v2"
+    run_id = "20260826T120000Z-live-build"
+    for status in ("started", "collecting", "analyzing"):
+        automation.append_run_event(
+            settings.run_registry_path,
+            run_id=run_id,
+            status=status,
+        )
+    automation.append_run_event(
+        settings.run_registry_path,
+        run_id=run_id,
+        status="completed",
+        generation_id=generation_id,
+    )
+    candidate = b'{"meta":{"generation_id":"generation-v2"}}\n'
+    monkeypatch.setattr(
+        automation,
+        "validate_automation_candidate",
+        lambda *_args, **_kwargs: {"meta": {"generation_id": generation_id}},
+    )
+
+    automation._cache_candidate(
+        settings,
+        candidate,
+        target=LIVE_TARGET,
+        context=CANDIDATE_CONTEXT,
+    )
+    assert automation.current_run_status(settings.run_registry_path, run_id) == (
+        "publication_reviewed"
+    )
+
+    automation._record_candidate_published(
+        settings,
+        candidate=candidate,
+        generation_manifest=None,
+        commit_sha="a" * 40,
+        workflow_url="https://example.invalid/actions/1",
+    )
+    assert automation.current_run_status(settings.run_registry_path, run_id) == (
+        "published"
+    )
 
 
 def test_status_records_each_completed_pipeline_stage(tmp_path: Path) -> None:
@@ -351,9 +504,22 @@ def test_candidate_context_is_content_based_not_inode_or_mtime(tmp_path: Path) -
     subprocess.run(["git", "init", str(root)], check=True, capture_output=True)
     tracked = root / "tracked.txt"
     tracked.write_text("safe\n", encoding="utf-8")
+    (root / "requirements-ci.lock").write_text(
+        "locked-test-runtime\n",
+        encoding="utf-8",
+    )
     (root / "config/series.json").write_text("{}\n", encoding="utf-8")
     (root / "config/automation.json").write_text("{}\n", encoding="utf-8")
-    _git(["add", "tracked.txt", "config/series.json", "config/automation.json"], root)
+    _git(
+        [
+            "add",
+            "tracked.txt",
+            "requirements-ci.lock",
+            "config/series.json",
+            "config/automation.json",
+        ],
+        root,
+    )
     _git(
         [
             "-c",
@@ -508,9 +674,11 @@ def test_public_readback_requires_exact_payload_manifest_and_consumer(
 ) -> None:
     settings = _settings(tmp_path)
     digest = hashlib.sha256(LIVE_PAYLOAD).hexdigest()
+    operating_contract = render_browser_contract_javascript()
     assets = {
         "index.html": b"<title>US Market Regime Lab</title><script src='./app.js'></script>",
         "styles.css": b"body { color: black; }\n",
+        "operating-contract.generated.js": operating_contract,
         "app.js": b"console.log('regime');\n",
     }
     manifest = json.dumps(
@@ -615,23 +783,29 @@ def test_public_readback_expects_packaged_content_hash_index(tmp_path: Path) -> 
     web.mkdir()
     styles = b"body { color: black; }\n"
     app = b"console.log('regime');\n"
+    operating_contract = render_browser_contract_javascript()
     source_index = (
         b'<title>US Market Regime Lab</title>'
         b'<link rel="stylesheet" href="./styles.css?v=manual">'
+        b'<script src="./operating-contract.generated.js?v=manual"></script>'
         b'<script src="./app.js?v=manual"></script>'
     )
     (web / "index.html").write_bytes(source_index)
     (web / "styles.css").write_bytes(styles)
+    (web / "operating-contract.generated.js").write_bytes(operating_contract)
     (web / "app.js").write_bytes(app)
     packaged_index = (
         '<title>US Market Regime Lab</title>'
         '<link rel="stylesheet" '
         f'href="./styles.css?v={hashlib.sha256(styles).hexdigest()}">'
+        '<script src="./operating-contract.generated.js?v='
+        f'{hashlib.sha256(operating_contract).hexdigest()}"></script>'
         f'<script src="./app.js?v={hashlib.sha256(app).hexdigest()}"></script>'
     ).encode()
     public_assets = {
         "index.html": packaged_index,
         "styles.css": styles,
+        "operating-contract.generated.js": operating_contract,
         "app.js": app,
     }
     payload_sha256 = hashlib.sha256(LIVE_PAYLOAD).hexdigest()
@@ -673,6 +847,85 @@ def test_public_readback_expects_packaged_content_hash_index(tmp_path: Path) -> 
     )
 
 
+def test_v5_public_readback_requires_hash_bound_core_and_research_split(
+    tmp_path: Path,
+) -> None:
+    settings = replace(_settings(tmp_path), contract="v5")
+    live_root = ROOT / "publication/live"
+    payload = (live_root / "regime-results.json").read_bytes()
+    comparison = (live_root / "v5-vs-v4-comparison.json").read_bytes()
+    generation = (live_root / "generation-manifest.json").read_bytes()
+    selection = (live_root / "selection-family-audit.json").read_bytes()
+    core, research = build_dashboard_split(json.loads(payload), payload_raw=payload)
+    operating_contract = render_browser_contract_javascript()
+    assets = {
+        "index.html": b"<title>US Market Regime Lab</title><script src='./app.js'></script>",
+        "styles.css": b"body {}\n",
+        "operating-contract.generated.js": operating_contract,
+        "app.js": b"console.log('regime');\n",
+    }
+    published = {
+        automation.PUBLIC_PAYLOAD_PATH: payload,
+        automation.PUBLIC_CORE_PAYLOAD_PATH: core,
+        automation.PUBLIC_RESEARCH_SIDECAR_PATH: research,
+        automation.PUBLIC_COMPARISON_PATH: comparison,
+        automation.PUBLIC_GENERATION_MANIFEST_PATH: generation,
+        automation.PUBLIC_SELECTION_FAMILY_PATH: selection,
+        **assets,
+    }
+    manifest = json.dumps(
+        {
+            "payload_data_as_of": json.loads(payload)["meta"]["data_as_of"],
+            "files": {
+                path: {
+                    "sha256": hashlib.sha256(raw).hexdigest(),
+                    "bytes": len(raw),
+                }
+                for path, raw in published.items()
+            },
+        }
+    ).encode()
+
+    def fetch(url: str) -> bytes:
+        if url.endswith(automation.PUBLIC_MANIFEST_PATH):
+            return manifest
+        for path, raw in published.items():
+            if url.endswith(path):
+                return raw
+        raise AssertionError(url)
+
+    automation.verify_public_readback(
+        settings,
+        expected_payload=payload,
+        expected_comparison=comparison,
+        expected_generation_manifest=generation,
+        expected_selection_family=selection,
+        expected_assets=assets,
+        fetch=fetch,
+    )
+
+    tampered = {**published, automation.PUBLIC_RESEARCH_SIDECAR_PATH: research + b" "}
+
+    def tampered_fetch(url: str) -> bytes:
+        if url.endswith(automation.PUBLIC_MANIFEST_PATH):
+            return manifest
+        for path, raw in tampered.items():
+            if url.endswith(path):
+                return raw
+        raise AssertionError(url)
+
+    with pytest.raises(automation.AutomationError, match="research.*expected generation"):
+        automation.verify_public_readback(
+            settings,
+            expected_payload=payload,
+            expected_comparison=comparison,
+            expected_generation_manifest=generation,
+            expected_selection_family=selection,
+            expected_assets=assets,
+            fetch=tampered_fetch,
+        )
+
+
 def test_expected_static_assets_reject_one_sided_application_shell(
     tmp_path: Path,
 ) -> None:
@@ -684,11 +937,14 @@ def test_expected_static_assets_reject_one_sided_application_shell(
         b'<link rel="stylesheet" href="./styles.css?v=manual">'
     )
     (web / "styles.css").write_bytes(b"body {}\n")
+    (web / "operating-contract.generated.js").write_bytes(
+        render_browser_contract_javascript()
+    )
     (web / "app.js").write_bytes(b"console.log('regime');\n")
 
     with pytest.raises(
         automation.AutomationError,
-        match="exactly one styles.css and one app.js reference",
+        match="exactly one reference for every packaged application asset",
     ):
         automation._expected_static_assets(settings)
 
@@ -1027,8 +1283,9 @@ else:
                 ],
                 "reviewed_at": reviewed_at.isoformat(),
                 "review_after": (reviewed_at + timedelta(days=180)).isoformat(),
-                "contains_credentials": False,
-            }
+                    "contains_credentials": False,
+                    "runtime_fingerprint": automation.build_runtime_fingerprint(ROOT),
+                }
         ),
         encoding="utf-8",
     )

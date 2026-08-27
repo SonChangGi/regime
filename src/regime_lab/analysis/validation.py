@@ -368,6 +368,8 @@ def evaluate_predictions(predictions: pd.DataFrame) -> pd.DataFrame:
 
     rows: list[dict[str, object]] = []
     for model, group in predictions.groupby("model", sort=False):
+        if "origin_date" in group:
+            group = group.sort_values("origin_date", kind="stable")
         actual = group["actual"].astype(str).to_numpy()
         probability = group[list(PROBABILITY_COLUMNS)].to_numpy(dtype=float)
         probability = np.clip(probability, 1e-9, 1.0)
@@ -387,6 +389,33 @@ def evaluate_predictions(predictions: pd.DataFrame) -> pd.DataFrame:
             # Backward-compatible evaluation for externally supplied tables.
             transition_actual = transition_state_actual
             transition_predicted = transition_state_predicted
+        transition_event_count = int(np.count_nonzero(transition_actual))
+        on_time_departure_count = int(
+            np.count_nonzero(transition_actual & transition_predicted)
+        )
+        false_alarm_count = int(
+            np.count_nonzero(~transition_actual & transition_predicted)
+        )
+        exposure_years = float(len(group) / 52.1775)
+
+        # Detection delay is a destination-recognition diagnostic.  It is
+        # deliberately separate from on-time departure recall: after a true
+        # departure, scan only until the next true departure and count weekly
+        # forecast steps until the new destination is first predicted.
+        detected_delays: list[int] = []
+        event_positions = np.flatnonzero(transition_actual)
+        for event_number, event_position_raw in enumerate(event_positions):
+            event_position = int(event_position_raw)
+            next_event_position = (
+                int(event_positions[event_number + 1])
+                if event_number + 1 < len(event_positions)
+                else len(group)
+            )
+            destination = str(actual[event_position])
+            for candidate_position in range(event_position, next_event_position):
+                if str(predicted[candidate_position]) == destination:
+                    detected_delays.append(candidate_position - event_position)
+                    break
         positions = {state: index for index, state in enumerate(STATE_ORDER)}
         actual_probability = np.asarray(
             [probability[row, positions[state]] for row, state in enumerate(actual)]
@@ -426,6 +455,21 @@ def evaluate_predictions(predictions: pd.DataFrame) -> pd.DataFrame:
                         transition_predicted,
                         zero_division=0,
                     )
+                ),
+                "transition_event_count": transition_event_count,
+                "on_time_departure_count": on_time_departure_count,
+                "false_alarm_count": false_alarm_count,
+                "exposure_years": exposure_years,
+                "false_alarms_per_year": (
+                    float(false_alarm_count / exposure_years)
+                    if exposure_years > 0.0
+                    else float("nan")
+                ),
+                "detected_event_count": int(len(detected_delays)),
+                "mean_detection_delay_forecast_weeks": (
+                    float(np.mean(detected_delays))
+                    if detected_delays
+                    else float("nan")
                 ),
                 "transition_state_precision": float(
                     precision_score(

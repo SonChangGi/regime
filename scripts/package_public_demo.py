@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Create a fail-closed static dashboard package.
 
-Only the three static application assets, one explicitly selected dashboard
-payload, and the required derived-only V5 comparison sidecar are copied. Live
+Only the allowlisted static application assets, one explicitly selected dashboard
+payload, and the required derived-only V5 sidecars are copied. Live
 publication is limited to the user's personal,
 non-commercial *derived result* snapshot: raw observations, databases, model
 artifacts, credentials, and arbitrary files are never copied.
@@ -50,9 +50,29 @@ from regime_lab.publication_contract import (
     validate_v5_comparison_sidecar,
 )
 from regime_lab.contract_v5 import V5_PUBLICATION_STATUS
+from regime_lab.dashboard_split import (
+    CORE_PAYLOAD_DESTINATION,
+    CORE_PAYLOAD_SCHEMA_VERSION,
+    MAX_CORE_PAYLOAD_BYTES,
+    MAX_CORE_TO_SOURCE_RATIO,
+    RESEARCH_SIDECAR_DESTINATION,
+    RESEARCH_SIDECAR_SCHEMA_VERSION,
+    build_dashboard_split,
+    validate_dashboard_split,
+)
+from regime_lab.web_contract import (
+    BrowserContractError,
+    validate_generated_browser_contract,
+)
 
 
-STATIC_ALLOWLIST = ("index.html", "styles.css", "app.js")
+GENERATED_BROWSER_CONTRACT = "operating-contract.generated.js"
+STATIC_ALLOWLIST = (
+    "index.html",
+    "styles.css",
+    GENERATED_BROWSER_CONTRACT,
+    "app.js",
+)
 PAYLOAD_DESTINATION = "data/regime-results.json"
 V5_COMPARISON_FILENAME = "v5-vs-v4-comparison.json"
 V5_COMPARISON_DESTINATION = f"data/{V5_COMPARISON_FILENAME}"
@@ -294,10 +314,17 @@ def package_public_dashboard(
             web_root / relative_path,
             label=f"allowlisted web asset {relative_path}",
         )
+    try:
+        generated_contract_raw = validate_generated_browser_contract(
+            web_root / GENERATED_BROWSER_CONTRACT
+        )
+    except BrowserContractError as exc:
+        raise PackagingError(str(exc)) from exc
     files["index.html"] = rewrite_index_asset_versions(
         files["index.html"],
         styles_raw=files["styles.css"],
         app_raw=files["app.js"],
+        operating_contract_raw=generated_contract_raw,
     )
 
     payload_raw = _read_regular_file(payload_path, label="dashboard payload")
@@ -475,6 +502,12 @@ def package_public_dashboard(
                 "selection-family path requires a bound generation manifest"
             )
         files[V5_COMPARISON_DESTINATION] = comparison_raw
+        core_raw, research_raw = build_dashboard_split(
+            payload,
+            payload_raw=payload_raw,
+        )
+        files[CORE_PAYLOAD_DESTINATION] = core_raw
+        files[RESEARCH_SIDECAR_DESTINATION] = research_raw
 
     is_live_derived = publication_mode == PUBLICATION_MODE_LIVE_DERIVED
     source_ids = sorted(
@@ -534,6 +567,21 @@ def package_public_dashboard(
             rights_acknowledged=rights_acknowledged,
         )
         if result_version == V5_RESULT_VERSION:
+            staged_core_raw = _read_regular_file(
+                staging / CORE_PAYLOAD_DESTINATION,
+                label="staged dashboard core envelope",
+            )
+            staged_research_raw = _read_regular_file(
+                staging / RESEARCH_SIDECAR_DESTINATION,
+                label="staged dashboard research sidecar",
+            )
+            validate_dashboard_split(
+                _decode_payload(staged_core_raw),
+                _decode_payload(staged_research_raw),
+                payload=staged_payload,
+                payload_raw=staged_payload_raw,
+                research_raw=staged_research_raw,
+            )
             staged_comparison_raw = _read_regular_file(
                 staging / V5_COMPARISON_DESTINATION,
                 label="staged V5/V4 comparison sidecar",
@@ -587,6 +635,10 @@ def package_public_dashboard(
             app_raw=_read_regular_file(
                 staging / "app.js",
                 label="staged app.js",
+            ),
+            operating_contract_raw=_read_regular_file(
+                staging / GENERATED_BROWSER_CONTRACT,
+                label="staged generated browser contract",
             ),
         )
         if output_directory.exists() or output_directory.is_symlink():

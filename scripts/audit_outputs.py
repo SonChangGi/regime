@@ -363,6 +363,30 @@ def require(condition: bool, message: str) -> None:
         raise AuditFailure(message)
 
 
+def anchored_transition_projection(
+    raw_probabilities: Mapping[str, object],
+) -> dict[str, float]:
+    """Independently reproduce the published 1w-anchored L2 projection."""
+
+    require(
+        set(raw_probabilities) == {"1w", "4w", "13w"},
+        "transition term-structure raw probability keys mismatch",
+    )
+    values = {
+        key: float(raw_probabilities[key]) for key in ("1w", "4w", "13w")
+    }
+    require(
+        all(np.isfinite(value) and 0.0 <= value <= 1.0 for value in values.values()),
+        "transition term-structure raw probabilities are invalid",
+    )
+    p1 = values["1w"]
+    p4 = max(values["4w"], p1)
+    p13 = max(values["13w"], p1)
+    if p4 > p13:
+        p4 = p13 = (p4 + p13) / 2.0
+    return {"1w": p1, "4w": p4, "13w": p13}
+
+
 def require_columns(frame: pd.DataFrame, required: set[str], name: str) -> None:
     missing = sorted(required.difference(frame.columns))
     require(not missing, f"{name} missing columns: {missing}")
@@ -3675,6 +3699,62 @@ def audit_transition_outputs(
         require(str(risk["1w"]["model"]) == main_champion, f"weekly[{index}] 1w model is not main champion")
         require(np.isclose(float(risk["1w"]["threshold"]), 0.5, atol=1e-12), f"weekly[{index}] authoritative 1w threshold must be 0.5")
         require(bool(risk["1w"]["fallback"]) == bool(week["next_week"]["fallback"]), f"weekly[{index}] authoritative 1w fallback mismatch")
+        term_structure = week.get("transition_term_structure")
+        raw_probabilities: Mapping[str, object] | None = None
+        if term_structure is not None:
+            require(
+                isinstance(term_structure, dict)
+                and set(term_structure)
+                == {
+                    "semantics",
+                    "coherence_method",
+                    "one_week_anchor",
+                    "raw_probabilities",
+                    "adjusted",
+                },
+                f"weekly[{index}] transition term-structure fields mismatch",
+            )
+            require(
+                term_structure["semantics"]
+                == "cumulative_first_departure_probability"
+                and term_structure["coherence_method"]
+                == "one_week_anchored_l2_isotonic_projection_v1"
+                and term_structure["one_week_anchor"]
+                == "official_multiclass_departure_probability",
+                f"weekly[{index}] transition term-structure identity mismatch",
+            )
+            raw_value = term_structure.get("raw_probabilities")
+            require(
+                isinstance(raw_value, dict),
+                f"weekly[{index}] transition raw probabilities missing",
+            )
+            raw_probabilities = raw_value
+            projected = anchored_transition_projection(raw_probabilities)
+            for key in ("1w", "4w", "13w"):
+                require(
+                    np.isclose(
+                        float(risk[key]["probability"]),
+                        projected[key],
+                        atol=1e-7,
+                    ),
+                    f"weekly[{index}] {key} anchored projection mismatch",
+                )
+            expected_adjusted = any(
+                not np.isclose(
+                    projected[key],
+                    float(raw_probabilities[key]),
+                    atol=1e-12,
+                )
+                for key in ("1w", "4w", "13w")
+            )
+            require(
+                term_structure.get("adjusted") is expected_adjusted,
+                f"weekly[{index}] transition adjusted flag mismatch",
+            )
+            require(
+                np.isclose(float(raw_probabilities["1w"]), canonical, atol=1e-7),
+                f"weekly[{index}] raw 1w probability mismatch",
+            )
         if origin in main_by_origin:
             main_row = main_by_origin[origin]
             require(np.isclose(canonical, 1.0 - float(main_row[f"p_{main_row['current_state']}"]), atol=1e-7), f"weekly[{index}] 1w probability does not map to main OOS champion")
@@ -3685,7 +3765,12 @@ def audit_transition_outputs(
             require(np.isclose(float(published_risk["threshold"]), float(source["threshold"]), atol=1e-7), f"weekly[{index}] {horizon}w threshold/source mismatch")
             require(str(published_risk["target_end"]) == pd.Timestamp(source["target_end"]).date().isoformat(), f"weekly[{index}] {horizon}w target/source mismatch")
             require(published_risk["model"] == source["model"], f"weekly[{index}] {horizon}w model/source mismatch")
-            require(np.isclose(float(published_risk["probability"]), float(source["p_change"]), atol=1e-7), f"weekly[{index}] {horizon}w probability/source mismatch")
+            source_probability = (
+                float(raw_probabilities[f"{horizon}w"])
+                if raw_probabilities is not None
+                else float(published_risk["probability"])
+            )
+            require(np.isclose(source_probability, float(source["p_change"]), atol=1e-7), f"weekly[{index}] {horizon}w probability/source mismatch")
             effective_fallback, effective_reason = effective_transition_fallback(source)
             require(bool(published_risk["fallback"]) == effective_fallback, f"weekly[{index}] {horizon}w effective fallback/source mismatch")
             require(str(published_risk.get("fallback_reason", "")) == effective_reason, f"weekly[{index}] {horizon}w effective fallback reason/source mismatch")
