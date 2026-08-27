@@ -308,44 +308,6 @@
     return fallback;
   }
 
-  function resultIdentity(payload) {
-    const meta = isObject(payload && payload.meta) ? payload.meta : {};
-    const model = isObject(payload && payload.model) ? payload.model : {};
-    const execution = isObject(model.execution_parameters) ? model.execution_parameters : {};
-    const mode = typeof meta.mode === "string" ? meta.mode.trim().toLowerCase() : "";
-    const rawProfile = firstValue(execution, ["profile"]) || firstValue(model, ["profile"]);
-    const normalizedProfile = typeof rawProfile === "string" ? rawProfile.trim().toLowerCase() : "";
-    const profile = ["quick", "standard", "full"].includes(normalizedProfile)
-      ? normalizedProfile.toUpperCase()
-      : null;
-
-    if (mode === "demo") {
-      return {
-        mode,
-        profile,
-        label: ["모의자료", profile, "파이프라인 검증"].filter(Boolean).join(" · "),
-      };
-    }
-    if (mode === "live") {
-      const labels = ["실데이터", profile].filter(Boolean);
-      const lifecycle = isObject(model.lifecycle) ? model.lifecycle : {};
-      const deployment = isObject(lifecycle.deployment) ? lifecycle.deployment.status : null;
-      if (meta.publication_status === V5_PUBLICATION_STATUS) {
-        labels.push("공개 운영");
-      } else if (deployment === "reviewed") {
-        labels.push("검토 완료 · 미배포");
-      } else if (model.selection_status === "selected_by_gate") {
-        labels.push("연구 후보 · 미배포");
-      }
-      return {
-        mode,
-        profile,
-        label: labels.join(" · "),
-      };
-    }
-    return { mode: "unknown", profile, label: "결과 유형 확인 필요" };
-  }
-
   function fxStatusLabel(status) {
     return FX_STATUS_LABELS[status] || "확인 필요";
   }
@@ -1117,19 +1079,10 @@
 
     const forecast = isObject(state.raw.forecast) ? state.raw.forecast : {};
     const availability = forecastAvailability(state.raw);
-    const evidenceLabel = forecast.evidence_track === "operational_oos"
-      ? "실제 운영 OOS"
-      : forecast.evidence_track === "reconstructed_oos"
-        ? "재구성 OOS"
-        : "근거 트랙 미기재";
-    const currentLabel = availability.current ? "예측 유효" : "예측기간 종료";
-    setText(dom["forecast-contract-status"], `${currentLabel} · ${evidenceLabel}`);
-    dom["forecast-contract-status"].classList.toggle("is-expired", !availability.current);
     setText(dom["forecast-origin-at"], formatDateTime(forecast.origin_at));
     setText(dom["forecast-decision-at"], forecast.decision_at ? formatDateTime(forecast.decision_at) : "발행시각 없음");
     setText(dom["forecast-target-at"], formatDateTime(forecast.target_at));
     setText(dom["forecast-remaining-horizon"], formatDurationSeconds(availability.remaining_seconds));
-    dom["forecast-expired-notice"].hidden = availability.current;
     dom["hero-results"].classList.toggle(
       "has-expired-current-forecast",
       !selectedForecastIsHistorical() && !availability.current,
@@ -3414,13 +3367,13 @@
   function initializeDom() {
     const ids = [
       "app-state", "loading-state", "error-state", "empty-state", "error-title", "error-detail", "retry-button",
-      "dashboard", "header-result-identity", "header-analysis-date", "header-data-as-of", "header-model-health", "theme-toggle",
+      "dashboard", "header-analysis-date", "header-data-as-of", "header-model-health", "theme-toggle",
       "theme-toggle-text", "dashboard-subtitle", "date-form", "analysis-date", "week-select",
       "snap-note", "previous-week", "next-week", "latest-week", "history-window",
       "hero-results", "contract-overview-grid", "label-spec-identity", "membership-definition",
       "forecast-window-section",
-      "forecast-window-card", "forecast-contract-status", "forecast-origin-at", "forecast-decision-at",
-      "forecast-target-at", "forecast-remaining-horizon", "forecast-expired-notice",
+      "forecast-window-card", "forecast-origin-at", "forecast-decision-at",
+      "forecast-target-at", "forecast-remaining-horizon",
       "current-regime-card", "current-horizon", "current-regime-symbol", "current-regime-name",
       "current-regime-confidence", "current-probabilities", "current-entropy", "next-regime-card", "next-horizon",
       "next-regime-symbol", "next-regime-name", "next-regime-confidence",
@@ -5523,25 +5476,13 @@
     return normalizeStatus(firstValue(source, ["status", "health", "quality_status"]));
   }
 
-  function sourceRightsLabel(source) {
-    const value = String(firstValue(source, ["license_class", "license", "rights", "usage_scope"]) || "")
-      .trim()
-      .toLowerCase();
-    if (value === "private_noncommercial") return "개인 · 비상업";
-    if (value.startsWith("user_confirmed")) return "사용자 확인";
-    if (value === "federal_reserve_board_public_domain_citation_requested") return "미 연준 공개 · 출처 표기";
-    if (value === "rights_unconfirmed") return "공개 미확인";
-    if (value === "license_blocked") return "이용 차단";
-    return textValue(firstValue(source, ["license_class", "license", "rights", "usage_scope"]), "미기재");
-  }
-
   function renderSources() {
     const sources = state.raw.sources || [];
     dom["source-health-body"].replaceChildren();
     if (!sources.length) {
       const row = createElement("tr");
       const cell = createElement("td", null, "소스 메타데이터가 없습니다.");
-      cell.colSpan = 5;
+      cell.colSpan = 4;
       row.append(cell);
       dom["source-health-body"].append(row);
       return;
@@ -5566,7 +5507,6 @@
         .map((value) => textValue(value))
         .join(" · ");
       row.append(createElement("td", null, coverage || "—"));
-      row.append(createElement("td", null, sourceRightsLabel(rowData)));
       dom["source-health-body"].append(row);
     }
   }
@@ -5611,7 +5551,6 @@
   function renderGlobalMetadata() {
     const meta = state.raw.meta || {};
     const dataAsOf = firstValue(meta, ["data_as_of", "dataAsOf", "cutoff_at"]);
-    renderResultIdentity();
     renderHeaderDataAsOf(dataAsOf);
     const freshness = isObject(meta.freshness) ? meta.freshness : null;
     const currentFreshness = freshness
@@ -5631,26 +5570,6 @@
     setText(dom["footer-schema-version"], firstValue(meta, ["schema_version", "schemaVersion"]) || "미기재");
     setText(dom["footer-generated-at"], formatDateTime(firstValue(meta, ["generated_at", "generatedAt"])));
     renderHeaderModelHealth();
-  }
-
-  function renderResultIdentity() {
-    const identity = resultIdentity(state.raw);
-    const element = dom["header-result-identity"];
-    const meta = isObject(state.raw && state.raw.meta) ? state.raw.meta : {};
-    const model = isObject(state.raw && state.raw.model) ? state.raw.model : {};
-    const visibleLabel = identity.mode === "demo"
-      ? "모의자료"
-      : meta.publication_status === V5_PUBLICATION_STATUS
-        ? "공개 운영"
-        : model.selection_status === "selected_by_gate"
-          ? "연구 후보"
-          : identity.mode === "live"
-            ? "실데이터"
-            : identity.label;
-    element.className = `result-identity-chip is-${identity.mode}`;
-    element.setAttribute("aria-label", identity.label);
-    element.title = identity.label;
-    setText(element, visibleLabel);
   }
 
   function renderHeaderDataAsOf(value) {
@@ -5716,8 +5635,6 @@
 
   async function loadData() {
     showAppState("loading");
-    dom["header-result-identity"].className = "result-identity-chip is-loading";
-    setText(dom["header-result-identity"], "결과 상태 불러오는 중");
     setText(dom["header-analysis-date"], "불러오는 중");
     setText(dom["header-data-as-of"], "불러오는 중");
     setText(dom["header-model-health"], "불러오는 중");
@@ -5766,8 +5683,6 @@
           ? "결과 파일이 올바른 JSON이 아닙니다."
           : textValue(error && error.message, "데이터 요청 중 알 수 없는 오류가 발생했습니다.");
       showAppState("error", "국면 결과를 표시할 수 없습니다", detail);
-      dom["header-result-identity"].className = "result-identity-chip is-unknown";
-      setText(dom["header-result-identity"], "결과 유형 확인 필요");
       setText(dom["header-analysis-date"], "사용 불가");
       setText(dom["header-data-as-of"], "사용 불가");
       setText(dom["header-model-health"], "사용 불가");
@@ -5803,7 +5718,6 @@
     resolveHistoryWindow,
     championSelectionEvidence,
     validatePayload,
-    resultIdentity,
     stateMeta,
     forecastAvailability,
     forecastSurfacePolicy,

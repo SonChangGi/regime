@@ -10,8 +10,8 @@
     >
     <title>US Market Regime Lab | Quant Research</title>
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23111727'/%3E%3Cpath d='M14 43 26 31l9 8 15-20' fill='none' stroke='%2334d399' stroke-width='7' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
-    <link rel="stylesheet" href="./styles.css?v=7e814d1aaceeedef50c13b8291166544aef66588afea1ac30d6ea854b738ba03">
-    <script src="./app.js?v=644161ad4b12118571fa43957996b3155478a4fa0257317d8766a3d19a89b43a" defer></script>
+    <link rel="stylesheet" href="./styles.css?v=7db1a26770934c7d09d0a9a780828080a88a001ab8c4a778ddbf31f8595ca46c">
+    <script src="./app.js?v=f554b8de1ebd369fff858745d21cea7fe18e8c65d436f0b8b61c04533b9fe550" defer></script>
   </head>
   <body id="top">
     <a class="skip-link" href="#main-content">본문으로 건너뛰기</a>
@@ -196,7 +196,6 @@
             <article id="label-definition-card" class="definition-card card" aria-labelledby="label-definition-title">
               <div class="card-heading compact-card-heading">
                 <div>
-                  <span class="card-kicker">쉽게 보는 기준</span>
                   <h2 id="label-definition-title">국면은 이렇게 나눕니다</h2>
                 </div>
                 <span id="label-spec-identity" class="contract-chip">불러오는 중</span>
@@ -215,7 +214,6 @@
                   <dd id="membership-definition">현재 막대는 이번 주가 각 국면에 얼마나 가까운지, 다음 주 막대는 다음 주가 각 국면일 모델 확률입니다.</dd>
                 </div>
               </dl>
-              <p class="definition-helper">시장 전반의 상승 참여도, 업종, 금리, 신용, 경기 데이터는 현재 국면을 정하는 기준이 아니라 다음 주 예측을 돕는 보조 신호입니다.</p>
             </article>
           </div>
 
@@ -641,13 +639,6 @@
                   <div id="transition-risk-detail" class="research-transition-grid"></div>
                 </article>
 
-                <article class="research-evidence-block research-method-block" aria-labelledby="research-method-title">
-                  <h3 id="research-method-title">표시 기준</h3>
-                  <p class="research-evidence-copy">
-                    52주 극단값은 시장 맥락이며 예측 기여도와는 별도입니다. USD 변화의 양(+)은 달러 강세 방향입니다.
-                    자산 성과는 선택 국면 다음 주 종가 진입, USD 기준으로 계산합니다.
-                  </p>
-                </article>
               </div>
             </div>
           </details>
@@ -661,22 +652,18 @@
                 <small>Data &amp; Operations</small>
                 <strong id="research-notice-summary">데이터 · 출처 · 운영</strong>
               </span>
-              <span id="header-result-identity" class="result-identity-chip" role="status" aria-live="polite">
-                결과 상태 불러오는 중
-              </span>
             </summary>
             <div class="research-notice-body operations-body">
               <p id="source-freshness" class="operations-freshness">기준 시점 —</p>
-              <div class="table-scroll" tabindex="0" aria-label="데이터 소스 상태와 이용 범위 표">
+              <div class="table-scroll" tabindex="0" aria-label="데이터 소스 상태 표">
                 <table>
-                  <caption class="sr-only">데이터 소스의 상태와 이용 범위</caption>
+                  <caption class="sr-only">데이터 소스 상태</caption>
                   <thead>
                     <tr>
                       <th scope="col">소스</th>
                       <th scope="col">상태</th>
                       <th scope="col">가용 시점</th>
                       <th scope="col">범위 / 주기</th>
-                      <th scope="col">이용 범위</th>
                     </tr>
                   </thead>
                   <tbody id="source-health-body"></tbody>
@@ -711,7 +698,6 @@
                 <small>Forecast timing</small>
                 <strong>운영 예측 시점</strong>
               </span>
-              <span id="forecast-contract-status" class="contract-chip" role="status">불러오는 중</span>
             </summary>
             <div class="research-notice-body operations-body forecast-window-body">
               <dl class="forecast-timing" aria-label="운영 예측 시점과 남은 예측기간">
@@ -720,9 +706,6 @@
                 <div><dt>예측 대상시각</dt><dd id="forecast-target-at">—</dd></div>
                 <div><dt>남은 예측기간</dt><dd id="forecast-remaining-horizon">—</dd></div>
               </dl>
-              <p id="forecast-expired-notice" class="forecast-expired-notice" role="status" hidden>
-                예측 대상시각이 지나 현재 예측 카드에서 제외했습니다. 결과는 과거 이력에만 보존됩니다.
-              </p>
             </div>
           </details>
         </section>

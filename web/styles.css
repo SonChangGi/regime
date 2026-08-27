@@ -5277,42 +5277,7 @@ tr.is-holdout-best td,
   }
 }
 
-/* Compact payload identity and v5 FX research status. */
-
-.result-identity-chip {
-  display: inline-flex;
-  min-height: 26px;
-  margin: 0;
-  padding: 4px 9px;
-  grid-column: 1 / -1;
-  justify-self: start;
-  align-items: center;
-  border: 1px solid var(--line-strong);
-  border-radius: 999px;
-  background: var(--surface-soft);
-  color: var(--ink-soft);
-  font-family: var(--mono);
-  font-size: 10px;
-  font-weight: 780;
-  line-height: 1.3;
-}
-
-.result-identity-chip.is-demo {
-  border-style: dashed;
-  border-color: color-mix(in srgb, var(--transition) 55%, var(--line));
-  color: var(--transition);
-}
-
-.result-identity-chip.is-live {
-  border-color: color-mix(in srgb, var(--brand) 42%, var(--line));
-  background: var(--brand-soft);
-  color: var(--brand-dark);
-}
-
-.result-identity-chip.is-loading,
-.result-identity-chip.is-unknown {
-  color: var(--ink-faint);
-}
+/* V5 model and FX research status. */
 
 .fx-ablation-status {
   display: grid;
@@ -5370,11 +5335,6 @@ tr.is-holdout-best td,
 .research-evidence-section {
   margin-bottom: 12px;
   scroll-margin-top: calc(var(--site-nav-height) + 14px);
-}
-
-.operations-details > summary .result-identity-chip {
-  margin-left: auto;
-  flex: 0 0 auto;
 }
 
 .research-evidence-details > summary::after {
@@ -6104,21 +6064,9 @@ tr.is-holdout-best td,
   font-size: 10px;
 }
 
-.definition-helper {
-  margin: 12px 2px 0;
-  color: var(--ink-faint);
-  font-size: 10px;
-  line-height: 1.55;
-}
-
 .forecast-window-section {
   margin-bottom: 12px;
   scroll-margin-top: calc(var(--site-nav-height) + 14px);
-}
-
-.forecast-window-details > summary .contract-chip {
-  margin-left: auto;
-  flex: 0 0 auto;
 }
 
 .forecast-window-details > summary::after {
@@ -6128,16 +6076,6 @@ tr.is-holdout-best td,
 .forecast-window-body .forecast-timing {
   margin: 0;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-}
-
-.forecast-expired-notice {
-  margin: 10px 0 0;
-  padding: 9px 10px;
-  border-left: 3px solid var(--transition);
-  background: var(--transition-soft);
-  color: var(--status-review-text);
-  font-size: 10px;
-  line-height: 1.55;
 }
 
 .hero-grid.has-expired-current-forecast > #current-regime-card {

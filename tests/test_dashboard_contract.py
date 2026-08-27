@@ -1012,7 +1012,6 @@ def test_required_result_surfaces_exist() -> None:
         "error-state",
         "empty-state",
         "dashboard",
-        "header-result-identity",
         "analysis-date",
         "week-select",
         "latest-week",
@@ -1026,7 +1025,6 @@ def test_required_result_surfaces_exist() -> None:
         "forecast-decision-at",
         "forecast-target-at",
         "forecast-remaining-horizon",
-        "forecast-expired-notice",
         "current-probabilities",
         "next-probabilities",
         "header-model-health",
@@ -1223,7 +1221,13 @@ def test_label_copy_forecast_disclosure_and_model_section_stay_clear() -> None:
     assert 'id="label-definition-card"' in document
     assert "미국 대형주 시장을 대표하는 SPY" in document
     assert "안정적인 상승은 위험선호" in document
-    assert "다음 주 예측을 돕는 보조 신호" in document
+    assert "쉽게 보는 기준" not in document
+    assert "다음 주 예측을 돕는 보조 신호" not in document
+    assert "52주 극단값은 시장 맥락" not in document
+    assert 'id="header-result-identity"' not in document
+    assert 'id="forecast-contract-status"' not in document
+    assert 'id="forecast-expired-notice"' not in document
+    assert "<th scope=\"col\">이용 범위</th>" not in document
     assert "posterior가 아닙니다" not in document
     assert "연구 challenger" not in document
     for element_id in (
@@ -1713,17 +1717,10 @@ def test_v5_browser_binds_core_artifacts_and_multiscale_candidate() -> None:
         assert _browser_validation_errors(changed), f"browser validator accepted {label}"
 
 
-def test_result_identity_and_dynamic_freshness_are_payload_driven() -> None:
+def test_dynamic_freshness_and_fx_status_are_payload_driven() -> None:
     program = f"""
 const api = require({json.dumps(str(JS_PATH))});
 process.stdout.write(JSON.stringify({{
-  identities: [
-    api.resultIdentity({{meta: {{mode: "demo"}}, model: {{execution_parameters: {{profile: "quick"}}}}}}).label,
-    api.resultIdentity({{meta: {{mode: "live"}}, model: {{execution_parameters: {{profile: "standard"}}}}}}).label,
-    api.resultIdentity({{meta: {{mode: "live"}}, model: {{profile: "full"}}}}).label,
-    api.resultIdentity({{meta: {{mode: "live"}}, model: {{profile: "standard", selection_status: "selected_by_gate", lifecycle: {{deployment: {{status: "candidate"}}}}}}}}).label,
-    api.resultIdentity({{meta: {{mode: "live", publication_status: "reviewed_publication"}}, model: {{profile: "standard", selection_status: "selected_by_gate", lifecycle: {{deployment: {{status: "operating"}}}}}}}}).label
-  ],
   fxStatuses: [
     api.fxStatusLabel("unavailable"),
     api.fxStatusLabel("insufficient_history"),
@@ -1735,13 +1732,6 @@ process.stdout.write(JSON.stringify({{
 """
     completed = subprocess.run(["node", "-e", program], text=True, capture_output=True, check=True)
     result = json.loads(completed.stdout)
-    assert result["identities"] == [
-        "모의자료 · QUICK · 파이프라인 검증",
-        "실데이터 · STANDARD",
-        "실데이터 · FULL",
-        "실데이터 · STANDARD · 연구 후보 · 미배포",
-        "실데이터 · STANDARD · 공개 운영",
-    ]
     assert result["fxStatuses"] == ["사용 불가", "표본 축적 중", "완료"]
     assert result["current"] == {
         "age_days": 10,
@@ -2309,8 +2299,8 @@ def test_browser_contract_requires_explicit_consistent_lifecycle() -> None:
     assert "function validateV5Lifecycle(" in script
     assert 'publication.status === V5_PUBLICATION_STATUS && deployment.status === "operating"' in script
     assert 'deployment === "operating" ? "현재 모델" : "선정 모델"' in script
-    assert 'labels.push("공개 운영")' in script
-    assert 'labels.push("연구 후보 · 미배포")' in script
+    assert 'labels.push("공개 운영")' not in script
+    assert 'labels.push("연구 후보 · 미배포")' not in script
 
 
 def test_v5_comparison_sidecar_requires_current_payload_and_frozen_v4_identity() -> None:
@@ -2610,17 +2600,16 @@ def test_default_canvas_uses_compact_copy_and_one_operations_disclosure() -> Non
     assert "투자 조언 아님" not in document
 
 
-def test_h10_source_has_public_rights_copy_and_official_link() -> None:
+def test_h10_source_keeps_rights_contract_and_official_link_without_rights_copy() -> None:
     document = HTML_PATH.read_text(encoding="utf-8")
     script = JS_PATH.read_text(encoding="utf-8")
     assert (
         '<a href="https://www.federalreserve.gov/releases/h10/">'
         "Federal Reserve H.10</a>"
     ) in document
-    assert (
-        'if (value === "federal_reserve_board_public_domain_citation_requested") '
-        'return "미 연준 공개 · 출처 표기"'
-    ) in script
+    assert 'frb_h10: "federal_reserve_board_public_domain_citation_requested"' in script
+    assert "source.license_class !== expectedLicense" in script
+    assert "미 연준 공개 · 출처 표기" not in script
 
 
 def test_dashboard_uses_only_real_payload_values() -> None:

@@ -82,7 +82,7 @@ def test_visuals_have_semantic_fallbacks_and_non_color_encoding() -> None:
     assert 'isCurrent && isV5Payload() ? "소속도"' in JS
     assert '"예측확률"' in JS
     assert "최초 이탈 방향" in JS
-    assert "52주 극단값은 시장 맥락이며 예측 기여도와는 별도" in HTML
+    assert "52주 극단값은 시장 맥락이며 예측 기여도와는 별도" not in HTML
     assert 'id="next-model-context"' not in HTML
     assert 'id="next-model-context-detail"' in HTML
     assert "입력 현재 국면·과거 전이" in JS
@@ -186,18 +186,16 @@ def test_mobile_navigation_reveals_active_project() -> None:
     assert 'window.addEventListener("resize", revealActiveProjectLink)' in JS
 
 
-def test_result_identity_is_compact_without_general_warning_surface() -> None:
+def test_collapsed_detail_cards_omit_general_warning_surfaces() -> None:
     assert 'id="header-health"' not in HTML
     assert 'id="header-mode"' not in HTML
     assert 'id="model-diagnostic"' not in HTML
     assert 'id="shadow-nowcast-summary"' not in HTML
-    assert 'id="header-result-identity" class="result-identity-chip"' in HTML
-    assert 'role="status" aria-live="polite"' in HTML
-    assert HTML.index('id="header-result-identity"') > HTML.index('id="research-evidence"')
-    assert HTML.index('id="header-result-identity"') > HTML.index('id="models"')
+    assert 'id="header-result-identity"' not in HTML
+    assert 'id="forecast-contract-status"' not in HTML
+    assert 'id="forecast-expired-notice"' not in HTML
     assert 'id="research-evidence-details"' in HTML
-    assert '["모의자료", profile, "파이프라인 검증"]' in JS
-    assert '["실데이터", profile]' in JS
+    assert 'class="research-notice-details operations-details"' in HTML
     assert 'id="fx-ablation-status"' in HTML
     assert 'id="model-evidence-summary"' in HTML
     assert '"전향적 shadow"' in JS
