@@ -2074,7 +2074,11 @@ process.stdout.write(JSON.stringify({{
 }}));
 """
     completed = subprocess.run(
-        ["node", "-e", program], text=True, capture_output=True, check=True
+        ["node", "-"],
+        input=program,
+        text=True,
+        capture_output=True,
+        check=True,
     )
     assert json.loads(completed.stdout) == {
         "models": ["markov", "xgboost"],

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import subprocess
+import sys
 
 from regime_lab.config import project_root
 from regime_lab.operating_contract import canonical_sha256, load_operating_contract
@@ -56,7 +57,7 @@ def test_generator_check_rejects_stale_output(tmp_path: Path) -> None:
     target.write_text("stale\n", encoding="utf-8")
     completed = subprocess.run(
         [
-            str(project_root() / ".venv/bin/python"),
+            sys.executable,
             str(project_root() / "scripts/generate_web_contract.py"),
             "--output",
             str(target),
