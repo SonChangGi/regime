@@ -24,6 +24,16 @@ V5_FORECAST_COMPARISON_MODELS = [
 ]
 
 
+def _run_node(program: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["node", "-"],
+        input=program,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+
+
 def _valid_v3_browser_payload() -> dict:
     current = {
         "state": "transition",
@@ -1443,7 +1453,7 @@ process.stdout.write(JSON.stringify({{
   elapsed: api.forecastAvailability(payload, Date.parse("2026-08-14T20:00:00Z"))
 }}));
 """
-    completed = subprocess.run(["node", "-e", program], text=True, capture_output=True, check=True)
+    completed = _run_node(program)
     result = json.loads(completed.stdout)
     assert result["active"] == {"status": "active", "current": True, "remaining_seconds": 3600}
     assert result["elapsed"] == {"status": "elapsed", "current": False, "remaining_seconds": 0}
@@ -1477,7 +1487,7 @@ const historicalPolicy = api.forecastSurfacePolicy(
 api.applyExpiredForecastDomState(historical, historicalPolicy);
 process.stdout.write(JSON.stringify({{expiredPolicy, latest, historicalPolicy, historical}}));
 """
-    completed = subprocess.run(["node", "-e", program], text=True, capture_output=True, check=True)
+    completed = _run_node(program)
     result = json.loads(completed.stdout)
     assert result["expiredPolicy"] == {
         "expiredLatest": True,
@@ -1510,7 +1520,7 @@ process.stdout.write(JSON.stringify({{
   models: api.forecastComparisonModels(payload)
 }}));
 """
-    completed = subprocess.run(["node", "-e", program], text=True, capture_output=True, check=True)
+    completed = _run_node(program)
     result = json.loads(completed.stdout)
     assert result["meta"]["label"] == "Custom on"
     assert result["meta"]["ko"] == "사용자 정의"
@@ -1775,7 +1785,7 @@ process.stdout.write(JSON.stringify({{
   stale: api.displayFreshness("2026-08-07T20:00:00Z", 10, Date.parse("2026-08-22T03:07:56Z"))
 }}));
 """
-    completed = subprocess.run(["node", "-e", program], text=True, capture_output=True, check=True)
+    completed = _run_node(program)
     result = json.loads(completed.stdout)
     assert result["fxStatuses"] == ["사용 불가", "표본 축적 중", "완료"]
     assert result["current"] == {
@@ -1995,7 +2005,7 @@ process.stdout.write(JSON.stringify([
   api.getCurrentMeasure({{memberships: {{risk_on: 0.75}}}}, "risk_on", "weekly-regime-result-v5")
 ]));
 """
-    completed = subprocess.run(["node", "-e", program], text=True, capture_output=True, check=True)
+    completed = _run_node(program)
     assert json.loads(completed.stdout) == ["probability", "membership", 0.25, 0.75]
 
 
@@ -2133,9 +2143,7 @@ process.stdout.write(JSON.stringify({{
   duplicateRejected: api.championSelectionEvidence(mismatch).valid
 }}));
 """
-    completed = subprocess.run(
-        ["node", "-e", program], text=True, capture_output=True, check=True
-    )
+    completed = _run_node(program)
     assert json.loads(completed.stdout) == {
         "valid": True,
         "champion": "xgboost",
@@ -2194,9 +2202,7 @@ process.stdout.write(JSON.stringify({
 }));
 """
     )
-    completed = subprocess.run(
-        ["node", "-e", program], text=True, capture_output=True, check=True
-    )
+    completed = _run_node(program)
     assert json.loads(completed.stdout) == {
         "markovComplete": True,
         "xgboostComplete": True,
@@ -2431,7 +2437,7 @@ process.stdout.write(JSON.stringify([
   api.validateV5ComparisonSummary(report, legacyPayload, {json.dumps(payload_sha)}),
 ]));
 """
-    completed = subprocess.run(["node", "-e", program], text=True, capture_output=True, check=True)
+    completed = _run_node(program)
     accepted, rejected, mismatched_role, accepted_legacy, mismatched_new_role = (
         json.loads(completed.stdout)
     )
@@ -2680,9 +2686,7 @@ process.stdout.write(JSON.stringify({{
   independentRole: api.transitionHorizonRole({{}}, 13)
 }}));
 """
-    completed = subprocess.run(
-        ["node", "-e", program], text=True, capture_output=True, check=True
-    )
+    completed = _run_node(program)
     result = json.loads(completed.stdout)
     assert result["valid"] == {
         "week": "2026-08-07",
@@ -2823,9 +2827,7 @@ const sidecar = JSON.parse(fs.readFileSync({json.dumps(str(sidecar_path))}, "utf
 const result = api.validateSelectionFamilyAuditSemantics(sidecar, payload);
 process.stdout.write(JSON.stringify(result));
 """
-    completed = subprocess.run(
-        ["node", "-e", program], text=True, capture_output=True, check=True
-    )
+    completed = _run_node(program)
     result = json.loads(completed.stdout)
     assert result["source"] == "selection-family-audit/v2"
     assert result["retainedModels"] == [
