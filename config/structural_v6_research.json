@@ -371,7 +371,7 @@
       ]
     },
     "ofr_fsi": {
-      "status": "research_planned",
+      "status": "prospective_shadow_parser_implemented",
       "role": "retrospective_sensitivity_then_prospective_shadow",
       "rights_profile": "ofr_published_aggregate",
       "official_page_url": "https://www.financialresearch.gov/financial-stress-index/",
@@ -381,6 +381,7 @@
       "release_schedule": {
         "frequency": "daily",
         "observation_lag_business_days": 2,
+        "business_day_calendar": "USFederalHolidayCalendar",
         "time": null
       },
       "cutoff_rule": {
@@ -402,7 +403,9 @@
         {"output_id": "OFR_FSI_SAFE_ASSETS", "csv_column": "Safe assets", "domain": "financial_conditions", "frequency": "daily", "required": false},
         {"output_id": "OFR_FSI_FUNDING", "csv_column": "Funding", "domain": "financial_conditions", "frequency": "daily", "required": false},
         {"output_id": "OFR_FSI_VOLATILITY", "csv_column": "Volatility", "domain": "financial_conditions", "frequency": "daily", "required": false},
-        {"output_id": "OFR_FSI_US", "csv_column": "United States", "domain": "financial_conditions", "frequency": "daily", "required": false}
+        {"output_id": "OFR_FSI_US", "csv_column": "United States", "domain": "financial_conditions", "frequency": "daily", "required": false},
+        {"output_id": "OFR_FSI_ADVANCED_ECONOMIES", "csv_column": "Other advanced economies", "domain": "financial_conditions", "frequency": "daily", "required": false},
+        {"output_id": "OFR_FSI_EMERGING_MARKETS", "csv_column": "Emerging markets", "domain": "financial_conditions", "frequency": "daily", "required": false}
       ]
     },
     "philadelphia_ads": {

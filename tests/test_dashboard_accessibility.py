@@ -99,7 +99,7 @@ def test_visuals_have_semantic_fallbacks_and_non_color_encoding() -> None:
     assert "표본 부족" in JS
     assert 'createElement("td", null, formatSignedPercent(row.median_return))' in JS
     assert 'createElement("td", null, formatPercent(row.positive_rate))' in JS
-    assert "선정 구간" in HTML and "2023+ 진단" in HTML
+    assert "선정 구간" in HTML and "2023년 이후 진단" in HTML
     assert "향후 1주 안에 한 번 이상 현재 국면에서 이탈할 확률" in JS
     assert "향후 ${horizon}주 안에 한 번 이상 현재 국면에서 이탈할 확률" in JS
     assert 'class="diagnostic-label"' not in HTML

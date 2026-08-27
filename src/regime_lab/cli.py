@@ -262,12 +262,24 @@ _V5_H10_DEFAULT_RECEIPT = "build/v5-h10/collection-receipt.json"
 _V5_H10_ARCHIVE_DEFAULT_RECEIPT = (
     "build/v5-h10/archive-collection-receipt.json"
 )
+_V6_OFR_FSI_DEFAULT_DATABASE = "data/ofr-fsi-shadow.sqlite3"
+_V6_OFR_FSI_DEFAULT_RECEIPT = "build/v6-ofr-fsi/collection-receipt.json"
 _H10_RECEIPT_PROTECTED_WRITE_TARGETS: tuple[str, ...] = (
     "build/weekly-automation",
     "build/v5-live/regime-results.json",
     "build/v5-live/artifacts",
     "build/v5-demo/regime-results.json",
     "build/v5-demo/artifacts",
+)
+_OFR_FSI_PROTECTED_WRITE_TARGETS: tuple[str, ...] = (
+    "data/regime.sqlite3",
+    "build/weekly-automation",
+    "build/v5-live",
+    "build/v5-demo",
+    "publication/live",
+    "web",
+    "artifacts/latest",
+    "artifacts/demo",
 )
 
 
@@ -421,6 +433,47 @@ def _resolve_h10_collection_receipt(
         if _paths_overlap(receipt, target):
             raise ValueError(f"v5 H.10 receipt overlaps the {label}: {target}")
     return receipt
+
+
+def _resolve_ofr_fsi_collection_targets(
+    *,
+    database_value: str | Path | None,
+    receipt_value: str | Path | None,
+) -> tuple[Path, Path, Path]:
+    """Resolve private V6 OFR targets and reject every operating surface."""
+
+    database = _mutable_path(
+        _V6_OFR_FSI_DEFAULT_DATABASE if database_value is None else database_value,
+        label="OFR FSI shadow database",
+    )
+    receipt = _mutable_path(
+        _V6_OFR_FSI_DEFAULT_RECEIPT if receipt_value is None else receipt_value,
+        label="OFR FSI collection receipt",
+    )
+    lock = database.with_name(f"{database.name}.ofr-fsi-collect.lock")
+    protected = tuple(
+        _root_path(target).absolute()
+        for target in _OFR_FSI_PROTECTED_WRITE_TARGETS
+    )
+    for label, candidate in (
+        ("shadow database", database),
+        ("collection receipt", receipt),
+        ("collection lock", lock),
+    ):
+        conflict = next(
+            (target for target in protected if _paths_overlap(candidate, target)),
+            None,
+        )
+        if conflict is not None:
+            raise ValueError(
+                f"V6 OFR FSI {label} overlaps an operating/public target: "
+                f"{candidate} conflicts with {conflict}"
+            )
+    if _paths_overlap(database, receipt):
+        raise ValueError("V6 OFR FSI receipt must not overlap its private database")
+    if _paths_overlap(receipt, lock):
+        raise ValueError("V6 OFR FSI receipt must not overlap its collection lock")
+    return database, receipt, lock
 
 
 def _flush_progress(message: str) -> None:
@@ -1059,6 +1112,80 @@ def command_collect_h10(args: argparse.Namespace) -> int:
         raise SystemExit(
             "H.10 collection refused because another build owns "
             f"{live_build_lock}: {exc}"
+        ) from exc
+    print(
+        json.dumps(
+            {**document, "receipt": str(receipt)},
+            ensure_ascii=False,
+            indent=2,
+        ),
+        flush=True,
+    )
+    return 0
+
+
+def command_collect_ofr_fsi(args: argparse.Namespace) -> int:
+    """Collect one private prospective OFR FSI shadow snapshot only."""
+
+    if getattr(args, "contract", None) != "v6":
+        raise SystemExit("OFR FSI collection requires explicit --contract v6")
+    try:
+        verify_provider_rights(
+            ("ofr_fsi",),
+            policy_path=project_root() / "config/provider_rights.json",
+            capabilities=("collection", "local_storage"),
+        )
+    except ProviderRightsError as exc:
+        raise SystemExit(str(exc)) from exc
+    database, receipt, collection_lock = _resolve_ofr_fsi_collection_targets(
+        database_value=getattr(args, "database", None),
+        receipt_value=getattr(args, "receipt", None),
+    )
+    requested_at = datetime.now(timezone.utc)
+    as_of = getattr(args, "as_of", None)
+    if as_of is not None and as_of > requested_at:
+        raise SystemExit("OFR FSI as-of cutoff must not be in the future")
+    try:
+        with automation_lock(collection_lock):
+            _backup_database_before_mutation(
+                database,
+                backup_directory=getattr(args, "backup_directory", None),
+                source_code_fingerprint_sha256=getattr(
+                    args,
+                    "backup_source_code_fingerprint_sha256",
+                    None,
+                ),
+            )
+            from regime_lab.data import (
+                OFRFSIClient,
+                OFRFSIConfig,
+                SQLiteSnapshotStore,
+                load_ofr_fsi_contract,
+            )
+            from regime_lab.ofr_fsi_store import (
+                ofr_fsi_collection_receipt_document,
+                refresh_ofr_fsi_store,
+            )
+
+            contract = load_ofr_fsi_contract()
+            client = OFRFSIClient(OFRFSIConfig(contract))
+            with SQLiteSnapshotStore(database) as store:
+                refresh = refresh_ofr_fsi_store(
+                    store,
+                    client,
+                    requested_at=requested_at,
+                    as_of=as_of,
+                )
+            document = ofr_fsi_collection_receipt_document(
+                refresh,
+                requested_at=requested_at,
+                as_of=refresh.as_of,
+            )
+            write_json_atomic(receipt, document)
+    except AlreadyRunning as exc:
+        raise SystemExit(
+            "OFR FSI collection refused because another shadow collection owns "
+            f"{collection_lock}: {exc}"
         ) from exc
     print(
         json.dumps(
@@ -1711,6 +1838,43 @@ def build_parser() -> argparse.ArgumentParser:
         help="archive release-event end date (default: the as-of date)",
     )
     collect_h10.set_defaults(func=command_collect_h10)
+
+    collect_ofr_fsi = subparsers.add_parser(
+        "collect-ofr-fsi",
+        help="collect one isolated prospective OFR FSI shadow snapshot for v6",
+    )
+    collect_ofr_fsi.add_argument(
+        "--contract",
+        choices=("v6",),
+        required=True,
+        help="explicitly opt in to the private v6 prospective-shadow contract",
+    )
+    collect_ofr_fsi.add_argument(
+        "--database",
+        default=None,
+        help="private append-only store (default: data/ofr-fsi-shadow.sqlite3)",
+    )
+    collect_ofr_fsi.add_argument(
+        "--backup-directory",
+        default=None,
+        help="verified SQLite backup root (default: <database>.backups)",
+    )
+    collect_ofr_fsi.add_argument(
+        "--backup-source-code-fingerprint-sha256",
+        default=None,
+        help=argparse.SUPPRESS,
+    )
+    collect_ofr_fsi.add_argument(
+        "--receipt",
+        default=None,
+        help="value-free local receipt (default: build/v6-ofr-fsi)",
+    )
+    collect_ofr_fsi.add_argument(
+        "--as-of",
+        type=_aware_datetime_argument,
+        help="evaluate first-seen eligibility at this ISO-8601 cutoff",
+    )
+    collect_ofr_fsi.set_defaults(func=command_collect_ofr_fsi)
 
     demo = subparsers.add_parser("demo", help="generate a clearly labelled synthetic result")
     demo.add_argument("--config", type=Path, default=default_config_path())

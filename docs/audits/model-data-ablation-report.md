@@ -176,7 +176,7 @@ fixed-XGBoost feature-track의 190-origin holdout 결과는 다음과 같다. de
 - Cboe VIX 16:00 control·16:15 sensitivity·term structure
 - DOL weekly claims, BLS, BEA, Census EITS
 
-현재 15개 모두 `enabled=false`, `ingested=false`다. 12개는 `planned`, Cboe 3개는 `rights_review_required`다. [`src/regime_lab/data/release_archive.py`](../../src/regime_lab/data/release_archive.py)는 collector가 아니라 release catalog와 `ReleaseRecord`의 PIT 기반이다.
+현재 15개 모두 `enabled=false`, `ingested=false`다. OFR FSI는 parser만 구현됐고 ingest되지 않았으며, Cboe 3개는 서면 license 전까지 `blocked_pending_written_license`다. [`src/regime_lab/data/release_archive.py`](../../src/regime_lab/data/release_archive.py)는 collector가 아니라 release catalog와 `ReleaseRecord`의 PIT 기반이다.
 
 구현된 기반은 다음을 다룬다.
 

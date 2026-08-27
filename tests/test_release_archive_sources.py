@@ -72,6 +72,22 @@ def test_default_catalog_covers_priority_sources_without_ingestion_claims() -> N
     assert all(source.official_primary_url.startswith("https://") for source in catalog.sources)
 
 
+def test_ofr_parser_status_and_cboe_written_license_blocks_are_explicit() -> None:
+    catalog = load_release_source_catalog()
+
+    assert catalog.source("ofr_fsi").status.value == "parser_implemented"
+    for source_id in (
+        "cboe_vix_1600_control",
+        "cboe_vix_1615_sensitivity",
+        "cboe_vix_term_structure",
+    ):
+        source = catalog.source(source_id)
+        assert source.status.value == "blocked_pending_written_license"
+        assert source.rights_profile == "cboe_written_license_required"
+        assert source.enabled is False
+        assert source.ingested is False
+
+
 def test_catalog_rejects_false_ingestion_status(tmp_path: Path) -> None:
     payload = json.loads(DEFAULT_RELEASE_SOURCE_CATALOG.read_text(encoding="utf-8"))
     payload["sources"][0]["ingested"] = True
@@ -79,6 +95,21 @@ def test_catalog_rejects_false_ingestion_status(tmp_path: Path) -> None:
     path.write_text(json.dumps(payload), encoding="utf-8")
 
     with pytest.raises(ReleaseCatalogError, match="must also be enabled"):
+        load_release_source_catalog(path)
+
+
+def test_catalog_rejects_enabling_a_written_license_block(tmp_path: Path) -> None:
+    payload = json.loads(DEFAULT_RELEASE_SOURCE_CATALOG.read_text(encoding="utf-8"))
+    source = next(
+        item
+        for item in payload["sources"]
+        if item["id"] == "cboe_vix_1600_control"
+    )
+    source["enabled"] = True
+    path = tmp_path / "invalid-cboe-catalog.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ReleaseCatalogError, match="rights-blocked source"):
         load_release_source_catalog(path)
 
 

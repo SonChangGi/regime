@@ -160,6 +160,24 @@ prospective shadow로 분리합니다. 시장 가격·수익률 label은 승인�
 동결한 스냅샷부터 prospective 근거를 축적합니다. 검토를 통과한 파생 결과만
 개인·비상업 공개 경로에 승격할 수 있습니다.
 
+OFR FSI는 운영 V5 DB·학습·공개 build와 분리된 V6 prospective shadow로만
+수집합니다. 아래 명령은 공식 OFR aggregate CSV와 공개 category/region contribution만
+private SQLite에 append-only로 보존하고, 값이 없는 로컬 receipt만 작성합니다.
+공식 intraday 발표시각은 알려져 있지 않으므로 `source_released_at`은 비워 두고 실제
+`provider_first_seen_at`부터만 사용할 수 있습니다. 과거 current-history를 PIT 빈티지로
+소급하지 않으며, raw CSV와 관측값은 public package에 포함하지 않습니다.
+
+```bash
+.venv/bin/regime-lab collect-ofr-fsi --contract v6 \
+  --database data/ofr-fsi-shadow.sqlite3 \
+  --receipt build/v6-ofr-fsi/collection-receipt.json
+```
+
+provider 실패나 schema drift가 발생하면 OFR shadow의 last-good만 유지하며 주간 운영
+build의 성공/실패에는 영향을 주지 않습니다. 저장 전에
+`config/structural_v6_research.json`, `config/release-source-catalog.json`,
+`config/provider_rights.json`의 OFR aggregate 계약을 모두 대조합니다.
+
 ## 정보 시점 계약
 
 - 기준 시각: 완료된 미국 거래 주의 금요일 16:00 `America/New_York`

@@ -1020,6 +1020,7 @@ def test_required_result_surfaces_exist() -> None:
         "next-regime-card",
         "label-definition-card",
         "label-spec-identity",
+        "forecast-window-section",
         "forecast-window-card",
         "forecast-origin-at",
         "forecast-decision-at",
@@ -1070,11 +1071,6 @@ def test_required_result_surfaces_exist() -> None:
         "model-forecast-brier",
         "model-forecast-calibration",
         "model-evidence-summary",
-        "model-role-grid",
-        "operating-model-name",
-        "frozen-baseline-name",
-        "research-selector-summary",
-        "research-selection-status",
         "transition-horizon-bars",
         "transition-model-section",
         "transition-horizon-select",
@@ -1158,7 +1154,7 @@ def test_model_results_remain_visible_without_generalization_warning_surface() -
     assert "선정 구간" in script
     assert "holdoutBestName" in script
     assert "is-holdout-best" in script
-    assert "2023+ 1위" in script
+    assert "2023년 이후 1위" in script
     assert "진단 주의" not in script
 
 
@@ -1220,14 +1216,16 @@ def test_current_membership_and_forecast_probability_are_separate_surfaces() -> 
     assert 'dom["model-loss-axis"].replaceChildren' in script
 
 
-def test_label_forecast_and_model_role_cards_preserve_semantic_separation() -> None:
+def test_label_copy_forecast_disclosure_and_model_section_stay_clear() -> None:
     document = HTML_PATH.read_text(encoding="utf-8")
     script = JS_PATH.read_text(encoding="utf-8")
     styles = CSS_PATH.read_text(encoding="utf-8")
     assert 'id="label-definition-card"' in document
-    assert "SPY 조정종가의 13·26주 추세, 4·13주 변동성, 13·52주 낙폭" in document
-    assert "예측 피처 또는 연구 challenger" in document
-    assert "posterior가 아닙니다" in document
+    assert "미국 대형주 시장을 대표하는 SPY" in document
+    assert "안정적인 상승은 위험선호" in document
+    assert "다음 주 예측을 돕는 보조 신호" in document
+    assert "posterior가 아닙니다" not in document
+    assert "연구 challenger" not in document
     for element_id in (
         "forecast-origin-at",
         "forecast-decision-at",
@@ -1239,13 +1237,20 @@ def test_label_forecast_and_model_role_cards_preserve_semantic_separation() -> N
     assert "function forecastAvailability(" in script
     assert 'dom["next-regime-card"].hidden = suppressed' in script
     assert 'dom["transition-card"].hidden = suppressed' in script
-    assert 'id="model-role-grid"' in document
-    assert "공식 운영 모델" in document
-    assert "V4 동결 기준선" in document
-    assert "연구 모델 선택기" in document
-    assert "현재 연구 상태" in document
+    assert 'id="forecast-window-section"' in document
+    assert '<details id="forecast-window-card"' in document
+    forecast_details = document.split('<details id="forecast-window-card"', 1)[1].split(">", 1)[0]
+    assert " open" not in forecast_details
+    assert document.index('id="research-evidence"') < document.index('id="data-health"')
+    assert document.index('id="data-health"') < document.index('id="forecast-window-section"')
+    assert 'id="model-role-grid"' not in document
+    assert "V4 동결 기준선" not in document
+    assert "현재 payload · 공개 운영" not in script
+    assert "function renderModelRoles" not in script
     assert document.index('id="conditional-stats"') < document.index('id="models"')
     assert ".contract-overview-grid" in styles
+    assert ".forecast-window-section" in styles
+    assert ".forecast-window-body .forecast-timing" in styles
     assert "@media (max-width: 1024px)" in styles
     assert "@media (max-width: 760px)" in styles
 
@@ -1288,7 +1293,7 @@ def test_v5_only_sections_fail_closed_for_v4_payloads() -> None:
 def test_full_model_and_conditional_tables_are_collapsed_by_default() -> None:
     document = HTML_PATH.read_text(encoding="utf-8")
     assert document.count('class="compact-table-details"') == 3
-    assert "<summary>전체 모델 표</summary>" in document
+    assert "<summary>전체 모델 보기</summary>" in document
     assert "<summary>전체 이탈 모델 표</summary>" in document
     assert "상세 성과 표" in document
     assert 'class="compact-table-details" open' not in document
@@ -2289,8 +2294,8 @@ def test_v3_transition_models_have_horizon_specific_diagnostic_surface() -> None
         assert f'<option value="{value}"' in document
     for label in ("AP ↑", "Precision ↑", "Recall ↑", "False alarms / 연 ↓"):
         assert label in document
-    assert "선정 구간 · 2023+ 진단" in document
-    assert "${horizon}주 이탈 · 선정 구간 / 2023+ 진단" in script
+    assert "선정 구간 · 2023년 이후 진단" in document
+    assert "${horizon}주 이탈 · 선정 구간 / 2023년 이후 진단" in script
     assert "function renderTransitionModels" in script
     assert "function renderTransitionHorizons" in script
     assert "section.hidden = true" in script
@@ -2303,7 +2308,7 @@ def test_browser_contract_requires_explicit_consistent_lifecycle() -> None:
     assert 'const expectedSelectionStatus = isV5 ? "selected_by_gate" : "provisional_predeployment"' in script
     assert "function validateV5Lifecycle(" in script
     assert 'publication.status === V5_PUBLICATION_STATUS && deployment.status === "operating"' in script
-    assert 'deployment === "operating" ? "공식 운영 모델" : "로컬 선정 모델"' in script
+    assert 'deployment === "operating" ? "현재 모델" : "선정 모델"' in script
     assert 'labels.push("공개 운영")' in script
     assert 'labels.push("연구 후보 · 미배포")' in script
 

@@ -1099,14 +1099,20 @@
   function renderContractOverview() {
     const isV5 = isV5Payload();
     dom["contract-overview-grid"].hidden = !isV5;
+    dom["forecast-window-section"].hidden = !isV5;
     if (!isV5) return;
 
     const label = isObject(state.raw.label) ? state.raw.label : {};
     const shortHash = typeof label.spec_sha256 === "string" ? label.spec_sha256.slice(0, 8) : "hash 없음";
-    setText(dom["label-spec-identity"], `${textValue(label.spec_version, "정의 미기재")} · ${shortHash}`);
+    setText(dom["label-spec-identity"], "SPY 기반 · 주간");
+    dom["label-spec-identity"].title = `${textValue(label.spec_version, "정의 미기재")} · ${shortHash}`;
+    dom["label-spec-identity"].setAttribute(
+      "aria-label",
+      `국면 정의 버전 ${textValue(label.spec_version, "미기재")}, 식별자 ${shortHash}`,
+    );
     const membershipText = label.membership_semantics === "distance_to_anchor_not_posterior"
-      ? "관측 소속도는 임계 anchor와의 거리이며 posterior가 아닙니다. 다음 주 값은 t까지의 정보로 만든 t+1 예측확률입니다."
-      : "관측 소속도와 다음 주 예측확률은 서로 다른 값입니다.";
+      ? "현재 막대는 이번 주가 각 국면에 얼마나 가까운지, 다음 주 막대는 지금까지의 데이터로 계산한 다음 주 국면 확률입니다."
+      : "현재 막대와 다음 주 확률은 서로 다른 값을 보여줍니다.";
     setText(dom["membership-definition"], membershipText);
 
     const forecast = isObject(state.raw.forecast) ? state.raw.forecast : {};
@@ -3412,6 +3418,7 @@
       "theme-toggle-text", "dashboard-subtitle", "date-form", "analysis-date", "week-select",
       "snap-note", "previous-week", "next-week", "latest-week", "history-window",
       "hero-results", "contract-overview-grid", "label-spec-identity", "membership-definition",
+      "forecast-window-section",
       "forecast-window-card", "forecast-contract-status", "forecast-origin-at", "forecast-decision-at",
       "forecast-target-at", "forecast-remaining-horizon", "forecast-expired-notice",
       "current-regime-card", "current-horizon", "current-regime-symbol", "current-regime-name",
@@ -3436,8 +3443,6 @@
       "conditional-stat-scroll", "conditional-stat-table-caption", "conditional-stat-body",
       "champion-summary", "model-evidence-summary", "model-caption", "model-loss-caption",
       "model-loss-chart", "model-loss-axis", "leaderboard-body",
-      "model-role-grid", "operating-model-name", "operating-model-status", "frozen-baseline-name",
-      "research-selector-summary", "research-selector-detail", "research-selection-status", "research-selection-detail",
       "model-forecast-field", "model-forecast-select", "model-forecast-explorer",
       "model-forecast-role", "model-forecast-title", "model-forecast-caption",
       "model-forecast-symbol", "model-forecast-state", "model-forecast-confidence",
@@ -5034,7 +5039,7 @@
   }
 
   function transitionSplitLabel(value) {
-    return value === "selection" ? "선정 구간" : "2023+ 진단";
+    return value === "selection" ? "선정 구간" : "2023년 이후 진단";
   }
 
   function renderTransitionModels() {
@@ -5065,7 +5070,7 @@
     setText(dom["transition-leaderboard-caption"], `${horizon}주 이탈 모델 진단 지표`);
     setText(
       dom["transition-model-caption"],
-      `${horizon}주 이탈 · 선정 구간 / 2023+ 진단`,
+      `${horizon}주 이탈 · 선정 구간 / 2023년 이후 진단`,
     );
 
     const preferred = rows.find((row) => row.selected && row.evaluation_split === "retrospective_diagnostic")
@@ -5152,7 +5157,7 @@
 
     if (!eligible.length) {
       container.append(createElement("p", "empty-inline", "표시할 Log loss 비교 값이 없습니다."));
-      setText(dom["model-loss-caption"], "선정 구간·2023+ 진단 값 없음");
+      setText(dom["model-loss-caption"], "비교할 예측 오차가 없습니다");
       return;
     }
 
@@ -5161,7 +5166,7 @@
     const includesExtraChampion = champion && champion.rank > 6;
     setText(
       dom["model-loss-caption"],
-      `${includesExtraChampion ? "2023+ 상위 5개 + 선정 모델" : `2023+ 상위 ${eligible.length}개`} · 낮을수록 좋음`,
+      `${includesExtraChampion ? "상위 5개 + 현재 모델" : `상위 ${eligible.length}개`} · 왼쪽일수록 정확`,
     );
     dom["model-loss-axis"].replaceChildren(
       createElement("span", null, "0"),
@@ -5184,10 +5189,10 @@
           "span",
           null,
           isChampion
-            ? `선정 · 2023+ #${formatNumber(item.rank, 0)}`
+            ? `선정 · 2023년 이후 #${formatNumber(item.rank, 0)}`
             : isHoldoutBest
-              ? "2023+ #1"
-              : `2023+ #${formatNumber(item.rank, 0)}`,
+              ? "2023년 이후 #1"
+              : `2023년 이후 #${formatNumber(item.rank, 0)}`,
         ),
       );
 
@@ -5216,7 +5221,7 @@
       );
       chartRow.setAttribute(
         "aria-label",
-        `${item.name}, 선정 구간 Log loss ${formatNumber(item.selection, 4)}, 2023+ 진단 Log loss ${formatNumber(item.holdout, 4)}${isChampion ? ", 선정 모델" : ""}${isHoldoutBest ? ", 2023+ 진단 1위" : ""}`,
+        `${item.name}, 선정 구간 Log loss ${formatNumber(item.selection, 4)}, 2023년 이후 진단 Log loss ${formatNumber(item.holdout, 4)}${isChampion ? ", 선정 모델" : ""}${isHoldoutBest ? ", 2023년 이후 진단 1위" : ""}`,
       );
       chartRow.append(label, track, exact);
       container.append(chartRow);
@@ -5311,12 +5316,12 @@
         const row = leaderboard.find((candidate) => modelName(candidate) === name);
         const rank = finiteNumber(firstValue(row, ["rank", "position"]));
         const role = name === operatingName
-          ? "공식"
+          ? "현재"
           : name === championName
-            ? "로컬 선정"
+            ? "선정"
             : rank === null
-              ? "연구"
-              : `연구 · 2023+ #${formatNumber(rank, 0)}`;
+              ? "비교"
+              : `비교 · 2023년 이후 #${formatNumber(rank, 0)}`;
         const option = createElement("option", null, `${modelForecastLabel(name)} · ${role}`);
         option.value = name;
         select.append(option);
@@ -5334,10 +5339,10 @@
     const leaderboardRow = leaderboard.find((row) => modelName(row) === state.comparisonModel) || {};
     const isChampion = state.comparisonModel === operatingName;
     const selectedRole = isChampion
-      ? "공식 모델"
+      ? "현재 모델"
       : state.comparisonModel === championName
-        ? "로컬 선정 모델"
-        : "연구 모델";
+        ? "선정 모델"
+        : "비교 모델";
     const role = dom["model-forecast-role"];
     role.classList.toggle("is-comparison", !isChampion);
     role.classList.toggle("is-fallback", forecast.fallback === true);
@@ -5348,8 +5353,8 @@
     const officialState = officialForecast && officialForecast.state;
     const officialModelLabel = modelForecastLabel(operatingName);
     const agreement = forecast.state === officialState
-      ? "공식 예측과 국면 일치"
-      : `공식 ${officialModelLabel} ${stateMeta(officialState).ko}`;
+      ? "현재 예측과 국면 일치"
+      : `현재 ${officialModelLabel} ${stateMeta(officialState).ko}`;
     setText(
       dom["model-forecast-caption"],
       `${formatDate(week.date, false)} 관측 → ${formatDate(forecast.date, false)} 예측 · ${agreement}`,
@@ -5378,71 +5383,6 @@
     );
   }
 
-  function renderModelRoles(model) {
-    const grid = dom["model-role-grid"];
-    if (!isV5Payload()) {
-      grid.hidden = true;
-      return;
-    }
-    grid.hidden = false;
-    const selection = isObject(state.raw.selection) ? state.raw.selection : {};
-    const selectionEvidence = selectionEvidenceForDisplay(
-      state.raw,
-      state.selectionFamilyAudit,
-    );
-    const lifecycle = isObject(model.lifecycle) ? model.lifecycle : {};
-    const deployment = isObject(lifecycle.deployment) ? lifecycle.deployment.status : "candidate";
-    const operatingName = textValue(selection.operating_champion, modelName(model.champion));
-    const operatingStatus = deployment === "operating"
-      ? "현재 payload · 공개 운영"
-      : "기존 reviewed 운영 기준 유지";
-    const researchRunStatus = {
-      operating: "운영 반영 완료",
-      reviewed: "검토 완료 · 미배포",
-      candidate: "candidate · 미배포",
-    }[deployment] || "run 상태 확인 필요";
-    setText(dom["operating-model-name"], modelForecastLabel(operatingName));
-    setText(dom["operating-model-status"], operatingStatus);
-
-    const baseline = isObject(model.baseline_v4) ? model.baseline_v4 : {};
-    setText(dom["frozen-baseline-name"], modelForecastLabel(baseline.champion));
-
-    const selectors = selectionEvidence.candidates;
-    const researchModels = selectors.filter((name) => name !== operatingName);
-    setText(
-      dom["research-selector-summary"],
-      `${formatNumber(researchModels.length, 0)}개 비교 모델`,
-    );
-    setText(
-      dom["research-selector-detail"],
-      researchModels.length
-        ? [
-          researchModels.slice(0, 3).map(modelForecastLabel).join(" · ")
-            + (researchModels.length > 3 ? ` 외 ${researchModels.length - 3}개` : ""),
-          selectionEvidence.source === "selection-family-audit/v2"
-            ? `generic audit · matched origin ${formatNumber(selectionEvidence.originCount, 0)}`
-            : "payload 계약 fallback",
-        ].join(" · ")
-        : "등록된 비교 모델 없음",
-    );
-
-    const reasonLabel = {
-      best_gate_passing_log_loss: "gate 통과 최저 Log loss",
-      simplicity_tiebreak_within_tolerance: "0.01 이내 단순성 tie-break",
-      reference_fallback_no_challenger_passed: "기준 모델 유지",
-    }[selectionEvidence.selectionReason] || "선정 근거 확인 필요";
-    setText(dom["research-selection-status"], reasonLabel);
-    setText(
-      dom["research-selection-detail"],
-      [
-        researchRunStatus,
-        selectionEvidence.runnerUp
-          ? `runner-up ${modelForecastLabel(selectionEvidence.runnerUp)}`
-          : "runner-up 없음",
-      ].join(" · "),
-    );
-  }
-
   function renderModel() {
     const model = state.raw.model || {};
     const champion = model.champion;
@@ -5452,20 +5392,19 @@
     const lifecycle = isObject(model.lifecycle) ? model.lifecycle : {};
     const deployment = isObject(lifecycle.deployment) ? lifecycle.deployment.status : null;
     dom["champion-summary"].replaceChildren(
-      createElement("span", null, deployment === "operating" ? "공식 운영 모델" : "로컬 선정 모델"),
+      createElement("span", null, deployment === "operating" ? "현재 모델" : "선정 모델"),
       createElement("strong", null, modelForecastLabel(championName)),
     );
-    renderModelRoles(model);
     renderModelEvidenceSummary(model, championName, holdoutDiagnostic);
     renderTransitionModels();
     const selection = firstValue(model, ["selection_period"]);
     const holdout = firstValue(model, ["holdout_period", "validation_period", "evaluation_period", "oos_period"]);
     const comparisonLabel = selection && holdout
-      ? "선정 구간과 2023+ 진단 비교"
+      ? "선정 구간과 2023년 이후 성과"
       : holdout
-        ? "2023+ 진단 비교"
-        : "모델 진단 비교";
-    dom["model-caption"].textContent = `${comparisonLabel} · ${publicationSnapshotLabel()}`;
+        ? "2023년 이후 성과"
+        : "모델 성과 비교";
+    dom["model-caption"].textContent = comparisonLabel;
 
     dom["leaderboard-body"].replaceChildren();
     const rows = Array.isArray(model.leaderboard) ? model.leaderboard : [];
@@ -5494,7 +5433,7 @@
       nameCell.classList.add("model-name-cell");
       if (modelForecastLabel(name) !== name) nameCell.append(createElement("small", "model-code", name));
       if (isChampion) nameCell.append(createElement("span", "champion-label", "선정"));
-      if (isHoldoutBest) nameCell.append(createElement("span", "holdout-label", "2023+ 1위"));
+      if (isHoldoutBest) nameCell.append(createElement("span", "holdout-label", "2023년 이후 1위"));
       row.append(nameCell);
       row.append(
         createElement("td", null, formatNumber(metricValue(rowData, ["log_loss", "multiclass_log_loss"]), 4)),
@@ -5528,7 +5467,7 @@
     if (selection || holdout) {
       appendEvidence(
         "검증 구간",
-        [selection ? `선정 ${textValue(selection)}` : null, holdout ? `2023+ ${textValue(holdout)}` : null]
+        [selection ? `선정 ${textValue(selection)}` : null, holdout ? `2023년 이후 ${textValue(holdout)}` : null]
           .filter(Boolean)
           .join(" · "),
       );
@@ -5549,7 +5488,7 @@
     }
     if (isObject(holdoutDiagnostic) && holdoutDiagnostic.applicable === true) {
       appendEvidence(
-        "2023+ 진단",
+        "2023년 이후 진단",
         `${championName} ${formatNumber(holdoutDiagnostic.champion_rank, 0)}/${formatNumber(holdoutDiagnostic.model_count, 0)}위 · ${textValue(holdoutDiagnostic.best_model)} 대비 Log loss +${formatNumber(holdoutDiagnostic.absolute_regret, 4)}`,
         holdoutDiagnostic.status === "ok" ? "is-ok" : "is-review",
       );

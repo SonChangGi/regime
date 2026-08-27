@@ -6004,17 +6004,14 @@ tr.is-holdout-best td,
   }
 }
 
-/* Payload-driven label, forecast-clock, and model-role contracts. */
+/* Payload-driven label and forecast-clock contracts. */
 
 .contract-overview-grid {
-  display: grid;
+  display: block;
   margin-top: 12px;
-  grid-template-columns: minmax(0, 1.35fr) minmax(360px, 0.65fr);
-  gap: 12px;
 }
 
-.definition-card,
-.forecast-window-card {
+.definition-card {
   min-width: 0;
   padding: 18px;
 }
@@ -6107,6 +6104,32 @@ tr.is-holdout-best td,
   font-size: 10px;
 }
 
+.definition-helper {
+  margin: 12px 2px 0;
+  color: var(--ink-faint);
+  font-size: 10px;
+  line-height: 1.55;
+}
+
+.forecast-window-section {
+  margin-bottom: 12px;
+  scroll-margin-top: calc(var(--site-nav-height) + 14px);
+}
+
+.forecast-window-details > summary .contract-chip {
+  margin-left: auto;
+  flex: 0 0 auto;
+}
+
+.forecast-window-details > summary::after {
+  margin-left: 0;
+}
+
+.forecast-window-body .forecast-timing {
+  margin: 0;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
 .forecast-expired-notice {
   margin: 10px 0 0;
   padding: 9px 10px;
@@ -6121,68 +6144,31 @@ tr.is-holdout-best td,
   grid-column: 1 / -1;
 }
 
-.model-role-grid {
-  display: grid;
-  margin: 0 0 14px;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 8px;
-}
-
-.model-role-grid > article {
-  display: grid;
-  min-width: 0;
-  min-height: 92px;
-  padding: 11px 12px;
-  align-content: start;
-  gap: 4px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  background: var(--surface-soft);
-}
-
-.model-role-grid span {
-  color: var(--ink-faint);
-  font-size: 9px;
-  font-weight: 760;
-}
-
-.model-role-grid strong {
-  overflow-wrap: anywhere;
-  color: var(--ink-strong);
-  font-size: 13px;
-  line-height: 1.4;
-}
-
-.model-role-grid small {
-  overflow-wrap: anywhere;
-  color: var(--ink-soft);
-  font-size: 10px;
-  line-height: 1.45;
-}
-
 @media (max-width: 1024px) {
-  .contract-overview-grid {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .model-role-grid {
+  .forecast-window-body .forecast-timing {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
 @media (max-width: 760px) {
   .definition-facts,
-  .forecast-timing,
-  .model-role-grid {
+  .forecast-window-body .forecast-timing {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .definition-card,
-  .forecast-window-card {
+  .definition-card {
     padding: 15px;
   }
 
-  .model-role-grid > article {
-    min-height: 0;
+  .forecast-window-details > summary {
+    flex-wrap: wrap;
+  }
+
+  .forecast-window-details > summary .contract-chip {
+    margin-left: 0;
+  }
+
+  .forecast-window-details > summary::after {
+    margin-left: auto;
   }
 }

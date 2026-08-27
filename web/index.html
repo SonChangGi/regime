@@ -10,8 +10,8 @@
     >
     <title>US Market Regime Lab | Quant Research</title>
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23111727'/%3E%3Cpath d='M14 43 26 31l9 8 15-20' fill='none' stroke='%2334d399' stroke-width='7' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
-    <link rel="stylesheet" href="./styles.css?v=e36a95335a2e1501dbb4751d1a11456bb60809184bf3724dc2b7c7a81bd81937">
-    <script src="./app.js?v=77e9000e8e5bc0a8151a184c26920ec9b30c82af8baae3497df7b4fa50d459a3" defer></script>
+    <link rel="stylesheet" href="./styles.css?v=7e814d1aaceeedef50c13b8291166544aef66588afea1ac30d6ea854b738ba03">
+    <script src="./app.js?v=644161ad4b12118571fa43957996b3155478a4fa0257317d8766a3d19a89b43a" defer></script>
   </head>
   <body id="top">
     <a class="skip-link" href="#main-content">본문으로 건너뛰기</a>
@@ -196,44 +196,26 @@
             <article id="label-definition-card" class="definition-card card" aria-labelledby="label-definition-title">
               <div class="card-heading compact-card-heading">
                 <div>
-                  <span class="card-kicker">Label contract</span>
-                  <h2 id="label-definition-title">국면 정의</h2>
+                  <span class="card-kicker">쉽게 보는 기준</span>
+                  <h2 id="label-definition-title">국면은 이렇게 나눕니다</h2>
                 </div>
                 <span id="label-spec-identity" class="contract-chip">불러오는 중</span>
               </div>
               <dl class="definition-facts">
                 <div>
-                  <dt>공식 정답지</dt>
-                  <dd>SPY 조정종가의 13·26주 추세, 4·13주 변동성, 13·52주 낙폭</dd>
+                  <dt>무엇을 보나요?</dt>
+                  <dd>미국 대형주 시장을 대표하는 SPY의 방향, 가격 흔들림, 최근 고점에서 밀린 폭을 함께 봅니다.</dd>
                 </div>
                 <div>
-                  <dt>시장 폭 · 거시</dt>
-                  <dd>RSP·IWM·섹터 breadth와 거시·금리·신용은 예측 피처 또는 연구 challenger이며, 공식 정답지에는 아직 포함하지 않습니다.</dd>
+                  <dt>어떻게 나누나요?</dt>
+                  <dd>안정적인 상승은 위험선호, 방향이 섞이면 전환, 하락과 불안이 커지면 위험회피로 나눕니다.</dd>
                 </div>
                 <div>
-                  <dt>두 값의 의미</dt>
-                  <dd id="membership-definition">관측 소속도는 임계 anchor와의 거리이며 posterior가 아닙니다. 다음 주 값은 t까지의 정보로 만든 t+1 예측확률입니다.</dd>
+                  <dt>화면 숫자는?</dt>
+                  <dd id="membership-definition">현재 막대는 이번 주가 각 국면에 얼마나 가까운지, 다음 주 막대는 다음 주가 각 국면일 모델 확률입니다.</dd>
                 </div>
               </dl>
-            </article>
-
-            <article id="forecast-window-card" class="forecast-window-card card" aria-labelledby="forecast-window-title">
-              <div class="card-heading compact-card-heading">
-                <div>
-                  <span class="card-kicker">Forecast clock</span>
-                  <h2 id="forecast-window-title">운영 예측 시점</h2>
-                </div>
-                <span id="forecast-contract-status" class="contract-chip" role="status">불러오는 중</span>
-              </div>
-              <dl class="forecast-timing" aria-label="운영 예측 시점과 남은 예측기간">
-                <div><dt>주간 기준일</dt><dd id="forecast-origin-at">—</dd></div>
-                <div><dt>실제 발행시각</dt><dd id="forecast-decision-at">—</dd></div>
-                <div><dt>예측 대상시각</dt><dd id="forecast-target-at">—</dd></div>
-                <div><dt>남은 예측기간</dt><dd id="forecast-remaining-horizon">—</dd></div>
-              </dl>
-              <p id="forecast-expired-notice" class="forecast-expired-notice" role="status" hidden>
-                예측 대상시각이 지나 현재 예측 카드에서 제외했습니다. 결과는 과거 이력에만 보존됩니다.
-              </p>
+              <p class="definition-helper">시장 전반의 상승 참여도, 업종, 금리, 신용, 경기 데이터는 현재 국면을 정하는 기준이 아니라 다음 주 예측을 돕는 보조 신호입니다.</p>
             </article>
           </div>
 
@@ -519,33 +501,11 @@
           <div class="card-heading">
             <div>
               <h2 id="model-title">모델 비교</h2>
-              <p id="model-caption" class="section-caption">선정 구간 · 2023+ 진단</p>
+              <p id="model-caption" class="section-caption">선정 구간과 2023년 이후 진단</p>
             </div>
             <div class="model-heading-controls">
               <div id="champion-summary" class="champion-summary" aria-label="선정 모델"></div>
             </div>
-          </div>
-          <div id="model-role-grid" class="model-role-grid v5-only" aria-label="공식·기준선·연구 모델 역할" hidden>
-            <article>
-              <span>공식 운영 모델</span>
-              <strong id="operating-model-name">—</strong>
-              <small id="operating-model-status">—</small>
-            </article>
-            <article>
-              <span>V4 동결 기준선</span>
-              <strong id="frozen-baseline-name">—</strong>
-              <small>회귀 재현 전용</small>
-            </article>
-            <article>
-              <span>연구 모델 선택기</span>
-              <strong id="research-selector-summary">—</strong>
-              <small id="research-selector-detail">—</small>
-            </article>
-            <article>
-              <span>현재 연구 상태</span>
-              <strong id="research-selection-status">—</strong>
-              <small id="research-selection-detail">—</small>
-            </article>
           </div>
           <article id="model-forecast-explorer" class="model-forecast-explorer v5-only" aria-labelledby="model-forecast-title" hidden>
             <div class="model-forecast-heading">
@@ -565,8 +525,8 @@
             <div class="model-forecast-body">
               <div id="model-forecast-probabilities" class="probability-list" aria-label="선택 모델의 다음 주 국면별 예측 확률"></div>
               <dl class="model-forecast-metrics" aria-label="선택 모델의 2023년 이후 진단 지표">
-                <div><dt>2023+ 순위</dt><dd id="model-forecast-rank">—</dd></div>
-                <div><dt>Log loss · 선정→2023+</dt><dd id="model-forecast-log-loss">—</dd></div>
+                <div><dt>2023년 이후 순위</dt><dd id="model-forecast-rank">—</dd></div>
+                <div><dt>예측 오차 · 선정→이후</dt><dd id="model-forecast-log-loss">—</dd></div>
                 <div><dt>Brier</dt><dd id="model-forecast-brier">—</dd></div>
                 <div><dt>보정 오차</dt><dd id="model-forecast-calibration">—</dd></div>
               </dl>
@@ -574,21 +534,21 @@
           </article>
           <figure class="model-loss-figure" aria-labelledby="model-loss-title model-loss-caption">
             <figcaption>
-              <strong id="model-loss-title">Log loss · 선정 구간 → 2023+ 진단</strong>
-              <span id="model-loss-caption">낮을수록 좋음</span>
+              <strong id="model-loss-title">예측 오차 비교</strong>
+              <span id="model-loss-caption">왼쪽일수록 정확</span>
             </figcaption>
             <div class="loss-legend" aria-label="Log loss 기호 범례">
               <span><i class="loss-marker selection" aria-hidden="true"></i>선정 구간</span>
-              <span><i class="loss-marker holdout" aria-hidden="true"></i>2023+ 진단</span>
+              <span><i class="loss-marker holdout" aria-hidden="true"></i>2023년 이후</span>
             </div>
             <div id="model-loss-chart" class="model-loss-chart"></div>
             <div id="model-loss-axis" class="fixed-axis model-loss-axis" aria-hidden="true"><span>0</span><span>0.55</span><span>1.10</span></div>
           </figure>
           <details class="compact-table-details">
-            <summary>전체 모델 표</summary>
+            <summary>전체 모델 보기</summary>
             <div class="table-scroll" tabindex="0" aria-label="2023년 이후 모델 진단 지표 표">
               <table id="leaderboard-table">
-                <caption class="sr-only">2023+ 진단 지표</caption>
+                <caption class="sr-only">2023년 이후 진단 지표</caption>
                 <thead>
                   <tr>
                     <th scope="col">순위</th>
@@ -611,7 +571,7 @@
           <div class="card-heading transition-model-heading">
             <div>
               <h2 id="transition-model-title">국면 이탈 모델 비교</h2>
-              <p id="transition-model-caption" class="section-caption">선정 구간 · 2023+ 진단</p>
+              <p id="transition-model-caption" class="section-caption">선정 구간 · 2023년 이후 진단</p>
             </div>
             <div class="field-group inline-field transition-horizon-field">
               <label for="transition-horizon-select">예측 구간</label>
@@ -739,6 +699,30 @@
                 <div><dt>스키마</dt><dd id="footer-schema-version">—</dd></div>
                 <div><dt>생성 시각</dt><dd id="footer-generated-at">—</dd></div>
               </dl>
+            </div>
+          </details>
+        </section>
+
+        <section id="forecast-window-section" class="dashboard-section forecast-window-section v5-only" aria-labelledby="forecast-window-title" hidden>
+          <h2 id="forecast-window-title" class="sr-only">운영 예측 시점</h2>
+          <details id="forecast-window-card" class="research-notice-details operations-details forecast-window-details">
+            <summary>
+              <span>
+                <small>Forecast timing</small>
+                <strong>운영 예측 시점</strong>
+              </span>
+              <span id="forecast-contract-status" class="contract-chip" role="status">불러오는 중</span>
+            </summary>
+            <div class="research-notice-body operations-body forecast-window-body">
+              <dl class="forecast-timing" aria-label="운영 예측 시점과 남은 예측기간">
+                <div><dt>주간 기준일</dt><dd id="forecast-origin-at">—</dd></div>
+                <div><dt>실제 발행시각</dt><dd id="forecast-decision-at">—</dd></div>
+                <div><dt>예측 대상시각</dt><dd id="forecast-target-at">—</dd></div>
+                <div><dt>남은 예측기간</dt><dd id="forecast-remaining-horizon">—</dd></div>
+              </dl>
+              <p id="forecast-expired-notice" class="forecast-expired-notice" role="status" hidden>
+                예측 대상시각이 지나 현재 예측 카드에서 제외했습니다. 결과는 과거 이력에만 보존됩니다.
+              </p>
             </div>
           </details>
         </section>

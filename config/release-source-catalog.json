@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "catalog_version": "release-source-catalog-v1",
-  "as_of": "2026-08-26",
+  "catalog_version": "release-source-catalog-v2",
+  "as_of": "2026-08-27",
   "sources": [
     {
       "id": "philadelphia_ads",
@@ -145,7 +145,7 @@
       "measurement_contract": "use only the published aggregate and components, excluding reconstructable proprietary inputs",
       "enabled": false,
       "ingested": false,
-      "status": "planned"
+      "status": "parser_implemented"
     },
     {
       "id": "board_ntfs",
@@ -212,12 +212,12 @@
       "vintage_policy": "append_only_first_seen",
       "revision_policy": "freeze timestamped provider value and retain corrections as later revisions",
       "historical_certification": "timestamped 16:00 history and account rights not yet certified",
-      "rights_profile": "cboe_terms_review_required",
+      "rights_profile": "cboe_written_license_required",
       "publication_role": "private_shadow_only",
       "measurement_contract": "16:00 control must remain separate from the 16:15 calculation-window sensitivity",
       "enabled": false,
       "ingested": false,
-      "status": "rights_review_required"
+      "status": "blocked_pending_written_license"
     },
     {
       "id": "cboe_vix_1615_sensitivity",
@@ -236,12 +236,12 @@
       "vintage_policy": "append_only_first_seen",
       "revision_policy": "freeze the exact timestamped value; later corrections are distinct revisions",
       "historical_certification": "exact timestamp history and account rights not yet certified",
-      "rights_profile": "cboe_terms_review_required",
+      "rights_profile": "cboe_written_license_required",
       "publication_role": "private_shadow_only",
       "measurement_contract": "never align a 16:15 value to the same Friday 16:00 forecast decision",
       "enabled": false,
       "ingested": false,
-      "status": "rights_review_required"
+      "status": "blocked_pending_written_license"
     },
     {
       "id": "cboe_vix_term_structure",
@@ -260,12 +260,12 @@
       "vintage_policy": "append_only_first_seen",
       "revision_policy": "freeze exact timestamped contract observations and source payload hashes",
       "historical_certification": "dataset entitlement, timestamps, settlement fields, and publication rights not yet reviewed",
-      "rights_profile": "cboe_terms_review_required",
+      "rights_profile": "cboe_written_license_required",
       "publication_role": "private_shadow_only",
       "measurement_contract": "spot, front contracts, and derived slope use one synchronized cutoff and cannot mix settlement with 16:00 snapshots",
       "enabled": false,
       "ingested": false,
-      "status": "rights_review_required"
+      "status": "blocked_pending_written_license"
     },
     {
       "id": "dol_weekly_claims",

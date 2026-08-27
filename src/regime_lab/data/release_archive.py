@@ -80,6 +80,7 @@ class PublicationRole(StrEnum):
 class SourceStatus(StrEnum):
     PLANNED = "planned"
     RIGHTS_REVIEW_REQUIRED = "rights_review_required"
+    BLOCKED_PENDING_WRITTEN_LICENSE = "blocked_pending_written_license"
     PARSER_IMPLEMENTED = "parser_implemented"
     INGESTING = "ingesting"
     INGESTED = "ingested"
@@ -170,6 +171,13 @@ class ReleaseSource:
         if self.ingested and not self.enabled:
             raise ReleaseCatalogError(
                 f"{self.source_id}: an ingested source must also be enabled"
+            )
+        if self.status in {
+            SourceStatus.RIGHTS_REVIEW_REQUIRED,
+            SourceStatus.BLOCKED_PENDING_WRITTEN_LICENSE,
+        } and (self.enabled or self.ingested):
+            raise ReleaseCatalogError(
+                f"{self.source_id}: a rights-blocked source cannot be enabled or ingested"
             )
         if self.ingested and self.status not in {
             SourceStatus.INGESTED,

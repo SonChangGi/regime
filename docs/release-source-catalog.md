@@ -6,9 +6,11 @@
 공식 URL, 빈도, 예상 지연, 시각 의미, 빈티지 정책, 권리 profile, 공개 역할과
 `enabled`/`ingested`/`status`를 같은 스키마로 정규화한다.
 
-2026-08-26 현재 모든 항목은 `enabled=false`, `ingested=false`다. 이 카탈로그는
-수집 완료나 모델 사용을 주장하지 않는다. 특히 Cboe 세 항목은 데이터 entitlement와
-공개 권리 검토 전까지 `rights_review_required`이며 private shadow 밖으로 나갈 수 없다.
+2026-08-27 현재 모든 항목은 `enabled=false`, `ingested=false`다. 이 카탈로그는
+수집 완료나 모델 사용을 주장하지 않는다. OFR FSI는 strict parser만 구현되어 실제
+ingest나 모델 사용을 뜻하지 않는다. Cboe 세 항목은 현 약관 검토 결과 서면 license
+전에는 수집을 시작할 수 없어 `blocked_pending_written_license`이며, ingest는 구현하지
+않는다.
 
 ## PIT 시장 총수익 입력
 
@@ -51,12 +53,12 @@ weekly 응답에는 split coefficient가 없으므로 별도 corporate-action so
 | `board_h41` | Fed H.4.1 dated releases | 중앙은행 유동성 archive | planned, not ingested |
 | `board_h8` | Fed H.8 dated releases | 은행 신용 archive | planned, not ingested |
 | `board_sloos` | Fed SLOOS releases | 대출 기준·수요 archive | planned, not ingested |
-| `ofr_fsi` | OFR FSI | first-seen snapshot, 과거는 sensitivity | planned, not ingested |
+| `ofr_fsi` | OFR FSI | first-seen snapshot, 과거는 sensitivity | parser implemented, not ingested |
 | `board_ntfs` | Fed near-term forward spread | 입력 vintage를 가진 shadow | planned, not ingested |
 | `board_ebp` | Fed excess bond premium | revision-prone monthly shadow | planned, not ingested |
-| `cboe_vix_1600_control` | VIX 16:00 control | exact timestamp only | rights review required |
-| `cboe_vix_1615_sensitivity` | VIX 16:15 sensitivity | 16:00 cutoff 뒤 값으로 분리 | rights review required |
-| `cboe_vix_term_structure` | timestamped VIX curve | synchronized exact timestamp | rights review required |
+| `cboe_vix_1600_control` | VIX 16:00 control | exact timestamp only | blocked pending written license |
+| `cboe_vix_1615_sensitivity` | VIX 16:15 sensitivity | 16:00 cutoff 뒤 값으로 분리 | blocked pending written license |
+| `cboe_vix_term_structure` | timestamped VIX curve | synchronized exact timestamp | blocked pending written license |
 | `dol_weekly_claims` | DOL claims archive | weekly release snapshot | planned, not ingested |
 | `bls` | BLS employment/CPI archives | monthly release snapshot | planned, not ingested |
 | `bea` | BEA GDP/PCE archives | estimate-vintage snapshot | planned, not ingested |
