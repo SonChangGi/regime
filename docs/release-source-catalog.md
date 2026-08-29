@@ -18,6 +18,8 @@ ingest나 모델 사용을 뜻하지 않는다. Cboe 세 항목은 현 약관 �
 `dividend_amount`를 [`config/series.json`](../config/series.json)의
 `research_fields`로 분리했다. 다음 실제 23-symbol 수집부터 같은 provider call 안에서
 raw close와 함께 first-seen을 보존하며, 기존 모델 feature에는 들어가지 않는다.
+주간 분석 canonical에는 audit column으로만 materialize되어 decision shadow의
+split-safe price-only 분해에 사용된다. 예측 feature selector에서는 계속 제외된다.
 weekly 응답에는 split coefficient가 없으므로 별도 corporate-action source가 권리·시각
 검토와 회귀 테스트를 통과하기 전까지 PIT total-return challenger는 실데이터로 만들지
 않는다. adjusted close의 현재 조정계수를 과거 PIT event로 역산하지 않는다

@@ -121,7 +121,7 @@ def _history(rows: int = 70) -> tuple[tuple[datetime, ...], tuple[Observation, .
     return cutoffs, tuple(records)
 
 
-def test_v3_dataset_uses_all_volumes_and_split_adjusted_core_ohlc() -> None:
+def test_v3_dataset_uses_all_volumes_and_split_adjusted_ohlc_without_expanding_features() -> None:
     cutoffs, observations = _history()
     dataset = build_weekly_dataset(_config(), cutoffs, observations)
 
@@ -131,6 +131,17 @@ def test_v3_dataset_uses_all_volumes_and_split_adjusted_core_ohlc() -> None:
     assert "spy_raw_close" in dataset.canonical
     assert "spy_close" in dataset.canonical
     assert dataset.canonical.columns.is_unique
+    expected_adjusted_columns = {
+        f"{symbol.lower()}_{suffix}"
+        for symbol in SYMBOLS
+        for suffix in (
+            "adjusted_open",
+            "adjusted_high",
+            "adjusted_low",
+            "adjustment_factor",
+        )
+    }
+    assert expected_adjusted_columns.issubset(dataset.canonical.columns)
 
     before_split = dataset.canonical.index[34]
     after_split = dataset.canonical.index[35]
@@ -140,6 +151,19 @@ def test_v3_dataset_uses_all_volumes_and_split_adjusted_core_ohlc() -> None:
         dataset.canonical["spy_adjusted_open"],
         dataset.canonical["spy_close"] * 0.99,
     )
+    np.testing.assert_allclose(
+        dataset.canonical["xly_adjusted_open"],
+        dataset.canonical["xly_close"] * 0.99,
+    )
+    np.testing.assert_allclose(
+        dataset.canonical["xly_adjusted_high"],
+        dataset.canonical["xly_close"] * 1.02,
+    )
+    np.testing.assert_allclose(
+        dataset.canonical["xly_adjusted_low"],
+        dataset.canonical["xly_close"] * 0.97,
+    )
+    assert dataset.canonical.loc[after_split, "xly_adjustment_factor"] == 2.0
 
     expected_range = np.log(1.02 / 0.97)
     np.testing.assert_allclose(
@@ -158,6 +182,14 @@ def test_v3_dataset_uses_all_volumes_and_split_adjusted_core_ohlc() -> None:
     assert sum(
         column.startswith("market_ohlc__") for column in dataset.features
     ) == len(CORE_OHLC) * 3
+    assert {
+        column.split("__")[1]
+        for column in dataset.features
+        if column.startswith("market_ohlc__")
+    } == {symbol.lower() for symbol in CORE_OHLC}
+    assert not any(
+        column.startswith("market_ohlc__xly__") for column in dataset.features
+    )
     assert any(column.startswith("market_internal__") for column in dataset.features)
     assert any(column.startswith("market_spread__") for column in dataset.features)
     assert any(column.startswith("volume_internal__") for column in dataset.features)
@@ -217,7 +249,7 @@ def test_v3_dataset_is_prefix_causal_and_rejects_incomplete_ohlc_config() -> Non
         build_weekly_dataset(incomplete, cutoffs, observations)
 
 
-def test_research_dividend_rows_do_not_silently_enter_model_features() -> None:
+def test_research_dividend_rows_are_available_to_analysis_but_not_model_features() -> None:
     cutoffs, observations = _history(rows=24)
     config = _config()
     alpha = config["alpha_vantage"]
@@ -250,7 +282,16 @@ def test_research_dividend_rows_do_not_silently_enter_model_features() -> None:
         observations,
     )
 
-    assert_frame_equal(with_research_rows.canonical, without_research_rows.canonical)
+    shared_columns = without_research_rows.canonical.columns
+    assert_frame_equal(
+        with_research_rows.canonical.loc[:, shared_columns],
+        without_research_rows.canonical,
+    )
+    for symbol in SYMBOLS:
+        column = f"{symbol.lower()}_dividend_amount"
+        assert column in with_research_rows.canonical
+        assert column not in without_research_rows.canonical
+        assert with_research_rows.canonical[column].notna().all()
     assert_frame_equal(with_research_rows.features, without_research_rows.features)
     assert not any("dividend" in column for column in with_research_rows.features)
 
@@ -365,6 +406,7 @@ def test_ohlc_features_fail_closed_on_cross_field_period_mismatch() -> None:
     dataset = build_weekly_dataset(_config(), cutoffs, mismatched)
 
     at = dataset.features.index[-1]
+    assert np.isnan(dataset.canonical.loc[at, "spy_adjusted_open"])
     assert np.isnan(dataset.features.loc[at, "market_ohlc__spy__log_gap_1w"])
     assert np.isnan(
         dataset.features.loc[at, "market_ohlc__spy__log_high_low_range_1w"]

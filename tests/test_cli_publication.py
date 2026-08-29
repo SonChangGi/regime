@@ -81,6 +81,106 @@ def test_publish_active_generation_replaces_both_outputs_together(
     _assert_no_transaction_directories(artifacts, output)
 
 
+def test_live_v2_publication_requires_research_replay_input(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_stage_fakes(monkeypatch)
+    payload = {
+        "meta": {
+            "generation_id": "new",
+            "result_version": "weekly-regime-result-v5",
+            "mode": "live",
+            "data_as_of": "2026-08-21T20:00:00+00:00",
+        },
+        "research": {
+            "prospective_decision_shadow": {
+                "schema_version": "regime-prospective-decision-shadow/2"
+            }
+        },
+    }
+
+    with pytest.raises(ValueError, match="requires research replay input"):
+        cli._publish_active_generation(
+            payload,
+            object(),
+            output=tmp_path / "regime-results.json",
+            artifacts=tmp_path / "artifacts",
+            input_snapshot_sha256="d" * 64,
+        )
+
+
+def test_live_v2_publication_includes_replay_input_before_inventory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(cli, "validate_dashboard_payload", lambda _payload: None)
+
+    def write_artifacts(
+        _benchmark: object,
+        directory: Path,
+        **_kwargs: object,
+    ) -> None:
+        directory.mkdir(parents=True)
+        (directory / "selection-family-audit.json").write_text(
+            "{}", encoding="utf-8"
+        )
+
+    monkeypatch.setattr(cli, "_write_supporting_results", write_artifacts)
+    monkeypatch.setattr(cli, "_verify_staged_evidence_artifacts", lambda *_: None)
+    monkeypatch.setattr(cli, "_verify_staged_research_artifacts", lambda *_: None)
+    monkeypatch.setattr(cli, "_verify_staged_core_artifacts", lambda *_: None)
+    monkeypatch.setattr(
+        cli, "_verify_staged_feature_quality_artifact", lambda *_: None
+    )
+    monkeypatch.setattr(cli, "build_generation_manifest", lambda **_: {})
+    monkeypatch.setattr(
+        cli, "bind_payload_to_generation_manifest", lambda value, _: value
+    )
+    monkeypatch.setattr(cli, "validate_generation_manifest", lambda *_, **__: {})
+
+    def write_payload(value: dict[str, object], path: Path) -> Path:
+        path.write_text(json.dumps(value), encoding="utf-8")
+        return path
+
+    monkeypatch.setattr(cli, "write_dashboard_payload", write_payload)
+    payload = {
+        "meta": {
+            "generation_id": "new",
+            "result_version": "weekly-regime-result-v5",
+            "mode": "live",
+            "data_as_of": "2026-08-21T20:00:00+00:00",
+        },
+        "research": {
+            "prospective_decision_shadow": {
+                "schema_version": "regime-prospective-decision-shadow/2"
+            }
+        },
+        "sources": [],
+    }
+    replay = {
+        "data_as_of": "2026-08-21T20:00:00+00:00",
+        "operational_generation_input_snapshot_sha256": "d" * 64,
+    }
+    artifacts = tmp_path / "artifacts"
+
+    cli._publish_active_generation(
+        payload,
+        object(),
+        output=tmp_path / "regime-results.json",
+        artifacts=artifacts,
+        input_snapshot_sha256="d" * 64,
+        research_replay_input=replay,
+    )
+
+    assert json.loads(
+        (artifacts / "research-replay-input.json").read_text(encoding="utf-8")
+    ) == replay
+    assert "research-replay-input.json" in (
+        artifacts / "SHA256SUMS"
+    ).read_text(encoding="utf-8")
+
+
 def test_staging_failure_leaves_old_generation_untouched(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

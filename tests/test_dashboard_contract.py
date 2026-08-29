@@ -759,6 +759,285 @@ def _valid_v5_browser_payload() -> dict:
     }
 
 
+def _target_week_browser_payload() -> dict:
+    payload = _valid_v5_browser_payload()
+    shared_metadata = {
+        "entry_price_basis": "next_week_adjusted_open",
+        "exit_price_basis": "horizon_week_adjusted_close",
+        "rebalance_policy": "none_fixed_asset_hold",
+        "origin_sampling": "weekly_rolling_overlapping",
+        "return_measure": "provider_adjusted_forward_return",
+        "entry_week_distribution_policy": "conservative_excluded_without_ex_date",
+        "corporate_action_policy": "same_row_adjustment_factor_split_consistent",
+        "drawdown_observation_basis": "entry_adjusted_open_then_weekly_adjusted_closes",
+    }
+    observed = payload["research"]["conditional_asset_stats"]
+    observed.update(
+        {
+            "method": (
+                "matched_oos_actual_next_state_target_week_adjusted_forward_return"
+            ),
+            "role": "matched_oracle_diagnostic",
+            "conditioning": "actual_next_state_on_matched_oos_origins",
+            "state_horizon_weeks": 1,
+            **shared_metadata,
+        }
+    )
+    forecast = payload["research"]["model_conditioned_asset_stats"]
+    forecast.update(
+        {
+            "method": (
+                "matched_oos_predicted_next_state_target_week_adjusted_forward_return"
+            ),
+            **shared_metadata,
+        }
+    )
+    non_overlapping_by_horizon = {1: 80, 4: 20, 13: 7}
+    for row in [*observed["rows"], *forecast["rows"]]:
+        mean_return = float(row["mean_return"])
+        row.update(
+            {
+                "non_overlapping_n": non_overlapping_by_horizon[
+                    int(row["horizon_weeks"])
+                ],
+                "minimum_non_overlapping_observations": 5,
+                "unconditional_benchmark_method": (
+                    "same_asset_horizon_all_origins_mean"
+                ),
+                "unconditional_benchmark_n": 240,
+                "unconditional_benchmark_mean_return": 0.02,
+                "excess_mean_return": mean_return - 0.02,
+                "episode_equal_mean_return": mean_return,
+                "episode_equal_unconditional_benchmark_method": (
+                    "same_asset_horizon_all_state_episodes_equal_weight"
+                ),
+                "episode_equal_unconditional_benchmark_episode_n": 36,
+                "episode_equal_unconditional_benchmark_mean_return": 0.015,
+                "episode_equal_excess_return": mean_return - 0.015,
+                "episode_bootstrap_method": "whole_episode_resampling",
+                "episode_bootstrap_resamples": 1_999,
+                "episode_bootstrap_seed": 1_000_017,
+                "episode_equal_mean_return_ci95_lower": mean_return - 0.02,
+                "episode_equal_mean_return_ci95_upper": mean_return + 0.02,
+            }
+        )
+    return payload
+
+
+def _valid_browser_forecast_ledger_v2(*, completed: bool = False) -> dict:
+    performance = {
+        "status": "completed" if completed else "pending",
+        "weeks": 1 if completed else 0,
+        "gross_cumulative_return": 0.02 if completed else None,
+        "net_cumulative_return": 0.0199 if completed else None,
+        "turnover_sum": 0.1 if completed else None,
+        "transaction_cost_rate_sum": 0.0001 if completed else None,
+        "transaction_cost_bps": 10.0 if completed else None,
+        "forecast_hit_count": 1 if completed else None,
+        "forecast_accuracy": 1.0 if completed else None,
+        "actual_state_counts": (
+            {"risk_on": 1, "transition": 0, "risk_off": 0}
+            if completed
+            else None
+        ),
+    }
+    return {
+        "schema_version": "regime-prospective-ledger-summary/2",
+        "status": "completed" if completed else "empty",
+        "entry_count": 1 if completed else 0,
+        "pending_evaluation_count": 0,
+        "unresolved_due_evaluation_count": 0,
+        "realized_evaluation_count": 1 if completed else 0,
+        "partial_evaluation_count": 0,
+        "key_manifest_sha256": "4" * 64,
+        "evaluation_manifest_sha256": "5" * 64,
+        "hash_scope": "ordered_ledger_primary_keys_only",
+        "evaluation_hash_scope": (
+            "ordered_forecast_primary_keys_status_and_evaluation_sha256"
+        ),
+        "performance": performance,
+    }
+
+
+def _valid_browser_payload_with_forecast_ledger_v2(
+    *, completed: bool = False
+) -> dict:
+    payload = _valid_v5_browser_payload()
+    payload["forecast"].update(
+        {
+            "forecast_evidence_track": payload["forecast"]["evidence_track"],
+            "issue_latency_seconds": 0,
+            "scheduled_horizon_seconds": 604_800,
+            "remaining_horizon_fraction": 1.0,
+            "minimum_full_horizon_remaining_fraction": 4 / 7,
+            "timing_status": "full_horizon_forecast",
+            "prospective_ledger": _valid_browser_forecast_ledger_v2(
+                completed=completed
+            ),
+        }
+    )
+    return payload
+
+
+def _decision_shadow_metrics(*, v2: bool) -> dict:
+    metrics = {
+        "weeks": 80,
+        "cumulative_return": 0.10,
+        "annualized_return": 0.06,
+        "annualized_volatility": 0.12,
+        "sharpe": 0.50,
+        "certainty_equivalent_return": 0.04,
+        "maximum_drawdown": -0.15,
+        "annualized_turnover": 0.35,
+        "gross_cumulative_return": 0.12,
+        "transaction_cost_bps": 10.0,
+    }
+    metrics[
+        "transaction_cost_rate_sum" if v2 else "total_transaction_cost"
+    ] = 0.02
+    return metrics
+
+
+def _valid_browser_decision_shadow_v1() -> dict:
+    return {
+        "schema_version": "regime-prospective-decision-shadow/1",
+        "role": "research_only_no_forecast_or_champion_effect",
+        "spec": {
+            "path": "config/decision-shadow.json",
+            "sha256": "1" * 64,
+            "spec_id": "spy-tlt-probability-shadow-v1",
+        },
+        "execution_contract": {
+            "first_tradable_point": "next_completed_weekly_close",
+            "execution_lag_weeks": 1,
+            "holding_period_weeks": 1,
+        },
+        "historical_reconstructed_shadow": {
+            "status": "completed",
+            "evidence_track": "reconstructed_oos",
+            "evidence_status": "historical_reconstructed_shadow",
+            "first_tradable_at": "2024-01-12T21:00:00+00:00",
+            "minimum_evaluation_weeks": 52,
+            "strategies": {
+                name: _decision_shadow_metrics(v2=False)
+                for name in (
+                    "probability_shadow",
+                    "spy_buy_and_hold",
+                    "static_60_40",
+                    "vol_target_60_40",
+                )
+            },
+        },
+        "prospective_ledger": {
+            "status": "awaiting_realized_targets",
+            "evidence_track": "operational_oos",
+            "ledger_entry_count": 0,
+            "realized_evaluation_count": 0,
+            "affects_official_forecast": False,
+            "affects_champion_selection": False,
+        },
+    }
+
+
+def _valid_browser_decision_shadow_v2() -> dict:
+    shadow = _valid_browser_decision_shadow_v1()
+    latest_target_weights = {"SPY": 0.512, "TLT": 0.488}
+    shadow["schema_version"] = "regime-prospective-decision-shadow/2"
+    shadow["spec"] = {
+        "path": "config/decision-shadow-v2.json",
+        "sha256": "2" * 64,
+        "spec_id": "spy-tlt-probability-shadow-v2",
+    }
+    shadow["execution_contract"] = {
+        "signal_origin": "completed_weekly_close",
+        "first_tradable_point": "next_week_adjusted_open",
+        "target_return_window": "next_week_open_to_close",
+        "rebalance_frequency": "weekly",
+        "late_signal_policy": "no_trade",
+        "holding_period_weeks": 1,
+    }
+    shadow["current_signal"] = {
+        "origin_date": "2026-08-07",
+        "target_week": "2026-08-14",
+        "scheduled_entry_at": "2026-08-10T09:30:00-04:00",
+        "decision_at": "2026-08-07T20:00:00+00:00",
+        "forecast_model": "causal_dynamic_ensemble",
+        "status": "scheduled",
+        "action": "trade_at_scheduled_open",
+    }
+    shadow["historical_reconstructed_shadow"] = {
+        "status": "completed",
+        "evidence_track": "reconstructed_oos",
+        "evidence_status": "historical_reconstructed_shadow",
+        "first_tradable_week": "2024-01-12",
+        "evaluation_start_week": "2024-01-12",
+        "evaluation_end_week": "2025-07-18",
+        "minimum_evaluation_weeks": 52,
+        "latest_target_weights": deepcopy(latest_target_weights),
+        "allocation_policy": {
+            "method": "probability_weighted_state_portfolios",
+            "assets": ["SPY", "TLT"],
+            "forecast_model": "causal_dynamic_ensemble",
+            "latest_signal_origin": "2026-08-07",
+            "latest_target_weights": deepcopy(latest_target_weights),
+        },
+        "strategies": {
+            name: _decision_shadow_metrics(v2=True)
+            for name in (
+                "probability_shadow",
+                "spy_buy_and_hold",
+                "static_60_40",
+                "vol_target_60_40",
+            )
+        },
+    }
+    public_ledger = _valid_browser_forecast_ledger_v2()
+    shadow["prospective_ledger"] = {
+        "status": "pending",
+        "evidence_track": "operational_oos",
+        "ledger_entry_count": public_ledger["entry_count"],
+        "pending_evaluation_count": public_ledger["pending_evaluation_count"],
+        "unresolved_due_evaluation_count": public_ledger[
+            "unresolved_due_evaluation_count"
+        ],
+        "realized_evaluation_count": public_ledger["realized_evaluation_count"],
+        "partial_evaluation_count": public_ledger["partial_evaluation_count"],
+        "evaluation_manifest_sha256": public_ledger[
+            "evaluation_manifest_sha256"
+        ],
+        "performance": deepcopy(public_ledger["performance"]),
+        "affects_official_forecast": False,
+        "affects_champion_selection": False,
+    }
+    return shadow
+
+
+def _valid_browser_payload_with_operating_forecast() -> dict:
+    payload = _valid_v5_browser_payload()
+    champion = payload["selection"]["operating_champion"]
+    payload["model"]["champion"] = champion
+    for row in payload["model"]["leaderboard"]:
+        selected = row["name"] == champion
+        row["selected"] = selected
+        row["is_champion"] = selected
+    for row in payload["model"]["selection_diagnostics"]:
+        selected = row["model"] == champion
+        row["selected"] = selected
+        row["gate_passed"] = selected
+    latest_week = payload["weekly"][-1]
+    selected_forecast = next(
+        row for row in latest_week["model_forecasts"] if row["model"] == champion
+    )
+    latest_week["next_week"].update(
+        {
+            key: deepcopy(value)
+            for key, value in selected_forecast.items()
+            if key != "method"
+        }
+    )
+    return payload
+
+
 def _canonical_json_sha256(value: object) -> str:
     encoded = json.dumps(
         value,
@@ -1089,6 +1368,7 @@ def test_required_result_surfaces_exist() -> None:
         "feature-catalog",
         "header-data-as-of",
         "header-analysis-date",
+        "header-analysis-coverage",
         "model-loss-chart",
         "model-forecast-field",
         "model-forecast-select",
@@ -1128,9 +1408,18 @@ def test_required_result_surfaces_exist() -> None:
         "conditional-stat-body",
         "conditional-unavailable",
         "conditional-results",
+        "conditional-support-summary",
         "research-sidecar-unavailable",
+        "decision-action-card",
+        "decision-action-title",
+        "decision-action-status",
+        "decision-shadow-current-summary",
         "decision-shadow-block",
         "decision-shadow-grid",
+        "decision-shadow-economic-summary",
+        "decision-shadow-economic-status",
+        "decision-shadow-economic-conclusion",
+        "decision-shadow-economic-metrics",
     }
     assert required_ids <= parsed_html().ids
 
@@ -1174,8 +1463,16 @@ def test_shared_navigation_and_theme_contract_are_explicit() -> None:
         'aria-current="page">Regime</a>'
     ) in document
     assert 'class="section-nav"' in document
-    for anchor in ("#overview", "#history", "#evidence", "#models", "#data-health"):
+    for anchor in (
+        "#overview",
+        "#decision-shadow-block",
+        "#conditional-stats",
+        "#history",
+    ):
         assert f'href="{anchor}"' in document
+    assert 'href="#evidence"' not in document
+    assert 'href="#models"' not in document
+    assert 'href="#data-health"' not in document
     assert 'id="copy-view-link"' in document
     assert 'class="page-jump-nav"' not in document
     assert 'const THEME_STORAGE_KEY = "quant-research-theme"' in script
@@ -1302,6 +1599,7 @@ def test_label_copy_forecast_disclosure_and_model_section_stay_clear() -> None:
     assert "function renderModelRoles" not in script
     assert (
         document.index('id="overview"')
+        < document.index('id="decision-shadow-block"')
         < document.index('id="conditional-stats"')
         < document.index('id="history"')
         < document.index('id="evidence"')
@@ -1339,7 +1637,15 @@ def test_v5_only_sections_fail_closed_for_v4_payloads() -> None:
     document = HTML_PATH.read_text(encoding="utf-8")
     script = JS_PATH.read_text(encoding="utf-8")
     styles = CSS_PATH.read_text(encoding="utf-8")
-    for section_id in ("conditional-stats-nav", "duration-context-card", "fx-context-card", "conditional-stats", "research-evidence"):
+    for section_id in (
+        "conditional-stats-nav",
+        "duration-context-card",
+        "fx-context-card",
+        "decision-action-card",
+        "decision-shadow-block",
+        "conditional-stats",
+        "research-evidence",
+    ):
         assert f'id="{section_id}"' in document
         start = document.index(f'id="{section_id}"')
         assert "hidden" in document[start : start + 180]
@@ -1989,6 +2295,413 @@ def test_v5_browser_rejects_model_conditioned_metadata_row_and_metric_drift() ->
     )
 
 
+def test_v5_browser_accepts_target_week_matched_oos_outcome_contract() -> None:
+    assert _browser_validation_errors(_target_week_browser_payload()) == []
+
+
+def test_v5_browser_rejects_target_week_schema_and_decision_metric_tamper() -> None:
+    cases: list[tuple[str, dict]] = []
+
+    missing_metadata = _target_week_browser_payload()
+    missing_metadata["research"]["conditional_asset_stats"].pop("return_measure")
+    cases.append(("missing target metadata", missing_metadata))
+
+    unexpected_row_field = _target_week_browser_payload()
+    unexpected_row_field["research"]["conditional_asset_stats"]["rows"][0][
+        "unexpected"
+    ] = True
+    cases.append(("unexpected row field", unexpected_row_field))
+
+    missing_benchmark = _target_week_browser_payload()
+    missing_benchmark["research"]["conditional_asset_stats"]["rows"][0].pop(
+        "unconditional_benchmark_mean_return"
+    )
+    cases.append(("missing benchmark", missing_benchmark))
+
+    invalid_non_overlapping = _target_week_browser_payload()
+    invalid_non_overlapping["research"]["conditional_asset_stats"]["rows"][0][
+        "non_overlapping_n"
+    ] = 79
+    cases.append(("target-week overlap mismatch", invalid_non_overlapping))
+
+    invalid_support = _target_week_browser_payload()
+    invalid_support["research"]["conditional_asset_stats"]["rows"][0][
+        "minimum_non_overlapping_observations"
+    ] = 4
+    cases.append(("support threshold", invalid_support))
+
+    invalid_benchmark_count = _target_week_browser_payload()
+    invalid_benchmark_count["research"]["conditional_asset_stats"]["rows"][0][
+        "unconditional_benchmark_n"
+    ] = 79
+    cases.append(("benchmark count", invalid_benchmark_count))
+
+    inconsistent_benchmark = _target_week_browser_payload()
+    inconsistent_benchmark["research"]["model_conditioned_asset_stats"]["rows"][0][
+        "unconditional_benchmark_mean_return"
+    ] = 0.03
+    cases.append(("matched benchmark drift", inconsistent_benchmark))
+
+    invalid_excess = _target_week_browser_payload()
+    invalid_excess["research"]["conditional_asset_stats"]["rows"][0][
+        "excess_mean_return"
+    ] = 0.99
+    cases.append(("mean excess", invalid_excess))
+
+    invalid_episode_mean = _target_week_browser_payload()
+    invalid_episode_mean["research"]["conditional_asset_stats"]["rows"][0][
+        "episode_equal_mean_return"
+    ] = "0.08"
+    cases.append(("episode mean type", invalid_episode_mean))
+
+    invalid_episode_excess = _target_week_browser_payload()
+    invalid_episode_excess["research"]["conditional_asset_stats"]["rows"][0][
+        "episode_equal_excess_return"
+    ] = 0.99
+    cases.append(("episode excess", invalid_episode_excess))
+
+    invalid_episode_benchmark = _target_week_browser_payload()
+    invalid_episode_benchmark["research"]["conditional_asset_stats"]["rows"][0][
+        "episode_equal_unconditional_benchmark_mean_return"
+    ] = 0.025
+    cases.append(("matched episode benchmark drift", invalid_episode_benchmark))
+
+    missing_episode_interval = _target_week_browser_payload()
+    missing_episode_interval["research"]["model_conditioned_asset_stats"]["rows"][
+        0
+    ].pop("episode_equal_mean_return_ci95_lower")
+    cases.append(("episode interval field", missing_episode_interval))
+
+    for label, payload in cases:
+        assert _browser_validation_errors(payload), f"accepted {label} tamper"
+
+
+def test_v5_browser_accepts_prospective_ledger_v2_empty_and_completed() -> None:
+    assert _browser_validation_errors(
+        _valid_browser_payload_with_forecast_ledger_v2()
+    ) == []
+    assert _browser_validation_errors(
+        _valid_browser_payload_with_forecast_ledger_v2(completed=True)
+    ) == []
+
+
+def test_v5_browser_rejects_prospective_ledger_v2_contract_and_metric_tamper() -> None:
+    cases: list[tuple[str, dict]] = []
+
+    missing_manifest = _valid_browser_payload_with_forecast_ledger_v2()
+    missing_manifest["forecast"]["prospective_ledger"].pop(
+        "evaluation_manifest_sha256"
+    )
+    cases.append(("missing evaluation manifest", missing_manifest))
+
+    inconsistent_counts = _valid_browser_payload_with_forecast_ledger_v2()
+    inconsistent_counts["forecast"]["prospective_ledger"][
+        "pending_evaluation_count"
+    ] = 1
+    cases.append(("inconsistent counts", inconsistent_counts))
+
+    wrong_empty_metrics = _valid_browser_payload_with_forecast_ledger_v2()
+    wrong_empty_metrics["forecast"]["prospective_ledger"]["performance"][
+        "forecast_accuracy"
+    ] = 0.0
+    cases.append(("empty metrics", wrong_empty_metrics))
+
+    net_above_gross = _valid_browser_payload_with_forecast_ledger_v2(
+        completed=True
+    )
+    net_above_gross["forecast"]["prospective_ledger"]["performance"][
+        "net_cumulative_return"
+    ] = 0.03
+    cases.append(("net above gross", net_above_gross))
+
+    wrong_cost = _valid_browser_payload_with_forecast_ledger_v2(completed=True)
+    wrong_cost["forecast"]["prospective_ledger"]["performance"][
+        "transaction_cost_rate_sum"
+    ] = 0.0002
+    cases.append(("cost identity", wrong_cost))
+
+    wrong_state_counts = _valid_browser_payload_with_forecast_ledger_v2(
+        completed=True
+    )
+    wrong_state_counts["forecast"]["prospective_ledger"]["performance"][
+        "actual_state_counts"
+    ]["transition"] = 1
+    cases.append(("state counts", wrong_state_counts))
+
+    for label, payload in cases:
+        assert _browser_validation_errors(payload), f"accepted {label} tamper"
+
+
+def test_v5_browser_accepts_both_decision_shadow_generations() -> None:
+    for payload, shadow in (
+        (_valid_v5_browser_payload(), _valid_browser_decision_shadow_v1()),
+        (
+            _valid_browser_payload_with_operating_forecast(),
+            _valid_browser_decision_shadow_v2(),
+        ),
+    ):
+        payload["research"]["prospective_decision_shadow"] = shadow
+        assert _browser_validation_errors(payload) == []
+
+    zero_volatility = _valid_browser_decision_shadow_v2()
+    for metrics in zero_volatility["historical_reconstructed_shadow"][
+        "strategies"
+    ].values():
+        metrics["sharpe"] = None
+    payload = _valid_browser_payload_with_operating_forecast()
+    payload["research"]["prospective_decision_shadow"] = zero_volatility
+    assert _browser_validation_errors(payload) == []
+
+    zero_weeks = _valid_browser_decision_shadow_v2()
+    zero_weeks["historical_reconstructed_shadow"]["status"] = "insufficient_history"
+    zero_weeks["historical_reconstructed_shadow"]["evaluation_start_week"] = None
+    zero_weeks["historical_reconstructed_shadow"]["evaluation_end_week"] = None
+    nullable_metrics = (
+        "cumulative_return",
+        "annualized_return",
+        "annualized_volatility",
+        "sharpe",
+        "certainty_equivalent_return",
+        "maximum_drawdown",
+        "annualized_turnover",
+        "gross_cumulative_return",
+    )
+    for metrics in zero_weeks["historical_reconstructed_shadow"][
+        "strategies"
+    ].values():
+        metrics["weeks"] = 0
+        for field in nullable_metrics:
+            metrics[field] = None
+        metrics["transaction_cost_rate_sum"] = 0.0
+    payload = _valid_browser_payload_with_operating_forecast()
+    payload["research"]["prospective_decision_shadow"] = zero_weeks
+    assert _browser_validation_errors(payload) == []
+
+
+def test_v5_browser_rejects_decision_shadow_contract_and_numeric_tamper() -> None:
+    cases: list[tuple[str, dict]] = []
+
+    wrong_spec = _valid_browser_decision_shadow_v2()
+    wrong_spec["spec"]["spec_id"] = "spy-tlt-probability-shadow-v1"
+    cases.append(("spec identity", wrong_spec))
+
+    wrong_execution = _valid_browser_decision_shadow_v2()
+    wrong_execution["execution_contract"]["late_signal_policy"] = "trade_late"
+    cases.append(("execution", wrong_execution))
+
+    missing_current_signal = _valid_browser_decision_shadow_v2()
+    missing_current_signal.pop("current_signal")
+    cases.append(("current signal", missing_current_signal))
+
+    wrong_entry_clock = _valid_browser_decision_shadow_v2()
+    wrong_entry_clock["current_signal"][
+        "scheduled_entry_at"
+    ] = "2026-08-10T10:30:00-04:00"
+    cases.append(("entry clock", wrong_entry_clock))
+
+    wrong_signal_action = _valid_browser_decision_shadow_v2()
+    wrong_signal_action["current_signal"].update(
+        {"status": "missed_entry", "action": "no_trade"}
+    )
+    cases.append(("current signal action", wrong_signal_action))
+
+    wrong_signal_origin = _valid_browser_decision_shadow_v2()
+    wrong_signal_origin["current_signal"]["origin_date"] = "2026-07-31"
+    wrong_signal_origin["current_signal"]["target_week"] = "2026-08-07"
+    wrong_signal_origin["current_signal"][
+        "scheduled_entry_at"
+    ] = "2026-08-03T09:30:00-04:00"
+    cases.append(("current signal origin binding", wrong_signal_origin))
+
+    wrong_signal_decision = _valid_browser_decision_shadow_v2()
+    wrong_signal_decision["current_signal"][
+        "decision_at"
+    ] = "2026-08-07T19:00:00+00:00"
+    cases.append(("current signal decision binding", wrong_signal_decision))
+
+    wrong_signal_model = _valid_browser_decision_shadow_v2()
+    wrong_signal_model["current_signal"]["forecast_model"] = "markov"
+    cases.append(("current signal model binding", wrong_signal_model))
+
+    wrong_allocation_model = _valid_browser_decision_shadow_v2()
+    wrong_allocation_model["historical_reconstructed_shadow"][
+        "allocation_policy"
+    ]["forecast_model"] = "markov"
+    cases.append(("allocation model binding", wrong_allocation_model))
+
+    missing_evaluation_bound = _valid_browser_decision_shadow_v2()
+    missing_evaluation_bound["historical_reconstructed_shadow"].pop(
+        "evaluation_end_week"
+    )
+    cases.append(("evaluation bound field", missing_evaluation_bound))
+
+    reversed_evaluation_bounds = _valid_browser_decision_shadow_v2()
+    reversed_evaluation_bounds["historical_reconstructed_shadow"].update(
+        {
+            "evaluation_start_week": "2025-07-18",
+            "evaluation_end_week": "2024-01-12",
+        }
+    )
+    cases.append(("evaluation bounds order", reversed_evaluation_bounds))
+
+    mismatched_evaluation_span = _valid_browser_decision_shadow_v2()
+    mismatched_evaluation_span["historical_reconstructed_shadow"][
+        "evaluation_end_week"
+    ] = "2025-07-11"
+    cases.append(("evaluation bounds weeks", mismatched_evaluation_span))
+
+    mismatched_weeks = _valid_browser_decision_shadow_v2()
+    mismatched_weeks["historical_reconstructed_shadow"]["strategies"][
+        "spy_buy_and_hold"
+    ]["weeks"] = 79
+    cases.append(("common period", mismatched_weeks))
+
+    string_metric = _valid_browser_decision_shadow_v2()
+    string_metric["historical_reconstructed_shadow"]["strategies"][
+        "probability_shadow"
+    ]["annualized_return"] = "0.06"
+    cases.append(("finite metric", string_metric))
+
+    net_above_gross = _valid_browser_decision_shadow_v2()
+    net_above_gross["historical_reconstructed_shadow"]["strategies"][
+        "probability_shadow"
+    ]["cumulative_return"] = 0.13
+    cases.append(("net above gross", net_above_gross))
+
+    net_gross_null_mismatch = _valid_browser_decision_shadow_v2()
+    net_gross_null_mismatch["historical_reconstructed_shadow"]["strategies"][
+        "probability_shadow"
+    ]["gross_cumulative_return"] = None
+    cases.append(("net gross nullability", net_gross_null_mismatch))
+
+    negative_turnover = _valid_browser_decision_shadow_v2()
+    negative_turnover["historical_reconstructed_shadow"]["strategies"][
+        "probability_shadow"
+    ]["annualized_turnover"] = -0.01
+    cases.append(("negative turnover", negative_turnover))
+
+    negative_cost = _valid_browser_decision_shadow_v2()
+    negative_cost["historical_reconstructed_shadow"]["strategies"][
+        "probability_shadow"
+    ]["transaction_cost_rate_sum"] = -0.01
+    cases.append(("negative cost", negative_cost))
+
+    wrong_weights = _valid_browser_decision_shadow_v2()
+    wrong_weights["historical_reconstructed_shadow"]["allocation_policy"][
+        "latest_target_weights"
+    ]["SPY"] = 0.7
+    cases.append(("weight copy", wrong_weights))
+
+    wrong_forecast_weights = _valid_browser_decision_shadow_v2()
+    for container in (
+        wrong_forecast_weights["historical_reconstructed_shadow"],
+        wrong_forecast_weights["historical_reconstructed_shadow"][
+            "allocation_policy"
+        ],
+    ):
+        container["latest_target_weights"] = {"SPY": 0.7, "TLT": 0.3}
+    cases.append(("forecast probability weight binding", wrong_forecast_weights))
+
+    completed_ledger = _valid_browser_decision_shadow_v2()
+    completed_ledger["prospective_ledger"].update(
+        {
+            "status": "completed",
+            "ledger_entry_count": 1,
+            "realized_evaluation_count": 1,
+        }
+    )
+    cases.append(("ledger status/count", completed_ledger))
+
+    for label, shadow in cases:
+        payload = _valid_browser_payload_with_operating_forecast()
+        payload["research"]["prospective_decision_shadow"] = shadow
+        assert _browser_validation_errors(payload), f"accepted {label} tamper"
+
+
+def test_decision_shadow_timing_policy_uses_v2_entry_deadline_not_forecast_lateness() -> None:
+    v1 = _valid_browser_decision_shadow_v1()
+    v2 = _valid_browser_decision_shadow_v2()
+    program = f"""
+const api = require({json.dumps(str(JS_PATH))});
+const v1 = {json.dumps(v1)};
+const v2 = {json.dumps(v2)};
+const missed = JSON.parse(JSON.stringify(v2));
+missed.current_signal.decision_at = "2026-08-10T13:30:00Z";
+missed.current_signal.status = "missed_entry";
+missed.current_signal.action = "no_trade";
+const before = Date.parse("2026-08-10T13:29:59Z");
+const after = Date.parse("2026-08-10T13:30:00Z");
+const pick = (value) => ({{
+  isV2: value.isV2,
+  missedEntry: value.missedEntry,
+  runtimeEntryClosed: value.runtimeEntryClosed,
+  legacyLateNowcast: value.legacyLateNowcast,
+}});
+process.stdout.write(JSON.stringify([
+  pick(api.decisionShadowTimingPolicy(v1, {{timing_status: "late_nowcast"}}, after)),
+  pick(api.decisionShadowTimingPolicy(v2, {{timing_status: "late_nowcast"}}, before)),
+  pick(api.decisionShadowTimingPolicy(v2, {{timing_status: "on_time"}}, after)),
+  pick(api.decisionShadowTimingPolicy(missed, {{timing_status: "on_time"}}, after)),
+]));
+"""
+    completed = _run_node(program)
+    assert json.loads(completed.stdout) == [
+        {
+            "isV2": False,
+            "missedEntry": False,
+            "runtimeEntryClosed": False,
+            "legacyLateNowcast": True,
+        },
+        {
+            "isV2": True,
+            "missedEntry": False,
+            "runtimeEntryClosed": False,
+            "legacyLateNowcast": False,
+        },
+        {
+            "isV2": True,
+            "missedEntry": False,
+            "runtimeEntryClosed": True,
+            "legacyLateNowcast": False,
+        },
+        {
+            "isV2": True,
+            "missedEntry": True,
+            "runtimeEntryClosed": False,
+            "legacyLateNowcast": False,
+        },
+    ]
+
+
+def test_decision_shadow_schedules_entry_open_boundary_rerender() -> None:
+    script = JS_PATH.read_text(encoding="utf-8")
+    assert "decisionShadowEntryTimer: null" in script
+    assert "function clearDecisionShadowEntryTimer()" in script
+    assert "function scheduleDecisionShadowEntryRerender(timingPolicy)" in script
+    assert "Date.parse(timingPolicy.scheduledEntryAt) - Date.now()" in script
+    assert "Math.min(delay + 250, 2147483647)" in script
+    assert "state.decisionShadowEntryTimer = null;\n      renderDecisionShadow();" in script
+
+
+def test_decision_shadow_nyse_entry_calendar_includes_exceptional_closures() -> None:
+    program = f"""
+const api = require({json.dumps(str(JS_PATH))});
+process.stdout.write(JSON.stringify([
+  api.firstNyseSessionDateOfWeek("2007-01-05"),
+  api.firstNyseSessionDateOfWeek("2012-11-02"),
+  api.firstNyseSessionDateOfWeek("2026-09-11"),
+  api.firstNyseSessionDateOfWeek("2026-08-14"),
+]));
+"""
+    completed = _run_node(program)
+    assert json.loads(completed.stdout) == [
+        "2007-01-03",
+        "2012-10-31",
+        "2026-09-08",
+        "2026-08-10",
+    ]
+
+
 def test_v5_rejects_allocation_semantics_in_conditional_statistics() -> None:
     payload = _valid_v5_browser_payload()
     payload["research"]["conditional_asset_stats"]["rows"][0]["allocation"] = 0.5
@@ -2227,9 +2940,7 @@ def test_forecast_rerender_does_not_touch_observed_context_surfaces() -> None:
         "renderModelForecast()",
         "renderSemanticLabels()",
         "renderHistory()",
-        "syncConditionalBasisControl()",
-        "renderConditionalComparison()",
-        "renderConditionalDetail()",
+        "renderConditionalStats()",
     ):
         assert expected in body
     for fixed_surface in (
@@ -2237,7 +2948,6 @@ def test_forecast_rerender_does_not_touch_observed_context_surfaces() -> None:
         "renderMarket(",
         "renderDurationContext(",
         "renderFxContext(",
-        "renderConditionalStats(",
         "renderTimeline()",
     ):
         assert fixed_surface not in body
@@ -2589,49 +3299,55 @@ def test_conditional_performance_leads_with_asset_class_mean_comparison() -> Non
     assert document.index('id="conditional-basis-select"', section_start) < details_start
     assert document.index('id="conditional-asset-select"', section_start) > details_start
     assert 'id="conditional-basis-field" class="field-group inline-field" hidden' in document
-    assert '<label for="conditional-basis-select">국면 기준</label>' in document
-    assert '<option value="observed" selected>관측 국면</option>' in document
-    assert '<option value="forecast">선택 모델 예측</option>' in document
+    assert '<label for="conditional-basis-select">기준</label>' in document
+    assert '<option value="observed">실제 국면 S(t+1)</option>' in document
+    assert '<option value="forecast" selected>예측 국면 Ŝ(t+1)</option>' in document
     assert '<label for="conditional-asset-select">상세 자산</label>' in document
-    assert '<option value="1" selected>1주</option>' in document
-    assert '<option value="13">13주</option>' in document
-    assert "평균과 95% 구간" in document
-    assert "전체 주 B&amp;H 대비" in document
-    assert "관측 후 1주 뒤 진입" in document
-    assert "평균 95% CI" in document
-    assert "연율 하방 변동성" in document
+    for weeks in (1, 4, 13):
+        selected = " selected" if weeks == 1 else ""
+        assert f'<option value="{weeks}"{selected}>{weeks}주 보유</option>' in document
+    assert "국면별 평균 수익률" in document
+    assert "전체 평균 대비" in document
+    assert "평균 수익률" in document
+    assert "상승 비율" in document
+    assert "평균 MDD" in script
     assert 'id="conditional-comparison-caption"' in document
     assert "const OUTCOME_ASSET_LABELS" in script
     assert "function conditionalStatsRows()" in script
     assert "function modelConditionedAssetRowsComplete(" in script
     assert "function conditionalStatsRowsForBasis(" in script
     assert "function syncConditionalBasisControl()" in script
+    assert 'outcomeBasis: "forecast"' in script
     assert 'state.outcomeBasis = "observed"' in script
-    assert '`${modelForecastLabel(state.comparisonModel)} OOS 예측 국면 기준`' in script
-    assert '"관측 국면 기준"' in script
+    assert '"예측 국면 Ŝ(t+1)"' in script
+    assert '"실제 국면 S(t+1)"' in script
+    assert '`${modelForecastLabel(state.comparisonModel)} 예측 국면`' in script
+    assert '"관측 국면"' in script
     assert "function conditionalDetailRows()" in script
     assert "function conditionalComparisonRows()" in script
+    assert "function conditionalDecisionMetrics(" in script
+    assert "row.episode_equal_mean_return" in script
+    assert "row.episode_equal_excess_return" in script
+    assert "row.episode_equal_unconditional_benchmark_mean_return" in script
+    assert "row.episode_equal_mean_return_ci95_lower" in script
     assert "function renderConditionalComparison()" in script
     assert "publicationSnapshotLabel()" in script
-    assert '"과거 조회"' in script
     assert "function renderConditionalDetail()" in script
-    assert 'createElement("article", "conditional-asset-card")' in script
-    assert 'createElement("div", "conditional-regime-list")' in script
-    assert 'createElement("span", "conditional-return-track")' in script
-    assert 'createElement("span", `conditional-return-ci state-${code}`)' in script
-    assert 'createElement("span", `conditional-return-point state-${code}`)' in script
-    assert 'createElement("span", "conditional-return-benchmark")' in script
-    assert 'track.setAttribute("aria-hidden", "true")' in script
+    assert 'createElement("table", "conditional-matrix")' in script
+    assert 'createElement("th", "conditional-matrix-asset")' in script
+    assert '`conditional-matrix-cell state-${code}' in script
+    assert 'cell.style.setProperty("--heat"' in script
+    assert 'createElement("td", "conditional-matrix-overall")' in script
     assert '`${value > 0 ? "+" : ""}${formatSignedPercent(value, comparisonDigits)}`' in script
-    assert 'createElement("small", null, statusLabel || `주차 ${sample} · ep ${episodes}`)' in script
+    assert 'sampleValues.length === 1 ? `n ${formatNumber(sampleValues[0], 0)}` : ""' in script
     assert "unconditional_benchmark_mean_return" in script
     assert "excess_mean_return" in script
     assert "표본 부족" in script
     assert "값 없음" in script
     assert 'renderConditionalDetail();\n      syncViewUrl();\n      dom["screen-reader-status"]' in script
-    assert ".conditional-regime-row" in styles
-    assert ".conditional-regime-legend" in styles
-    assert ".conditional-return-track::after" in styles
+    assert ".conditional-matrix-cell.is-positive" in styles
+    assert ".conditional-matrix-cell.is-negative" in styles
+    assert ".conditional-matrix-overall" in styles
 
 
 def test_url_view_state_core_split_and_optional_benchmark_helpers() -> None:
@@ -2839,21 +3555,143 @@ process.stdout.write(JSON.stringify(result));
     ]
 
 
-def test_decision_shadow_stays_in_collapsed_research_and_names_benchmarks() -> None:
+def test_decision_action_and_shadow_are_visible_before_conditional_results() -> None:
     document = HTML_PATH.read_text(encoding="utf-8")
     script = JS_PATH.read_text(encoding="utf-8")
+    styles = CSS_PATH.read_text(encoding="utf-8")
+    next_card_position = document.index('id="next-regime-card"')
+    action_position = document.index('id="decision-action-card"')
+    current_summary_position = document.index('id="decision-shadow-current-summary"')
     research_position = document.index('id="research-evidence"')
     decision_position = document.index('id="decision-shadow-block"')
-    assert decision_position > research_position
+    conditional_position = document.index('id="conditional-stats"')
+    assert next_card_position < action_position < current_summary_position
+    assert current_summary_position < decision_position < conditional_position
+    assert decision_position < research_position
     assert 'id="research-evidence-details" class="research-notice-details' in document
     assert 'id="research-evidence-details" class="research-notice-details operations-details research-evidence-details" open' not in document
-    assert "확률 shadow" in script
-    assert "SPY B&H" in script
-    assert "고정 60/40" in script
-    assert "변동성 조절 60/40" in script
-    assert "공식 예측·선정 미반영" in script
-    assert '["회전율", formatSignedPercent(metrics.annualized_turnover)]' in script
-    assert "연 회전율 ${formatSignedPercent(metrics.annualized_turnover)}" in script
+    assert 'id="header-analysis-coverage"' in document
+    assert 'id="conditional-support-summary"' in document
+    assert "진입 없음" in document
+    assert '`성과 ${formatNumber(observedOutcomeRows, 0)} · ${formatNumber(forecastOutcomeRows, 0)}`' in script
+    assert '`연수익 ${spyReturnGap === null ? "—" : `${formatSignedPercent(spyReturnGap)}p`}`' in script
+    assert ".hero-grid > .decision-action-card" in styles
+    assert "grid-column: 1 / -1;" in styles
+    assert ".decision-shadow-economic-summary" in styles
+    assert ".conditional-support-summary" in styles
+    assert 'probability_shadow: "국면 전략"' in script
+    assert 'spy_buy_and_hold: "SPY"' in script
+    assert 'static_60_40: "60/40"' in script
+    assert 'vol_target_60_40: "변동 60/40"' in script
+    assert "공식 예측·선정 미반영" not in script
+    assert '["연간 매수+매도", "annualized_turnover"' in script
+    assert '매수와 매도 비중을 모두 합산한 연환산 값' in script
+    assert "--site-nav-height: 57px" in styles
+    assert "#conditional-stat-table col:nth-child(10)" in styles
+    assert "evaluation_start_week" in script
+    assert "evaluation_end_week" in script
+    assert 'createElement("strong", null, "주간 리밸런싱")' in script
+    assert 'createElement("table", "decision-shadow-table")' in script
+    assert "grid.append(reconstructed);" in script
+    for removed_copy in (
+        "투자판단용 아님",
+        "공식 예측·선정 미반영",
+        "연율·CER·Sharpe 참고 보류",
+        "재구성 OOS와 운영 예측 원장을 분리해 표시합니다.",
+    ):
+        assert removed_copy not in document
+        assert removed_copy not in script
+
+
+def test_investment_summary_helpers_report_coverage_support_and_economic_result() -> None:
+    payload = {
+        "meta": {"mode": "live"},
+        "weekly": [{"date": "2023-01-06"}, {"date": "2026-08-21"}],
+        "model": {
+            "evidence_artifacts": {
+                "weekly_state_forecasts": {"row_count": 190},
+                "state_membership_history": {"row_count": 1077},
+            },
+            "research_artifacts": {
+                "conditional_asset_outcomes": {"row_count": 18882},
+                "model_conditioned_asset_outcomes": {"row_count": 36234},
+            },
+        },
+        "forecast": {
+            "prospective_ledger": {"realized_evaluation_count": 2}
+        },
+        "research": {
+            "prospective_decision_shadow": {
+                "prospective_ledger": {"realized_evaluation_count": 3}
+            }
+        },
+    }
+    unsupported_rows = [
+        {
+            "state": state,
+            "status": "insufficient_support",
+            "sample_start": "2023-01-06",
+            "sample_end": "2026-08-07",
+            "n": 188,
+            "unconditional_benchmark_n": 188,
+            "minimum_observations": 20,
+            "minimum_unique_episodes": 5,
+        }
+        for state in ("risk_on", "transition", "risk_off")
+    ]
+    supported_rows = [
+        {**unsupported_rows[0], "status": "ok"},
+        {**unsupported_rows[1], "status": "ok"},
+        unsupported_rows[2],
+    ]
+    historical = {
+        "status": "completed",
+        "minimum_evaluation_weeks": 52,
+        "strategies": {
+            "probability_shadow": {
+                "weeks": 188,
+                "annualized_return": 0.08,
+                "sharpe": 0.8,
+                "maximum_drawdown": -0.12,
+                "annualized_turnover": 6.5,
+            },
+            "spy_buy_and_hold": {
+                "annualized_return": 0.21,
+                "sharpe": 1.4,
+            },
+            "static_60_40": {
+                "annualized_return": 0.11,
+                "sharpe": 1.0,
+            },
+        },
+    }
+    program = f"""
+const api = require({json.dumps(str(JS_PATH))});
+const coverage = api.analysisCoverageSummary({json.dumps(payload)});
+const unsupported = api.conditionalSupportSummary({json.dumps(unsupported_rows)});
+const supported = api.conditionalSupportSummary({json.dumps(supported_rows)});
+const economics = api.decisionShadowEconomicAssessment({json.dumps(historical)});
+process.stdout.write(JSON.stringify({{coverage, unsupported, supported, economics}}));
+"""
+    result = json.loads(_run_node(program).stdout)
+    assert result["coverage"] == {
+        "mode": "live",
+        "forecast_oos_weeks": 190,
+        "forecast_start": "2023-01-06",
+        "forecast_end": "2026-08-21",
+        "state_history_weeks": 1077,
+        "conditional_outcome_rows": 18882,
+        "model_conditioned_outcome_rows": 36234,
+        "realized_evaluations": 3,
+    }
+    assert result["unsupported"]["supported_rows"] == 0
+    assert result["unsupported"]["supported_regimes"] == 0
+    assert result["supported"]["supported_rows"] == 2
+    assert result["supported"]["supported_regimes"] == 2
+    assert result["supported"]["sample_start"] == "2023-01-06"
+    assert result["supported"]["sample_end"] == "2026-08-07"
+    assert result["economics"]["status"] == "unconfirmed"
+    assert result["economics"]["strategy"]["annualized_turnover"] == 6.5
 
 
 def test_operations_are_collapsed_below_results_without_warning_surfaces() -> None:
@@ -2918,7 +3756,7 @@ def test_history_window_never_claims_more_weeks_than_are_available() -> None:
     assert "const requested = state.preferredHistoryWindow" in script
     assert 'option.textContent = available ? `전체 · ${available}주` : "전체"' in script
     assert "option.disabled = weeks > available" in script
-    assert "`${range} · ${history.length}주 · 상단" in script
+    assert "`${range} · ${history.length}주`" in script
 
 
 def test_three_state_and_health_contracts_are_explicit() -> None:

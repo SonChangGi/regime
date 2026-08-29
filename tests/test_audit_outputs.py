@@ -12,6 +12,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from regime_lab.analysis.decision_shadow import build_decision_shadow
 from regime_lab.analysis.labels import STATE_ORDER
 from regime_lab.analysis.models import (
     model_manifest,
@@ -598,7 +599,7 @@ def _v5_conditional_audit_fixture() -> tuple[dict, dict[str, pd.DataFrame]]:
                     "origin_position": position,
                     "origin_date": origin,
                     "entry_date": entry,
-                    "exit_date": entry + timedelta(weeks=horizon),
+                    "exit_date": entry + timedelta(weeks=horizon - 1),
                     "state": "risk_on",
                     "episode_id": position // 4,
                     "asset": "SPY",
@@ -612,7 +613,12 @@ def _v5_conditional_audit_fixture() -> tuple[dict, dict[str, pd.DataFrame]]:
     outcomes = pd.DataFrame(rows)
     keys = pd.DataFrame(
         [
-            {"state": "risk_on", "asset": "SPY", "horizon_weeks": horizon}
+            {
+                "state": "risk_on",
+                "asset": "SPY",
+                "horizon_weeks": horizon,
+                "minimum_non_overlapping_observations": 5,
+            }
             for horizon in (1, 4, 13)
         ]
     )
@@ -626,8 +632,38 @@ def _v5_conditional_audit_fixture() -> tuple[dict, dict[str, pd.DataFrame]]:
             "profile": "quick",
             "execution_parameters": _v5_execution_parameters(),
         },
+        "weekly": [
+            {
+                "date": origin.date().isoformat(),
+                "current": {"state": "risk_on"},
+            }
+            for origin in pd.date_range(
+                origins[0], periods=len(origins) + 1, freq="7D"
+            )
+        ],
         "research": {
             "conditional_asset_stats": {
+                "method": (
+                    "matched_oos_actual_next_state_target_week_adjusted_forward_return"
+                ),
+                "role": "matched_oracle_diagnostic",
+                "conditioning": "actual_next_state_on_matched_oos_origins",
+                "state_horizon_weeks": 1,
+                "execution_lag_weeks": 1,
+                "entry_price_basis": "next_week_adjusted_open",
+                "exit_price_basis": "horizon_week_adjusted_close",
+                "rebalance_policy": "none_fixed_asset_hold",
+                "origin_sampling": "weekly_rolling_overlapping",
+                "return_measure": "provider_adjusted_forward_return",
+                "entry_week_distribution_policy": (
+                    "conservative_excluded_without_ex_date"
+                ),
+                "corporate_action_policy": (
+                    "same_row_adjustment_factor_split_consistent"
+                ),
+                "drawdown_observation_basis": (
+                    "entry_adjusted_open_then_weekly_adjusted_closes"
+                ),
                 "rows": _v5_frame_records(statistics),
             }
         },
@@ -680,7 +716,7 @@ def _v5_model_conditioned_audit_fixture() -> tuple[
         for position, origin in enumerate(origins):
             entry = origin + timedelta(weeks=1)
             for horizon in audit_outputs.V5_OUTCOME_HORIZONS:
-                if position + 1 + horizon >= len(origins):
+                if position + horizon >= len(origins):
                     continue
                 for asset_position, asset in enumerate(
                     audit_outputs.V5_OUTCOME_ASSETS
@@ -691,7 +727,7 @@ def _v5_model_conditioned_audit_fixture() -> tuple[
                             "origin_position": position,
                             "origin_date": origin,
                             "entry_date": entry,
-                            "exit_date": entry + timedelta(weeks=horizon),
+                            "exit_date": entry + timedelta(weeks=horizon - 1),
                             "state": states_by_model[name][position],
                             "episode_id": episodes_by_model[name][position],
                             "asset": asset,
@@ -722,6 +758,7 @@ def _v5_model_conditioned_audit_fixture() -> tuple[
                 "state": state,
                 "asset": asset,
                 "horizon_weeks": horizon,
+                "minimum_non_overlapping_observations": 5,
             }
             for state in STATE_ORDER
             for asset in audit_outputs.V5_OUTCOME_ASSETS
@@ -751,12 +788,26 @@ def _v5_model_conditioned_audit_fixture() -> tuple[
         "research": {
             "model_conditioned_asset_stats": {
                 "method": (
-                    "oos_one_week_forecast_conditioned_forward_total_return"
+                    "matched_oos_predicted_next_state_target_week_adjusted_forward_return"
                 ),
                 "role": "retrospective_model_diagnostic",
                 "conditioning": "hard_argmax_oos_forecast",
                 "forecast_horizon_weeks": 1,
                 "execution_lag_weeks": 1,
+                "entry_price_basis": "next_week_adjusted_open",
+                "exit_price_basis": "horizon_week_adjusted_close",
+                "rebalance_policy": "none_fixed_asset_hold",
+                "origin_sampling": "weekly_rolling_overlapping",
+                "return_measure": "provider_adjusted_forward_return",
+                "entry_week_distribution_policy": (
+                    "conservative_excluded_without_ex_date"
+                ),
+                "corporate_action_policy": (
+                    "same_row_adjustment_factor_split_consistent"
+                ),
+                "drawdown_observation_basis": (
+                    "entry_adjusted_open_then_weekly_adjusted_closes"
+                ),
                 "horizons_weeks": list(audit_outputs.V5_OUTCOME_HORIZONS),
                 "assets": list(audit_outputs.V5_OUTCOME_ASSETS),
                 "models": list(models),
@@ -1011,9 +1062,13 @@ def test_v5_weekly_directional_audit_rejects_published_tamper(field: str) -> Non
     ("field", "replacement"),
     [
         ("n", 21),
+        ("non_overlapping_n", 999),
         ("unique_episodes", 6),
         ("status", "insufficient_support"),
         ("mean_return", 0.987654321),
+        ("unconditional_benchmark_mean_return", 0.7654321),
+        ("episode_equal_mean_return", 0.654321),
+        ("episode_equal_mean_return_ci95_lower", 0.54321),
         ("mean_return_ci95_lower", 0.87654321),
         ("bootstrap_seed", 999),
         ("bootstrap_resamples", 8),
@@ -1054,6 +1109,198 @@ def test_v5_conditional_audit_recomputes_all_point_and_interval_fields() -> None
         "statistics_rows": 3,
         "bootstrap_resamples": 7,
     }
+
+
+def test_v5_decision_shadow_audit_binds_v2_spec_and_late_no_trade() -> None:
+    index = pd.date_range("2022-01-07", periods=90, freq="W-FRI", tz="UTC")
+    position = np.arange(len(index), dtype=float)
+    prices = pd.DataFrame(
+        {
+            "spy_close": 100.0 * np.exp(np.cumsum(0.002 + position / 100_000)),
+            "tlt_close": 100.0 * np.exp(np.cumsum(0.001 - position / 200_000)),
+        },
+        index=index,
+    )
+    prices["spy_adjusted_open"] = prices["spy_close"] * 0.998
+    prices["tlt_adjusted_open"] = prices["tlt_close"] * 0.999
+    for asset in ("spy", "tlt"):
+        prices[f"{asset}_raw_open"] = prices[f"{asset}_adjusted_open"]
+        prices[f"{asset}_raw_close"] = prices[f"{asset}_close"]
+        prices[f"{asset}_dividend_amount"] = 0.0
+    forecast_model = "causal_dynamic_ensemble"
+    weekly = [
+        {
+            "date": origin.date().isoformat(),
+            "next_week": {
+                "date": (origin + timedelta(weeks=1)).date().isoformat(),
+                "probabilities": {
+                    "risk_on": 0.6,
+                    "transition": 0.25,
+                    "risk_off": 0.15,
+                }
+            },
+            "model_forecasts": [
+                {
+                    "model": forecast_model,
+                    "date": (origin + timedelta(weeks=1)).date().isoformat(),
+                    "probabilities": {
+                        "risk_on": 0.6,
+                        "transition": 0.25,
+                        "risk_off": 0.15,
+                    },
+                }
+            ],
+        }
+        for origin in index[10:-1]
+    ]
+    target_week = pd.Timestamp(weekly[-1]["next_week"]["date"]).date()
+    target_monday = target_week - timedelta(days=4)
+    decision_at = pd.Timestamp(
+        f"{target_monday.isoformat()} 09:31:00",
+        tz="America/New_York",
+    )
+    payload = {
+        "meta": {"generated_at": decision_at.isoformat()},
+        "selection": {"operating_champion": forecast_model},
+        "weekly": weekly,
+        "forecast": {
+            "timing_status": "full_horizon_forecast",
+            "origin_at": pd.Timestamp(
+                f"{weekly[-1]['date']} 16:00:00",
+                tz="America/New_York",
+            ).isoformat(),
+            "decision_at": decision_at.isoformat(),
+            "target_at": pd.Timestamp(
+                f"{weekly[-1]['next_week']['date']} 16:00:00",
+                tz="America/New_York",
+            ).isoformat(),
+        },
+        "research": {
+            "prospective_decision_shadow": build_decision_shadow(
+                weekly,
+                prices,
+                forecast_model=forecast_model,
+                decision_at=decision_at,
+            )
+        },
+    }
+
+    summary = audit_outputs._audit_v5_decision_shadow(payload)
+
+    assert summary["status"] == "verified"
+    assert summary["spec_id"] == "spy-tlt-probability-shadow-v2"
+    assert summary["current_signal_action"] == "no_trade"
+
+    populated_shadow = deepcopy(
+        payload["research"]["prospective_decision_shadow"]
+    )
+    historical = payload["research"]["prospective_decision_shadow"][
+        "historical_reconstructed_shadow"
+    ]
+    historical["status"] = "insufficient_history"
+    historical["evaluation_start_week"] = None
+    historical["evaluation_end_week"] = None
+    for metrics in historical["strategies"].values():
+        for field in (
+            "cumulative_return",
+            "annualized_return",
+            "annualized_volatility",
+            "sharpe",
+            "certainty_equivalent_return",
+            "maximum_drawdown",
+            "annualized_turnover",
+            "gross_cumulative_return",
+        ):
+            metrics[field] = None
+        metrics["weeks"] = 0
+        metrics["transaction_cost_rate_sum"] = 0.0
+    assert audit_outputs._audit_v5_decision_shadow(payload)["weeks"] == 0
+
+    historical["strategies"]["probability_shadow"]["annualized_turnover"] = 0.0
+    with pytest.raises(audit_outputs.AuditFailure, match="empty turnover/cost"):
+        audit_outputs._audit_v5_decision_shadow(payload)
+
+    payload["research"]["prospective_decision_shadow"] = populated_shadow
+    payload["research"]["prospective_decision_shadow"]["spec"]["sha256"] = "0" * 64
+    with pytest.raises(audit_outputs.AuditFailure, match="spec SHA-256"):
+        audit_outputs._audit_v5_decision_shadow(payload)
+
+
+def test_current_live_decision_shadow_spec_remains_auditable() -> None:
+    payload = json.loads(
+        (ROOT / "publication" / "live" / "regime-results.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    summary = audit_outputs._audit_v5_decision_shadow(payload)
+
+    assert summary["status"] == "verified"
+    assert summary["spec_id"] == "spy-tlt-probability-shadow-v2"
+
+
+def test_v5_research_replay_input_separates_research_and_operational_hashes(
+    tmp_path: Path,
+) -> None:
+    payload = {
+        "meta": {
+            "mode": "live",
+            "data_as_of": "2026-08-21T20:00:00+00:00",
+        },
+        "weekly": [{}] * 190,
+        "research": {
+            "prospective_decision_shadow": {
+                "schema_version": "regime-prospective-decision-shadow/2"
+            }
+        },
+    }
+    document = {
+        "schema_version": "regime-research-replay-input/1",
+        "evidence_track": "reconstructed_oos",
+        "data_as_of": "2026-08-21T20:00:00+00:00",
+        "availability_basis": "reconstructed_market",
+        "source_observation_count": 2_801_234,
+        "input_vintages": {"count": 179_461, "sha256": "a" * 64},
+        "canonical_panel": {
+            "start": "2006-01-06",
+            "end": "2026-08-21",
+            "rows": 1_077,
+            "columns": 288,
+            "sha256": "b" * 64,
+        },
+        "state_membership": {"rows": 1_077, "sha256": "c" * 64},
+        "operational_generation_input_snapshot_sha256": "d" * 64,
+    }
+    (tmp_path / "research-replay-input.json").write_text(
+        json.dumps(document),
+        encoding="utf-8",
+    )
+
+    summary = audit_outputs._audit_v5_research_replay_input(payload, tmp_path)
+
+    assert summary["status"] == "verified"
+    assert summary["input_vintage_sha256"] == "a" * 64
+    assert summary["operational_generation_input_snapshot_sha256"] == "d" * 64
+
+
+def test_v5_research_replay_input_is_required_for_decision_shadow_v2(
+    tmp_path: Path,
+) -> None:
+    payload = {
+        "meta": {
+            "mode": "live",
+            "data_as_of": "2026-08-21T20:00:00+00:00",
+        },
+        "weekly": [{}],
+        "research": {
+            "prospective_decision_shadow": {
+                "schema_version": "regime-prospective-decision-shadow/2"
+            }
+        },
+    }
+
+    with pytest.raises(audit_outputs.AuditFailure, match="missing research-replay"):
+        audit_outputs._audit_v5_research_replay_input(payload, tmp_path)
 
 
 def test_v5_research_artifact_contract_keeps_legacy_and_optional_order() -> None:

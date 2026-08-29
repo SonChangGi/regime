@@ -15,6 +15,8 @@ import sys
 import tempfile
 from typing import Any, Callable, Mapping
 
+import pandas as pd
+
 from regime_lab.artifact_inventory import (
     verify_artifact_inventory,
     write_artifact_inventory,
@@ -27,6 +29,10 @@ from regime_lab.collection import (
     validate_collection_for_training,
 )
 from regime_lab.analysis.ablation import feature_ablation_manifest_document
+from regime_lab.analysis.decision_shadow import (
+    load_decision_shadow_spec,
+    prospective_ledger_shadow_contract,
+)
 from regime_lab.analysis.models import model_manifest, model_manifest_sha256
 from regime_lab.config import default_config_path, load_config, project_root
 from regime_lab.dataset import build_weekly_dataset
@@ -48,7 +54,10 @@ from regime_lab.forecast_ledger import (
     ForecastLedgerEntry,
     ForecastLedgerKey,
     OperationalInput,
+    build_research_replay_input_document,
+    mature_forecast_evaluations,
     operational_input_manifest_sha256,
+    operational_inputs_for_generation,
 )
 from regime_lab.keychain import provider_environment_from_keychain
 from regime_lab.payload import write_dashboard_payload
@@ -69,6 +78,7 @@ from regime_lab.provider_rights import (
 from regime_lab.run_registry import append_run_event, current_run_status
 from regime_lab.selection_family_audit import (
     build_selection_family_audit_from_artifacts,
+    validate_selection_family_audit,
 )
 from regime_lab.publication_contract import (
     V5_RESULT_VERSION,
@@ -91,69 +101,7 @@ from regime_lab.v5_preflight import (
 )
 
 
-def _operational_inputs_for_generation(
-    dataset: object,
-    *,
-    additional_records: tuple[object, ...] = (),
-    origin_at: datetime,
-    decision_at: datetime,
-) -> tuple[OperationalInput, ...]:
-    """Bind the exact inputs used by a real forecast decision.
-
-    Historical walk-forward rows can only be classified as reconstructed OOS
-    when the provider supplied a current-adjusted backfill.  Requiring an
-    ``operational`` as-of join for every historical row would therefore erase
-    the training history rather than make it prospective.  The operational
-    claim belongs to the *current decision*: every revision used anywhere in
-    the assembled training/forecast matrix must have been retrieved by that
-    decision, and no observation period may extend beyond the forecast origin.
-    The append-only ledger enforces the same clocks independently on append.
-    """
-
-    if getattr(dataset, "availability_basis", None) not in {
-        "source",
-        "operational",
-        "reconstructed_market",
-    }:
-        raise ValueError("forecast ledger dataset has an invalid availability basis")
-    if origin_at.tzinfo is None or origin_at.utcoffset() is None:
-        raise ValueError("forecast origin must include a timezone")
-    if decision_at.tzinfo is None or decision_at.utcoffset() is None:
-        raise ValueError("forecast decision must include a timezone")
-    origin = origin_at.astimezone(timezone.utc)
-    decision = decision_at.astimezone(timezone.utc)
-    if origin > decision:
-        raise ValueError("forecast origin must not follow the decision")
-    values = tuple(getattr(dataset, "input_vintages", ()))
-    inputs = [OperationalInput.from_asof_value(value) for value in values]
-    for item in inputs:
-        if item.observed_period_end > origin.date():
-            raise ValueError("forecast input period exceeds the forecast origin")
-        if item.operating_available_at > decision:
-            raise ValueError("forecast input was first seen after the decision")
-        if item.system_retrieved_at > decision:
-            raise ValueError("forecast input was retrieved after the decision")
-    for record in additional_records:
-        if (
-            record.observed_period_end > origin.date()
-            or record.operating_available_at > decision
-            or record.system_retrieved_at > decision
-        ):
-            continue
-        inputs.append(OperationalInput.from_observation(record))
-    unique = {
-        (
-            item.source,
-            item.series_id,
-            item.observed_period_end,
-            item.revision_seq,
-            item.raw_sha256,
-        ): item
-        for item in inputs
-    }
-    if not unique:
-        raise ValueError("operational generation has no bound input vintages")
-    return tuple(unique.values())
+_operational_inputs_for_generation = operational_inputs_for_generation
 
 
 def _forecast_ledger_entry(
@@ -172,6 +120,30 @@ def _forecast_ledger_entry(
     latest = payload["weekly"][-1]
     model = payload["model"]
     label = payload["label"]
+    research = payload.get("research")
+    shadow = (
+        research.get("prospective_decision_shadow")
+        if isinstance(research, Mapping)
+        else None
+    )
+    if not isinstance(shadow, Mapping):
+        raise ValueError("operational forecast ledger requires decision shadow")
+    shadow_fields = (
+        "schema_version",
+        "spec",
+        "execution_contract",
+        "current_signal",
+    )
+    if any(field not in shadow for field in shadow_fields):
+        raise ValueError("operational decision shadow contract is incomplete")
+    spec_snapshot = load_decision_shadow_spec()
+    if (
+        not isinstance(shadow["spec"], Mapping)
+        or shadow["spec"].get("spec_id") != spec_snapshot.get("spec_id")
+        or shadow["spec"].get("sha256")
+        != canonical_json_sha256_v1(spec_snapshot)
+    ):
+        raise ValueError("operational decision shadow spec is inconsistent")
     input_snapshot_sha256 = operational_input_manifest_sha256(operational_inputs)
     publication_at = published_at.astimezone(timezone.utc)
     return ForecastLedgerEntry(
@@ -194,8 +166,24 @@ def _forecast_ledger_entry(
             "champion": model["champion"],
             "selection": payload["selection"],
             "lifecycle": model["lifecycle"],
+            "decision_shadow": {
+                field: shadow[field] for field in shadow_fields
+            }
+            | {"spec_snapshot": spec_snapshot},
         },
     )
+
+
+def _prospective_actual_states(benchmark: object) -> pd.Series:
+    """Recover the exact canonical state labels used by the live payload."""
+
+    frame = getattr(benchmark, "state_label_history", None)
+    if not isinstance(frame, pd.DataFrame) or not {"date", "state"} <= set(frame):
+        raise ValueError("prospective maturity requires state label history")
+    index = pd.DatetimeIndex(pd.to_datetime(frame["date"], errors="raise"))
+    if index.has_duplicates:
+        raise ValueError("prospective maturity state dates must be unique")
+    return pd.Series(frame["state"].astype(str).to_numpy(), index=index, dtype=object)
 
 
 def _root_path(value: str) -> Path:
@@ -835,6 +823,7 @@ def _publish_active_generation(
     output: Path,
     artifacts: Path,
     input_snapshot_sha256: str | None = None,
+    research_replay_input: Mapping[str, Any] | None = None,
     finalization: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """Publish one payload/artifact generation with rollback-safe cutover.
@@ -898,13 +887,52 @@ def _publish_active_generation(
             == "weekly-regime-result-v5"
         )
         if is_v5:
+            shadow = payload.get("research", {}).get(
+                "prospective_decision_shadow"
+            )
+            requires_replay_input = (
+                payload.get("meta", {}).get("mode") == "live"
+                and isinstance(shadow, Mapping)
+                and shadow.get("schema_version")
+                == "regime-prospective-decision-shadow/2"
+            )
+            if requires_replay_input and research_replay_input is None:
+                raise ValueError(
+                    "live decision-shadow V2 publication requires research replay input"
+                )
             _write_supporting_results(
                 benchmark,
                 staged_artifacts,
                 generation_id=generation_id,
-                write_inventory=True,
+                write_inventory=False,
                 selection_context=payload,
             )
+            if research_replay_input is not None:
+                if not requires_replay_input:
+                    raise ValueError(
+                        "research replay input is only valid for live decision-shadow V2"
+                    )
+                if (
+                    research_replay_input.get("data_as_of")
+                    != payload.get("meta", {}).get("data_as_of")
+                ):
+                    raise ValueError(
+                        "research replay input data_as_of differs from payload"
+                    )
+                if (
+                    research_replay_input.get(
+                        "operational_generation_input_snapshot_sha256"
+                    )
+                    != input_snapshot_sha256
+                ):
+                    raise ValueError(
+                        "research replay input differs from operational input snapshot"
+                    )
+                write_json_atomic(
+                    staged_artifacts / "research-replay-input.json",
+                    dict(research_replay_input),
+                )
+            write_artifact_inventory(staged_artifacts)
             verify_artifact_inventory(staged_artifacts)
         else:
             _write_supporting_results(
@@ -1559,6 +1587,28 @@ def command_build(args: argparse.Namespace) -> int:
             input_snapshot_sha256 = operational_input_manifest_sha256(
                 operational_inputs
             )
+            research_replay_input = None
+            decision_shadow = payload.get("research", {}).get(
+                "prospective_decision_shadow"
+            )
+            if (
+                contract_version == "v5"
+                and isinstance(decision_shadow, Mapping)
+                and decision_shadow.get("schema_version")
+                == "regime-prospective-decision-shadow/2"
+            ):
+                replay_canonical = dataset.canonical.loc[
+                    dataset.canonical["spy_close"].notna()
+                ].copy()
+                research_replay_input = build_research_replay_input_document(
+                    input_vintages=dataset.input_vintages,
+                    availability_basis=str(dataset.availability_basis),
+                    source_observation_count=len(collection.records),
+                    canonical=replay_canonical,
+                    states=_prospective_actual_states(benchmark),
+                    data_as_of=str(payload["meta"]["data_as_of"]),
+                    operational_input_snapshot_sha256=input_snapshot_sha256,
+                )
             configured_forecast_ledger = getattr(args, "forecast_ledger", None)
             forecast_ledger_path = _mutable_path(
                 output.parent / "forecast-ledger.sqlite3"
@@ -1577,21 +1627,23 @@ def command_build(args: argparse.Namespace) -> int:
                 input_snapshot_sha256=input_snapshot_sha256,
             )
             with ForecastLedger(forecast_ledger_path) as ledger:
+                maturity = mature_forecast_evaluations(
+                    ledger,
+                    canonical=dataset.canonical,
+                    states=_prospective_actual_states(benchmark),
+                    evaluated_at=datetime.fromisoformat(str(decision_value)),
+                )
                 ledger_summary = ledger.public_summary(
-                    pending_key=prospective_key
+                    pending_key=prospective_key,
+                    unresolved_due=maturity.unresolved_due,
                 )
                 payload["forecast"]["prospective_ledger"] = ledger_summary
                 decision_shadow = payload.get("research", {}).get(
                     "prospective_decision_shadow"
                 )
-                if isinstance(decision_shadow, dict) and isinstance(
-                    decision_shadow.get("prospective_ledger"), dict
-                ):
-                    decision_shadow["prospective_ledger"].update(
-                        {
-                            "status": "ledger_recorded_outcomes_pending",
-                            "ledger_entry_count": ledger_summary["entry_count"],
-                        }
+                if isinstance(decision_shadow, dict):
+                    decision_shadow["prospective_ledger"] = (
+                        prospective_ledger_shadow_contract(ledger_summary)
                     )
 
             def append_forecast_ledger(bound_payload: dict[str, Any]) -> None:
@@ -1609,6 +1661,7 @@ def command_build(args: argparse.Namespace) -> int:
                 output=output,
                 artifacts=artifacts,
                 input_snapshot_sha256=input_snapshot_sha256,
+                research_replay_input=research_replay_input,
                 finalization=(
                     append_forecast_ledger if contract_version == "v5" else None
                 ),
@@ -1740,10 +1793,19 @@ def command_serve(args: argparse.Namespace) -> int:
         comparison = sibling if sibling.is_file() and not sibling.is_symlink() else None
     else:
         comparison = _root_path(comparison_value)
+    selection_family_value = getattr(args, "selection_family", None)
+    if selection_family_value is None:
+        sibling = payload.with_name("selection-family-audit.json")
+        selection_family = (
+            sibling if sibling.is_file() and not sibling.is_symlink() else None
+        )
+    else:
+        selection_family = _root_path(selection_family_value)
     payload_raw = payload.read_bytes()
     payload_document = json.loads(payload_raw)
     validate_dashboard_payload(payload_document)
     comparison_raw = None
+    selection_family_raw = None
     if comparison is not None:
         if payload_document.get("meta", {}).get("result_version") != V5_RESULT_VERSION:
             raise ValueError("a V5/V4 comparison sidecar requires a V5 payload")
@@ -1754,12 +1816,22 @@ def command_serve(args: argparse.Namespace) -> int:
             payload=payload_document,
             payload_raw=payload_raw,
         )
+    if selection_family is not None:
+        if payload_document.get("meta", {}).get("result_version") != V5_RESULT_VERSION:
+            raise ValueError("a selection-family audit requires a V5 payload")
+        selection_family_raw = selection_family.read_bytes()
+        selection_family_document = json.loads(selection_family_raw)
+        validate_selection_family_audit(
+            selection_family_document,
+            expected_generation_id=str(payload_document["meta"]["generation_id"]),
+        )
     serve_dashboard(
         _root_path(args.web_root),
         host=args.host,
         port=args.port,
         payload_bytes=payload_raw,
         comparison_bytes=comparison_raw,
+        selection_family_bytes=selection_family_raw,
     )
     return 0
 
@@ -1964,6 +2036,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--comparison",
         default=None,
         help="optional V5/V4 sidecar (default: payload sibling when present)",
+    )
+    serve.add_argument(
+        "--selection-family",
+        default=None,
+        help=(
+            "optional selection-family audit sidecar "
+            "(default: payload sibling when present)"
+        ),
     )
     serve.set_defaults(func=command_serve)
 

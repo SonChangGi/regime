@@ -2,8 +2,8 @@
 
 This module reports historical state-conditioned outcomes only.  It does not
 construct allocations, portfolio weights, or trading recommendations.  A
-state observed at origin ``t`` is executable at the next completed weekly
-close ``t+1``; an ``h``-week outcome exits at ``t+1+h``.
+signal observed at origin ``t`` enters at the adjusted open of week ``t+1``;
+an ``h``-week outcome exits at the adjusted close of week ``t+h``.
 """
 
 from __future__ import annotations
@@ -21,6 +21,9 @@ HORIZONS: tuple[int, ...] = (1, 4, 13)
 STATE_ORDER: tuple[str, ...] = ("risk_on", "transition", "risk_off")
 DEFAULT_ASSET_COLUMNS: dict[str, str] = {
     asset: f"{asset.lower()}_close" for asset in ASSETS
+}
+DEFAULT_ASSET_OPEN_COLUMNS: dict[str, str] = {
+    asset: f"{asset.lower()}_adjusted_open" for asset in ASSETS
 }
 OUTCOME_COLUMNS: tuple[str, ...] = (
     "origin_position",
@@ -49,6 +52,7 @@ DECISION_USEFULNESS_METRICS: tuple[str, ...] = (
     "unconditional_benchmark_mean_return",
     "excess_mean_return",
     "episode_equal_mean_return",
+    "episode_equal_unconditional_benchmark_mean_return",
     "episode_equal_excess_return",
 )
 
@@ -109,31 +113,72 @@ def _resolve_prices(
     states: pd.Series,
     *,
     asset_columns: Mapping[str, str] | None,
-) -> pd.DataFrame:
+    asset_open_columns: Mapping[str, str] | None,
+) -> tuple[pd.DataFrame, pd.DataFrame, np.ndarray]:
     if not isinstance(prices, pd.DataFrame):
         raise TypeError("prices must be a pandas DataFrame")
     _validate_weekly_index(prices.index, context="prices")
-    if not prices.index.equals(states.index):
-        raise ValueError("prices and states must use the same weekly index")
-    configured = dict(DEFAULT_ASSET_COLUMNS if asset_columns is None else asset_columns)
-    if set(configured) != set(ASSETS):
-        raise ValueError(f"asset_columns keys must be exactly {ASSETS}")
+    state_positions = prices.index.get_indexer(states.index)
+    if bool((state_positions < 0).any()):
+        raise ValueError("states dates must be a subset of the prices weekly index")
+    if len(state_positions) > 1 and not bool((np.diff(state_positions) == 1).all()):
+        raise ValueError("states dates must be a consecutive subset of prices")
 
-    resolved: dict[str, pd.Series] = {}
+    configured_closes = dict(
+        DEFAULT_ASSET_COLUMNS if asset_columns is None else asset_columns
+    )
+    if set(configured_closes) != set(ASSETS):
+        raise ValueError(f"asset_columns keys must be exactly {ASSETS}")
+    configured_opens = dict(
+        DEFAULT_ASSET_OPEN_COLUMNS
+        if asset_open_columns is None
+        else asset_open_columns
+    )
+    if set(configured_opens) != set(ASSETS):
+        raise ValueError(f"asset_open_columns keys must be exactly {ASSETS}")
+
+    resolved_closes: dict[str, pd.Series] = {}
+    resolved_opens: dict[str, pd.Series] = {}
     for asset in ASSETS:
-        requested = str(configured[asset])
-        candidates = tuple(dict.fromkeys((requested, asset, asset.lower())))
-        column = next((name for name in candidates if name in prices.columns), None)
-        if column is None:
-            raise KeyError(f"missing adjusted-close column for {asset}: {requested}")
-        values = pd.to_numeric(prices[column], errors="coerce").astype(float)
-        finite = values[np.isfinite(values)]
-        if (finite <= 0.0).any():
-            raise ValueError(f"{asset} prices must be positive where observed")
-        if np.isinf(values.to_numpy(dtype=float)).any():
-            raise ValueError(f"{asset} prices must not contain infinities")
-        resolved[asset] = values
-    return pd.DataFrame(resolved, index=states.index, dtype=float)
+        requested_close = str(configured_closes[asset])
+        close_candidates = tuple(
+            dict.fromkeys((requested_close, asset, asset.lower()))
+        )
+        close_column = next(
+            (name for name in close_candidates if name in prices.columns), None
+        )
+        if close_column is None:
+            raise KeyError(
+                f"missing adjusted-close column for {asset}: {requested_close}"
+            )
+
+        requested_open = str(configured_opens[asset])
+        open_column = requested_open if requested_open in prices.columns else None
+        if open_column is None:
+            raise KeyError(
+                f"missing adjusted-open column for {asset}: {requested_open}"
+            )
+
+        for price_kind, column, resolved in (
+            ("close", close_column, resolved_closes),
+            ("open", open_column, resolved_opens),
+        ):
+            values = pd.to_numeric(prices[column], errors="coerce").astype(float)
+            finite = values[np.isfinite(values)]
+            if (finite <= 0.0).any():
+                raise ValueError(
+                    f"{asset} adjusted {price_kind} prices must be positive where observed"
+                )
+            if np.isinf(values.to_numpy(dtype=float)).any():
+                raise ValueError(
+                    f"{asset} adjusted {price_kind} prices must not contain infinities"
+                )
+            resolved[asset] = values
+    return (
+        pd.DataFrame(resolved_closes, index=prices.index, dtype=float),
+        pd.DataFrame(resolved_opens, index=prices.index, dtype=float),
+        state_positions,
+    )
 
 
 def _state_episode_ids(states: pd.Series) -> pd.Series:
@@ -152,15 +197,24 @@ def build_forward_outcomes(
     states: pd.Series,
     *,
     asset_columns: Mapping[str, str] | None = None,
+    asset_open_columns: Mapping[str, str] | None = None,
     horizons: Sequence[int] = HORIZONS,
     execution_lag_weeks: int = 1,
     return_currency: str = "USD",
 ) -> pd.DataFrame:
-    """Materialize fully observed, implementable forward outcomes."""
+    """Materialize next-open, weekly-close forward outcomes.
+
+    ``states`` may cover any consecutive subset of the full ``prices`` index.
+    This lets reconstructed OOS origins use subsequent price rows without
+    pretending those later rows were part of the signal sample.
+    """
 
     labels = _validate_states(states)
-    normalized_prices = _resolve_prices(
-        prices, labels, asset_columns=asset_columns
+    normalized_closes, normalized_opens, state_positions = _resolve_prices(
+        prices,
+        labels,
+        asset_columns=asset_columns,
+        asset_open_columns=asset_open_columns,
     )
     lag = _positive_integer(execution_lag_weeks, name="execution_lag_weeks")
     resolved_horizons = tuple(
@@ -177,20 +231,23 @@ def build_forward_outcomes(
     episodes = _state_episode_ids(labels)
     rows: list[dict[str, Any]] = []
     for origin_position, origin_date in enumerate(labels.index):
-        entry_position = origin_position + lag
-        if entry_position >= len(labels):
+        origin_price_position = int(state_positions[origin_position])
+        entry_position = origin_price_position + lag
+        if entry_position >= len(prices.index):
             continue
         for horizon in resolved_horizons:
-            exit_position = entry_position + horizon
-            if exit_position >= len(labels):
+            exit_position = entry_position + horizon - 1
+            if exit_position >= len(prices.index):
                 continue
-            entry_date = labels.index[entry_position]
-            exit_date = labels.index[exit_position]
+            entry_date = prices.index[entry_position]
+            exit_date = prices.index[exit_position]
             for asset in ASSETS:
-                path = normalized_prices[asset].iloc[
+                entry_open = float(normalized_opens[asset].iloc[entry_position])
+                close_path = normalized_closes[asset].iloc[
                     entry_position : exit_position + 1
                 ].to_numpy(dtype=float)
-                if len(path) != horizon + 1 or not np.isfinite(path).all():
+                path = np.concatenate(([entry_open], close_path))
+                if len(close_path) != horizon or not np.isfinite(path).all():
                     continue
                 rows.append(
                     {
@@ -204,7 +261,7 @@ def build_forward_outcomes(
                         "horizon_weeks": horizon,
                         "execution_lag_weeks": lag,
                         "return_currency": currency,
-                        "forward_return": float(path[-1] / path[0] - 1.0),
+                        "forward_return": float(close_path[-1] / entry_open - 1.0),
                         "max_drawdown": _within_window_max_drawdown(path),
                     }
                 )
@@ -329,6 +386,33 @@ def _episode_equal_mean(frame: pd.DataFrame) -> float:
     return float(episode_means.mean())
 
 
+def _greedy_non_overlapping_count(frame: pd.DataFrame) -> int:
+    """Count a deterministic maximum set of non-overlapping holding windows.
+
+    Entry is at the weekly open and exit is at the weekly close, so two windows
+    sharing the same date still overlap intraperiod.  The next selected entry
+    must therefore be strictly after the previous selected exit.
+    """
+
+    if frame.empty:
+        return 0
+    intervals = frame.assign(
+        _entry=pd.to_datetime(frame["entry_date"], utc=True),
+        _exit=pd.to_datetime(frame["exit_date"], utc=True),
+    ).sort_values(["_entry", "_exit"], kind="mergesort")
+    selected = 0
+    previous_exit: pd.Timestamp | None = None
+    for entry_value, exit_value in zip(
+        intervals["_entry"], intervals["_exit"], strict=True
+    ):
+        entry = pd.Timestamp(entry_value)
+        exit_date = pd.Timestamp(exit_value)
+        if previous_exit is None or entry > previous_exit:
+            selected += 1
+            previous_exit = exit_date
+    return selected
+
+
 def _whole_episode_bootstrap_interval(
     frame: pd.DataFrame,
     *,
@@ -366,6 +450,7 @@ def summarize_conditional_outcomes(
     states: Sequence[str] = STATE_ORDER,
     min_observations: int = 20,
     min_unique_episodes: int = 5,
+    min_non_overlapping_observations: int = 5,
     bootstrap_block_weeks: int = 13,
     bootstrap_resamples: int = 1_999,
     bootstrap_seed: int = 17,
@@ -391,6 +476,10 @@ def summarize_conditional_outcomes(
     minimum_rows = _positive_integer(min_observations, name="min_observations")
     minimum_episodes = _positive_integer(
         min_unique_episodes, name="min_unique_episodes"
+    )
+    minimum_non_overlapping = _positive_integer(
+        min_non_overlapping_observations,
+        name="min_non_overlapping_observations",
     )
     block_length = _positive_integer(
         bootstrap_block_weeks, name="bootstrap_block_weeks"
@@ -421,8 +510,11 @@ def summarize_conditional_outcomes(
                 ].sort_values("origin_position")
                 count = int(len(group))
                 unique_episodes = int(group["episode_id"].nunique())
+                non_overlapping_count = _greedy_non_overlapping_count(group)
                 supported = (
-                    count >= minimum_rows and unique_episodes >= minimum_episodes
+                    count >= minimum_rows
+                    and unique_episodes >= minimum_episodes
+                    and non_overlapping_count >= minimum_non_overlapping
                 )
                 metrics = (
                     _point_metrics(group, horizon_weeks=horizon)
@@ -451,6 +543,10 @@ def summarize_conditional_outcomes(
                     else float("nan")
                 )
                 episode_equal_mean = _episode_equal_mean(group)
+                episode_equal_benchmark_mean = _episode_equal_mean(benchmark)
+                episode_equal_benchmark_episodes = int(
+                    benchmark["episode_id"].nunique()
+                )
                 episode_interval = (
                     _whole_episode_bootstrap_interval(
                         group,
@@ -477,16 +573,20 @@ def summarize_conditional_outcomes(
                     if count
                     else None,
                     "n": count,
+                    "non_overlapping_n": non_overlapping_count,
                     "unique_episodes": unique_episodes,
                     "status": "ok" if supported else "insufficient_support",
                     "minimum_observations": minimum_rows,
                     "minimum_unique_episodes": minimum_episodes,
+                    "minimum_non_overlapping_observations": (
+                        minimum_non_overlapping
+                    ),
                     "bootstrap_method": "episode_bounded_circular_block",
                     "bootstrap_block_weeks": block_length,
                     "bootstrap_resamples": resamples,
                     "bootstrap_seed": group_seed,
                     "unconditional_benchmark_method": (
-                        "same_asset_horizon_all_origins_buy_and_hold"
+                        "same_asset_horizon_all_origins_mean"
                     ),
                     "unconditional_benchmark_n": int(len(benchmark)),
                     "unconditional_benchmark_mean_return": benchmark_mean,
@@ -496,10 +596,22 @@ def summarize_conditional_outcomes(
                         else float("nan")
                     ),
                     "episode_equal_mean_return": episode_equal_mean,
+                    "episode_equal_unconditional_benchmark_method": (
+                        "same_asset_horizon_all_state_episodes_equal_weight"
+                    ),
+                    "episode_equal_unconditional_benchmark_episode_n": (
+                        episode_equal_benchmark_episodes
+                    ),
+                    "episode_equal_unconditional_benchmark_mean_return": (
+                        episode_equal_benchmark_mean
+                    ),
                     "episode_equal_excess_return": (
-                        float(episode_equal_mean - benchmark_mean)
+                        float(
+                            episode_equal_mean
+                            - episode_equal_benchmark_mean
+                        )
                         if np.isfinite(episode_equal_mean)
-                        and np.isfinite(benchmark_mean)
+                        and np.isfinite(episode_equal_benchmark_mean)
                         else float("nan")
                     ),
                     "episode_bootstrap_method": "whole_episode_resampling",
@@ -521,8 +633,10 @@ def build_conditional_asset_statistics(
     states: pd.Series,
     *,
     asset_columns: Mapping[str, str] | None = None,
+    asset_open_columns: Mapping[str, str] | None = None,
     min_observations: int = 20,
     min_unique_episodes: int = 5,
+    min_non_overlapping_observations: int = 5,
     bootstrap_block_weeks: int = 13,
     bootstrap_resamples: int = 1_999,
     bootstrap_seed: int = 17,
@@ -533,6 +647,7 @@ def build_conditional_asset_statistics(
         prices,
         states,
         asset_columns=asset_columns,
+        asset_open_columns=asset_open_columns,
         horizons=HORIZONS,
         execution_lag_weeks=1,
         return_currency="USD",
@@ -541,6 +656,7 @@ def build_conditional_asset_statistics(
         outcomes,
         min_observations=min_observations,
         min_unique_episodes=min_unique_episodes,
+        min_non_overlapping_observations=min_non_overlapping_observations,
         bootstrap_block_weeks=bootstrap_block_weeks,
         bootstrap_resamples=bootstrap_resamples,
         bootstrap_seed=bootstrap_seed,
@@ -552,6 +668,7 @@ __all__ = [
     "ASSETS",
     "ConditionalOutcomeResult",
     "DEFAULT_ASSET_COLUMNS",
+    "DEFAULT_ASSET_OPEN_COLUMNS",
     "DECISION_USEFULNESS_METRICS",
     "HORIZONS",
     "OUTCOME_COLUMNS",

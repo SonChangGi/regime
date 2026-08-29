@@ -1,11 +1,46 @@
 from __future__ import annotations
 
+from email.message import Message
+from http.server import SimpleHTTPRequestHandler
 from io import BytesIO
 from pathlib import Path
 
 import pytest
 
 from regime_lab import server
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["/", "/index.html", "/styles.css?v=abc", "/app.js?v=abc", "/data/regime-results.json"],
+)
+def test_dashboard_responses_disable_browser_cache(
+    path: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[tuple[str, str]] = []
+    instance = object.__new__(server.DashboardHandler)
+    instance.path = path
+    instance.send_header = lambda name, value: captured.append((name, value))
+    monkeypatch.setattr(SimpleHTTPRequestHandler, "end_headers", lambda _self: None)
+
+    instance.end_headers()
+
+    assert ("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0") in captured
+    assert ("Pragma", "no-cache") in captured
+    assert ("Expires", "0") in captured
+
+
+def test_dashboard_ignores_conditional_cache_headers() -> None:
+    instance = object.__new__(server.DashboardHandler)
+    instance.headers = Message()
+    instance.headers["If-Modified-Since"] = "Fri, 21 Aug 2026 20:00:00 GMT"
+    instance.headers["If-None-Match"] = '"stale-preview"'
+
+    instance._disable_conditional_cache()
+
+    assert "If-Modified-Since" not in instance.headers
+    assert "If-None-Match" not in instance.headers
 
 
 def test_regular_json_path_accepts_only_regular_non_symlink(tmp_path: Path) -> None:
@@ -31,10 +66,13 @@ def test_serve_dashboard_freezes_selected_payloads_before_binding(
     (web_root / "index.html").write_text("<!doctype html>", encoding="utf-8")
     payload = tmp_path / "regime-results.json"
     comparison = tmp_path / "v5-vs-v4-comparison.json"
+    selection_family = tmp_path / "selection-family-audit.json"
     original_payload = b'{"generation":"validated"}'
     original_comparison = b'{"comparison":"validated"}'
+    original_selection_family = b'{"selection":"validated"}'
     payload.write_bytes(original_payload)
     comparison.write_bytes(original_comparison)
+    selection_family.write_bytes(original_selection_family)
     captured: dict[str, object] = {}
 
     class FakeServer:
@@ -56,6 +94,7 @@ def test_serve_dashboard_freezes_selected_payloads_before_binding(
         port=9988,
         payload=payload,
         comparison=comparison,
+        selection_family=selection_family,
     )
 
     handler = captured["handler"]
@@ -64,6 +103,7 @@ def test_serve_dashboard_freezes_selected_payloads_before_binding(
     assert captured["closed"] is True
     payload.write_bytes(b'{"generation":"replaced"}')
     comparison.write_bytes(b'{"comparison":"replaced"}')
+    selection_family.write_bytes(b'{"selection":"replaced"}')
 
     instance = object.__new__(handler.func)
     instance.send_response = lambda _status: None
@@ -77,6 +117,10 @@ def test_serve_dashboard_freezes_selected_payloads_before_binding(
     instance.wfile = BytesIO()
     assert instance._serve_override_json(include_body=True) is True
     assert instance.wfile.getvalue() == original_comparison
+    instance.path = "/data/selection-family-audit.json"
+    instance.wfile = BytesIO()
+    assert instance._serve_override_json(include_body=True) is True
+    assert instance.wfile.getvalue() == original_selection_family
 
 
 def test_serve_dashboard_accepts_prevalidated_frozen_bytes(

@@ -49,10 +49,13 @@ byte 단위로 결속한다. 최초 V5 사전등록값은
   page gap은 보조 경보만 맡는다. 해당 page가 표 범위 밖 과거값에 미친 영향을
   알 수 없으므로 각 event 이후 27개 model origin을 평가에서 제외한다. 이 chain은
   민감도이며 core 자동 승격은 금지된다.
-- **조건부 자산 통계:** state `t`를 관측한 뒤 다음 주 종가 `t+1`에 진입한 것으로
-  정렬해 SPY·QQQ·IWM·TLT·HYG·UUP의 1·4·13주 성과를 요약한다. 결과는
-  descriptive-only이며 allocation·position·signal을 만들지 않는다. 신뢰구간은
-  episode 경계를 넘지 않는 circular block으로 주간 origin 가중치를 보존한다.
+- **투자 정렬 자산 통계:** origin `t`의 `S(t+1)` 예측을 다음 주 adjusted open에
+  체결한 것으로 두고, target 주를 포함해 1·4·13주차 adjusted close까지의
+  SPY·QQQ·IWM·TLT·HYG·UUP 고정 보유 adjusted forward return을 요약한다.
+  ex-date가 없는 주간 OHLC에서는 진입 주 분배금을 보수적으로 제외하며, 이를
+  total return으로 부르지 않는다. 예측 국면과 실제
+  `S(t+1)` oracle은 같은 OOS origin만 사용한다. 4·13주는 리밸런싱 주기가 아닌
+  겹치는 rolling cohort이며 `n`과 비중첩 표본 수를 함께 공개한다.
 
 FX의 champion 투입은 잠겨 있다. `v4_control`, `v4_plus_broad_index`,
 `v4_plus_bilateral_panel`, `v4_plus_all_fx` 네 shadow ablation을 모든 필요한
@@ -247,6 +250,10 @@ log high-low range, close location within that adjusted range, and the log gap
 from the previous adjusted close to the adjusted open. The collector requires
 complete `open/high/low/close/adjusted_close/volume` coverage and fails closed
 instead of combining unmatched periods or synthesizing a missing OHLC field.
+This same-row factor is split-consistent, but without an ex-date the entry
+week's distribution is conservatively excluded from adjusted-open forward
+returns. These outcomes are therefore named provider-adjusted forward returns,
+not total returns.
 
 ALFRED inputs include rates, inflation, labor, growth, the broad dollar,
 liquidity, NFCI, and the four official NFCI contributions: risk, credit,
@@ -383,8 +390,10 @@ forecast may use `forecast_evidence_track=operational_oos`, while the selection
 family reconstructed from the frozen 2016--2022 window remains
 `selection_evidence_track=reconstructed_oos` and
 `evidence_status=historical_reconstructed_oos`.  The public prospective-ledger
-summary exposes only an ordered primary-key count and SHA-256; forecast values,
-provider revisions, and raw inputs remain private.  Issue latency, actual
+summary exposes ordered forecast/evaluation manifest counts and SHA-256 values,
+plus derived realized weeks, gross/net cumulative return, turnover, cost,
+forecast hits, and actual-state counts.  Forecast probabilities, target prices,
+position paths, provider revisions, and raw inputs remain private.  Issue latency, actual
 remaining seconds, remaining-horizon fraction, and `late_nowcast` are computed
 from zoned instants.  A seven-calendar-day New York interval may therefore be
 601,200, 604,800, or 608,400 seconds across DST.
@@ -396,22 +405,75 @@ false alarms per year, and destination-recognition delay.  The selected binary
 transition benchmark is not substituted for the official champion in this
 health block.
 
-Conditional asset rows retain the certified weekly-origin estimates and add a
-same-asset/horizon unconditional buy-and-hold benchmark, excess return, and an
-episode-equal estimand.  The latter resamples whole episodes, so one long regime
-cannot dominate merely by contributing more weekly origins.
+Investment-aligned conditional asset rows use the same OOS origins for predicted
+`S(t+1)` and the realized-next-state oracle.  Entry is the next week's adjusted
+open and exit is the adjusted close of horizon week 1, 4, or 13.  The
+published return measure is `provider_adjusted_forward_return`; the entry-week
+distribution policy is `conservative_excluded_without_ex_date`, and the
+corporate-action policy is `same_row_adjustment_factor_split_consistent`.  The
+same-asset/horizon benchmark is the unconditional mean of those identical
+rolling windows, not a compounded buy-and-hold portfolio.  `non_overlapping_n`
+discloses effective independent-window support.  Status and confidence
+intervals are available only when `n >= 20`, `unique_episodes >= 5`, and
+`non_overlapping_n >= 5`; the episode-equal estimand prevents one long regime
+from dominating through repeated weekly origins.  Its excess return is
+compared with an all-state, all-episode equal-weight unconditional benchmark;
+the weekly-origin unconditional mean remains the matched benchmark for the
+weekly-origin excess only.  `mean_max_drawdown` is
+observed from the entry adjusted open and subsequent weekly adjusted closes;
+it is not an intraday-low drawdown estimate.
 
 `prospective_decision_shadow` is a separate research-only schema, not an
-allocation field inside conditional statistics.  Its preregistered mapping is
-the probability-weighted combination of fixed SPY/TLT state portfolios
-(80/20, 50/50, 20/80).  A signal at weekly close `t` is first tradable at the
-next completed weekly close and earns returns only after that point.  It
-deducts 10 bps per one-way turnover and compares a matched period against SPY
-buy-and-hold, static 60/40, and trailing-volatility-targeted 60/40 using return,
-volatility, Sharpe, maximum drawdown, turnover, and certainty-equivalent return
-(risk aversion 3).  Reconstructed history and realized prospective-ledger
-outcomes are separate evidence tracks, and neither can alter the official
-forecast or champion.
+allocation field inside conditional statistics.  Its versioned v2 spec is
+`config/decision-shadow-v2.json`; the original v1 file remains immutable for
+historical publication verification.  Its preregistered mapping is the
+probability-weighted combination of fixed SPY/TLT state portfolios
+(80/20, 50/50, 20/80).  Historical and current weights use the
+`model_forecasts` row named by `selection.operating_champion`;
+`allocation_policy.forecast_model` and `current_signal.forecast_model` make
+that binding explicit.  They do not silently use the separately selected
+`weekly.next_week` row when the models differ.  A signal at weekly close `t`
+is first tradable at the
+next week's adjusted open and earns that target week's open-to-close return.
+Schema 2 publishes `current_signal` with the target week's first regular NYSE
+session at 09:30 America/New_York.  The action is trade only when `decision_at`
+is strictly earlier than that scheduled open; an equal or later decision is
+`missed_entry` and `no_trade`.  Recurring NYSE full-day holiday rules move a
+Monday-holiday entry to Tuesday.  Historical timing is a market-week date, not
+a synthetic Friday execution timestamp.
+Existing holdings retain their close-to-next-open gap exposure; turnover is
+measured against drifted pre-trade weights and costs 10 bps one way.  The same
+self-financing engine and matched period apply to SPY buy-and-hold, weekly
+60/40, and trailing-volatility-targeted 60/40.  The reported
+`transaction_cost_rate_sum` is the sum of weekly cost rates, not a compounded
+wealth drag.  Initial cash-entry turnover is the L1 distance from zero asset
+weights to the target, so a partially invested target is not forced to one.
+Maximum drawdown includes initial wealth 1.0, and the summary publishes the
+actual common evaluation start and end weeks.
+
+The weekly provider row has `dividend_amount` but no ex-date.  V2 therefore
+uses one split-safe price-only contract for the shadow and every benchmark.  It
+starts from the adjusted-close total factor, removes the explicit weekly
+distribution, infers the split ratio, and decomposes the remaining price
+return into prior-close-to-target-open and target-open-to-close legs.  A
+target-week distribution is neither credited to the old weights nor
+selectively credited after rebalancing; it is conservatively excluded from all
+strategies.  Missing or implausible split/dividend inputs fail closed.  Late
+signals are no-trade.
+Reconstructed history and realized prospective-ledger outcomes are separate
+evidence tracks, and neither can alter the official forecast or champion.
+Each V2 replay writes a private `research-replay-input.json` artifact that
+binds the reconstructed input-vintage manifest, canonical panel, and state
+membership hashes.  The generation manifest continues to bind the distinct
+operational forecast input snapshot; the audit requires the replay artifact to
+point back to that same operating generation before publication.
+The private forecast and evaluation tables are independently append-only.  A
+target that has not arrived is pending; a due target with temporarily missing
+prices or state labels is `unresolved_due` and is retried without sealing an
+evaluation row.  Only permanent forecast-contract failures become terminal
+partial records.  A terminal partial closes that portfolio segment, while the
+next valid consecutive forecast starts a new cash-funded segment rather than
+propagating the failure indefinitely.
 
 The label sensitivity grid is preregistered in
 `config/label-sensitivity-grid.json`; its required output includes occupancy,

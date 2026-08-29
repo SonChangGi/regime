@@ -28,6 +28,7 @@ def test_validate_and_serve_default_to_reviewed_live_v5() -> None:
     assert validate.path == "publication/live/regime-results.json"
     assert serve.payload == "publication/live/regime-results.json"
     assert serve.comparison is None
+    assert serve.selection_family is None
 
 
 def test_serve_auto_selects_payload_sibling_comparison(
@@ -50,6 +51,7 @@ def test_serve_auto_selects_payload_sibling_comparison(
         *,
         payload_bytes: bytes,
         comparison_bytes: bytes | None,
+        selection_family_bytes: bytes | None,
     ) -> None:
         captured.update(
             web_root=web_root,
@@ -57,6 +59,7 @@ def test_serve_auto_selects_payload_sibling_comparison(
             port=port,
             payload_bytes=payload_bytes,
             comparison_bytes=comparison_bytes,
+            selection_family_bytes=selection_family_bytes,
         )
 
     monkeypatch.setattr(cli, "serve_dashboard", fake_serve)
@@ -72,6 +75,7 @@ def test_serve_auto_selects_payload_sibling_comparison(
         port=9988,
         payload=str(payload),
         comparison=None,
+        selection_family=None,
     )
 
     assert cli.command_serve(args) == 0
@@ -81,6 +85,7 @@ def test_serve_auto_selects_payload_sibling_comparison(
         "port": 9988,
         "payload_bytes": payload.read_bytes(),
         "comparison_bytes": comparison.read_bytes(),
+        "selection_family_bytes": None,
     }
 
 

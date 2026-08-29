@@ -59,11 +59,25 @@ def _alpha_fields(config: Mapping[str, Any]) -> tuple[str, ...]:
     )
 
 
+def _alpha_research_fields(config: Mapping[str, Any]) -> tuple[str, ...]:
+    return tuple(
+        dict.fromkeys(
+            str(item).strip()
+            for item in config["alpha_vantage"].get("research_fields", ())
+            if str(item).strip()
+        )
+    )
+
+
+def _alpha_dataset_fields(config: Mapping[str, Any]) -> tuple[str, ...]:
+    return tuple(dict.fromkeys((*_alpha_fields(config), *_alpha_research_fields(config))))
+
+
 def _required_series(config: Mapping[str, Any]) -> tuple[tuple[str, str], ...]:
     alpha = [
         ("alpha_vantage", f"{symbol}.{field}")
         for symbol in config["alpha_vantage"]["symbols"]
-        for field in _alpha_fields(config)
+        for field in _alpha_dataset_fields(config)
     ]
     alfred = [
         ("alfred", str(item["id"])) for item in config["alfred"]["series"]
@@ -74,7 +88,7 @@ def _required_series(config: Mapping[str, Any]) -> tuple[tuple[str, str], ...]:
 def _max_ages(config: Mapping[str, Any]) -> dict[tuple[str, str], timedelta]:
     result: dict[tuple[str, str], timedelta] = {}
     for symbol in config["alpha_vantage"]["symbols"]:
-        for field in _alpha_fields(config):
+        for field in _alpha_dataset_fields(config):
             result[("alpha_vantage", f"{symbol}.{field}")] = timedelta(days=10)
     by_frequency = {
         "daily": timedelta(days=14),
@@ -136,6 +150,8 @@ def _adjusted_ohlc(
     canonical: pd.DataFrame,
     symbols: Sequence[str],
     observed_periods: pd.DataFrame | None = None,
+    *,
+    feature_symbols: Sequence[str] | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Build split-consistent OHLC values and compact causal diagnostics.
 
@@ -144,10 +160,20 @@ def _adjusted_ohlc(
     on the same split/dividend-adjusted scale without interpolation or a
     future-row dependency.  A gap uses only the immediately preceding weekly
     adjusted close and therefore remains missing across a missing input week.
+
+    Adjusted audit columns are materialized for every symbol.  Compact model
+    diagnostics remain limited to ``feature_symbols`` so expanding outcome
+    price coverage cannot silently change the forecasting feature set.
     """
 
     adjusted: dict[str, pd.Series] = {}
     features: dict[str, pd.Series] = {}
+    feature_symbol_source = symbols if feature_symbols is None else feature_symbols
+    resolved_feature_symbols = {
+        str(configured_symbol).strip().lower()
+        for configured_symbol in feature_symbol_source
+        if str(configured_symbol).strip()
+    }
     for configured_symbol in symbols:
         symbol = str(configured_symbol).strip().lower()
         if not symbol:
@@ -159,6 +185,18 @@ def _adjusted_ohlc(
         adjusted_close_column = f"{symbol}_close"
         required = (*columns.values(), adjusted_close_column)
         if any(column not in canonical for column in required):
+            missing = pd.Series(np.nan, index=canonical.index, dtype=float)
+            for field in ("open", "high", "low"):
+                adjusted[f"{symbol}_adjusted_{field}"] = missing.copy()
+            adjusted[f"{symbol}_adjustment_factor"] = missing.copy()
+            if symbol in resolved_feature_symbols:
+                prefix = f"market_ohlc__{symbol}"
+                for suffix in (
+                    "log_high_low_range_1w",
+                    "close_location_1w",
+                    "log_gap_1w",
+                ):
+                    features[f"{prefix}__{suffix}"] = missing.copy()
             continue
 
         raw = {
@@ -170,10 +208,13 @@ def _adjusted_ohlc(
         ).astype(float)
         same_period = pd.Series(True, index=canonical.index, dtype=bool)
         if observed_periods is not None:
-            reference_period = observed_periods[adjusted_close_column]
-            same_period = reference_period.notna()
-            for column in required[:-1]:
-                same_period &= observed_periods[column].eq(reference_period)
+            if any(column not in observed_periods for column in required):
+                same_period = pd.Series(False, index=canonical.index, dtype=bool)
+            else:
+                reference_period = observed_periods[adjusted_close_column]
+                same_period = reference_period.notna()
+                for column in required[:-1]:
+                    same_period &= observed_periods[column].eq(reference_period)
         factor = (adjusted_close / raw["close"]).where(
             same_period & (adjusted_close > 0.0) & (raw["close"] > 0.0)
         )
@@ -186,6 +227,9 @@ def _adjusted_ohlc(
         for field in ("open", "high", "low"):
             adjusted[f"{symbol}_adjusted_{field}"] = adjusted_prices[field]
         adjusted[f"{symbol}_adjustment_factor"] = factor
+
+        if symbol not in resolved_feature_symbols:
+            continue
 
         valid_range = (
             (adjusted_prices["high"] > 0.0)
@@ -362,14 +406,16 @@ def build_weekly_dataset(
             "alpha_vantage fields must include adjusted_close and volume"
         )
     required_ohlc_fields = {"open", "high", "low", "close"}
-    if ohlc_feature_symbols and not required_ohlc_fields.issubset(alpha_fields):
+    if configured_symbols and not required_ohlc_fields.issubset(alpha_fields):
         raise ValueError(
-            "configured OHLC feature symbols require open, high, low, and close"
+            "configured Alpha Vantage symbols require open, high, low, and close "
+            "for adjusted OHLC"
         )
     adjusted_ohlc, ohlc_features = _adjusted_ohlc(
         canonical,
-        ohlc_feature_symbols,
+        configured_symbols,
         observed_periods=alpha_observed_periods,
+        feature_symbols=ohlc_feature_symbols,
     )
     canonical = pd.concat([canonical, adjusted_ohlc], axis=1)
 

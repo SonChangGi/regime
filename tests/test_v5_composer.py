@@ -46,14 +46,18 @@ def _inputs(rows: int = 700):
         },
         index=index,
     )
-    canonical = pd.DataFrame(
-        {
-            f"{asset.lower()}_close": 100.0
-            * np.exp(np.cumsum(0.001 + 0.005 * np.sin(position / (7 + offset))))
-            for offset, asset in enumerate(("SPY", "QQQ", "IWM", "TLT", "HYG", "UUP"))
-        },
-        index=index,
-    )
+    close_values = {
+        f"{asset.lower()}_close": 100.0
+        * np.exp(np.cumsum(0.001 + 0.005 * np.sin(position / (7 + offset))))
+        for offset, asset in enumerate(("SPY", "QQQ", "IWM", "TLT", "HYG", "UUP"))
+    }
+    canonical = pd.DataFrame(close_values, index=index)
+    for asset in ("SPY", "QQQ", "IWM", "TLT", "HYG", "UUP"):
+        close = canonical[f"{asset.lower()}_close"]
+        canonical[f"{asset.lower()}_adjusted_open"] = close * 0.999
+        canonical[f"{asset.lower()}_raw_open"] = close * 0.999
+        canonical[f"{asset.lower()}_raw_close"] = close
+        canonical[f"{asset.lower()}_dividend_amount"] = 0.0
     return index, states, features, canonical
 
 
@@ -391,7 +395,79 @@ def test_v5_composer_changes_semantics_without_allocation_output() -> None:
     assert payload["weekly"][-1]["fx_context"]["status"] == "unavailable"
     assert len(payload["research"]["conditional_asset_stats"]["rows"]) == 54
     assert len(conditional.statistics) == 54
-    assert "allocation" not in repr(payload["research"])
+    assert payload["research"]["conditional_asset_stats"]["method"] == (
+        "matched_oos_actual_next_state_target_week_adjusted_forward_return"
+    )
+    assert payload["research"]["model_conditioned_asset_stats"]["method"] == (
+        "matched_oos_predicted_next_state_target_week_adjusted_forward_return"
+    )
+    for key in ("conditional_asset_stats", "model_conditioned_asset_stats"):
+        stats = payload["research"][key]
+        assert stats["return_measure"] == "provider_adjusted_forward_return"
+        assert stats["entry_week_distribution_policy"] == (
+            "conservative_excluded_without_ex_date"
+        )
+        assert stats["corporate_action_policy"] == (
+            "same_row_adjustment_factor_split_consistent"
+        )
+        assert stats["drawdown_observation_basis"] == (
+            "entry_adjusted_open_then_weekly_adjusted_closes"
+        )
+    target_week_rows = conditional.outcomes.loc[
+        conditional.outcomes["horizon_weeks"].eq(1)
+    ]
+    assert set(target_week_rows["origin_date"]) == {index[-2]}
+    assert set(target_week_rows["state"]) == {str(states.loc[index[-1]])}
+    assert set(target_week_rows["entry_date"]) == {index[-1]}
+    assert set(target_week_rows["exit_date"]) == {index[-1]}
+    assert "non_overlapping_n" in conditional.statistics
+    assert "allocation" not in repr(payload["research"]["conditional_asset_stats"])
+    assert payload["research"]["prospective_decision_shadow"][
+        "historical_reconstructed_shadow"
+    ]["allocation_policy"]["latest_target_weights"] is not None
+    decision_shadow = payload["research"]["prospective_decision_shadow"]
+    assert decision_shadow["schema_version"] == (
+        "regime-prospective-decision-shadow/2"
+    )
+    assert decision_shadow["current_signal"]["decision_at"] == (
+        payload["forecast"]["decision_at"]
+    )
+    assert decision_shadow["current_signal"]["decision_at"] == (
+        payload["forecast"]["origin_at"]
+    )
+    assert decision_shadow["current_signal"]["origin_date"] == (
+        payload["weekly"][-1]["date"]
+    )
+    assert decision_shadow["current_signal"]["target_week"] == (
+        payload["weekly"][-1]["next_week"]["date"]
+    )
+    assert decision_shadow["current_signal"]["forecast_model"] == (
+        payload["selection"]["operating_champion"]
+    )
+    assert decision_shadow["historical_reconstructed_shadow"][
+        "allocation_policy"
+    ]["forecast_model"] == payload["selection"]["operating_champion"]
+    operating_forecast = next(
+        row
+        for row in payload["weekly"][-1]["model_forecasts"]
+        if row["model"] == payload["selection"]["operating_champion"]
+    )
+    probabilities = operating_forecast["probabilities"]
+    expected_spy_weight = (
+        0.8 * probabilities["risk_on"]
+        + 0.5 * probabilities["transition"]
+        + 0.2 * probabilities["risk_off"]
+    )
+    assert np.isclose(
+        decision_shadow["historical_reconstructed_shadow"][
+            "latest_target_weights"
+        ]["SPY"],
+        expected_spy_weight,
+    )
+    assert decision_shadow["current_signal"]["status"] == "scheduled"
+    assert decision_shadow["current_signal"]["action"] == (
+        "trade_at_scheduled_open"
+    )
     assert payload["model"]["forecast_comparison"]["models"] == list(
         V5_FORECAST_COMPARISON_MODELS
     )
@@ -536,4 +612,7 @@ def test_model_conditioned_asset_statistics_use_completed_oos_forecasts() -> Non
     ]
     assert set(first_rows["state"]) == {"risk_on"}
     assert set(first_rows["entry_date"]) == {index[-79]}
-    assert set(first_rows["exit_date"]) == {index[-78]}
+    assert set(first_rows["exit_date"]) == {index[-79]}
+    assert research["model_conditioned_asset_stats"]["entry_price_basis"] == (
+        "next_week_adjusted_open"
+    )

@@ -1,0 +1,49 @@
+{
+  "schema_version": "regime-decision-shadow-spec/1",
+  "spec_id": "spy-tlt-probability-shadow-v2",
+  "role": "research_only_no_forecast_or_champion_effect",
+  "assets": ["SPY", "TLT"],
+  "probability_weight_mapping": {
+    "risk_on": {"SPY": 0.8, "TLT": 0.2},
+    "transition": {"SPY": 0.5, "TLT": 0.5},
+    "risk_off": {"SPY": 0.2, "TLT": 0.8}
+  },
+  "execution": {
+    "signal_origin": "completed_weekly_close",
+    "first_tradable_point": "next_week_adjusted_open",
+    "target_return_window": "next_week_open_to_close",
+    "rebalance_frequency": "weekly",
+    "late_signal_policy": "no_trade",
+    "holding_period_weeks": 1
+  },
+  "return_accounting": {
+    "method": "split_safe_price_only_weekly",
+    "total_factor_source": "provider_adjusted_close_to_close",
+    "split_inference": "total_factor_x_prior_raw_close_over_current_raw_close_plus_dividend",
+    "gap_window": "prior_raw_close_to_target_raw_open_after_inferred_split",
+    "holding_window": "target_raw_open_to_raw_close",
+    "distribution_policy": "excluded_without_ex_date_for_all_strategies"
+  },
+  "cost": {
+    "one_way_turnover_bps": 10.0,
+    "turnover_definition": "sum_absolute_target_minus_drifted_pretrade_weight",
+    "initial_allocation_costed_from_cash": true
+  },
+  "benchmarks": {
+    "buy_and_hold": {"SPY": 1.0, "TLT": 0.0},
+    "static_60_40": {"SPY": 0.6, "TLT": 0.4},
+    "vol_target_60_40": {
+      "base": {"SPY": 0.6, "TLT": 0.4},
+      "annual_target": 0.1,
+      "lookback_weeks": 26,
+      "minimum_observations": 13,
+      "maximum_gross_exposure": 1.0
+    }
+  },
+  "metrics": {
+    "annualization_weeks": 52.1775,
+    "risk_free_rate": 0.0,
+    "certainty_equivalent_risk_aversion": 3.0,
+    "minimum_evaluation_weeks": 52
+  }
+}

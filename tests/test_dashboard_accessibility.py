@@ -45,7 +45,7 @@ def test_interactive_controls_have_accessible_names() -> None:
     assert 'id="chart-readout-entropy"' in HTML
     assert 'id="chart-readout-observed-label"' in HTML
     assert 'id="history-observed-group-label"' in HTML
-    assert '<label for="conditional-basis-select">국면 기준</label>' in HTML
+    assert '<label for="conditional-basis-select">기준</label>' in HTML
     assert 'id="conditional-basis-select"' in HTML
     assert 'aria-controls="conditional-stat-grid conditional-stat-body"' in HTML
     assert '<label for="conditional-asset-select">' in HTML
@@ -82,27 +82,23 @@ def test_visuals_have_semantic_fallbacks_and_non_color_encoding() -> None:
     assert 'setText(dom["chart-readout-observed-label"], `${historyMeta.observedMeasure} · t`)' in JS
     assert 'isCurrent && isV5Payload() ? "소속도"' in JS
     assert '"예측확률"' in JS
-    assert "최초 이탈 방향" in JS
     assert "52주 극단값은 시장 맥락이며 예측 기여도와는 별도" not in HTML
     assert 'id="next-model-context"' not in HTML
     assert 'id="next-model-context-detail"' in HTML
-    assert "입력 현재 국면·과거 전이" in JS
-    assert "입력 완료 OOS 예측 풀 26·52·104주" in JS
     assert "function displayFreshness" in JS
-    assert "과거 조회" in JS
     assert "공개 스냅샷" in JS
     assert 'currentFreshness.status === "stale"' in JS
     assert 'id="conditional-stat-grid" class="conditional-stat-grid" role="region"' in HTML
-    assert 'setAttribute("aria-label", `${basisLabel} 자산군 평균과 95% 구간 및 전체 주 B&H 비교`)' in JS
-    assert '`${basisLabel} · 선택 자산과 보유 기간의 국면별 조건부 성과 표 · 가로 스크롤 가능`' in JS
-    assert '`${modelForecastLabel(state.comparisonModel)} OOS 예측 국면 기준`' in JS
-    assert '"관측 국면 기준"' in JS
+    assert 'setAttribute("aria-label", `${basisLabel} 자산별 평균 수익률`)' in JS
+    assert '`${basisLabel} · ${horizonLabel} 자산 성과 표`' in JS
+    assert '`${modelForecastLabel(state.comparisonModel)} 예측 국면`' in JS
+    assert '"관측 국면"' in JS
     assert "표본 부족" in JS
     assert 'createElement("td", null, formatSignedPercent(row.median_return))' in JS
     assert 'createElement("td", null, formatPercent(row.positive_rate))' in JS
     assert "선정 구간" in HTML and "2023년 이후 진단" in HTML
-    assert "향후 1주 안에 한 번 이상 현재 국면에서 이탈할 확률" in JS
-    assert "향후 ${horizon}주 안에 한 번 이상 현재 국면에서 이탈할 확률" in JS
+    assert 'setText(dom["transition-value-label"], "1주 이탈")' in JS
+    assert 'createElement("span", null, `${horizon}주 이탈`)' in JS
     assert 'class="diagnostic-label"' not in HTML
     assert "diagnostic-label" not in JS
     assert "stroke-dasharray" in CSS
@@ -135,8 +131,8 @@ def test_keyboard_focus_reduced_motion_and_mobile_rules_exist() -> None:
     assert "aria-current" in JS
     table_scrolls = re.findall(r'class="[^"]*\btable-scroll\b[^"]*" tabindex="0"', HTML)
     assert len(table_scrolls) == 5
-    assert 'aria-label="선택 자산과 보유 기간의 국면별 조건부 성과 표 · 가로 스크롤 가능"' in HTML
-    assert "${stateMeta(code).label}, ${asset} ${OUTCOME_ASSET_LABELS[asset]}" in JS
+    assert 'aria-label="선택 자산과 보유 기간의 국면별 조건부 성과 표"' in HTML
+    assert '`${basisLabel}, ${stateMeta(code).label}, ${asset}, 수익률 ${formatted}, 전체 평균 대비' in JS
     assert '.table-scroll[tabindex="0"]:focus-visible' in CSS
     assert ".transition-horizon-field select" in CSS
     assert ".model-forecast-field select" in CSS
@@ -253,5 +249,5 @@ def test_collapsed_detail_cards_omit_general_warning_surfaces() -> None:
 def test_probability_chart_declares_honest_fixed_axis() -> None:
     assert "for (const tick of [0, 0.25, 0.5, 0.75, 1])" in JS
     assert '`${Math.round(tick * 100)}%`' in JS
-    assert "두 패널 모두 0–100% 축" in JS
-    assert "상단 ${historyMeta.observedMeasure}, 하단 ${historyMeta.model} 1주 예측확률" in JS
+    assert 'aria-valuemin="0"' in HTML and 'aria-valuemax="100"' in HTML
+    assert "`${range} · ${history.length}주`" in JS

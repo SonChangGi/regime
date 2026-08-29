@@ -841,21 +841,93 @@ def _freshness(meta: Mapping[str, Any]) -> dict[str, Any]:
 def _conditional_research(
     canonical: pd.DataFrame,
     states: pd.Series,
+    weekly: Sequence[Mapping[str, Any]],
     *,
     bootstrap_resamples: int,
-) -> tuple[dict[str, Any], Any]:
+) -> tuple[dict[str, Any], Any, pd.DatetimeIndex]:
+    """Compare OOS forecasts with the actual state they targeted.
+
+    Each weekly row is a forecast origin ``t`` for state ``t+1``.  The
+    comparator is intentionally an oracle diagnostic: it assigns the realized
+    ``t+1`` state back to the same origin used by the forecast.  This keeps the
+    observed and predicted studies on identical, investable return windows.
+    """
+
+    canonical_index_by_date = {
+        pd.Timestamp(index).date().isoformat(): index for index in canonical.index
+    }
+    state_by_date = {
+        pd.Timestamp(index).date().isoformat(): str(value)
+        for index, value in states.items()
+    }
+    matched_origins: list[pd.Timestamp] = []
+    actual_next_states: list[str] = []
+    for week in weekly:
+        origin_date = str(week.get("date", ""))
+        origin = canonical_index_by_date.get(origin_date)
+        if origin is None:
+            raise ValueError(
+                f"conditional outcome origin is absent from canonical data: {origin_date}"
+            )
+        origin_position = canonical.index.get_loc(origin)
+        if not isinstance(origin_position, (int, np.integer)):
+            raise ValueError("conditional outcome origin must resolve uniquely")
+        target_position = int(origin_position) + 1
+        if target_position >= len(canonical.index):
+            continue
+        target = canonical.index[target_position]
+        target_date = pd.Timestamp(target).date().isoformat()
+        actual_state = state_by_date.get(target_date)
+        if actual_state is None:
+            continue
+        if actual_state not in STATE_ORDER:
+            raise ValueError(
+                f"conditional outcome target state is invalid: {actual_state}"
+            )
+        matched_origins.append(pd.Timestamp(origin))
+        actual_next_states.append(actual_state)
+
+    if not matched_origins:
+        raise ValueError("conditional outcomes require realized OOS forecast targets")
+    matched_index = pd.DatetimeIndex(matched_origins)
+    if matched_index.has_duplicates or not matched_index.is_monotonic_increasing:
+        raise ValueError("conditional outcome origins must be unique and increasing")
+    conditioning_states = pd.Series(
+        actual_next_states,
+        index=matched_index,
+        dtype="object",
+        name="state",
+    )
     result = build_conditional_asset_statistics(
         canonical,
-        states,
+        conditioning_states,
         bootstrap_resamples=bootstrap_resamples,
         bootstrap_seed=17,
     )
     return (
         {
             "conditional_asset_stats": {
-                "method": "state_conditioned_forward_total_return",
-                "role": "descriptive_only",
+                "method": (
+                    "matched_oos_actual_next_state_target_week_adjusted_forward_return"
+                ),
+                "role": "matched_oracle_diagnostic",
+                "conditioning": "actual_next_state_on_matched_oos_origins",
+                "return_measure": "provider_adjusted_forward_return",
+                "entry_week_distribution_policy": (
+                    "conservative_excluded_without_ex_date"
+                ),
+                "corporate_action_policy": (
+                    "same_row_adjustment_factor_split_consistent"
+                ),
+                "drawdown_observation_basis": (
+                    "entry_adjusted_open_then_weekly_adjusted_closes"
+                ),
+                "state_horizon_weeks": 1,
                 "execution_lag_weeks": 1,
+                "entry_price_basis": "next_week_adjusted_open",
+                "exit_price_basis": "horizon_week_adjusted_close",
+                "rebalance_policy": "none_fixed_asset_hold",
+                "origin_sampling": "weekly_rolling_overlapping",
                 "horizons_weeks": list(HORIZONS),
                 "assets": list(ASSETS),
                 "return_currency": "USD",
@@ -863,6 +935,7 @@ def _conditional_research(
             }
         },
         result,
+        matched_index,
     )
 
 
@@ -872,12 +945,14 @@ def _model_conditioned_research(
     model_names: Sequence[str],
     *,
     bootstrap_resamples: int,
+    matched_origins: pd.DatetimeIndex | None = None,
 ) -> tuple[dict[str, Any], pd.DataFrame, pd.DataFrame]:
     """Condition forward outcomes on each model's completed OOS forecast.
 
     Forecasts made at origin ``t`` describe the state expected at ``t+1``.
-    The outcome study therefore enters at the completed ``t+1`` close, which
-    is the same one-week execution lag used by the observed-state study.
+    The outcome study enters at the adjusted open of ``t+1`` and includes that
+    target week's open-to-close return.  When ``matched_origins`` is supplied,
+    the forecast and actual-state oracle use exactly the same OOS origins.
     """
 
     resolved_models = tuple(str(name) for name in model_names)
@@ -887,12 +962,22 @@ def _model_conditioned_research(
     index_by_date = {
         pd.Timestamp(index).date().isoformat(): index for index in canonical.index
     }
+    allowed_dates = (
+        {
+            pd.Timestamp(index).date().isoformat()
+            for index in pd.DatetimeIndex(matched_origins)
+        }
+        if matched_origins is not None
+        else None
+    )
     origin_index: list[pd.Timestamp] = []
     states_by_model: dict[str, list[str]] = {
         name: [] for name in resolved_models
     }
     for week in weekly:
         date_value = str(week.get("date", ""))
+        if allowed_dates is not None and date_value not in allowed_dates:
+            continue
         index = index_by_date.get(date_value)
         if index is None:
             raise ValueError(
@@ -928,18 +1013,22 @@ def _model_conditioned_research(
     if pd.DatetimeIndex(origin_index).has_duplicates:
         raise ValueError("model-conditioned outcome origins must be unique")
 
-    prices = canonical.loc[origin_index]
+    prices_index = pd.DatetimeIndex(origin_index)
+    if allowed_dates is not None and set(
+        pd.Timestamp(index).date().isoformat() for index in prices_index
+    ) != allowed_dates:
+        raise ValueError("model-conditioned origins differ from matched OOS origins")
     statistics_frames: list[pd.DataFrame] = []
     outcome_frames: list[pd.DataFrame] = []
     for name in resolved_models:
         predicted_states = pd.Series(
             states_by_model[name],
-            index=prices.index,
+            index=prices_index,
             dtype="object",
             name="state",
         )
         result = build_conditional_asset_statistics(
-            prices,
+            canonical,
             predicted_states,
             bootstrap_resamples=bootstrap_resamples,
             bootstrap_seed=17,
@@ -956,11 +1045,27 @@ def _model_conditioned_research(
     return (
         {
             "model_conditioned_asset_stats": {
-                "method": "oos_one_week_forecast_conditioned_forward_total_return",
+                "method": (
+                    "matched_oos_predicted_next_state_target_week_adjusted_forward_return"
+                ),
                 "role": "retrospective_model_diagnostic",
                 "conditioning": "hard_argmax_oos_forecast",
+                "return_measure": "provider_adjusted_forward_return",
+                "entry_week_distribution_policy": (
+                    "conservative_excluded_without_ex_date"
+                ),
+                "corporate_action_policy": (
+                    "same_row_adjustment_factor_split_consistent"
+                ),
+                "drawdown_observation_basis": (
+                    "entry_adjusted_open_then_weekly_adjusted_closes"
+                ),
                 "forecast_horizon_weeks": 1,
                 "execution_lag_weeks": 1,
+                "entry_price_basis": "next_week_adjusted_open",
+                "exit_price_basis": "horizon_week_adjusted_close",
+                "rebalance_policy": "none_fixed_asset_hold",
+                "origin_sampling": "weekly_rolling_overlapping",
                 "horizons_weeks": list(HORIZONS),
                 "assets": list(ASSETS),
                 "models": list(resolved_models),
@@ -1162,14 +1267,30 @@ def build_v5_payload(
         week["summary"] = _summary(week)
         weekly.append(week)
 
-    research, conditional_result = _conditional_research(
+    selection = _selection_contract(model)
+    forecast_contract = _forecast_contract(
+        weekly[-1],
+        generated_at=generated_at,
+        mode=str(meta["mode"]),
+        evidence_track=evidence_track,
+    )
+    shadow_decision_at = forecast_contract.get("decision_at")
+    if shadow_decision_at is None:
+        # Non-live expired fixtures suppress decision_at in the forecast envelope,
+        # but the shadow still records the same generation decision for no-trade.
+        shadow_decision_at = pd.Timestamp(generated_at).tz_convert("UTC").isoformat()
+
+    research, conditional_result, matched_outcome_origins = _conditional_research(
         canonical,
         states,
+        weekly,
         bootstrap_resamples=outcome_bootstrap_resamples,
     )
     research["prospective_decision_shadow"] = build_decision_shadow(
         weekly,
         canonical,
+        forecast_model=str(selection["operating_champion"]),
+        decision_at=shadow_decision_at,
     )
     forecast_comparison = model.get("forecast_comparison", {})
     comparison_models = (
@@ -1187,6 +1308,7 @@ def build_v5_payload(
             weekly,
             comparison_models,
             bootstrap_resamples=outcome_bootstrap_resamples,
+            matched_origins=matched_outcome_origins,
         )
         research.update(model_conditioned_research)
     research_frames = {
@@ -1276,7 +1398,6 @@ def build_v5_payload(
     )
     if resolved_fit_end < resolved_fit_start:
         raise ValueError("label fit period is reversed")
-    selection = _selection_contract(model)
     lifecycle = {
         "selection": {"status": "selected_by_gate"},
         "deployment": {"status": "candidate"},
@@ -1299,12 +1420,7 @@ def build_v5_payload(
             "input_scope": "SPY adjusted close only",
             "membership_semantics": label_spec.membership.semantics,
         },
-        "forecast": _forecast_contract(
-            weekly[-1],
-            generated_at=generated_at,
-            mode=str(meta["mode"]),
-            evidence_track=evidence_track,
-        ),
+        "forecast": forecast_contract,
         "selection": selection,
         "model": model,
         "weekly": weekly,

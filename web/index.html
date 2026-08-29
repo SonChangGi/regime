@@ -10,9 +10,9 @@
     >
     <title>US Market Regime Lab | Quant Research</title>
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23111727'/%3E%3Cpath d='M14 43 26 31l9 8 15-20' fill='none' stroke='%2334d399' stroke-width='7' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
-    <link rel="stylesheet" href="./styles.css?v=ad9423885fcd7862ac1a61d18681add9cbaecf35888efc2562483fe437f96b07">
+    <link rel="stylesheet" href="./styles.css?v=114b965dd51b6c3bde9856501fc722eed51fa12b5c3619a8f167e8612f771b99">
     <script src="./operating-contract.generated.js?v=5078635e5a1fb2b9300e56f045b51c4e85ee047a21a3f64a15cd4e69261c9a20" defer></script>
-    <script src="./app.js?v=700936a639955ba083d2fe6f8f2f8258bffdce9dc08aa7daf1e46c1736d4a353" defer></script>
+    <script src="./app.js?v=b07616c9b10d318b71c6c7f4bf2cec52d21908805ed5e95389168258ed94bcd7" defer></script>
   </head>
   <body id="top">
     <a class="skip-link" href="#main-content">본문으로 건너뛰기</a>
@@ -42,29 +42,31 @@
         <h1 id="page-title">미국 증시 국면</h1>
       </div>
       <div class="header-status-strip" aria-label="현재 결과 요약">
-        <article>
+        <article hidden>
           <span>관측 주</span>
           <strong id="header-analysis-date">불러오는 중</strong>
         </article>
         <article>
-          <span>데이터 기준</span>
+          <span>데이터</span>
           <strong id="header-data-as-of">불러오는 중</strong>
         </article>
-        <article>
+        <article hidden>
           <span>모델 상태</span>
           <strong id="header-model-health">불러오는 중</strong>
+        </article>
+        <article hidden>
+          <span>표본</span>
+          <strong id="header-analysis-coverage">불러오는 중</strong>
         </article>
       </div>
     </header>
 
     <nav class="section-nav" aria-label="페이지 섹션 바로가기">
       <a href="#overview">현재</a>
-      <a id="conditional-stats-nav" class="v5-only" href="#conditional-stats" hidden>성과</a>
+      <a id="decision-shadow-nav" class="v5-only" href="#decision-shadow-block" hidden>전략</a>
+      <a id="conditional-stats-nav" class="v5-only" href="#conditional-stats" hidden>자산</a>
       <a href="#history">추이</a>
-      <a href="#evidence">맥락</a>
-      <a href="#models">모델</a>
-      <a href="#data-health">데이터</a>
-      <button id="copy-view-link" class="section-nav-action" type="button" aria-label="현재 분석 뷰 링크 복사">뷰 링크 복사</button>
+      <button id="copy-view-link" class="section-nav-action" type="button" aria-label="현재 화면 링크 복사">링크 복사</button>
     </nav>
 
     <main id="main-content" tabindex="-1">
@@ -81,7 +83,6 @@
           <div>
             <h1 id="error-title">데이터를 표시할 수 없습니다</h1>
             <p id="error-detail"></p>
-            <p class="state-help">정적 서버와 결과 파일을 확인하세요.</p>
             <button id="retry-button" class="button button-primary" type="button">다시 시도</button>
           </div>
         </div>
@@ -105,7 +106,7 @@
 
           <div class="control-bar">
             <form id="date-form" class="date-controls" aria-label="분석 기준일 선택">
-              <div class="field-group date-field">
+              <div class="field-group date-field compact-hidden-control">
                 <label for="analysis-date">기준일</label>
                 <input id="analysis-date" name="analysis-date" type="date" aria-describedby="snap-note" required>
               </div>
@@ -191,9 +192,20 @@
             </div>
             <div id="transition-horizon-bars" class="transition-horizon-bars" hidden></div>
           </article>
+
+          <article id="decision-action-card" class="decision-action-card card v5-only" aria-labelledby="decision-action-title" hidden>
+            <div class="decision-action-heading">
+              <div>
+                <span class="card-kicker">투자 실행</span>
+                <h2 id="decision-action-title">진입 없음</h2>
+              </div>
+              <span id="decision-action-status" class="support-chip is-limited">확인 중</span>
+            </div>
+            <div id="decision-shadow-current-summary" class="decision-action-summary" aria-live="polite"></div>
+          </article>
           </div>
 
-          <div id="contract-overview-grid" class="contract-overview-grid v5-only" hidden>
+          <div id="contract-overview-grid" class="contract-overview-grid v5-only meta-only-section" hidden>
             <details id="label-definition-card" class="definition-card card compact-definition-details">
               <summary>
                 <span id="label-definition-title">국면 기준 보기</span>
@@ -220,52 +232,62 @@
 
         </section>
 
+        <section id="decision-shadow-block" class="dashboard-section decision-shadow-section card v5-only" aria-labelledby="decision-shadow-title" hidden>
+          <div class="decision-shadow-section-heading">
+            <div>
+              <h2 id="decision-shadow-title">예측 전략 성과</h2>
+              <p id="decision-shadow-caption" class="section-caption" hidden></p>
+            </div>
+            <div id="decision-shadow-economic-summary" class="decision-shadow-economic-summary" aria-live="polite">
+              <span id="decision-shadow-economic-status" class="support-chip is-limited">확인 중</span>
+              <strong id="decision-shadow-economic-conclusion">성과 확인 중</strong>
+              <p id="decision-shadow-economic-metrics" hidden></p>
+            </div>
+          </div>
+          <div id="decision-shadow-grid" class="decision-shadow-grid" aria-label="예측 기반 전략과 benchmark 성과 비교"></div>
+        </section>
+
         <section id="conditional-stats" class="dashboard-section conditional-stats-section card v5-only" aria-labelledby="conditional-stats-title" hidden>
           <div class="card-heading conditional-stats-heading">
             <div>
-              <h2 id="conditional-stats-title">국면별 자산 성과</h2>
-              <p id="conditional-stats-caption" class="section-caption">관측 후 1주 뒤 진입 · 미래 보유 총수익률 · USD</p>
+              <h2 id="conditional-stats-title">예측 국면별 자산 성과</h2>
+              <p id="conditional-stats-caption" class="section-caption">다음 주 시가 진입 · 1주 보유</p>
             </div>
             <div class="conditional-stat-controls" aria-label="자산군 수익률 비교 필터">
               <div id="conditional-basis-field" class="field-group inline-field" hidden>
-                <label for="conditional-basis-select">국면 기준</label>
+                <label for="conditional-basis-select">기준</label>
                 <select
                   id="conditional-basis-select"
                   aria-controls="conditional-stat-grid conditional-stat-body"
                 >
-                  <option value="observed" selected>관측 국면</option>
-                  <option value="forecast">선택 모델 예측</option>
+                  <option value="observed">실제 국면 S(t+1)</option>
+                  <option value="forecast" selected>예측 국면 Ŝ(t+1)</option>
                 </select>
               </div>
               <div class="field-group inline-field">
                 <label for="conditional-horizon-select">보유 기간</label>
                 <select id="conditional-horizon-select">
-                  <option value="1" selected>1주</option>
-                  <option value="4">4주</option>
-                  <option value="13">13주</option>
+                  <option value="1" selected>1주 보유</option>
+                  <option value="4">4주 보유</option>
+                  <option value="13">13주 보유</option>
                 </select>
               </div>
             </div>
           </div>
+          <div id="conditional-support-summary" class="conditional-support-summary" role="status" aria-live="polite" hidden></div>
           <p id="conditional-unavailable" class="section-unavailable" role="status" hidden>자산 성과를 불러오지 못했습니다.</p>
           <div id="conditional-results">
             <div class="conditional-comparison-heading">
-              <strong>평균과 95% 구간</strong>
-              <span id="conditional-comparison-caption">1주 보유 · 전체 주 B&amp;H 대비</span>
+              <strong id="conditional-comparison-title">국면별 평균 수익률</strong>
+              <span id="conditional-comparison-caption">전체 평균 대비</span>
             </div>
-            <div class="conditional-regime-legend" aria-label="국면 범례">
-              <span><i class="legend-line risk-on-line" aria-hidden="true"></i><span data-state-label="risk_on">Risk-on</span></span>
-              <span><i class="legend-line transition-line" aria-hidden="true"></i><span data-state-label="transition">Transition</span></span>
-              <span><i class="legend-line risk-off-line" aria-hidden="true"></i><span data-state-label="risk_off">Risk-off</span></span>
-              <span><i class="conditional-legend-ci" aria-hidden="true"></i>점 평균 · 선 95% CI</span>
-            </div>
-            <div id="conditional-stat-grid" class="conditional-stat-grid" role="region" aria-label="국면별 자산군 평균 수익률 비교"></div>
+            <div id="conditional-stat-grid" class="conditional-stat-grid" role="region" aria-label="국면별 자산 수익률"></div>
             <details class="compact-table-details">
               <summary>
                 <span>상세 성과 표</span>
               </summary>
               <div class="conditional-detail-toolbar">
-                <span>선택 자산의 국면별 전체 통계</span>
+                <span>선택 자산</span>
                 <div class="field-group inline-field">
                   <label for="conditional-asset-select">상세 자산</label>
                   <select id="conditional-asset-select">
@@ -279,11 +301,12 @@
                 </div>
               </div>
               <span class="table-scroll-guide" aria-hidden="true">좌우로 스크롤</span>
-              <div id="conditional-stat-scroll" class="table-scroll conditional-table-scroll" tabindex="0" aria-label="선택 자산과 보유 기간의 국면별 조건부 성과 표 · 가로 스크롤 가능">
+              <div id="conditional-stat-scroll" class="table-scroll conditional-table-scroll" tabindex="0" aria-label="선택 자산과 보유 기간의 국면별 조건부 성과 표">
                 <table id="conditional-stat-table">
                   <caption id="conditional-stat-table-caption" class="sr-only">SPY 1주 국면별 조건부 성과</caption>
                   <colgroup>
                     <col class="conditional-col-state">
+                    <col class="conditional-col-return">
                     <col class="conditional-col-return">
                     <col class="conditional-col-return">
                     <col class="conditional-col-rate">
@@ -297,13 +320,14 @@
                     <tr>
                       <th scope="col">국면</th>
                       <th scope="col">평균 수익률</th>
-                      <th scope="col">중앙값</th>
-                      <th scope="col">양(+) 비율</th>
-                      <th scope="col">평균 95% CI</th>
-                      <th scope="col">연율 하방 변동성</th>
+                      <th scope="col">전체 평균 대비</th>
+                      <th scope="col">주별 평균</th>
+                      <th scope="col">상승 비율</th>
+                      <th scope="col" data-legacy-label="평균 95% CI">95% 구간</th>
+                      <th scope="col" data-unit="연율" aria-label="연율 하방 변동성">하방 변동성</th>
                       <th scope="col">CVaR 5%</th>
                       <th scope="col">평균 MDD</th>
-                      <th scope="col">주차 / episode</th>
+                      <th scope="col">표본</th>
                     </tr>
                   </thead>
                   <tbody id="conditional-stat-body"></tbody>
@@ -576,7 +600,7 @@
           </details>
         </section>
 
-        <section id="transition-model-section" class="dashboard-section transition-model-section card" aria-labelledby="transition-model-title" hidden>
+        <section id="transition-model-section" class="dashboard-section transition-model-section card meta-only-section" aria-labelledby="transition-model-title" hidden>
           <div class="card-heading transition-model-heading">
             <div>
               <h2 id="transition-model-title">국면 이탈 모델 비교</h2>
@@ -616,7 +640,7 @@
           </details>
         </section>
 
-        <section id="research-evidence" class="dashboard-section research-evidence-section v5-only" aria-labelledby="research-evidence-title" hidden>
+        <section id="research-evidence" class="dashboard-section research-evidence-section v5-only meta-only-section" aria-labelledby="research-evidence-title" hidden>
           <h2 id="research-evidence-title" class="sr-only">모델 · 연구 검증 상세</h2>
           <details id="research-evidence-details" class="research-notice-details operations-details research-evidence-details">
             <summary>
@@ -650,18 +674,12 @@
                   <div id="transition-risk-detail" class="research-transition-grid"></div>
                 </article>
 
-                <article id="decision-shadow-block" class="research-evidence-block research-decision-block" aria-labelledby="decision-shadow-title" hidden>
-                  <h3 id="decision-shadow-title">의사결정 shadow</h3>
-                  <p id="decision-shadow-caption" class="research-evidence-copy">공식 예측·선정 미반영</p>
-                  <div id="decision-shadow-grid" class="decision-shadow-grid" aria-label="연구 shadow와 benchmark 성과 비교"></div>
-                </article>
-
               </div>
             </div>
           </details>
         </section>
 
-        <section id="data-health" class="dashboard-section operations-section" aria-labelledby="health-title">
+        <section id="data-health" class="dashboard-section operations-section meta-only-section" aria-labelledby="health-title" hidden>
           <h2 id="health-title" class="sr-only">데이터 · 출처 · 운영</h2>
           <details class="research-notice-details operations-details">
             <summary>
@@ -707,7 +725,7 @@
           </details>
         </section>
 
-        <section id="forecast-window-section" class="dashboard-section forecast-window-section v5-only" aria-labelledby="forecast-window-title" hidden>
+        <section id="forecast-window-section" class="dashboard-section forecast-window-section v5-only meta-only-section" aria-labelledby="forecast-window-title" hidden>
           <h2 id="forecast-window-title" class="sr-only">운영 예측 시점</h2>
           <details id="forecast-window-card" class="research-notice-details operations-details forecast-window-details">
             <summary>

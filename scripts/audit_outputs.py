@@ -8,7 +8,7 @@ It does not open the snapshot database, refit a model, or modify artifacts.
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 import hashlib
 import json
 from pathlib import Path
@@ -166,14 +166,30 @@ V5_CONDITIONAL_STATISTIC_FIELDS = (
     "sample_start",
     "sample_end",
     "n",
+    "non_overlapping_n",
     "unique_episodes",
     "status",
     "minimum_observations",
     "minimum_unique_episodes",
+    "minimum_non_overlapping_observations",
     "bootstrap_method",
     "bootstrap_block_weeks",
     "bootstrap_resamples",
     "bootstrap_seed",
+    "unconditional_benchmark_method",
+    "unconditional_benchmark_n",
+    "unconditional_benchmark_mean_return",
+    "excess_mean_return",
+    "episode_equal_mean_return",
+    "episode_equal_unconditional_benchmark_method",
+    "episode_equal_unconditional_benchmark_episode_n",
+    "episode_equal_unconditional_benchmark_mean_return",
+    "episode_equal_excess_return",
+    "episode_bootstrap_method",
+    "episode_bootstrap_resamples",
+    "episode_bootstrap_seed",
+    "episode_equal_mean_return_ci95_lower",
+    "episode_equal_mean_return_ci95_upper",
     *V5_OUTCOME_POINT_METRICS,
     *tuple(
         field
@@ -183,6 +199,26 @@ V5_CONDITIONAL_STATISTIC_FIELDS = (
             f"{metric}_ci95_upper",
         )
     ),
+)
+V5_INVESTMENT_CONDITIONAL_FIELDS = frozenset(
+    {
+        "non_overlapping_n",
+        "minimum_non_overlapping_observations",
+        "unconditional_benchmark_method",
+        "unconditional_benchmark_n",
+        "unconditional_benchmark_mean_return",
+        "excess_mean_return",
+        "episode_equal_mean_return",
+        "episode_equal_unconditional_benchmark_method",
+        "episode_equal_unconditional_benchmark_episode_n",
+        "episode_equal_unconditional_benchmark_mean_return",
+        "episode_equal_excess_return",
+        "episode_bootstrap_method",
+        "episode_bootstrap_resamples",
+        "episode_bootstrap_seed",
+        "episode_equal_mean_return_ci95_lower",
+        "episode_equal_mean_return_ci95_upper",
+    }
 )
 V4_PREREGISTRATION_SHA256 = (
     "2f53ada564efca770261f16ce6eb16ec9c9782bde014de7a7d85b7b24dbe407b"
@@ -5859,6 +5895,74 @@ def _v5_conditional_bootstrap_intervals(
     return intervals
 
 
+def _v5_non_overlapping_count(frame: pd.DataFrame) -> int:
+    """Greedily count disjoint holding windows in chronological order."""
+
+    if frame.empty:
+        return 0
+    ordered = frame.assign(
+        _entry=pd.to_datetime(frame["entry_date"], utc=True),
+        _exit=pd.to_datetime(frame["exit_date"], utc=True),
+    ).sort_values(["_entry", "_exit"], kind="mergesort")
+    count = 0
+    previous_exit: pd.Timestamp | None = None
+    for entry_value, exit_value in zip(
+        ordered["_entry"], ordered["_exit"], strict=True
+    ):
+        entry = pd.Timestamp(entry_value)
+        exit_date = pd.Timestamp(exit_value)
+        if previous_exit is None or entry > previous_exit:
+            count += 1
+            previous_exit = exit_date
+    return count
+
+
+def _v5_episode_equal_mean(frame: pd.DataFrame) -> float:
+    if frame.empty:
+        return float("nan")
+    means = frame.groupby("episode_id", sort=False)["forward_return"].mean()
+    return float(means.mean())
+
+
+def _v5_whole_episode_bootstrap_interval(
+    frame: pd.DataFrame,
+    *,
+    resamples: int,
+    seed: int,
+) -> tuple[float, float]:
+    if resamples == 0 or frame.empty:
+        return float("nan"), float("nan")
+    episode_means = (
+        frame.groupby("episode_id", sort=False)["forward_return"]
+        .mean()
+        .to_numpy(dtype=float)
+    )
+    require(
+        len(episode_means) > 0,
+        "v5 conditional episode bootstrap has no episodes",
+    )
+    generator = np.random.default_rng(seed)
+    draws = np.asarray(
+        [
+            float(
+                np.mean(
+                    episode_means[
+                        generator.integers(
+                            0,
+                            len(episode_means),
+                            len(episode_means),
+                        )
+                    ]
+                )
+            )
+            for _ in range(resamples)
+        ],
+        dtype=float,
+    )
+    lower, upper = np.quantile(draws, [0.025, 0.975])
+    return float(lower), float(upper)
+
+
 def _recompute_v5_conditional_statistics(
     outcomes: pd.DataFrame,
     statistics: pd.DataFrame,
@@ -5887,6 +5991,14 @@ def _recompute_v5_conditional_statistics(
     asset_positions = {
         asset: index for index, asset in enumerate(V5_OUTCOME_ASSETS)
     }
+    unconditional = {
+        (str(asset), int(horizon)): group.sort_values(
+            "origin_position", kind="mergesort"
+        )
+        for (asset, horizon), group in outcomes.groupby(
+            ["asset", "horizon_weeks"], sort=False
+        )
+    }
     rows: list[dict[str, Any]] = []
     for statistic in statistics.itertuples(index=False):
         state = str(statistic.state)
@@ -5907,8 +6019,26 @@ def _recompute_v5_conditional_statistics(
         unique_episodes = int(group["episode_id"].nunique())
         minimum_observations = 20
         minimum_episodes = 5
+        non_overlapping_n = _v5_non_overlapping_count(group)
+        reported_minimum_non_overlapping = getattr(
+            statistic,
+            "minimum_non_overlapping_observations",
+            None,
+        )
+        minimum_non_overlapping = (
+            1
+            if reported_minimum_non_overlapping is None
+            else int(reported_minimum_non_overlapping)
+        )
+        if reported_minimum_non_overlapping is not None:
+            require(
+                minimum_non_overlapping == 5,
+                "v5 conditional minimum non-overlapping support is invalid",
+            )
         supported = (
-            count >= minimum_observations and unique_episodes >= minimum_episodes
+            count >= minimum_observations
+            and unique_episodes >= minimum_episodes
+            and non_overlapping_n >= minimum_non_overlapping
         )
         metrics = (
             _v5_conditional_point_metrics(
@@ -5941,6 +6071,40 @@ def _recompute_v5_conditional_statistics(
                 for metric in V5_OUTCOME_POINT_METRICS
             }
         )
+        benchmark = unconditional.get((asset, horizon), outcomes.iloc[0:0])
+        benchmark_mean = (
+            float(benchmark["forward_return"].mean())
+            if len(benchmark)
+            else float("nan")
+        )
+        episode_equal_mean = _v5_episode_equal_mean(group)
+        episode_equal_benchmark_mean = _v5_episode_equal_mean(benchmark)
+        episode_equal_benchmark_episodes = int(
+            benchmark["episode_id"].nunique()
+        )
+        episode_seed = seed + 1_000_000
+        episode_interval = (
+            _v5_whole_episode_bootstrap_interval(
+                group,
+                resamples=expected_resamples,
+                seed=episode_seed,
+            )
+            if supported
+            else (float("nan"), float("nan"))
+        )
+        reported_benchmark_method = getattr(
+            statistic,
+            "unconditional_benchmark_method",
+            "same_asset_horizon_all_origins_mean",
+        )
+        require(
+            reported_benchmark_method
+            in {
+                "same_asset_horizon_all_origins_buy_and_hold",
+                "same_asset_horizon_all_origins_mean",
+            },
+            "v5 conditional unconditional benchmark method is invalid",
+        )
         row: dict[str, Any] = {
             "state": state,
             "asset": asset,
@@ -5962,14 +6126,48 @@ def _recompute_v5_conditional_statistics(
                 else None
             ),
             "n": count,
+            "non_overlapping_n": non_overlapping_n,
             "unique_episodes": unique_episodes,
             "status": "ok" if supported else "insufficient_support",
             "minimum_observations": minimum_observations,
             "minimum_unique_episodes": minimum_episodes,
+            "minimum_non_overlapping_observations": minimum_non_overlapping,
             "bootstrap_method": "episode_bounded_circular_block",
             "bootstrap_block_weeks": 13,
             "bootstrap_resamples": expected_resamples,
             "bootstrap_seed": seed,
+            "unconditional_benchmark_method": reported_benchmark_method,
+            "unconditional_benchmark_n": int(len(benchmark)),
+            "unconditional_benchmark_mean_return": benchmark_mean,
+            "excess_mean_return": (
+                float(metrics["mean_return"] - benchmark_mean)
+                if count and np.isfinite(benchmark_mean)
+                else float("nan")
+            ),
+            "episode_equal_mean_return": episode_equal_mean,
+            "episode_equal_unconditional_benchmark_method": (
+                "same_asset_horizon_all_state_episodes_equal_weight"
+            ),
+            "episode_equal_unconditional_benchmark_episode_n": (
+                episode_equal_benchmark_episodes
+            ),
+            "episode_equal_unconditional_benchmark_mean_return": (
+                episode_equal_benchmark_mean
+            ),
+            "episode_equal_excess_return": (
+                float(
+                    episode_equal_mean
+                    - episode_equal_benchmark_mean
+                )
+                if np.isfinite(episode_equal_mean)
+                and np.isfinite(episode_equal_benchmark_mean)
+                else float("nan")
+            ),
+            "episode_bootstrap_method": "whole_episode_resampling",
+            "episode_bootstrap_resamples": expected_resamples,
+            "episode_bootstrap_seed": episode_seed,
+            "episode_equal_mean_return_ci95_lower": episode_interval[0],
+            "episode_equal_mean_return_ci95_upper": episode_interval[1],
             **metrics,
         }
         for metric, (lower, upper) in intervals.items():
@@ -5979,11 +6177,70 @@ def _recompute_v5_conditional_statistics(
     return pd.DataFrame(rows)
 
 
+def _v5_conditional_comparison_fields(
+    statistics: pd.DataFrame,
+    *,
+    require_investment_fields: bool,
+) -> tuple[str, ...]:
+    present = set(str(column) for column in statistics.columns)
+    legacy_required = set(V5_CONDITIONAL_STATISTIC_FIELDS).difference(
+        V5_INVESTMENT_CONDITIONAL_FIELDS
+    )
+    require(
+        legacy_required.issubset(present),
+        "v5 conditional statistics omit required legacy fields",
+    )
+    if require_investment_fields:
+        require(
+            set(V5_CONDITIONAL_STATISTIC_FIELDS).issubset(present),
+            "v5 investment-aligned conditional statistics omit required fields",
+        )
+    return tuple(
+        field for field in V5_CONDITIONAL_STATISTIC_FIELDS if field in present
+    )
+
+
 def _audit_v5_conditional(
     payload: Mapping[str, Any], frames: Mapping[str, pd.DataFrame]
 ) -> dict[str, Any]:
     statistics = frames["conditional-asset-statistics.csv"]
-    embedded = payload["research"]["conditional_asset_stats"]["rows"]
+    metadata = payload["research"]["conditional_asset_stats"]
+    method = metadata.get("method")
+    investment_aligned = (
+        method
+        == "matched_oos_actual_next_state_target_week_adjusted_forward_return"
+    )
+    require(
+        method
+        in {
+            "state_conditioned_forward_total_return",
+            "matched_oos_actual_next_state_target_week_adjusted_forward_return",
+        },
+        "v5 conditional asset method is invalid",
+    )
+    if investment_aligned:
+        require(
+            metadata.get("role") == "matched_oracle_diagnostic"
+            and metadata.get("conditioning")
+            == "actual_next_state_on_matched_oos_origins"
+            and metadata.get("state_horizon_weeks") == 1
+            and metadata.get("execution_lag_weeks") == 1
+            and metadata.get("entry_price_basis") == "next_week_adjusted_open"
+            and metadata.get("exit_price_basis")
+            == "horizon_week_adjusted_close"
+            and metadata.get("rebalance_policy") == "none_fixed_asset_hold"
+            and metadata.get("origin_sampling") == "weekly_rolling_overlapping"
+            and metadata.get("return_measure")
+            == "provider_adjusted_forward_return"
+            and metadata.get("entry_week_distribution_policy")
+            == "conservative_excluded_without_ex_date"
+            and metadata.get("corporate_action_policy")
+            == "same_row_adjustment_factor_split_consistent"
+            and metadata.get("drawdown_observation_basis")
+            == "entry_adjusted_open_then_weekly_adjusted_closes",
+            "v5 conditional investment semantics mismatch",
+        )
+    embedded = metadata["rows"]
     _audit_v5_embedded_records(
         embedded,
         statistics,
@@ -6024,8 +6281,12 @@ def _audit_v5_conditional(
         "v5 conditional outcomes entry is not t+1 week",
     )
     require(
-        ((exit_date - entry).dt.days == 7 * horizon).all(),
+        ((exit_date - entry).dt.days == 7 * (horizon - 1)).all(),
         "v5 conditional outcomes exit horizon is invalid",
+    )
+    require(
+        (horizon.ne(1) | entry.eq(exit_date)).all(),
+        "v5 conditional one-week outcome must include target-week open-to-close",
     )
     require(
         outcomes["execution_lag_weeks"].astype(int).eq(1).all()
@@ -6035,7 +6296,8 @@ def _audit_v5_conditional(
     require(
         outcomes["state"].astype(str).isin(STATE_ORDER).all()
         and outcomes["asset"].astype(str).isin(V5_OUTCOME_ASSETS).all()
-        and set(horizon) == {1, 4, 13},
+        and set(horizon).issubset(set(V5_OUTCOME_HORIZONS))
+        and bool(set(horizon)),
         "v5 conditional outcomes state/asset/horizon is invalid",
     )
     require(
@@ -6051,10 +6313,46 @@ def _audit_v5_conditional(
         np.isfinite(numeric_outcomes.to_numpy(dtype=float)).all(),
         "v5 conditional outcomes contain non-finite values",
     )
+    if investment_aligned:
+        weekly = payload.get("weekly")
+        require(
+            isinstance(weekly, list) and len(weekly) >= 2,
+            "v5 matched conditional outcomes require weekly target states",
+        )
+        current_state_by_date: dict[str, str] = {}
+        for position, week in enumerate(weekly):
+            require(
+                isinstance(week, Mapping),
+                f"v5 matched conditional weekly[{position}] is invalid",
+            )
+            current = week.get("current")
+            require(
+                isinstance(current, Mapping),
+                f"v5 matched conditional weekly[{position}].current is invalid",
+            )
+            current_state_by_date[_market_date(week.get("date"))] = str(
+                current.get("state")
+            )
+        for row in outcomes.itertuples(index=False):
+            target_day = (
+                pd.Timestamp(row.origin_date) + timedelta(weeks=1)
+            ).date().isoformat()
+            require(
+                current_state_by_date.get(target_day) == str(row.state),
+                "v5 matched conditional outcome is not bound to actual next state",
+            )
     execution = _audit_v5_execution_parameters(payload)
     expected_resamples = int(
         execution["conditional_outcome_bootstrap_resamples"]
     )
+    if investment_aligned:
+        require(
+            statistics["unconditional_benchmark_method"]
+            .astype(str)
+            .eq("same_asset_horizon_all_origins_mean")
+            .all(),
+            "v5 conditional investment benchmark method is mislabeled",
+        )
     recomputed = _recompute_v5_conditional_statistics(
         outcomes,
         statistics,
@@ -6064,7 +6362,10 @@ def _audit_v5_conditional(
         recomputed,
         statistics,
         keys=("state", "asset", "horizon_weeks"),
-        fields=V5_CONDITIONAL_STATISTIC_FIELDS,
+        fields=_v5_conditional_comparison_fields(
+            statistics,
+            require_investment_fields=investment_aligned,
+        ),
         context="v5 conditional asset statistics",
     )
     return {
@@ -6126,9 +6427,17 @@ def _audit_v5_model_conditioned(
         len(models) == len(set(models)),
         "v5 model-conditioned forecast models duplicate",
     )
+    method = embedded_metadata.get("method")
+    investment_aligned = (
+        method
+        == "matched_oos_predicted_next_state_target_week_adjusted_forward_return"
+    )
     require(
-        embedded_metadata.get("method")
-        == "oos_one_week_forecast_conditioned_forward_total_return"
+        method
+        in {
+            "oos_one_week_forecast_conditioned_forward_total_return",
+            "matched_oos_predicted_next_state_target_week_adjusted_forward_return",
+        }
         and embedded_metadata.get("role") == "retrospective_model_diagnostic"
         and embedded_metadata.get("conditioning") == "hard_argmax_oos_forecast"
         and embedded_metadata.get("forecast_horizon_weeks") == 1
@@ -6141,8 +6450,36 @@ def _audit_v5_model_conditioned(
         and embedded_metadata.get("return_currency") == "USD",
         "v5 model-conditioned metadata contract mismatch",
     )
+    if investment_aligned:
+        require(
+            embedded_metadata.get("entry_price_basis")
+            == "next_week_adjusted_open"
+            and embedded_metadata.get("exit_price_basis")
+            == "horizon_week_adjusted_close"
+            and embedded_metadata.get("rebalance_policy")
+            == "none_fixed_asset_hold"
+            and embedded_metadata.get("origin_sampling")
+            == "weekly_rolling_overlapping"
+            and embedded_metadata.get("return_measure")
+            == "provider_adjusted_forward_return"
+            and embedded_metadata.get("entry_week_distribution_policy")
+            == "conservative_excluded_without_ex_date"
+            and embedded_metadata.get("corporate_action_policy")
+            == "same_row_adjustment_factor_split_consistent"
+            and embedded_metadata.get("drawdown_observation_basis")
+            == "entry_adjusted_open_then_weekly_adjusted_closes",
+            "v5 model-conditioned investment semantics mismatch",
+        )
 
     statistics = frames[statistics_path]
+    if investment_aligned:
+        require(
+            statistics["unconditional_benchmark_method"]
+            .astype(str)
+            .eq("same_asset_horizon_all_origins_mean")
+            .all(),
+            "v5 model-conditioned investment benchmark method is mislabeled",
+        )
     outcomes = frames[outcome_path].copy()
     _audit_v5_embedded_records(
         embedded_metadata.get("rows"),
@@ -6169,6 +6506,10 @@ def _audit_v5_model_conditioned(
         },
         "v5 model-conditioned asset outcomes",
     )
+    model_statistic_fields = _v5_conditional_comparison_fields(
+        statistics,
+        require_investment_fields=investment_aligned,
+    )
     require_columns(
         statistics,
         {
@@ -6176,7 +6517,7 @@ def _audit_v5_model_conditioned(
             "state",
             "asset",
             "horizon_weeks",
-            *V5_CONDITIONAL_STATISTIC_FIELDS,
+            *model_statistic_fields,
         },
         "v5 model-conditioned asset statistics",
     )
@@ -6228,8 +6569,12 @@ def _audit_v5_model_conditioned(
         "v5 model-conditioned outcomes entry is not t+1 week",
     )
     require(
-        ((exit_date - entry).dt.days == 7 * horizon).all(),
-        "v5 model-conditioned outcomes exit is not t+1+h weeks",
+        ((exit_date - entry).dt.days == 7 * (horizon - 1)).all(),
+        "v5 model-conditioned outcomes exit horizon is invalid",
+    )
+    require(
+        (horizon.ne(1) | entry.eq(exit_date)).all(),
+        "v5 model-conditioned one-week outcome must include target-week open-to-close",
     )
     require(
         outcomes["execution_lag_weeks"].astype(int).eq(1).all()
@@ -6239,8 +6584,9 @@ def _audit_v5_model_conditioned(
     require(
         set(outcomes["conditioning_model"].astype(str)) == set(models)
         and outcomes["state"].astype(str).isin(STATE_ORDER).all()
-        and set(outcomes["asset"].astype(str)) == set(V5_OUTCOME_ASSETS)
-        and set(horizon) == set(V5_OUTCOME_HORIZONS),
+        and outcomes["asset"].astype(str).isin(V5_OUTCOME_ASSETS).all()
+        and set(horizon).issubset(set(V5_OUTCOME_HORIZONS))
+        and bool(set(horizon)),
         "v5 model-conditioned outcomes model/state/asset/horizon is invalid",
     )
     require(
@@ -6410,9 +6756,48 @@ def _audit_v5_model_conditioned(
             recomputed,
             model_statistics,
             keys=("state", "asset", "horizon_weeks"),
-            fields=V5_CONDITIONAL_STATISTIC_FIELDS,
+            fields=model_statistic_fields,
             context=f"v5 model-conditioned asset statistics {name}",
         )
+
+    if investment_aligned and "conditional-asset-outcomes.csv" in frames:
+        actual_outcomes = frames["conditional-asset-outcomes.csv"]
+        signature_columns_actual = (
+            "origin_position",
+            "origin_date",
+            "entry_date",
+            "exit_date",
+            "asset",
+            "horizon_weeks",
+        )
+        require_columns(
+            actual_outcomes,
+            set(signature_columns_actual),
+            "v5 matched actual conditional outcomes",
+        )
+        actual_signature = {
+            tuple(str(row[field]) for field in signature_columns_actual)
+            for _, row in actual_outcomes.loc[:, signature_columns_actual].iterrows()
+        }
+        for name in models:
+            predicted = outcomes.loc[
+                outcomes["conditioning_model"].astype(str).eq(name)
+            ]
+            predicted_signature = {
+                (
+                    str(row["_origin_position"]),
+                    str(row["origin_date"]),
+                    str(row["entry_date"]),
+                    str(row["exit_date"]),
+                    str(row["asset"]),
+                    str(row["_horizon"]),
+                )
+                for _, row in predicted.iterrows()
+            }
+            require(
+                predicted_signature == actual_signature,
+                f"v5 model-conditioned outcomes are not matched to actual OOS origins for {name}",
+            )
 
     return {
         "status": "verified",
@@ -6420,6 +6805,639 @@ def _audit_v5_model_conditioned(
         "outcome_rows": len(outcomes),
         "statistics_rows": len(statistics),
         "bootstrap_resamples": expected_resamples,
+    }
+
+
+def _audit_v5_decision_shadow(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Bind the decision shadow to its immutable execution spec and accounting."""
+
+    research = payload.get("research")
+    require(isinstance(research, Mapping), "v5 decision shadow research is invalid")
+    raw = research.get("prospective_decision_shadow")
+    if raw is None:
+        return {"status": "legacy_absent"}
+    require(isinstance(raw, Mapping), "v5 decision shadow is invalid")
+    schema_version = raw.get("schema_version")
+    require(
+        schema_version
+        in {
+            "regime-prospective-decision-shadow/1",
+            "regime-prospective-decision-shadow/2",
+        },
+        "v5 decision shadow schema is invalid",
+    )
+    investment_aligned = schema_version == "regime-prospective-decision-shadow/2"
+    expected_shadow_fields = {
+        "schema_version",
+        "role",
+        "spec",
+        "execution_contract",
+        "historical_reconstructed_shadow",
+        "prospective_ledger",
+    }
+    if investment_aligned:
+        expected_shadow_fields.add("current_signal")
+    require(
+        set(raw) == expected_shadow_fields
+        and raw.get("role")
+        == "research_only_no_forecast_or_champion_effect",
+        "v5 decision shadow fields/role are invalid",
+    )
+    spec = raw.get("spec")
+    execution = raw.get("execution_contract")
+    historical = raw.get("historical_reconstructed_shadow")
+    prospective = raw.get("prospective_ledger")
+    require(
+        isinstance(spec, Mapping)
+        and isinstance(execution, Mapping)
+        and isinstance(historical, Mapping)
+        and isinstance(prospective, Mapping),
+        "v5 decision shadow components are invalid",
+    )
+    expected_historical_fields = {
+        "status",
+        "evidence_track",
+        "evidence_status",
+        "minimum_evaluation_weeks",
+        "strategies",
+    }
+    if investment_aligned:
+        expected_historical_fields.update(
+            {
+                "first_tradable_week",
+                "evaluation_start_week",
+                "evaluation_end_week",
+                "latest_target_weights",
+                "allocation_policy",
+            }
+        )
+    else:
+        expected_historical_fields.add("first_tradable_at")
+    require(
+        set(historical) == expected_historical_fields,
+        "v5 decision shadow historical fields are invalid",
+    )
+    spec_id = str(spec.get("spec_id"))
+    expected_paths = {
+        "spy-tlt-probability-shadow-v1": "config/decision-shadow.json",
+        "spy-tlt-probability-shadow-v2": "config/decision-shadow-v2.json",
+    }
+    expected_path = expected_paths.get(spec_id)
+    require(expected_path is not None, "v5 decision shadow spec id is invalid")
+    require(
+        spec.get("path") == expected_path,
+        "v5 decision shadow spec id/path mismatch",
+    )
+    require(
+        (investment_aligned and spec_id == "spy-tlt-probability-shadow-v2")
+        or (
+            not investment_aligned
+            and spec_id == "spy-tlt-probability-shadow-v1"
+        ),
+        "v5 decision shadow schema/spec generation mismatch",
+    )
+    path = PROJECT_ROOT / expected_path
+    require(
+        path.is_file() and not path.is_symlink(),
+        "v5 decision shadow spec is missing or non-regular",
+    )
+    document = json.loads(path.read_text(encoding="utf-8"))
+    require(
+        isinstance(document, Mapping)
+        and document.get("spec_id") == spec_id
+        and document.get("role")
+        == "research_only_no_forecast_or_champion_effect",
+        "v5 decision shadow local spec identity mismatch",
+    )
+    require(
+        spec.get("sha256") == canonical_json_sha256(document),
+        "v5 decision shadow spec SHA-256 mismatch",
+    )
+    require(
+        dict(execution) == dict(document.get("execution", {})),
+        "v5 decision shadow execution differs from its spec",
+    )
+
+    strategies = historical.get("strategies")
+    require(isinstance(strategies, Mapping), "v5 decision shadow strategies are invalid")
+    expected_strategies = {
+        "probability_shadow",
+        "spy_buy_and_hold",
+        "static_60_40",
+        "vol_target_60_40",
+    }
+    require(
+        set(strategies) == expected_strategies,
+        "v5 decision shadow benchmark set is invalid",
+    )
+    weeks: set[int] = set()
+    transaction_cost_field = (
+        "transaction_cost_rate_sum"
+        if investment_aligned
+        else "total_transaction_cost"
+    )
+    expected_metric_fields = {
+        "weeks",
+        "cumulative_return",
+        "annualized_return",
+        "annualized_volatility",
+        "sharpe",
+        "certainty_equivalent_return",
+        "maximum_drawdown",
+        "annualized_turnover",
+        "gross_cumulative_return",
+        transaction_cost_field,
+        "transaction_cost_bps",
+    }
+    for name, raw_metrics in strategies.items():
+        require(
+            isinstance(raw_metrics, Mapping),
+            f"v5 decision shadow {name} metrics are invalid",
+        )
+        require(
+            set(raw_metrics) == expected_metric_fields,
+            f"v5 decision shadow {name} metric fields are invalid",
+        )
+        strategy_weeks = raw_metrics.get("weeks")
+        require(
+            isinstance(strategy_weeks, int) and strategy_weeks >= 0,
+            f"v5 decision shadow {name} weeks are invalid",
+        )
+        weeks.add(strategy_weeks)
+        for field in (transaction_cost_field, "transaction_cost_bps"):
+            value = raw_metrics.get(field)
+            require(
+                isinstance(value, (int, float))
+                and not isinstance(value, bool)
+                and np.isfinite(float(value))
+                and float(value) >= 0.0,
+                f"v5 decision shadow {name}.{field} is invalid",
+            )
+        annualized_turnover = raw_metrics.get("annualized_turnover")
+        if strategy_weeks == 0:
+            require(
+                annualized_turnover is None
+                and np.isclose(
+                    float(raw_metrics[transaction_cost_field]),
+                    0.0,
+                    atol=1e-12,
+                ),
+                f"v5 decision shadow {name} empty turnover/cost is invalid",
+            )
+        else:
+            require(
+                isinstance(annualized_turnover, (int, float))
+                and not isinstance(annualized_turnover, bool)
+                and np.isfinite(float(annualized_turnover))
+                and float(annualized_turnover) >= 0.0,
+                f"v5 decision shadow {name}.annualized_turnover is invalid",
+            )
+        net = raw_metrics.get("cumulative_return")
+        gross = raw_metrics.get("gross_cumulative_return")
+        if net is not None and gross is not None:
+            require(
+                np.isfinite(float(net))
+                and np.isfinite(float(gross))
+                and float(net) <= float(gross) + 1e-12,
+                f"v5 decision shadow {name} net return exceeds gross return",
+            )
+    require(len(weeks) == 1, "v5 decision shadow strategies use unmatched weeks")
+    common_weeks = next(iter(weeks))
+
+    if investment_aligned:
+        evaluation_start_raw = historical.get("evaluation_start_week")
+        evaluation_end_raw = historical.get("evaluation_end_week")
+        require(
+            (evaluation_start_raw is None) == (evaluation_end_raw is None),
+            "v5 decision shadow evaluation bounds differ in nullability",
+        )
+        if common_weeks == 0:
+            require(
+                evaluation_start_raw is None and evaluation_end_raw is None,
+                "v5 decision shadow empty evaluation has date bounds",
+            )
+        else:
+            require(
+                evaluation_start_raw is not None and evaluation_end_raw is not None,
+                "v5 decision shadow populated evaluation lacks date bounds",
+            )
+            evaluation_start = datetime.fromisoformat(
+                str(evaluation_start_raw)
+            ).date()
+            evaluation_end = datetime.fromisoformat(str(evaluation_end_raw)).date()
+            evaluation_days = (evaluation_end - evaluation_start).days
+            require(
+                evaluation_days >= 0
+                and evaluation_days % 7 == 0
+                and evaluation_days // 7 + 1 == common_weeks,
+                "v5 decision shadow evaluation bounds do not match weeks",
+            )
+        allocation = historical.get("allocation_policy")
+        require(
+            isinstance(allocation, Mapping),
+            "v5 decision shadow allocation policy is invalid",
+        )
+        require(
+            set(allocation)
+            == {
+                "method",
+                "assets",
+                "forecast_model",
+                "latest_signal_origin",
+                "latest_target_weights",
+            }
+            and allocation.get("method")
+            == "probability_weighted_state_portfolios"
+            and allocation.get("assets") == ["SPY", "TLT"],
+            "v5 decision shadow allocation policy fields are invalid",
+        )
+        weights = allocation.get("latest_target_weights")
+        if weights is not None:
+            require(
+                isinstance(weights, Mapping) and set(weights) == {"SPY", "TLT"},
+                "v5 decision shadow latest target weights are invalid",
+            )
+            values = np.asarray([weights["SPY"], weights["TLT"]], dtype=float)
+            require(
+                np.isfinite(values).all()
+                and (values >= 0.0).all()
+                and (values <= 1.0).all()
+                and np.isclose(float(values.sum()), 1.0, atol=1e-8),
+                "v5 decision shadow latest target weights are invalid",
+            )
+            require(
+                historical.get("latest_target_weights") == weights,
+                "v5 decision shadow latest target weight copies differ",
+            )
+
+    expected_prospective_fields = {
+        "status",
+        "evidence_track",
+        "ledger_entry_count",
+        "realized_evaluation_count",
+        "affects_official_forecast",
+        "affects_champion_selection",
+    }
+    if investment_aligned:
+        expected_prospective_fields.update(
+            {
+                "pending_evaluation_count",
+                "unresolved_due_evaluation_count",
+                "partial_evaluation_count",
+                "evaluation_manifest_sha256",
+                "performance",
+            }
+        )
+    require(
+        set(prospective) == expected_prospective_fields,
+        "v5 decision shadow prospective ledger fields are invalid",
+    )
+    require(
+        prospective.get("evidence_track") == "operational_oos"
+        and prospective.get("affects_official_forecast") is False
+        and prospective.get("affects_champion_selection") is False,
+        "v5 decision shadow prospective isolation is invalid",
+    )
+    ledger_entries = prospective.get("ledger_entry_count")
+    realized_evaluations = prospective.get("realized_evaluation_count")
+    require(
+        isinstance(ledger_entries, int)
+        and not isinstance(ledger_entries, bool)
+        and ledger_entries >= 0
+        and isinstance(realized_evaluations, int)
+        and not isinstance(realized_evaluations, bool)
+        and 0 <= realized_evaluations <= ledger_entries,
+        "v5 decision shadow prospective ledger counts are invalid",
+    )
+    if investment_aligned:
+        pending_evaluations = prospective.get("pending_evaluation_count")
+        unresolved_evaluations = prospective.get(
+            "unresolved_due_evaluation_count"
+        )
+        partial_evaluations = prospective.get("partial_evaluation_count")
+        require(
+            all(
+                isinstance(value, int)
+                and not isinstance(value, bool)
+                and value >= 0
+                for value in (
+                    pending_evaluations,
+                    unresolved_evaluations,
+                    partial_evaluations,
+                )
+            )
+            and pending_evaluations
+            + unresolved_evaluations
+            + realized_evaluations
+            + partial_evaluations
+            == ledger_entries,
+            "v5 decision shadow prospective maturity counts are invalid",
+        )
+        evaluation_hash = prospective.get("evaluation_manifest_sha256")
+        require(
+            isinstance(evaluation_hash, str)
+            and len(evaluation_hash) == 64
+            and all(character in "0123456789abcdef" for character in evaluation_hash),
+            "v5 decision shadow evaluation manifest hash is invalid",
+        )
+        expected_status = (
+            "completed"
+            if ledger_entries > 0 and realized_evaluations == ledger_entries
+            else "pending"
+            if pending_evaluations == ledger_entries
+            else "partial"
+        )
+        require(
+            prospective.get("status") == expected_status,
+            "v5 decision shadow prospective status/counts are inconsistent",
+        )
+        performance = prospective.get("performance")
+        expected_performance_fields = {
+            "status",
+            "weeks",
+            "gross_cumulative_return",
+            "net_cumulative_return",
+            "turnover_sum",
+            "transaction_cost_rate_sum",
+            "transaction_cost_bps",
+            "forecast_hit_count",
+            "forecast_accuracy",
+            "actual_state_counts",
+        }
+        require(
+            isinstance(performance, Mapping)
+            and set(performance) == expected_performance_fields
+            and performance.get("weeks") == realized_evaluations,
+            "v5 decision shadow prospective performance fields are invalid",
+        )
+        expected_performance_status = (
+            "completed" if expected_status == "completed" else
+            "pending" if expected_status == "pending" else "partial"
+        )
+        require(
+            performance.get("status") == expected_performance_status,
+            "v5 decision shadow prospective performance status is invalid",
+        )
+        if realized_evaluations == 0:
+            require(
+                all(
+                    performance.get(field) is None
+                    for field in expected_performance_fields - {"status", "weeks"}
+                ),
+                "v5 decision shadow empty prospective performance is not null",
+            )
+        else:
+            numeric_fields = (
+                "gross_cumulative_return",
+                "net_cumulative_return",
+                "turnover_sum",
+                "transaction_cost_rate_sum",
+                "transaction_cost_bps",
+                "forecast_accuracy",
+            )
+            require(
+                all(
+                    isinstance(performance.get(field), (int, float))
+                    and not isinstance(performance.get(field), bool)
+                    and np.isfinite(float(performance[field]))
+                    for field in numeric_fields
+                ),
+                "v5 decision shadow prospective performance values are invalid",
+            )
+            hits = performance.get("forecast_hit_count")
+            counts = performance.get("actual_state_counts")
+            require(
+                isinstance(hits, int)
+                and not isinstance(hits, bool)
+                and 0 <= hits <= realized_evaluations
+                and isinstance(counts, Mapping)
+                and set(counts) == {"risk_on", "transition", "risk_off"}
+                and all(
+                    isinstance(value, int)
+                    and not isinstance(value, bool)
+                    and value >= 0
+                    for value in counts.values()
+                )
+                and sum(counts.values()) == realized_evaluations
+                and np.isclose(
+                    float(performance["forecast_accuracy"]),
+                    hits / realized_evaluations,
+                )
+                and np.isclose(
+                    float(performance["transaction_cost_bps"]), 10.0
+                )
+                and np.isclose(
+                    float(performance["transaction_cost_rate_sum"]),
+                    float(performance["turnover_sum"]) / 1_000.0,
+                )
+                and float(performance["net_cumulative_return"])
+                <= float(performance["gross_cumulative_return"]) + 1e-12,
+                "v5 decision shadow prospective performance is inconsistent",
+            )
+        forecast_ledger = payload.get("forecast", {}).get("prospective_ledger")
+        if (
+            isinstance(forecast_ledger, Mapping)
+            and forecast_ledger.get("schema_version")
+            == "regime-prospective-ledger-summary/2"
+        ):
+            expected_copy = {
+                "status": (
+                    "pending"
+                    if forecast_ledger.get("status") == "empty"
+                    else forecast_ledger.get("status")
+                ),
+                "ledger_entry_count": forecast_ledger.get("entry_count"),
+                "pending_evaluation_count": forecast_ledger.get(
+                    "pending_evaluation_count"
+                ),
+                "unresolved_due_evaluation_count": forecast_ledger.get(
+                    "unresolved_due_evaluation_count"
+                ),
+                "realized_evaluation_count": forecast_ledger.get(
+                    "realized_evaluation_count"
+                ),
+                "partial_evaluation_count": forecast_ledger.get(
+                    "partial_evaluation_count"
+                ),
+                "evaluation_manifest_sha256": forecast_ledger.get(
+                    "evaluation_manifest_sha256"
+                ),
+                "performance": forecast_ledger.get("performance"),
+            }
+            require(
+                all(prospective.get(key) == value for key, value in expected_copy.items()),
+                "v5 decision shadow prospective summary differs from forecast",
+            )
+    elif prospective.get("status") == "awaiting_realized_targets":
+        require(
+            ledger_entries == 0 and realized_evaluations == 0,
+            "v5 decision shadow empty ledger status is inconsistent",
+        )
+    elif prospective.get("status") == "ledger_recorded_outcomes_pending":
+        require(
+            ledger_entries > 0 and realized_evaluations < ledger_entries,
+            "v5 decision shadow pending ledger status is inconsistent",
+        )
+    else:
+        require(False, "v5 decision shadow prospective ledger status is invalid")
+
+    current_action = "legacy_weekly_close_contract"
+    if investment_aligned:
+        current_signal = raw.get("current_signal")
+        require(
+            isinstance(current_signal, Mapping)
+            and set(current_signal)
+            == {
+                "origin_date",
+                "target_week",
+                "scheduled_entry_at",
+                "decision_at",
+                "forecast_model",
+                "status",
+                "action",
+            },
+            "v5 decision shadow current signal is invalid",
+        )
+        origin_date = datetime.fromisoformat(
+            str(current_signal["origin_date"])
+        ).date()
+        target_week = datetime.fromisoformat(
+            str(current_signal["target_week"])
+        ).date()
+        require(
+            target_week == origin_date + timedelta(days=7),
+            "v5 decision shadow current target week is invalid",
+        )
+        scheduled_entry = pd.Timestamp(current_signal["scheduled_entry_at"])
+        decision_at = pd.Timestamp(current_signal["decision_at"])
+        require(
+            scheduled_entry.tzinfo is not None
+            and decision_at.tzinfo is not None,
+            "v5 decision shadow current signal timestamps require timezones",
+        )
+        scheduled_entry = scheduled_entry.tz_convert("UTC")
+        decision_at = decision_at.tz_convert("UTC")
+        expected = (
+            ("scheduled", "trade_at_scheduled_open")
+            if decision_at < scheduled_entry
+            else ("missed_entry", "no_trade")
+        )
+        require(
+            (current_signal.get("status"), current_signal.get("action"))
+            == expected,
+            "v5 decision shadow current signal timing is inconsistent",
+        )
+        selection = payload.get("selection")
+        forecast_envelope = payload.get("forecast")
+        weekly_rows = payload.get("weekly")
+        require(
+            isinstance(selection, Mapping)
+            and isinstance(forecast_envelope, Mapping)
+            and isinstance(weekly_rows, Sequence)
+            and not isinstance(weekly_rows, (str, bytes))
+            and len(weekly_rows) > 0,
+            "v5 decision shadow payload binding inputs are invalid",
+        )
+        latest_week = weekly_rows[-1]
+        require(
+            isinstance(latest_week, Mapping),
+            "v5 decision shadow latest weekly row is invalid",
+        )
+        operating_champion = selection.get("operating_champion")
+        model_forecasts = latest_week.get("model_forecasts")
+        require(
+            isinstance(operating_champion, str)
+            and operating_champion
+            and isinstance(model_forecasts, Sequence)
+            and not isinstance(model_forecasts, (str, bytes)),
+            "v5 decision shadow operating forecast binding is invalid",
+        )
+        operating_rows = [
+            row
+            for row in model_forecasts
+            if isinstance(row, Mapping)
+            and row.get("model") == operating_champion
+        ]
+        require(
+            len(operating_rows) == 1,
+            "v5 decision shadow operating forecast is not unique",
+        )
+        operating_row = operating_rows[0]
+        latest_origin = datetime.fromisoformat(str(latest_week.get("date"))).date()
+        operating_target = datetime.fromisoformat(
+            str(operating_row.get("date"))
+        ).date()
+        require(
+            origin_date == latest_origin
+            and target_week == operating_target
+            and current_signal.get("forecast_model") == operating_champion
+            and allocation.get("forecast_model") == operating_champion
+            and allocation.get("latest_signal_origin")
+            == latest_origin.isoformat(),
+            "v5 decision shadow current signal/allocation binding is invalid",
+        )
+        forecast_origin = pd.Timestamp(forecast_envelope.get("origin_at"))
+        forecast_target = pd.Timestamp(forecast_envelope.get("target_at"))
+        require(
+            forecast_origin.tzinfo is not None
+            and forecast_target.tzinfo is not None
+            and forecast_origin.tz_convert("America/New_York").date()
+            == latest_origin
+            and forecast_target.tz_convert("America/New_York").date()
+            == operating_target,
+            "v5 decision shadow dates differ from forecast envelope",
+        )
+        raw_forecast_decision = forecast_envelope.get("decision_at")
+        if raw_forecast_decision is None:
+            meta = payload.get("meta")
+            require(
+                isinstance(meta, Mapping),
+                "v5 decision shadow expired decision lacks payload meta",
+            )
+            expected_decision = pd.Timestamp(meta.get("generated_at"))
+        else:
+            expected_decision = pd.Timestamp(raw_forecast_decision)
+        require(
+            expected_decision.tzinfo is not None
+            and decision_at == expected_decision.tz_convert("UTC"),
+            "v5 decision shadow decision differs from forecast envelope",
+        )
+        probabilities = operating_row.get("probabilities")
+        weight_mapping = document.get("probability_weight_mapping")
+        require(
+            isinstance(probabilities, Mapping)
+            and set(probabilities) == set(STATE_ORDER)
+            and isinstance(weight_mapping, Mapping),
+            "v5 decision shadow operating probability mapping is invalid",
+        )
+        expected_weights = {
+            asset: sum(
+                float(probabilities[state])
+                * float(weight_mapping[state][asset])
+                for state in STATE_ORDER
+            )
+            for asset in ("SPY", "TLT")
+        }
+        require(
+            weights is not None
+            and all(
+                np.isclose(
+                    float(weights[asset]),
+                    expected_weights[asset],
+                    atol=1e-8,
+                )
+                for asset in ("SPY", "TLT")
+            ),
+            "v5 decision shadow latest weights differ from operating forecast",
+        )
+        current_action = str(current_signal.get("action"))
+    return {
+        "status": "verified",
+        "spec_id": spec_id,
+        "weeks": common_weeks,
+        "current_signal_action": current_action,
+        "ledger_entries": ledger_entries,
+        "realized_evaluations": realized_evaluations,
     }
 
 
@@ -8030,6 +9048,152 @@ def audit_v5_artifact_inventory(artifacts: Path) -> dict[str, Any]:
         raise AuditFailure(f"v5 artifact inventory failed: {exc}") from exc
 
 
+def _audit_v5_research_replay_input(
+    payload: Mapping[str, Any],
+    artifacts: Path,
+) -> dict[str, Any]:
+    """Verify the private input identity for reconstructed research outputs."""
+
+    path = artifacts / "research-replay-input.json"
+    shadow = payload.get("research", {}).get("prospective_decision_shadow")
+    schema_version = shadow.get("schema_version") if isinstance(shadow, Mapping) else None
+    live_v2 = (
+        payload.get("meta", {}).get("mode") == "live"
+        and schema_version == "regime-prospective-decision-shadow/2"
+    )
+    if not live_v2:
+        require(
+            not path.exists() and not path.is_symlink(),
+            "non-live or historical generation has an unexpected replay input",
+        )
+        return {"status": "not_required_non_live_or_historical_contract"}
+
+    require(
+        path.is_file() and not path.is_symlink(),
+        "decision-shadow V2 generation is missing research-replay-input.json",
+    )
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise AuditFailure(f"research replay input contract failed: {exc}") from exc
+    require(isinstance(document, Mapping), "research replay input must be an object")
+    require(
+        set(document)
+        == {
+            "schema_version",
+            "evidence_track",
+            "data_as_of",
+            "availability_basis",
+            "source_observation_count",
+            "input_vintages",
+            "canonical_panel",
+            "state_membership",
+            "operational_generation_input_snapshot_sha256",
+        },
+        "research replay input fields changed",
+    )
+    require(
+        document["schema_version"] == "regime-research-replay-input/1",
+        "research replay input schema is invalid",
+    )
+    require(
+        document["evidence_track"] == "reconstructed_oos"
+        and document["availability_basis"] == "reconstructed_market",
+        "research replay input evidence track is invalid",
+    )
+    require(
+        document["data_as_of"] == payload["meta"]["data_as_of"],
+        "research replay input data_as_of differs from payload",
+    )
+    source_observations = document["source_observation_count"]
+    require(
+        type(source_observations) is int and source_observations > 0,
+        "research replay source observation count is invalid",
+    )
+
+    def verified_sha256(value: object, *, context: str) -> str:
+        digest = str(value)
+        require(
+            len(digest) == 64
+            and all(character in "0123456789abcdef" for character in digest),
+            f"{context} is not a SHA-256 digest",
+        )
+        return digest
+
+    input_vintages = document["input_vintages"]
+    require(
+        isinstance(input_vintages, Mapping)
+        and set(input_vintages) == {"count", "sha256"},
+        "research replay input-vintage contract is invalid",
+    )
+    require(
+        type(input_vintages["count"]) is int
+        and 0 < input_vintages["count"] <= source_observations,
+        "research replay input-vintage count is invalid",
+    )
+    input_sha256 = verified_sha256(
+        input_vintages["sha256"],
+        context="research replay input-vintage hash",
+    )
+
+    canonical = document["canonical_panel"]
+    require(
+        isinstance(canonical, Mapping)
+        and set(canonical)
+        == {"start", "end", "rows", "columns", "sha256"},
+        "research replay canonical-panel contract is invalid",
+    )
+    membership = document["state_membership"]
+    require(
+        isinstance(membership, Mapping)
+        and set(membership) == {"rows", "sha256"},
+        "research replay state-membership contract is invalid",
+    )
+    require(
+        type(canonical["rows"]) is int
+        and canonical["rows"] >= len(payload["weekly"])
+        and type(canonical["columns"]) is int
+        and canonical["columns"] > 0
+        and membership["rows"] == canonical["rows"],
+        "research replay canonical dimensions are invalid",
+    )
+    try:
+        start = date.fromisoformat(str(canonical["start"]))
+        end = date.fromisoformat(str(canonical["end"]))
+        data_as_of = datetime.fromisoformat(
+            str(document["data_as_of"]).replace("Z", "+00:00")
+        ).date()
+    except ValueError as exc:
+        raise AuditFailure("research replay input dates are invalid") from exc
+    require(
+        start <= end == data_as_of,
+        "research replay canonical coverage differs from data_as_of",
+    )
+    canonical_sha256 = verified_sha256(
+        canonical["sha256"],
+        context="research replay canonical-panel hash",
+    )
+    membership_sha256 = verified_sha256(
+        membership["sha256"],
+        context="research replay state-membership hash",
+    )
+    operational_sha256 = verified_sha256(
+        document["operational_generation_input_snapshot_sha256"],
+        context="operational generation input snapshot hash",
+    )
+    return {
+        "status": "verified",
+        "source_observation_count": source_observations,
+        "input_vintage_count": input_vintages["count"],
+        "input_vintage_sha256": input_sha256,
+        "canonical_rows": canonical["rows"],
+        "canonical_columns": canonical["columns"],
+        "canonical_sha256": canonical_sha256,
+        "state_membership_sha256": membership_sha256,
+        "operational_generation_input_snapshot_sha256": operational_sha256,
+    }
+
+
 def _v5_expected_research_artifacts(
     research_contract: object,
 ) -> tuple[tuple[str, str], ...]:
@@ -8139,6 +9303,7 @@ def audit_v5(
         require(mode == expected_mode, f"expected mode={expected_mode}, got {mode}")
     require(meta["schema_version"] == V5_SCHEMA_VERSION, "unexpected v5 schema")
     artifact_inventory = audit_v5_artifact_inventory(artifacts)
+    research_replay_input = _audit_v5_research_replay_input(payload, artifacts)
 
     generation_path = _v5_artifact_path(
         artifacts, "build-generation.json", context="v5 generation contract"
@@ -8217,6 +9382,7 @@ def audit_v5(
     )
     conditional = _audit_v5_conditional(payload, frames)
     model_conditioned = _audit_v5_model_conditioned(payload, frames)
+    decision_shadow = _audit_v5_decision_shadow(payload)
     duration = _audit_v5_duration(payload, membership, execution)
     fx = _audit_v5_fx(
         payload,
@@ -8241,6 +9407,7 @@ def audit_v5(
         "directional": directional,
         "conditional": conditional,
         "model_conditioned": model_conditioned,
+        "decision_shadow": decision_shadow,
         "duration": duration,
         "execution_parameters_sha256": execution["sha256"],
         "core": core,
@@ -8259,6 +9426,7 @@ def audit_v5(
         "fx": fx,
         "fx_provenance": fx_provenance,
         "artifact_inventory": artifact_inventory,
+        "research_replay_input": research_replay_input,
         "research_artifacts": list(frames),
         "payload": str(payload_path),
         "artifacts": str(artifacts),
@@ -9169,6 +10337,13 @@ def _audit_local_generation(
         generation["artifact_directory"],
         "auto",
     )
+    replay_input = summary.get("research_replay_input")
+    if isinstance(replay_input, Mapping) and replay_input.get("status") == "verified":
+        require(
+            replay_input["operational_generation_input_snapshot_sha256"]
+            == generation["input_snapshot"]["sha256"],
+            "research replay input refers to a different operational generation",
+        )
     return {
         **summary,
         "target": "local-generation",

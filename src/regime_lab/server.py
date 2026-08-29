@@ -11,7 +11,13 @@ from urllib.parse import urlsplit
 class DashboardHandler(SimpleHTTPRequestHandler):
     payload_bytes: bytes | None = None
     comparison_bytes: bytes | None = None
+    selection_family_bytes: bytes | None = None
     json_overrides_enabled = False
+
+    def _disable_conditional_cache(self) -> None:
+        for name in ("If-Modified-Since", "If-None-Match"):
+            if name in self.headers:
+                del self.headers[name]
 
     def _override_json_bytes(self) -> bytes | None:
         request_path = urlsplit(self.path).path
@@ -19,6 +25,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             return self.payload_bytes
         if request_path == "/data/v5-vs-v4-comparison.json":
             return self.comparison_bytes
+        if request_path == "/data/selection-family-audit.json":
+            return self.selection_family_bytes
         return None
 
     def _serve_override_json(self, *, include_body: bool) -> bool:
@@ -26,6 +34,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         if request_path not in {
             "/data/regime-results.json",
             "/data/v5-vs-v4-comparison.json",
+            "/data/selection-family-audit.json",
         }:
             return False
         if not self.json_overrides_enabled:
@@ -45,16 +54,22 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         return True
 
     def do_GET(self) -> None:
+        self._disable_conditional_cache()
         if not self._serve_override_json(include_body=True):
             super().do_GET()
 
     def do_HEAD(self) -> None:
+        self._disable_conditional_cache()
         if not self._serve_override_json(include_body=False):
             super().do_HEAD()
 
     def end_headers(self) -> None:
-        if urlsplit(self.path).path.endswith(".json"):
-            self.send_header("Cache-Control", "no-store, max-age=0")
+        self.send_header(
+            "Cache-Control",
+            "no-store, no-cache, must-revalidate, max-age=0",
+        )
+        self.send_header("Pragma", "no-cache")
+        self.send_header("Expires", "0")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
         super().end_headers()
@@ -94,8 +109,10 @@ def serve_dashboard(
     *,
     payload: Path | None = None,
     comparison: Path | None = None,
+    selection_family: Path | None = None,
     payload_bytes: bytes | None = None,
     comparison_bytes: bytes | None = None,
+    selection_family_bytes: bytes | None = None,
 ) -> None:
     root = web_root.resolve()
     if not (root / "index.html").exists():
@@ -110,19 +127,27 @@ def serve_dashboard(
         comparison_bytes,
         label="dashboard comparison",
     )
+    selected_selection_family = _frozen_json_bytes(
+        selection_family,
+        selection_family_bytes,
+        label="dashboard selection-family audit",
+    )
     configured_handler = type(
         "ConfiguredDashboardHandler",
         (DashboardHandler,),
         {
             "payload_bytes": selected_payload,
             "comparison_bytes": selected_comparison,
+            "selection_family_bytes": selected_selection_family,
             "json_overrides_enabled": any(
                 value is not None
                 for value in (
                     payload,
                     comparison,
+                    selection_family,
                     payload_bytes,
                     comparison_bytes,
+                    selection_family_bytes,
                 )
             ),
         },

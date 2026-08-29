@@ -11,6 +11,7 @@ from regime_lab.contract_v5 import (
     V5_FORECAST_COMPARISON_MODELS,
     V5_STANDARD_CORE_MODELS,
     V5ContractError,
+    _validate_decision_shadow,
     _validate_publication_review,
     validate_v5_payload,
 )
@@ -166,6 +167,260 @@ def _add_model_conditioned_stats(payload: dict[str, object]) -> None:
             },
         }
     )
+
+
+def _upgrade_to_target_week_statistics(payload: dict[str, object]) -> None:
+    _add_model_conditioned_stats(payload)
+    observed = payload["research"]["conditional_asset_stats"]
+    observed.update(
+        {
+            "method": (
+                "matched_oos_actual_next_state_target_week_adjusted_forward_return"
+            ),
+            "role": "matched_oracle_diagnostic",
+            "conditioning": "actual_next_state_on_matched_oos_origins",
+            "state_horizon_weeks": 1,
+            "entry_price_basis": "next_week_adjusted_open",
+            "exit_price_basis": "horizon_week_adjusted_close",
+            "rebalance_policy": "none_fixed_asset_hold",
+            "origin_sampling": "weekly_rolling_overlapping",
+            "return_measure": "provider_adjusted_forward_return",
+            "entry_week_distribution_policy": (
+                "conservative_excluded_without_ex_date"
+            ),
+            "corporate_action_policy": (
+                "same_row_adjustment_factor_split_consistent"
+            ),
+            "drawdown_observation_basis": (
+                "entry_adjusted_open_then_weekly_adjusted_closes"
+            ),
+        }
+    )
+    forecast = payload["research"]["model_conditioned_asset_stats"]
+    forecast.update(
+        {
+            "method": (
+                "matched_oos_predicted_next_state_target_week_adjusted_forward_return"
+            ),
+            "entry_price_basis": "next_week_adjusted_open",
+            "exit_price_basis": "horizon_week_adjusted_close",
+            "rebalance_policy": "none_fixed_asset_hold",
+            "origin_sampling": "weekly_rolling_overlapping",
+            "return_measure": "provider_adjusted_forward_return",
+            "entry_week_distribution_policy": (
+                "conservative_excluded_without_ex_date"
+            ),
+            "corporate_action_policy": (
+                "same_row_adjustment_factor_split_consistent"
+            ),
+            "drawdown_observation_basis": (
+                "entry_adjusted_open_then_weekly_adjusted_closes"
+            ),
+        }
+    )
+    for row in [*observed["rows"], *forecast["rows"]]:
+        row.update(
+            {
+                "non_overlapping_n": 0,
+                "minimum_non_overlapping_observations": 5,
+                "unconditional_benchmark_method": (
+                    "same_asset_horizon_all_origins_mean"
+                ),
+                "unconditional_benchmark_n": 0,
+                "unconditional_benchmark_mean_return": None,
+                "excess_mean_return": None,
+                "episode_equal_mean_return": None,
+                "episode_equal_unconditional_benchmark_method": (
+                    "same_asset_horizon_all_state_episodes_equal_weight"
+                ),
+                "episode_equal_unconditional_benchmark_episode_n": 0,
+                "episode_equal_unconditional_benchmark_mean_return": None,
+                "episode_equal_excess_return": None,
+                "episode_bootstrap_method": "whole_episode_resampling",
+                "episode_bootstrap_resamples": 1_999,
+                "episode_bootstrap_seed": 1_000_017,
+                "episode_equal_mean_return_ci95_lower": None,
+                "episode_equal_mean_return_ci95_upper": None,
+            }
+        )
+
+
+def _decision_shadow_fixture(version: str) -> dict[str, object]:
+    strategy_metrics = {
+        "weeks": 80,
+        "cumulative_return": 0.08,
+        "annualized_return": 0.05,
+        "annualized_volatility": 0.1,
+        "sharpe": 0.5,
+        "certainty_equivalent_return": 0.035,
+        "maximum_drawdown": -0.12,
+        "annualized_turnover": 1.2,
+        "gross_cumulative_return": 0.09,
+        "total_transaction_cost": 0.01,
+        "transaction_cost_bps": 10.0,
+    }
+    historical: dict[str, object] = {
+        "status": "completed",
+        "evidence_track": "reconstructed_oos",
+        "evidence_status": "historical_reconstructed_shadow",
+        "minimum_evaluation_weeks": 52,
+        "strategies": {
+            name: deepcopy(strategy_metrics)
+            for name in (
+                "probability_shadow",
+                "spy_buy_and_hold",
+                "static_60_40",
+                "vol_target_60_40",
+            )
+        },
+    }
+    if version == "v1":
+        historical["first_tradable_at"] = "2024-01-12T21:00:00+00:00"
+        spec = {
+            "path": "config/decision-shadow.json",
+            "sha256": "1" * 64,
+            "spec_id": "spy-tlt-probability-shadow-v1",
+        }
+        execution = {
+            "first_tradable_point": "next_completed_weekly_close",
+            "execution_lag_weeks": 1,
+            "holding_period_weeks": 1,
+        }
+    elif version == "v2":
+        historical["first_tradable_week"] = "2024-01-12"
+        historical["evaluation_start_week"] = "2024-01-12"
+        historical["evaluation_end_week"] = "2025-07-18"
+        for metrics in historical["strategies"].values():
+            metrics["transaction_cost_rate_sum"] = metrics.pop(
+                "total_transaction_cost"
+            )
+        spec = {
+            "path": "config/decision-shadow-v2.json",
+            "sha256": "2" * 64,
+            "spec_id": "spy-tlt-probability-shadow-v2",
+        }
+        execution = {
+            "signal_origin": "completed_weekly_close",
+            "first_tradable_point": "next_week_adjusted_open",
+            "target_return_window": "next_week_open_to_close",
+            "rebalance_frequency": "weekly",
+            "late_signal_policy": "no_trade",
+            "holding_period_weeks": 1,
+        }
+        latest_weights = {"SPY": 0.6, "TLT": 0.4}
+        historical.update(
+            {
+                "latest_target_weights": latest_weights,
+                "allocation_policy": {
+                    "method": "probability_weighted_state_portfolios",
+                    "assets": ["SPY", "TLT"],
+                    "forecast_model": "causal_dynamic_ensemble",
+                    "latest_signal_origin": "2025-07-18",
+                    "latest_target_weights": latest_weights,
+                },
+            }
+        )
+    else:
+        raise AssertionError(f"unsupported decision-shadow fixture version: {version}")
+    prospective_ledger = {
+        "status": "ledger_recorded_outcomes_pending",
+        "evidence_track": "operational_oos",
+        "ledger_entry_count": 2,
+        "realized_evaluation_count": 0,
+        "affects_official_forecast": False,
+        "affects_champion_selection": False,
+    }
+    if version == "v2":
+        prospective_ledger = {
+            "status": "pending",
+            "evidence_track": "operational_oos",
+            "ledger_entry_count": 0,
+            "pending_evaluation_count": 0,
+            "unresolved_due_evaluation_count": 0,
+            "realized_evaluation_count": 0,
+            "partial_evaluation_count": 0,
+            "evaluation_manifest_sha256": (
+                "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+            ),
+            "performance": {
+                "status": "pending",
+                "weeks": 0,
+                "gross_cumulative_return": None,
+                "net_cumulative_return": None,
+                "turnover_sum": None,
+                "transaction_cost_rate_sum": None,
+                "transaction_cost_bps": None,
+                "forecast_hit_count": None,
+                "forecast_accuracy": None,
+                "actual_state_counts": None,
+            },
+            "affects_official_forecast": False,
+            "affects_champion_selection": False,
+        }
+    return {
+        "schema_version": (
+            "regime-prospective-decision-shadow/2"
+            if version == "v2"
+            else "regime-prospective-decision-shadow/1"
+        ),
+        "role": "research_only_no_forecast_or_champion_effect",
+        "spec": spec,
+        "execution_contract": execution,
+        "historical_reconstructed_shadow": historical,
+        "prospective_ledger": prospective_ledger,
+        **(
+            {
+                "current_signal": {
+                    "origin_date": "2025-07-11",
+                    "target_week": "2025-07-18",
+                    "scheduled_entry_at": "2025-07-14T09:30:00-04:00",
+                    "decision_at": "2025-07-11T16:05:00-04:00",
+                    "forecast_model": "causal_dynamic_ensemble",
+                    "status": "scheduled",
+                    "action": "trade_at_scheduled_open",
+                }
+            }
+            if version == "v2"
+            else {}
+        ),
+    }
+
+
+def _add_payload_bound_decision_shadow(payload: dict[str, object]) -> None:
+    shadow = _decision_shadow_fixture("v2")
+    latest = payload["weekly"][-1]
+    operating_champion = payload["selection"]["operating_champion"]
+    operating_forecast = next(
+        row
+        for row in latest["model_forecasts"]
+        if row["model"] == operating_champion
+    )
+    probabilities = operating_forecast["probabilities"]
+    spy_weight = (
+        0.8 * probabilities["risk_on"]
+        + 0.5 * probabilities["transition"]
+        + 0.2 * probabilities["risk_off"]
+    )
+    weights = {"SPY": spy_weight, "TLT": 1.0 - spy_weight}
+    historical = shadow["historical_reconstructed_shadow"]
+    historical["latest_target_weights"] = weights
+    historical["allocation_policy"].update(
+        {
+            "forecast_model": operating_champion,
+            "latest_signal_origin": latest["date"],
+            "latest_target_weights": weights,
+        }
+    )
+    shadow["current_signal"] = {
+        "origin_date": latest["date"],
+        "target_week": operating_forecast["date"],
+        "scheduled_entry_at": "2026-08-10T09:30:00-04:00",
+        "decision_at": payload["forecast"]["decision_at"],
+        "forecast_model": operating_champion,
+        "status": "scheduled",
+        "action": "trade_at_scheduled_open",
+    }
+    payload["research"]["prospective_decision_shadow"] = shadow
 
 
 def _core_artifacts() -> dict[str, dict[str, object]]:
@@ -623,6 +878,362 @@ def test_valid_v5_payload_with_model_conditioned_stats() -> None:
     _add_model_conditioned_stats(payload)
 
     validate_v5_payload(payload)
+
+
+def test_valid_v5_payload_with_target_week_matched_oos_statistics() -> None:
+    payload = valid_payload()
+    _upgrade_to_target_week_statistics(payload)
+
+    validate_v5_payload(payload)
+
+
+@pytest.mark.parametrize(
+    "stats_key",
+    ("conditional_asset_stats", "model_conditioned_asset_stats"),
+)
+def test_target_week_statistics_require_rolling_origin_mean_benchmark(
+    stats_key: str,
+) -> None:
+    payload = valid_payload()
+    _upgrade_to_target_week_statistics(payload)
+    payload["research"][stats_key]["rows"][0][
+        "unconditional_benchmark_method"
+    ] = "same_asset_horizon_all_origins_buy_and_hold"
+
+    with pytest.raises(
+        V5ContractError,
+        match="unconditional_benchmark_method is invalid",
+    ):
+        validate_v5_payload(payload)
+
+
+@pytest.mark.parametrize(
+    "stats_key",
+    ("conditional_asset_stats", "model_conditioned_asset_stats"),
+)
+def test_target_week_statistics_require_exact_adjusted_return_metadata(
+    stats_key: str,
+) -> None:
+    payload = valid_payload()
+    _upgrade_to_target_week_statistics(payload)
+    payload["research"][stats_key].pop("corporate_action_policy")
+
+    with pytest.raises(V5ContractError, match="fields are invalid"):
+        validate_v5_payload(payload)
+
+
+@pytest.mark.parametrize(
+    "stats_key",
+    ("conditional_asset_stats", "model_conditioned_asset_stats"),
+)
+def test_target_week_statistics_reject_adjusted_return_semantic_tampering(
+    stats_key: str,
+) -> None:
+    payload = valid_payload()
+    _upgrade_to_target_week_statistics(payload)
+    payload["research"][stats_key]["return_measure"] = "close_to_close_return"
+
+    with pytest.raises(V5ContractError, match="investment semantics are invalid"):
+        validate_v5_payload(payload)
+
+
+def test_target_week_statistics_bind_non_overlapping_support_threshold() -> None:
+    payload = valid_payload()
+    _upgrade_to_target_week_statistics(payload)
+    row = payload["research"]["conditional_asset_stats"]["rows"][0]
+    row.update(
+        {
+            "n": 20,
+            "unique_episodes": 5,
+            "non_overlapping_n": 4,
+            "status": "ok",
+        }
+    )
+
+    with pytest.raises(V5ContractError, match="status is inconsistent with support"):
+        validate_v5_payload(payload)
+
+    row["status"] = "insufficient_support"
+    row["minimum_non_overlapping_observations"] = 4
+    with pytest.raises(
+        V5ContractError,
+        match="minimum_non_overlapping_observations is invalid",
+    ):
+        validate_v5_payload(payload)
+
+
+@pytest.mark.parametrize("version", ("v1", "v2"))
+def test_decision_shadow_v1_and_v2_contracts_validate(version: str) -> None:
+    _validate_decision_shadow(
+        {"prospective_decision_shadow": _decision_shadow_fixture(version)}
+    )
+
+
+def test_decision_shadow_v2_current_signal_accepts_missed_entry_and_holiday_week() -> None:
+    shadow = _decision_shadow_fixture("v2")
+    signal = shadow["current_signal"]
+    signal.update(
+        {
+            "origin_date": "2025-08-29",
+            "target_week": "2025-09-05",
+            "scheduled_entry_at": "2025-09-02T09:30:00-04:00",
+            "decision_at": "2025-09-02T09:30:00-04:00",
+            "status": "missed_entry",
+            "action": "no_trade",
+        }
+    )
+
+    _validate_decision_shadow({"prospective_decision_shadow": shadow})
+
+
+def test_decision_shadow_v2_binds_operating_forecast_and_payload_timeline() -> None:
+    payload = valid_payload()
+    _add_payload_bound_decision_shadow(payload)
+
+    validate_v5_payload(payload)
+
+
+def test_decision_shadow_empty_history_requires_null_turnover_and_zero_cost() -> None:
+    shadow = _decision_shadow_fixture("v2")
+    historical = shadow["historical_reconstructed_shadow"]
+    historical["status"] = "insufficient_history"
+    historical["evaluation_start_week"] = None
+    historical["evaluation_end_week"] = None
+    for metrics in historical["strategies"].values():
+        for field in (
+            "cumulative_return",
+            "annualized_return",
+            "annualized_volatility",
+            "sharpe",
+            "certainty_equivalent_return",
+            "maximum_drawdown",
+            "annualized_turnover",
+            "gross_cumulative_return",
+        ):
+            metrics[field] = None
+        metrics["weeks"] = 0
+        metrics["transaction_cost_rate_sum"] = 0.0
+
+    _validate_decision_shadow({"prospective_decision_shadow": shadow})
+
+    historical["strategies"]["probability_shadow"]["annualized_turnover"] = 0.0
+    with pytest.raises(V5ContractError, match="empty metrics"):
+        _validate_decision_shadow({"prospective_decision_shadow": shadow})
+    historical["strategies"]["probability_shadow"]["annualized_turnover"] = None
+    historical["strategies"]["probability_shadow"][
+        "transaction_cost_rate_sum"
+    ] = 0.001
+    with pytest.raises(V5ContractError, match="empty metrics"):
+        _validate_decision_shadow({"prospective_decision_shadow": shadow})
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    (
+        lambda payload: payload["research"]["prospective_decision_shadow"][
+            "current_signal"
+        ].__setitem__("forecast_model", "markov"),
+        lambda payload: payload["research"]["prospective_decision_shadow"][
+            "historical_reconstructed_shadow"
+        ]["allocation_policy"].__setitem__("forecast_model", "markov"),
+        lambda payload: payload["research"]["prospective_decision_shadow"][
+            "current_signal"
+        ].__setitem__("decision_at", "2026-08-07T19:59:00+00:00"),
+        lambda payload: payload["research"]["prospective_decision_shadow"][
+            "historical_reconstructed_shadow"
+        ]["allocation_policy"].__setitem__("latest_signal_origin", "2026-07-31"),
+        lambda payload: payload["research"]["prospective_decision_shadow"][
+            "historical_reconstructed_shadow"
+        ]["latest_target_weights"].update({"SPY": 0.6, "TLT": 0.4}),
+        lambda payload: payload["research"]["prospective_decision_shadow"][
+            "current_signal"
+        ].update(
+            {
+                "origin_date": "2026-07-31",
+                "target_week": "2026-08-07",
+                "scheduled_entry_at": "2026-08-03T09:30:00-04:00",
+                "status": "missed_entry",
+                "action": "no_trade",
+            }
+        ),
+    ),
+)
+def test_decision_shadow_v2_rejects_payload_binding_tampering(mutate: object) -> None:
+    payload = valid_payload()
+    _add_payload_bound_decision_shadow(payload)
+    mutate(payload)
+
+    with pytest.raises(
+        V5ContractError,
+        match="payload binding|differs from forecast|differ from operating forecast",
+    ):
+        validate_v5_payload(payload)
+
+
+@pytest.mark.parametrize(
+    ("mutate", "match"),
+    (
+        (
+            lambda signal: signal.__setitem__("target_week", "2025-07-25"),
+            "target_week must be origin_date plus 7 days",
+        ),
+        (
+            lambda signal: signal.__setitem__(
+                "scheduled_entry_at", "2025-07-15T09:30:00-04:00"
+            ),
+            "first NYSE session",
+        ),
+        (
+            lambda signal: signal.__setitem__(
+                "decision_at", "2025-07-14T09:30:00-04:00"
+            ),
+            "status/action is inconsistent with timing",
+        ),
+        (
+            lambda signal: signal.__setitem__("action", "no_trade"),
+            "status/action is inconsistent with timing",
+        ),
+        (
+            lambda signal: signal.__setitem__(
+                "decision_at", "2025-07-11T16:05:00"
+            ),
+            "decision_at must include a timezone",
+        ),
+    ),
+)
+def test_decision_shadow_v2_current_signal_rejects_timeline_tampering(
+    mutate: object,
+    match: str,
+) -> None:
+    shadow = _decision_shadow_fixture("v2")
+    mutate(shadow["current_signal"])
+
+    with pytest.raises(V5ContractError, match=match):
+        _validate_decision_shadow({"prospective_decision_shadow": shadow})
+
+
+def test_decision_shadow_versions_reject_each_others_top_level_shape() -> None:
+    v1 = _decision_shadow_fixture("v1")
+    v1["current_signal"] = deepcopy(_decision_shadow_fixture("v2")["current_signal"])
+    with pytest.raises(V5ContractError, match="fields are invalid"):
+        _validate_decision_shadow({"prospective_decision_shadow": v1})
+
+    v2 = _decision_shadow_fixture("v2")
+    v2.pop("current_signal")
+    with pytest.raises(V5ContractError, match="fields are invalid"):
+        _validate_decision_shadow({"prospective_decision_shadow": v2})
+
+
+@pytest.mark.parametrize("version", ("v1", "v2"))
+@pytest.mark.parametrize(
+    ("mutate", "match"),
+    (
+        (
+            lambda shadow: shadow["spec"].pop("sha256"),
+            "spec fields are invalid",
+        ),
+        (
+            lambda shadow: shadow["historical_reconstructed_shadow"].pop(
+                "first_tradable_week"
+                if shadow["schema_version"].endswith("/2")
+                else "first_tradable_at"
+            ),
+            "historical fields are invalid",
+        ),
+        (
+            lambda shadow: shadow["historical_reconstructed_shadow"]["strategies"][
+                "probability_shadow"
+            ].pop("annualized_turnover"),
+            "probability_shadow fields are invalid",
+        ),
+        (
+            lambda shadow: shadow["prospective_ledger"].pop("status"),
+            "prospective fields are invalid",
+        ),
+    ),
+)
+def test_decision_shadow_rejects_deleted_contract_fields(
+    version: str,
+    mutate: object,
+    match: str,
+) -> None:
+    shadow = _decision_shadow_fixture(version)
+    mutate(shadow)
+
+    with pytest.raises(V5ContractError, match=match):
+        _validate_decision_shadow({"prospective_decision_shadow": shadow})
+
+
+@pytest.mark.parametrize("version", ("v1", "v2"))
+@pytest.mark.parametrize(
+    ("mutate", "match"),
+    (
+        (
+            lambda shadow: shadow["historical_reconstructed_shadow"]["strategies"][
+                "spy_buy_and_hold"
+            ].__setitem__("weeks", 79),
+            "strategy weeks are inconsistent",
+        ),
+        (
+            lambda shadow: shadow["historical_reconstructed_shadow"]["strategies"][
+                "probability_shadow"
+            ].__setitem__("annualized_turnover", -0.1),
+            "annualized_turnover must be at least",
+        ),
+        (
+            lambda shadow: shadow["historical_reconstructed_shadow"]["strategies"][
+                "probability_shadow"
+            ].__setitem__(
+                "transaction_cost_rate_sum"
+                if shadow["schema_version"].endswith("/2")
+                else "total_transaction_cost",
+                -0.01,
+            ),
+            "transaction_cost.*must be at least",
+        ),
+        (
+            lambda shadow: shadow["historical_reconstructed_shadow"]["strategies"][
+                "probability_shadow"
+            ].__setitem__("cumulative_return", 0.1),
+            "cumulative_return exceeds gross_cumulative_return",
+        ),
+        (
+            lambda shadow: shadow["historical_reconstructed_shadow"]["strategies"][
+                "probability_shadow"
+            ].__setitem__("transaction_cost_bps", 5.0),
+            "transaction_cost_bps differs from spec",
+        ),
+        (
+            lambda shadow: shadow["prospective_ledger"].__setitem__(
+                "ledger_entry_count",
+                1 if shadow["schema_version"].endswith("/2") else 0,
+            ),
+            "prospective .*counts are inconsistent",
+        ),
+        (
+            lambda shadow: shadow["prospective_ledger"].__setitem__(
+                "realized_evaluation_count", 3
+            ),
+            "prospective ledger counts are inconsistent",
+        ),
+        (
+            lambda shadow: shadow["historical_reconstructed_shadow"].__setitem__(
+                "status", "insufficient_history"
+            ),
+            "historical status is inconsistent",
+        ),
+    ),
+)
+def test_decision_shadow_rejects_economic_and_ledger_tampering(
+    version: str,
+    mutate: object,
+    match: str,
+) -> None:
+    shadow = _decision_shadow_fixture(version)
+    mutate(shadow)
+
+    with pytest.raises(V5ContractError, match=match):
+        _validate_decision_shadow({"prospective_decision_shadow": shadow})
 
 
 def test_tracked_public_v5_snapshot_still_validates() -> None:

@@ -62,7 +62,9 @@ gate 통과도 champion 자동 승격을 일으키지 않는다.
 | `next_week.probabilities` | 다음 주 세 국면 예측 분포 | membership과 별도 평가·표시 |
 | `directional_risk` | 1·4·13주 안의 첫 이탈 도착 국면 또는 `no_departure` | 목적지 합계를 기존 any-departure 확률에 맞춤 |
 | `duration_context` | 현재 spell 경과주, 상태별 조건부 생존·이탈, median과 52주 RMST | 현재 spell 우측 검열; 완료 spell 5개 미만이면 `insufficient_history` |
-| `conditional_asset_stats` | state `t` 뒤 `t+1`부터 측정한 SPY·QQQ·IWM·TLT·HYG·UUP의 1·4·13주 성과 분포 | 관측 20개·episode 5개부터 `ok`와 bootstrap CI를 부여; descriptive-only |
+| `conditional_asset_stats` | origin `t`에서 실제 `S(t+1)`로 분류한 matched OOS oracle; 다음 주 adjusted open부터 1·4·13주차 adjusted close까지의 provider-adjusted 고정 보유 성과 | 예측 국면 통계와 동일 origin; 진입 주 분배금은 ex-date 부재 시 제외; MDD는 entry open과 주간 close만 관측 |
+| `model_conditioned_asset_stats` | origin `t`의 OOS 예측 `S(t+1)`로 분류한 투자 정렬 provider-adjusted 성과 | 기본 화면 기준; 4·13주는 매주 시작하는 overlapping cohort이며 리밸런싱 주기가 아님 |
+| `prospective_decision_shadow` | operating champion의 OOS `model_forecasts` 확률을 SPY/TLT 목표비중으로 변환한 연구 포트폴리오 | v2는 분배금을 모든 전략에서 제외한 split-safe price-only 공통 회계; 공식 forecast/champion에 영향 없음 |
 
 공개 JSON에는 위 파생 결과와 출처 상태만 들어간다. H.10 raw observation,
 XML payload, snapshot DB와 provider request는 공개하지 않는다.

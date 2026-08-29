@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from datetime import date, datetime
+from datetime import date, datetime, time, timedelta
 import hashlib
 import json
 import math
 from typing import Any
+from zoneinfo import ZoneInfo
 
+from regime_lab.analysis.decision_shadow import load_decision_shadow_spec
 from regime_lab.analysis.label_spec import load_label_spec
 from regime_lab.frozen_v4 import FROZEN_V4_BASELINE
 from regime_lab.integrity import (
@@ -82,7 +84,7 @@ V5_PUBLICATION_MANIFEST_META_FIELDS = frozenset(
 STATE_ORDER = ("risk_on", "transition", "risk_off")
 HORIZONS = (1, 4, 13)
 OUTCOME_ASSETS = ("SPY", "QQQ", "IWM", "TLT", "HYG", "UUP")
-ENHANCED_CONDITIONAL_STATISTICS_FIELDS = frozenset(
+LEGACY_ENHANCED_CONDITIONAL_STATISTICS_FIELDS = frozenset(
     {
         "unconditional_benchmark_method",
         "unconditional_benchmark_n",
@@ -95,6 +97,19 @@ ENHANCED_CONDITIONAL_STATISTICS_FIELDS = frozenset(
         "episode_bootstrap_seed",
         "episode_equal_mean_return_ci95_lower",
         "episode_equal_mean_return_ci95_upper",
+    }
+)
+MATCHED_EPISODE_BENCHMARK_FIELDS = frozenset(
+    {
+        "episode_equal_unconditional_benchmark_method",
+        "episode_equal_unconditional_benchmark_episode_n",
+        "episode_equal_unconditional_benchmark_mean_return",
+    }
+)
+ENHANCED_CONDITIONAL_STATISTICS_FIELDS = frozenset(
+    {
+        *LEGACY_ENHANCED_CONDITIONAL_STATISTICS_FIELDS,
+        *MATCHED_EPISODE_BENCHMARK_FIELDS,
     }
 )
 FX_VARIANTS = (
@@ -271,6 +286,86 @@ def _iso_datetime(value: Any, context: str) -> datetime:
     return parsed
 
 
+def _observed_weekday_holiday(value: date) -> date:
+    if value.weekday() == 5:
+        return value - timedelta(days=1)
+    if value.weekday() == 6:
+        return value + timedelta(days=1)
+    return value
+
+
+def _gregorian_easter(year: int) -> date:
+    """Return Gregorian Easter Sunday using the Meeus/Jones/Butcher rule."""
+
+    a = year % 19
+    b = year // 100
+    c = year % 100
+    d = b // 4
+    e = b % 4
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30
+    i = c // 4
+    k = c % 4
+    ell = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * ell) // 451
+    month = (h + ell - 7 * m + 114) // 31
+    day = (h + ell - 7 * m + 114) % 31 + 1
+    return date(year, month, day)
+
+
+def _nth_weekday(year: int, month: int, weekday: int, occurrence: int) -> date:
+    first = date(year, month, 1)
+    offset = (weekday - first.weekday()) % 7
+    return first + timedelta(days=offset + 7 * (occurrence - 1))
+
+
+def _last_weekday(year: int, month: int, weekday: int) -> date:
+    if month == 12:
+        next_month = date(year + 1, 1, 1)
+    else:
+        next_month = date(year, month + 1, 1)
+    last = next_month - timedelta(days=1)
+    return last - timedelta(days=(last.weekday() - weekday) % 7)
+
+
+def _is_nyse_session(value: date) -> bool:
+    if value.weekday() >= 5:
+        return False
+    year = value.year
+    holidays = {
+        _observed_weekday_holiday(date(year, 1, 1)),
+        _nth_weekday(year, 1, 0, 3),
+        _nth_weekday(year, 2, 0, 3),
+        _gregorian_easter(year) - timedelta(days=2),
+        _last_weekday(year, 5, 0),
+        _observed_weekday_holiday(date(year, 7, 4)),
+        _nth_weekday(year, 9, 0, 1),
+        _nth_weekday(year, 11, 3, 4),
+        _observed_weekday_holiday(date(year, 12, 25)),
+    }
+    if year >= 2022:
+        holidays.add(_observed_weekday_holiday(date(year, 6, 19)))
+    # Unscheduled full-day closures that can change a week's first session.
+    holidays.update(
+        {
+            date(2007, 1, 2),
+            date(2012, 10, 29),
+            date(2012, 10, 30),
+        }
+    )
+    return value not in holidays
+
+
+def _first_nyse_session_of_week(target_week: date) -> date:
+    week_start = target_week - timedelta(days=target_week.weekday())
+    for offset in range(7):
+        candidate = week_start + timedelta(days=offset)
+        if _is_nyse_session(candidate):
+            return candidate
+    raise V5ContractError("target week has no NYSE trading session")
+
+
 def _validate_label_contract(value: Any) -> None:
     context = "payload.label"
     label = _mapping(value, context)
@@ -303,6 +398,162 @@ def _validate_label_contract(value: Any) -> None:
     end = _iso_date(fit["end"], f"{context}.fit_period.end")
     if end < start or _integer(fit["weeks"], f"{context}.fit_period.weeks", minimum=1) != 520:
         raise V5ContractError(f"{context}.fit_period is invalid")
+
+
+def _validate_prospective_performance(
+    value: Any,
+    *,
+    context: str,
+    ledger_status: str,
+    realized_count: int,
+) -> None:
+    performance = _mapping(value, context)
+    expected = {
+        "status",
+        "weeks",
+        "gross_cumulative_return",
+        "net_cumulative_return",
+        "turnover_sum",
+        "transaction_cost_rate_sum",
+        "transaction_cost_bps",
+        "forecast_hit_count",
+        "forecast_accuracy",
+        "actual_state_counts",
+    }
+    if set(performance) != expected:
+        raise V5ContractError(f"{context} fields are invalid")
+    weeks = _integer(performance.get("weeks"), f"{context}.weeks")
+    if weeks != realized_count:
+        raise V5ContractError(f"{context}.weeks differs from realized count")
+    expected_status = (
+        "completed" if ledger_status == "completed" else
+        "pending" if ledger_status in {"empty", "pending"} else "partial"
+    )
+    if performance.get("status") != expected_status:
+        raise V5ContractError(f"{context}.status is inconsistent")
+    metric_names = expected - {"status", "weeks"}
+    if weeks == 0:
+        if any(performance.get(field) is not None for field in metric_names):
+            raise V5ContractError(f"{context} empty metrics must be null")
+        return
+    gross = _number(
+        performance.get("gross_cumulative_return"),
+        f"{context}.gross_cumulative_return",
+        minimum=-1.0,
+    )
+    net = _number(
+        performance.get("net_cumulative_return"),
+        f"{context}.net_cumulative_return",
+        minimum=-1.0,
+    )
+    if net > gross + 1e-12:
+        raise V5ContractError(f"{context} net return exceeds gross return")
+    turnover = _number(
+        performance.get("turnover_sum"), f"{context}.turnover_sum", minimum=0.0
+    )
+    cost = _number(
+        performance.get("transaction_cost_rate_sum"),
+        f"{context}.transaction_cost_rate_sum",
+        minimum=0.0,
+    )
+    cost_bps = _number(
+        performance.get("transaction_cost_bps"),
+        f"{context}.transaction_cost_bps",
+        minimum=0.0,
+    )
+    if not math.isclose(cost_bps, 10.0, abs_tol=1e-12) or not math.isclose(
+        cost, turnover * cost_bps / 10_000.0, abs_tol=1e-12
+    ):
+        raise V5ContractError(f"{context} transaction cost is inconsistent")
+    hits = _integer(
+        performance.get("forecast_hit_count"),
+        f"{context}.forecast_hit_count",
+    )
+    if hits > weeks:
+        raise V5ContractError(f"{context}.forecast_hit_count is invalid")
+    accuracy = _number(
+        performance.get("forecast_accuracy"),
+        f"{context}.forecast_accuracy",
+        minimum=0.0,
+        maximum=1.0,
+    )
+    if not math.isclose(accuracy, hits / weeks, abs_tol=1e-12):
+        raise V5ContractError(f"{context}.forecast_accuracy is inconsistent")
+    counts = _mapping(
+        performance.get("actual_state_counts"), f"{context}.actual_state_counts"
+    )
+    if set(counts) != set(STATE_ORDER):
+        raise V5ContractError(f"{context}.actual_state_counts fields are invalid")
+    total = sum(
+        _integer(counts.get(state), f"{context}.actual_state_counts.{state}")
+        for state in STATE_ORDER
+    )
+    if total != weeks:
+        raise V5ContractError(f"{context}.actual_state_counts is inconsistent")
+
+
+def _validate_prospective_ledger_v2(value: Any, *, context: str) -> dict[str, Any]:
+    ledger = _mapping(value, context)
+    expected = {
+        "schema_version",
+        "status",
+        "entry_count",
+        "pending_evaluation_count",
+        "unresolved_due_evaluation_count",
+        "realized_evaluation_count",
+        "partial_evaluation_count",
+        "key_manifest_sha256",
+        "evaluation_manifest_sha256",
+        "hash_scope",
+        "evaluation_hash_scope",
+        "performance",
+    }
+    if set(ledger) != expected:
+        raise V5ContractError(f"{context} fields are invalid")
+    if (
+        ledger.get("schema_version") != "regime-prospective-ledger-summary/2"
+        or ledger.get("hash_scope") != "ordered_ledger_primary_keys_only"
+        or ledger.get("evaluation_hash_scope")
+        != "ordered_forecast_primary_keys_status_and_evaluation_sha256"
+    ):
+        raise V5ContractError(f"{context} identity is invalid")
+    _sha256(ledger.get("key_manifest_sha256"), f"{context}.key_manifest_sha256")
+    _sha256(
+        ledger.get("evaluation_manifest_sha256"),
+        f"{context}.evaluation_manifest_sha256",
+    )
+    count_fields = (
+        "entry_count",
+        "pending_evaluation_count",
+        "unresolved_due_evaluation_count",
+        "realized_evaluation_count",
+        "partial_evaluation_count",
+    )
+    counts = {
+        field: _integer(ledger.get(field), f"{context}.{field}")
+        for field in count_fields
+    }
+    if sum(counts[field] for field in count_fields[1:]) != counts["entry_count"]:
+        raise V5ContractError(f"{context} counts are inconsistent")
+    status = str(ledger.get("status", ""))
+    expected_status = (
+        "empty"
+        if counts["entry_count"] == 0
+        else "completed"
+        if counts["realized_evaluation_count"] == counts["entry_count"]
+        else "pending"
+        if counts["pending_evaluation_count"] == counts["entry_count"]
+        else "partial"
+    )
+    if status != expected_status:
+        raise V5ContractError(f"{context}.status is inconsistent")
+    _validate_prospective_performance(
+        ledger.get("performance"),
+        context=f"{context}.performance",
+        ledger_status=status,
+        realized_count=counts["realized_evaluation_count"],
+    )
+    return ledger
 
 
 def _validate_forecast_contract(value: Any, *, mode: str) -> tuple[datetime, datetime]:
@@ -407,40 +658,58 @@ def _validate_forecast_contract(value: Any, *, mode: str) -> tuple[datetime, dat
         ledger = _mapping(
             forecast.get("prospective_ledger"), f"{context}.prospective_ledger"
         )
-        if set(ledger) != {
-            "schema_version",
-            "status",
-            "entry_count",
-            "key_manifest_sha256",
-            "hash_scope",
-        }:
-            raise V5ContractError(f"{context}.prospective_ledger fields are invalid")
-        if ledger.get("schema_version") != "regime-prospective-ledger-summary/1":
-            raise V5ContractError(f"{context}.prospective_ledger schema is invalid")
-        if ledger.get("hash_scope") != "ordered_ledger_primary_keys_only":
-            raise V5ContractError(f"{context}.prospective_ledger hash scope is invalid")
-        if ledger.get("status") == "not_applicable":
-            if ledger.get("entry_count") != 0:
-                raise V5ContractError(f"{context}.prospective_ledger count is invalid")
-            _sha256(
-                ledger.get("key_manifest_sha256"),
-                f"{context}.prospective_ledger.key_manifest_sha256",
-            )
-        elif ledger.get("status") == "pending_append":
-            if ledger.get("entry_count") is not None or ledger.get("key_manifest_sha256") is not None:
-                raise V5ContractError(f"{context}.prospective_ledger pending state is invalid")
-        elif ledger.get("status") == "recorded":
-            _integer(
-                ledger.get("entry_count"),
-                f"{context}.prospective_ledger.entry_count",
-                minimum=1,
-            )
-            _sha256(
-                ledger.get("key_manifest_sha256"),
-                f"{context}.prospective_ledger.key_manifest_sha256",
+        if ledger.get("schema_version") == "regime-prospective-ledger-summary/2":
+            _validate_prospective_ledger_v2(
+                ledger, context=f"{context}.prospective_ledger"
             )
         else:
-            raise V5ContractError(f"{context}.prospective_ledger status is invalid")
+            if set(ledger) != {
+                "schema_version",
+                "status",
+                "entry_count",
+                "key_manifest_sha256",
+                "hash_scope",
+            }:
+                raise V5ContractError(
+                    f"{context}.prospective_ledger fields are invalid"
+                )
+            if ledger.get("schema_version") != "regime-prospective-ledger-summary/1":
+                raise V5ContractError(f"{context}.prospective_ledger schema is invalid")
+            if ledger.get("hash_scope") != "ordered_ledger_primary_keys_only":
+                raise V5ContractError(
+                    f"{context}.prospective_ledger hash scope is invalid"
+                )
+            if ledger.get("status") == "not_applicable":
+                if ledger.get("entry_count") != 0:
+                    raise V5ContractError(
+                        f"{context}.prospective_ledger count is invalid"
+                    )
+                _sha256(
+                    ledger.get("key_manifest_sha256"),
+                    f"{context}.prospective_ledger.key_manifest_sha256",
+                )
+            elif ledger.get("status") == "pending_append":
+                if (
+                    ledger.get("entry_count") is not None
+                    or ledger.get("key_manifest_sha256") is not None
+                ):
+                    raise V5ContractError(
+                        f"{context}.prospective_ledger pending state is invalid"
+                    )
+            elif ledger.get("status") == "recorded":
+                _integer(
+                    ledger.get("entry_count"),
+                    f"{context}.prospective_ledger.entry_count",
+                    minimum=1,
+                )
+                _sha256(
+                    ledger.get("key_manifest_sha256"),
+                    f"{context}.prospective_ledger.key_manifest_sha256",
+                )
+            else:
+                raise V5ContractError(
+                    f"{context}.prospective_ledger status is invalid"
+                )
     return origin, target
 
 
@@ -2671,7 +2940,7 @@ def _validate_publication_review(
 
 def _validate_conditional_stats(value: Any, *, expected_resamples: int) -> None:
     research = _mapping(value, "payload.research")
-    expected_stats_fields = {
+    legacy_stats_fields = {
         "method",
         "role",
         "execution_lag_weeks",
@@ -2680,17 +2949,59 @@ def _validate_conditional_stats(value: Any, *, expected_resamples: int) -> None:
         "return_currency",
         "rows",
     }
+    investment_stats_fields = {
+        *legacy_stats_fields,
+        "conditioning",
+        "state_horizon_weeks",
+        "entry_price_basis",
+        "exit_price_basis",
+        "rebalance_policy",
+        "origin_sampling",
+        "return_measure",
+        "entry_week_distribution_policy",
+        "corporate_action_policy",
+        "drawdown_observation_basis",
+    }
     stats = _mapping(
         _require(research, "conditional_asset_stats", "payload.research"),
         "payload.research.conditional_asset_stats",
+    )
+    method = stats.get("method")
+    expected_stats_fields = (
+        investment_stats_fields
+        if method
+        == "matched_oos_actual_next_state_target_week_adjusted_forward_return"
+        else legacy_stats_fields
     )
     if set(stats) != expected_stats_fields:
         raise V5ContractError(
             "payload.research.conditional_asset_stats fields are invalid"
         )
-    if stats.get("method") != "state_conditioned_forward_total_return":
+    if method not in {
+        "state_conditioned_forward_total_return",
+        "matched_oos_actual_next_state_target_week_adjusted_forward_return",
+    }:
         raise V5ContractError("conditional asset method is invalid")
-    if stats.get("role") != "descriptive_only":
+    if method == "matched_oos_actual_next_state_target_week_adjusted_forward_return":
+        if (
+            stats.get("role") != "matched_oracle_diagnostic"
+            or stats.get("conditioning")
+            != "actual_next_state_on_matched_oos_origins"
+            or stats.get("state_horizon_weeks") != 1
+            or stats.get("entry_price_basis") != "next_week_adjusted_open"
+            or stats.get("exit_price_basis") != "horizon_week_adjusted_close"
+            or stats.get("rebalance_policy") != "none_fixed_asset_hold"
+            or stats.get("origin_sampling") != "weekly_rolling_overlapping"
+            or stats.get("return_measure") != "provider_adjusted_forward_return"
+            or stats.get("entry_week_distribution_policy")
+            != "conservative_excluded_without_ex_date"
+            or stats.get("corporate_action_policy")
+            != "same_row_adjustment_factor_split_consistent"
+            or stats.get("drawdown_observation_basis")
+            != "entry_adjusted_open_then_weekly_adjusted_closes"
+        ):
+            raise V5ContractError("conditional asset investment semantics are invalid")
+    elif stats.get("role") != "descriptive_only":
         raise V5ContractError("conditional asset role is invalid")
     if stats.get("execution_lag_weeks") != 1:
         raise V5ContractError("conditional asset execution lag must be one week")
@@ -2709,13 +3020,36 @@ def _validate_conditional_stats(value: Any, *, expected_resamples: int) -> None:
         if forbidden.intersection(row):
             raise V5ContractError(f"{context} contains an allocation field")
         enhanced_fields = set(CONDITIONAL_STATISTICS_COLUMNS)
-        legacy_fields = enhanced_fields.difference(
+        current_core_fields = enhanced_fields.difference(
             ENHANCED_CONDITIONAL_STATISTICS_FIELDS
         )
-        if frozenset(row) not in {
-            frozenset(legacy_fields),
+        non_overlapping_contract_fields = {
+            "non_overlapping_n",
+            "minimum_non_overlapping_observations",
+        }
+        historical_enhanced_fields = enhanced_fields.difference(
+            non_overlapping_contract_fields
+        )
+        legacy_enhanced_fields = enhanced_fields.difference(
+            MATCHED_EPISODE_BENCHMARK_FIELDS
+        )
+        historical_legacy_enhanced_fields = legacy_enhanced_fields.difference(
+            non_overlapping_contract_fields
+        )
+        historical_core_fields = current_core_fields.difference(
+            non_overlapping_contract_fields
+        )
+        allowed_row_fields = {
+            frozenset(historical_core_fields),
+            frozenset(historical_enhanced_fields),
+            frozenset(current_core_fields),
             frozenset(enhanced_fields),
-        }:
+            frozenset(legacy_enhanced_fields),
+            frozenset(historical_legacy_enhanced_fields),
+        }
+        if method == "matched_oos_actual_next_state_target_week_adjusted_forward_return":
+            allowed_row_fields = {frozenset(enhanced_fields)}
+        if frozenset(row) not in allowed_row_fields:
             raise V5ContractError(f"{context} fields are invalid")
         if row.get("asset") not in OUTCOME_ASSETS or row.get("state") not in STATE_ORDER:
             raise V5ContractError(f"{context} asset/state is invalid")
@@ -2748,12 +3082,41 @@ def _validate_conditional_stats(value: Any, *, expected_resamples: int) -> None:
             raise V5ContractError(f"{context}.minimum_observations is invalid")
         if row.get("minimum_unique_episodes") != 5:
             raise V5ContractError(f"{context}.minimum_unique_episodes is invalid")
-        _integer(_require(row, "n", context), f"{context}.n")
-        _integer(_require(row, "unique_episodes", context), f"{context}.unique_episodes")
-        if ENHANCED_CONDITIONAL_STATISTICS_FIELDS.issubset(row):
-            if row.get("unconditional_benchmark_method") != (
-                "same_asset_horizon_all_origins_buy_and_hold"
+        count = _integer(_require(row, "n", context), f"{context}.n")
+        non_overlapping: int | None = None
+        if "non_overlapping_n" in row:
+            non_overlapping = _integer(
+                row.get("non_overlapping_n"),
+                f"{context}.non_overlapping_n",
+            )
+            if non_overlapping > count:
+                raise V5ContractError(
+                    f"{context}.non_overlapping_n exceeds n"
+                )
+        unique_episodes = _integer(
+            _require(row, "unique_episodes", context),
+            f"{context}.unique_episodes",
+        )
+        if "minimum_non_overlapping_observations" in row and (
+            row.get("minimum_non_overlapping_observations") != 5
+        ):
+            raise V5ContractError(
+                f"{context}.minimum_non_overlapping_observations is invalid"
+            )
+        if LEGACY_ENHANCED_CONDITIONAL_STATISTICS_FIELDS.issubset(row):
+            benchmark_method = row.get("unconditional_benchmark_method")
+            if method == (
+                "matched_oos_actual_next_state_target_week_adjusted_forward_return"
             ):
+                benchmark_method_is_valid = (
+                    benchmark_method == "same_asset_horizon_all_origins_mean"
+                )
+            else:
+                benchmark_method_is_valid = benchmark_method in {
+                    "same_asset_horizon_all_origins_buy_and_hold",
+                    "same_asset_horizon_all_origins_mean",
+                }
+            if not benchmark_method_is_valid:
                 raise V5ContractError(
                     f"{context}.unconditional_benchmark_method is invalid"
                 )
@@ -2790,6 +3153,47 @@ def _validate_conditional_stats(value: Any, *, expected_resamples: int) -> None:
                 raise V5ContractError(f"{context} episode CI must share nullability")
             if episode_lower is not None and episode_upper < episode_lower:
                 raise V5ContractError(f"{context} episode CI is reversed")
+            if MATCHED_EPISODE_BENCHMARK_FIELDS.issubset(row):
+                if (
+                    row.get("episode_equal_unconditional_benchmark_method")
+                    != "same_asset_horizon_all_state_episodes_equal_weight"
+                ):
+                    raise V5ContractError(
+                        f"{context}.episode_equal_unconditional_benchmark_method "
+                        "is invalid"
+                    )
+                _integer(
+                    row.get("episode_equal_unconditional_benchmark_episode_n"),
+                    f"{context}.episode_equal_unconditional_benchmark_episode_n",
+                )
+                episode_benchmark = _optional_number(
+                    row.get(
+                        "episode_equal_unconditional_benchmark_mean_return"
+                    ),
+                    f"{context}.episode_equal_unconditional_benchmark_mean_return",
+                )
+                episode_mean = _optional_number(
+                    row.get("episode_equal_mean_return"),
+                    f"{context}.episode_equal_mean_return",
+                )
+                episode_excess = _optional_number(
+                    row.get("episode_equal_excess_return"),
+                    f"{context}.episode_equal_excess_return",
+                )
+                complete_episode_estimand = None not in (
+                    episode_benchmark,
+                    episode_mean,
+                    episode_excess,
+                )
+                if complete_episode_estimand and not math.isclose(
+                    episode_excess,
+                    episode_mean - episode_benchmark,
+                    abs_tol=2e-8,
+                    rel_tol=0.0,
+                ):
+                    raise V5ContractError(
+                        f"{context}.episode_equal_excess_return is inconsistent"
+                    )
         for field in (
             "mean_return",
             "median_return",
@@ -2802,6 +3206,16 @@ def _validate_conditional_stats(value: Any, *, expected_resamples: int) -> None:
             _optional_number(row.get(field), f"{context}.{field}")
         if row.get("status") not in {"ok", "insufficient_support"}:
             raise V5ContractError(f"{context}.status is invalid")
+        if non_overlapping is not None:
+            expected_status = (
+                "ok"
+                if count >= 20
+                and unique_episodes >= 5
+                and non_overlapping >= 5
+                else "insufficient_support"
+            )
+            if row.get("status") != expected_status:
+                raise V5ContractError(f"{context}.status is inconsistent with support")
         for metric in (
             "mean_return",
             "median_return",
@@ -2866,9 +3280,30 @@ def _validate_model_conditioned_stats(
         "return_currency",
         "rows",
     }
-    if set(stats) != expected_stats_fields:
+    investment_stats_fields = {
+        *expected_stats_fields,
+        "entry_price_basis",
+        "exit_price_basis",
+        "rebalance_policy",
+        "origin_sampling",
+        "return_measure",
+        "entry_week_distribution_policy",
+        "corporate_action_policy",
+        "drawdown_observation_basis",
+    }
+    method = stats.get("method")
+    expected_fields = (
+        investment_stats_fields
+        if method
+        == "matched_oos_predicted_next_state_target_week_adjusted_forward_return"
+        else expected_stats_fields
+    )
+    if set(stats) != expected_fields:
         raise V5ContractError(f"{context} fields are invalid")
-    if stats.get("method") != "oos_one_week_forecast_conditioned_forward_total_return":
+    if method not in {
+        "oos_one_week_forecast_conditioned_forward_total_return",
+        "matched_oos_predicted_next_state_target_week_adjusted_forward_return",
+    }:
         raise V5ContractError(f"{context}.method is invalid")
     if stats.get("role") != "retrospective_model_diagnostic":
         raise V5ContractError(f"{context}.role is invalid")
@@ -2876,6 +3311,22 @@ def _validate_model_conditioned_stats(
         raise V5ContractError(f"{context}.conditioning is invalid")
     if stats.get("forecast_horizon_weeks") != 1:
         raise V5ContractError(f"{context}.forecast_horizon_weeks must be one")
+    if method == (
+        "matched_oos_predicted_next_state_target_week_adjusted_forward_return"
+    ) and (
+        stats.get("entry_price_basis") != "next_week_adjusted_open"
+        or stats.get("exit_price_basis") != "horizon_week_adjusted_close"
+        or stats.get("rebalance_policy") != "none_fixed_asset_hold"
+        or stats.get("origin_sampling") != "weekly_rolling_overlapping"
+        or stats.get("return_measure") != "provider_adjusted_forward_return"
+        or stats.get("entry_week_distribution_policy")
+        != "conservative_excluded_without_ex_date"
+        or stats.get("corporate_action_policy")
+        != "same_row_adjustment_factor_split_consistent"
+        or stats.get("drawdown_observation_basis")
+        != "entry_adjusted_open_then_weekly_adjusted_closes"
+    ):
+        raise V5ContractError(f"{context} investment semantics are invalid")
     if stats.get("execution_lag_weeks") != 1:
         raise V5ContractError(f"{context}.execution_lag_weeks must be one")
     if tuple(stats.get("horizons_weeks", ())) != HORIZONS:
@@ -2897,14 +3348,50 @@ def _validate_model_conditioned_stats(
             row_context = f"{context}.rows[{index}]"
             row = _mapping(raw_row, row_context)
             enhanced_model_fields = frozenset(MODEL_CONDITIONED_STATISTICS_COLUMNS)
-            legacy_model_fields = enhanced_model_fields.difference(
+            current_core_model_fields = enhanced_model_fields.difference(
                 ENHANCED_CONDITIONAL_STATISTICS_FIELDS
             )
-            if frozenset(row) not in {
+            non_overlapping_contract_fields = {
+                "non_overlapping_n",
+                "minimum_non_overlapping_observations",
+            }
+            historical_enhanced_model_fields = enhanced_model_fields.difference(
+                non_overlapping_contract_fields
+            )
+            legacy_enhanced_model_fields = enhanced_model_fields.difference(
+                MATCHED_EPISODE_BENCHMARK_FIELDS
+            )
+            historical_legacy_enhanced_model_fields = (
+                legacy_enhanced_model_fields.difference(
+                    non_overlapping_contract_fields
+                )
+            )
+            historical_core_model_fields = current_core_model_fields.difference(
+                non_overlapping_contract_fields
+            )
+            allowed_model_row_fields = {
                 enhanced_model_fields,
-                legacy_model_fields,
-            }:
+                frozenset(current_core_model_fields),
+                frozenset(historical_enhanced_model_fields),
+                frozenset(historical_core_model_fields),
+                frozenset(legacy_enhanced_model_fields),
+                frozenset(historical_legacy_enhanced_model_fields),
+            }
+            if method == (
+                "matched_oos_predicted_next_state_target_week_adjusted_forward_return"
+            ):
+                allowed_model_row_fields = {enhanced_model_fields}
+            if frozenset(row) not in allowed_model_row_fields:
                 raise V5ContractError(f"{row_context} fields are invalid")
+            if (
+                method
+                == "matched_oos_predicted_next_state_target_week_adjusted_forward_return"
+                and row.get("unconditional_benchmark_method")
+                != "same_asset_horizon_all_origins_mean"
+            ):
+                raise V5ContractError(
+                    f"{row_context}.unconditional_benchmark_method is invalid"
+                )
             if row.get("conditioning_model") != name:
                 continue
             model_rows.append(
@@ -2939,51 +3426,388 @@ def _validate_model_conditioned_stats(
         )
 
 
-def _validate_decision_shadow(research: Mapping[str, Any]) -> None:
+def _validate_decision_shadow_current_signal(
+    value: Any,
+    *,
+    context: str,
+) -> dict[str, Any]:
+    signal = _mapping(value, context)
+    if set(signal) != {
+        "origin_date",
+        "target_week",
+        "scheduled_entry_at",
+        "decision_at",
+        "forecast_model",
+        "status",
+        "action",
+    }:
+        raise V5ContractError(f"{context} fields are invalid")
+    origin_date = _iso_date(signal.get("origin_date"), f"{context}.origin_date")
+    target_week = _iso_date(signal.get("target_week"), f"{context}.target_week")
+    if target_week != origin_date + timedelta(days=7):
+        raise V5ContractError(f"{context}.target_week must be origin_date plus 7 days")
+    scheduled_entry_at = _iso_datetime(
+        signal.get("scheduled_entry_at"), f"{context}.scheduled_entry_at"
+    )
+    decision_at = _iso_datetime(signal.get("decision_at"), f"{context}.decision_at")
+    forecast_model = signal.get("forecast_model")
+    if not isinstance(forecast_model, str) or not forecast_model:
+        raise V5ContractError(f"{context}.forecast_model must be non-empty")
+    scheduled_eastern = scheduled_entry_at.astimezone(
+        ZoneInfo("America/New_York")
+    )
+    expected_session = _first_nyse_session_of_week(target_week)
+    if (
+        scheduled_eastern.date() != expected_session
+        or scheduled_eastern.timetz().replace(tzinfo=None) != time(9, 30)
+    ):
+        raise V5ContractError(
+            f"{context}.scheduled_entry_at must be the target week's first "
+            "NYSE session at 09:30 America/New_York"
+        )
+    if decision_at < scheduled_entry_at:
+        expected_status_action = ("scheduled", "trade_at_scheduled_open")
+    else:
+        expected_status_action = ("missed_entry", "no_trade")
+    if (signal.get("status"), signal.get("action")) != expected_status_action:
+        raise V5ContractError(f"{context} status/action is inconsistent with timing")
+    return {
+        "origin_date": origin_date,
+        "target_week": target_week,
+        "scheduled_entry_at": scheduled_entry_at,
+        "decision_at": decision_at,
+        "forecast_model": forecast_model,
+    }
+
+
+def _validate_decision_shadow(
+    research: Mapping[str, Any],
+    *,
+    latest_week: Mapping[str, Any] | None = None,
+    forecast: Mapping[str, Any] | None = None,
+    operating_champion: str | None = None,
+    generated_at: datetime | None = None,
+) -> None:
     raw = research.get("prospective_decision_shadow")
     if raw is None:
         # Backward-compatible with reviewed schema-2.1 snapshots.
         return
     context = "payload.research.prospective_decision_shadow"
     shadow = _mapping(raw, context)
-    if set(shadow) != {
+    schema_version = shadow.get("schema_version")
+    if schema_version == "regime-prospective-decision-shadow/1":
+        is_v2 = False
+    elif schema_version == "regime-prospective-decision-shadow/2":
+        is_v2 = True
+    else:
+        raise V5ContractError(f"{context} schema is invalid")
+    expected_shadow_fields = {
         "schema_version",
         "role",
         "spec",
         "execution_contract",
         "historical_reconstructed_shadow",
         "prospective_ledger",
-    }:
+    }
+    if is_v2:
+        expected_shadow_fields.add("current_signal")
+    if set(shadow) != expected_shadow_fields:
         raise V5ContractError(f"{context} fields are invalid")
-    if (
-        shadow.get("schema_version") != "regime-prospective-decision-shadow/1"
-        or shadow.get("role") != "research_only_no_forecast_or_champion_effect"
-    ):
+    if shadow.get("role") != "research_only_no_forecast_or_champion_effect":
         raise V5ContractError(f"{context} identity is invalid")
+    validated_current_signal: dict[str, Any] | None = None
+    if is_v2:
+        validated_current_signal = _validate_decision_shadow_current_signal(
+            shadow.get("current_signal"), context=f"{context}.current_signal"
+        )
     spec = _mapping(shadow.get("spec"), f"{context}.spec")
-    if spec.get("path") != "config/decision-shadow.json":
+    if set(spec) != {"path", "sha256", "spec_id"}:
+        raise V5ContractError(f"{context}.spec fields are invalid")
+    if spec.get("path") not in {
+        "config/decision-shadow.json",
+        "config/decision-shadow-v2.json",
+    }:
         raise V5ContractError(f"{context}.spec.path is invalid")
     _sha256(spec.get("sha256"), f"{context}.spec.sha256")
     execution = _mapping(
         shadow.get("execution_contract"), f"{context}.execution_contract"
     )
-    if (
-        execution.get("first_tradable_point")
-        != "next_completed_weekly_close"
-        or execution.get("execution_lag_weeks") != 1
-        or execution.get("holding_period_weeks") != 1
-    ):
+    legacy_execution = {
+        "first_tradable_point": "next_completed_weekly_close",
+        "execution_lag_weeks": 1,
+        "holding_period_weeks": 1,
+    }
+    investment_execution = {
+        "signal_origin": "completed_weekly_close",
+        "first_tradable_point": "next_week_adjusted_open",
+        "target_return_window": "next_week_open_to_close",
+        "rebalance_frequency": "weekly",
+        "late_signal_policy": "no_trade",
+        "holding_period_weeks": 1,
+    }
+    expected_execution = investment_execution if is_v2 else legacy_execution
+    if dict(execution) != expected_execution:
         raise V5ContractError(f"{context}.execution_contract is invalid")
+    if not is_v2 and (
+        spec.get("path") != "config/decision-shadow.json"
+        or spec.get("spec_id") != "spy-tlt-probability-shadow-v1"
+    ):
+        raise V5ContractError(f"{context}.spec v1 identity is invalid")
+    if is_v2 and (
+        spec.get("path") != "config/decision-shadow-v2.json"
+        or spec.get("spec_id") != "spy-tlt-probability-shadow-v2"
+    ):
+        raise V5ContractError(f"{context}.spec v2 identity is invalid")
     historical = _mapping(
         shadow.get("historical_reconstructed_shadow"),
         f"{context}.historical_reconstructed_shadow",
     )
+    historical_fields = {
+        "status",
+        "evidence_track",
+        "evidence_status",
+        "minimum_evaluation_weeks",
+        "strategies",
+    }
+    if is_v2:
+        historical_fields.update(
+            {
+                "first_tradable_week",
+                "evaluation_start_week",
+                "evaluation_end_week",
+                "latest_target_weights",
+                "allocation_policy",
+            }
+        )
+    else:
+        historical_fields.add("first_tradable_at")
+    if set(historical) != historical_fields:
+        raise V5ContractError(f"{context} historical fields are invalid")
     if (
         historical.get("evidence_track") != "reconstructed_oos"
         or historical.get("evidence_status") != "historical_reconstructed_shadow"
         or historical.get("status") not in {"completed", "insufficient_history"}
     ):
         raise V5ContractError(f"{context} historical evidence identity is invalid")
+    if is_v2:
+        if historical.get("first_tradable_week") is not None:
+            _iso_date(
+                historical.get("first_tradable_week"),
+                f"{context}.historical_reconstructed_shadow.first_tradable_week",
+            )
+        evaluation_start = historical.get("evaluation_start_week")
+        evaluation_end = historical.get("evaluation_end_week")
+        if (evaluation_start is None) != (evaluation_end is None):
+            raise V5ContractError(f"{context} evaluation bounds differ in nullability")
+        if evaluation_start is not None:
+            evaluation_start = _iso_date(
+                evaluation_start,
+                f"{context}.historical_reconstructed_shadow.evaluation_start_week",
+            )
+            evaluation_end = _iso_date(
+                evaluation_end,
+                f"{context}.historical_reconstructed_shadow.evaluation_end_week",
+            )
+            if evaluation_end < evaluation_start:
+                raise V5ContractError(f"{context} evaluation bounds are reversed")
+    elif historical.get("first_tradable_at") is not None:
+        _iso_datetime(
+            historical.get("first_tradable_at"),
+            f"{context}.historical_reconstructed_shadow.first_tradable_at",
+        )
+    minimum_evaluation_weeks = _integer(
+        historical.get("minimum_evaluation_weeks"),
+        f"{context}.historical_reconstructed_shadow.minimum_evaluation_weeks",
+        minimum=1,
+    )
+    if is_v2:
+        allocation = _mapping(
+            historical.get("allocation_policy"),
+            f"{context}.historical_reconstructed_shadow.allocation_policy",
+        )
+        if set(allocation) != {
+            "method",
+            "assets",
+            "forecast_model",
+            "latest_signal_origin",
+            "latest_target_weights",
+        }:
+            raise V5ContractError(f"{context} allocation policy fields are invalid")
+        if (
+            allocation.get("method")
+            != "probability_weighted_state_portfolios"
+            or tuple(allocation.get("assets", ())) != ("SPY", "TLT")
+        ):
+            raise V5ContractError(f"{context} allocation policy is invalid")
+        forecast_model = allocation.get("forecast_model")
+        if not isinstance(forecast_model, str) or not forecast_model:
+            raise V5ContractError(f"{context} allocation forecast_model is invalid")
+        latest_weights = allocation.get("latest_target_weights")
+        if historical.get("latest_target_weights") != latest_weights:
+            raise V5ContractError(f"{context} latest target weight copies differ")
+        latest_signal_origin = allocation.get("latest_signal_origin")
+        if latest_signal_origin is not None:
+            _iso_date(
+                latest_signal_origin,
+                f"{context}.historical_reconstructed_shadow.allocation_policy.latest_signal_origin",
+            )
+        if latest_weights is not None:
+            weights = _mapping(
+                latest_weights,
+                f"{context}.historical_reconstructed_shadow.allocation_policy.latest_target_weights",
+            )
+            if set(weights) != {"SPY", "TLT"}:
+                raise V5ContractError(f"{context} latest target weights are invalid")
+            values = [
+                _number(weights[asset], f"{context}.latest_target_weights.{asset}")
+                for asset in ("SPY", "TLT")
+            ]
+            if any(value < 0.0 or value > 1.0 for value in values) or not math.isclose(
+                sum(values), 1.0, abs_tol=1e-8
+            ):
+                raise V5ContractError(f"{context} latest target weights are invalid")
+        binding_inputs = (
+            latest_week,
+            forecast,
+            operating_champion,
+            generated_at,
+        )
+        if any(value is not None for value in binding_inputs):
+            if any(value is None for value in binding_inputs):
+                raise V5ContractError(
+                    f"{context} payload binding inputs are incomplete"
+                )
+            assert validated_current_signal is not None
+            assert latest_week is not None
+            assert forecast is not None
+            assert operating_champion is not None
+            assert generated_at is not None
+            latest_origin = _iso_date(
+                latest_week.get("date"),
+                "payload.weekly[-1].date",
+            )
+            official_next = _mapping(
+                latest_week.get("next_week"),
+                "payload.weekly[-1].next_week",
+            )
+            official_target = _iso_date(
+                official_next.get("date"),
+                "payload.weekly[-1].next_week.date",
+            )
+            forecast_rows = _sequence(
+                latest_week.get("model_forecasts"),
+                "payload.weekly[-1].model_forecasts",
+                nonempty=True,
+            )
+            operating_rows = [
+                _mapping(row, "payload.weekly[-1].model_forecasts[]")
+                for row in forecast_rows
+                if isinstance(row, Mapping)
+                and row.get("model") == operating_champion
+            ]
+            if len(operating_rows) != 1:
+                raise V5ContractError(
+                    f"{context} operating champion forecast is not unique"
+                )
+            operating_row = operating_rows[0]
+            operating_target = _iso_date(
+                operating_row.get("date"),
+                "payload.weekly[-1].model_forecasts[operating].date",
+            )
+            if operating_target != official_target:
+                raise V5ContractError(
+                    f"{context} operating champion target differs from next_week"
+                )
+            if (
+                validated_current_signal["origin_date"] != latest_origin
+                or validated_current_signal["target_week"] != operating_target
+                or validated_current_signal["forecast_model"]
+                != operating_champion
+                or allocation.get("forecast_model") != operating_champion
+                or allocation.get("latest_signal_origin")
+                != latest_origin.isoformat()
+            ):
+                raise V5ContractError(
+                    f"{context} current signal/allocation payload binding is invalid"
+                )
+            eastern = ZoneInfo("America/New_York")
+            forecast_origin = _iso_datetime(
+                forecast.get("origin_at"),
+                "payload.forecast.origin_at",
+            )
+            forecast_target = _iso_datetime(
+                forecast.get("target_at"),
+                "payload.forecast.target_at",
+            )
+            if (
+                forecast_origin.astimezone(eastern).date() != latest_origin
+                or forecast_target.astimezone(eastern).date() != operating_target
+            ):
+                raise V5ContractError(
+                    f"{context} current signal dates differ from forecast envelope"
+                )
+            raw_forecast_decision = forecast.get("decision_at")
+            expected_decision = (
+                generated_at
+                if raw_forecast_decision is None
+                else _iso_datetime(
+                    raw_forecast_decision,
+                    "payload.forecast.decision_at",
+                )
+            )
+            if validated_current_signal["decision_at"] != expected_decision:
+                raise V5ContractError(
+                    f"{context} current signal decision differs from forecast"
+                )
+            probabilities = _mapping(
+                operating_row.get("probabilities"),
+                "payload.weekly[-1].model_forecasts[operating].probabilities",
+            )
+            if set(probabilities) != set(STATE_ORDER):
+                raise V5ContractError(
+                    f"{context} operating champion probabilities are invalid"
+                )
+            try:
+                weight_mapping = load_decision_shadow_spec()[
+                    "probability_weight_mapping"
+                ]
+            except (OSError, TypeError, ValueError, KeyError) as exc:
+                raise V5ContractError(
+                    f"{context} local weight mapping is invalid"
+                ) from exc
+            if latest_weights is None:
+                raise V5ContractError(
+                    f"{context} current operating forecast lacks target weights"
+                )
+            probability_values = {
+                state: _number(
+                    probabilities[state],
+                    f"payload.weekly[-1].model_forecasts[operating]."
+                    f"probabilities.{state}",
+                )
+                for state in STATE_ORDER
+            }
+            probability_total = sum(probability_values.values())
+            expected_weights = {
+                asset: sum(
+                    probability_values[state]
+                    / probability_total
+                    * float(weight_mapping[state][asset])
+                    for state in STATE_ORDER
+                )
+                for asset in ("SPY", "TLT")
+            }
+            if any(
+                not math.isclose(
+                    float(latest_weights[asset]),
+                    expected_weights[asset],
+                    abs_tol=1e-8,
+                )
+                for asset in ("SPY", "TLT")
+            ):
+                raise V5ContractError(
+                    f"{context} latest target weights differ from operating forecast"
+                )
     strategies = _mapping(
         historical.get("strategies"),
         f"{context}.historical_reconstructed_shadow.strategies",
@@ -2995,39 +3819,249 @@ def _validate_decision_shadow(research: Mapping[str, Any]) -> None:
         "vol_target_60_40",
     }:
         raise V5ContractError(f"{context} benchmark set is invalid")
+    metric_fields = {
+        "weeks",
+        "cumulative_return",
+        "annualized_return",
+        "annualized_volatility",
+        "sharpe",
+        "certainty_equivalent_return",
+        "maximum_drawdown",
+        "annualized_turnover",
+        "gross_cumulative_return",
+        "transaction_cost_bps",
+    }
+    transaction_cost_field = (
+        "transaction_cost_rate_sum" if is_v2 else "total_transaction_cost"
+    )
+    metric_fields.add(transaction_cost_field)
+    common_weeks: int | None = None
+    common_transaction_cost_bps: float | None = None
     for name, raw_metrics in strategies.items():
-        metrics = _mapping(raw_metrics, f"{context}.strategies.{name}")
-        _integer(metrics.get("weeks"), f"{context}.strategies.{name}.weeks")
+        metrics_context = f"{context}.strategies.{name}"
+        metrics = _mapping(raw_metrics, metrics_context)
+        if set(metrics) != metric_fields:
+            raise V5ContractError(f"{metrics_context} fields are invalid")
+        weeks = _integer(metrics.get("weeks"), f"{metrics_context}.weeks")
+        if common_weeks is None:
+            common_weeks = weeks
+        elif weeks != common_weeks:
+            raise V5ContractError(f"{context} strategy weeks are inconsistent")
         for field in (
-            "cumulative_return",
             "annualized_return",
             "annualized_volatility",
             "sharpe",
             "certainty_equivalent_return",
             "maximum_drawdown",
-            "annualized_turnover",
-            "gross_cumulative_return",
-            "total_transaction_cost",
-            "transaction_cost_bps",
         ):
-            _optional_number(metrics.get(field), f"{context}.strategies.{name}.{field}")
+            _optional_number(metrics.get(field), f"{metrics_context}.{field}")
+        annualized_turnover = _optional_number(
+            metrics.get("annualized_turnover"),
+            f"{metrics_context}.annualized_turnover",
+            minimum=0.0,
+        )
+        transaction_cost_sum = _number(
+            metrics.get(transaction_cost_field),
+            f"{metrics_context}.{transaction_cost_field}",
+            minimum=0.0,
+        )
+        transaction_cost_bps = _number(
+            metrics.get("transaction_cost_bps"),
+            f"{metrics_context}.transaction_cost_bps",
+            minimum=0.0,
+        )
+        if common_transaction_cost_bps is None:
+            common_transaction_cost_bps = transaction_cost_bps
+        elif transaction_cost_bps != common_transaction_cost_bps:
+            raise V5ContractError(
+                f"{context} strategy transaction_cost_bps are inconsistent"
+            )
+        if transaction_cost_bps != 10.0:
+            raise V5ContractError(
+                f"{metrics_context}.transaction_cost_bps differs from spec"
+            )
+        net_cumulative = _optional_number(
+            metrics.get("cumulative_return"), f"{metrics_context}.cumulative_return"
+        )
+        gross_cumulative = _optional_number(
+            metrics.get("gross_cumulative_return"),
+            f"{metrics_context}.gross_cumulative_return",
+        )
+        if (net_cumulative is None) != (gross_cumulative is None):
+            raise V5ContractError(
+                f"{metrics_context} net/gross cumulative return nullability differs"
+            )
+        if (
+            net_cumulative is not None
+            and gross_cumulative is not None
+            and net_cumulative > gross_cumulative
+        ):
+            raise V5ContractError(
+                f"{metrics_context}.cumulative_return exceeds gross_cumulative_return"
+            )
+        if weeks == 0:
+            if annualized_turnover is not None or not math.isclose(
+                transaction_cost_sum,
+                0.0,
+                abs_tol=1e-12,
+            ):
+                raise V5ContractError(
+                    f"{metrics_context} empty metrics have non-empty turnover/cost"
+                )
+        elif net_cumulative is None or annualized_turnover is None:
+            raise V5ContractError(f"{metrics_context} populated metrics are incomplete")
+    assert common_weeks is not None
+    if is_v2:
+        if common_weeks == 0:
+            if evaluation_start is not None or evaluation_end is not None:
+                raise V5ContractError(f"{context} empty evaluation has date bounds")
+        else:
+            if evaluation_start is None or evaluation_end is None:
+                raise V5ContractError(f"{context} populated evaluation lacks date bounds")
+            expected_weeks = (evaluation_end - evaluation_start).days // 7 + 1
+            if (
+                (evaluation_end - evaluation_start).days % 7 != 0
+                or expected_weeks != common_weeks
+            ):
+                raise V5ContractError(
+                    f"{context} evaluation bounds do not match strategy weeks"
+                )
+    expected_historical_status = (
+        "completed"
+        if common_weeks >= minimum_evaluation_weeks
+        else "insufficient_history"
+    )
+    if historical.get("status") != expected_historical_status:
+        raise V5ContractError(f"{context} historical status is inconsistent")
     prospective = _mapping(
         shadow.get("prospective_ledger"), f"{context}.prospective_ledger"
     )
+    expected_prospective_fields = {
+        "status",
+        "evidence_track",
+        "ledger_entry_count",
+        "realized_evaluation_count",
+        "affects_official_forecast",
+        "affects_champion_selection",
+    }
+    if is_v2:
+        expected_prospective_fields.update(
+            {
+                "pending_evaluation_count",
+                "unresolved_due_evaluation_count",
+                "partial_evaluation_count",
+                "evaluation_manifest_sha256",
+                "performance",
+            }
+        )
+    if set(prospective) != expected_prospective_fields:
+        raise V5ContractError(f"{context} prospective fields are invalid")
     if (
         prospective.get("evidence_track") != "operational_oos"
         or prospective.get("affects_official_forecast") is not False
         or prospective.get("affects_champion_selection") is not False
     ):
         raise V5ContractError(f"{context} prospective isolation is invalid")
-    _integer(
+    ledger_entry_count = _integer(
         prospective.get("ledger_entry_count"),
         f"{context}.prospective_ledger.ledger_entry_count",
     )
-    _integer(
+    realized_evaluation_count = _integer(
         prospective.get("realized_evaluation_count"),
         f"{context}.prospective_ledger.realized_evaluation_count",
     )
+    if realized_evaluation_count > ledger_entry_count:
+        raise V5ContractError(f"{context} prospective ledger counts are inconsistent")
+    ledger_status = prospective.get("status")
+    if is_v2:
+        pending_count = _integer(
+            prospective.get("pending_evaluation_count"),
+            f"{context}.prospective_ledger.pending_evaluation_count",
+        )
+        unresolved_count = _integer(
+            prospective.get("unresolved_due_evaluation_count"),
+            f"{context}.prospective_ledger.unresolved_due_evaluation_count",
+        )
+        partial_count = _integer(
+            prospective.get("partial_evaluation_count"),
+            f"{context}.prospective_ledger.partial_evaluation_count",
+        )
+        _sha256(
+            prospective.get("evaluation_manifest_sha256"),
+            f"{context}.prospective_ledger.evaluation_manifest_sha256",
+        )
+        if (
+            pending_count + unresolved_count + realized_evaluation_count + partial_count
+            != ledger_entry_count
+        ):
+            raise V5ContractError(
+                f"{context} prospective ledger counts are inconsistent"
+            )
+        expected_status = (
+            "completed"
+            if ledger_entry_count > 0
+            and realized_evaluation_count == ledger_entry_count
+            else "pending"
+            if pending_count == ledger_entry_count
+            else "partial"
+        )
+        if ledger_status != expected_status:
+            raise V5ContractError(f"{context} prospective status is inconsistent")
+        _validate_prospective_performance(
+            prospective.get("performance"),
+            context=f"{context}.prospective_ledger.performance",
+            ledger_status=str(ledger_status),
+            realized_count=realized_evaluation_count,
+        )
+        if forecast is not None:
+            public_ledger = forecast.get("prospective_ledger")
+            if (
+                isinstance(public_ledger, Mapping)
+                and public_ledger.get("schema_version")
+                == "regime-prospective-ledger-summary/2"
+            ):
+                expected_copy = {
+                    "status": (
+                        "pending"
+                        if public_ledger.get("status") == "empty"
+                        else public_ledger.get("status")
+                    ),
+                    "ledger_entry_count": public_ledger.get("entry_count"),
+                    "pending_evaluation_count": public_ledger.get(
+                        "pending_evaluation_count"
+                    ),
+                    "unresolved_due_evaluation_count": public_ledger.get(
+                        "unresolved_due_evaluation_count"
+                    ),
+                    "realized_evaluation_count": public_ledger.get(
+                        "realized_evaluation_count"
+                    ),
+                    "partial_evaluation_count": public_ledger.get(
+                        "partial_evaluation_count"
+                    ),
+                    "evaluation_manifest_sha256": public_ledger.get(
+                        "evaluation_manifest_sha256"
+                    ),
+                    "performance": public_ledger.get("performance"),
+                }
+                if any(prospective.get(key) != value for key, value in expected_copy.items()):
+                    raise V5ContractError(
+                        f"{context} prospective ledger differs from forecast summary"
+                    )
+        return
+    if ledger_status == "awaiting_realized_targets":
+        status_is_consistent = (
+            ledger_entry_count == 0 and realized_evaluation_count == 0
+        )
+    elif ledger_status == "ledger_recorded_outcomes_pending":
+        status_is_consistent = (
+            ledger_entry_count > 0
+            and realized_evaluation_count < ledger_entry_count
+        )
+    else:
+        raise V5ContractError(f"{context} prospective status is invalid")
+    if not status_is_consistent:
+        raise V5ContractError(f"{context} prospective status/counts are inconsistent")
 
 
 def _validate_label_sensitivity(research: Mapping[str, Any], label: Mapping[str, Any]) -> None:
@@ -3197,9 +4231,11 @@ def validate_v5_payload(payload: Mapping[str, Any]) -> None:
     # in their selection evidence is reported at its narrowest contract edge.
     if is_reviewed_publication:
         _validate_publication_review(meta, model, mode=str(mode), payload=payload)
-    _validate_selection_contract(
-        _require(payload, "selection", "payload"), model
+    selection = _mapping(
+        _require(payload, "selection", "payload"),
+        "payload.selection",
     )
+    _validate_selection_contract(selection, model)
     forecast_comparison_models = _validate_forecast_comparison(model)
     if not is_reviewed_publication:
         _validate_publication_review(meta, model, mode=str(mode), payload=payload)
@@ -3445,7 +4481,11 @@ def validate_v5_payload(payload: Mapping[str, Any]) -> None:
         expected_resamples=expected_outcome_resamples,
     )
     _validate_decision_shadow(
-        _mapping(_require(payload, "research", "payload"), "payload.research")
+        _mapping(_require(payload, "research", "payload"), "payload.research"),
+        latest_week=_mapping(weekly[-1], "payload.weekly[-1]"),
+        forecast=_mapping(payload["forecast"], "payload.forecast"),
+        operating_champion=str(selection["operating_champion"]),
+        generated_at=generated_at,
     )
     _validate_label_sensitivity(
         _mapping(_require(payload, "research", "payload"), "payload.research"),
