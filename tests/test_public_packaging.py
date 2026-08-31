@@ -596,6 +596,62 @@ def _write_v5_comparison(tmp_path: Path, payload_path: Path, report: dict | None
     return path
 
 
+def test_v5_comparison_accepts_empty_fx_evidence_when_shadow_is_not_evaluated(
+    tmp_path: Path,
+) -> None:
+    payload_path = _minimal_live_payload(
+        tmp_path,
+        result_version=package_public_demo.V5_RESULT_VERSION,
+    )
+    report = _v5_comparison(payload_path)
+    payload = json.loads(payload_path.read_text(encoding="utf-8"))
+    fx = payload["model"]["fx_ablation"]
+    fx.update(
+        {
+            "status": "insufficient_history",
+            "status_reason": "eligible_common_weeks_below_156",
+            "common_evaluation_origins": {
+                "count": 0,
+                "first_origin": None,
+                "last_origin": None,
+                "sha256": None,
+                "rows": [],
+            },
+            "variant_metrics": [],
+            "gate": {"comparisons": [], "passed_variants": []},
+        }
+    )
+    fx_record = payload["model"]["research_artifacts"]["fx_ablation_oos"]
+    fx_record["row_count"] = 0
+    payload_raw = _json_bytes(payload)
+    report["inputs"]["v5"]["regime_results"]["sha256"] = hashlib.sha256(
+        payload_raw
+    ).hexdigest()
+    report["inputs"]["v5"]["fx_ablation_oos"] = dict(fx_record)
+    report["fx_ablation"] = {
+        "comparison_status": "unavailable",
+        "reason": "eligible_common_weeks_below_156",
+        "source_status": "insufficient_history",
+    }
+
+    publication_contract.validate_v5_comparison_sidecar(
+        report,
+        payload=payload,
+        payload_raw=payload_raw,
+    )
+
+    report["inputs"]["v5"]["fx_ablation_oos"]["row_count"] = 1
+    with pytest.raises(
+        publication_contract.PublicContractError,
+        match="fx_ablation_oos.row_count must be integer zero",
+    ):
+        publication_contract.validate_v5_comparison_sidecar(
+            report,
+            payload=payload,
+            payload_raw=payload_raw,
+        )
+
+
 def test_v5_comparison_binds_non_markov_champion_gate_row(tmp_path: Path) -> None:
     payload_path = _minimal_live_payload(
         tmp_path,

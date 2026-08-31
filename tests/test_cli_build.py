@@ -435,8 +435,29 @@ def test_v5_live_build_forwards_preflight_fingerprint_and_private_checkpoint(
         ),
     )
     monkeypatch.setattr(data_module, "SQLiteSnapshotStore", DummyStore)
+    archive_client = object()
+    h10_client = object()
+    monkeypatch.setattr(data_module, "H10ArchiveClient", lambda: archive_client)
+    monkeypatch.setattr(data_module, "H10Client", lambda: h10_client)
+    h10_calls: list[str] = []
 
-    def refresh_h10(*_args, **_kwargs):
+    def refresh_h10_archive(_store, actual_client, **kwargs):
+        assert actual_client is archive_client
+        assert kwargs["as_of"] == TARGET
+        h10_calls.append("archive")
+        return object()
+
+    monkeypatch.setattr(
+        h10_store_module,
+        "refresh_h10_archive_store",
+        refresh_h10_archive,
+    )
+
+    def refresh_h10(_store, actual_client, **kwargs):
+        assert actual_client is h10_client
+        assert kwargs["as_of"] == TARGET
+        assert h10_calls == ["archive"]
+        h10_calls.append("current")
         pending = json.loads(report.read_text(encoding="utf-8"))
         assert pending["ready_for_training"] is False
         assert pending["overall_health"] == "pending"
@@ -496,6 +517,7 @@ def test_v5_live_build_forwards_preflight_fingerprint_and_private_checkpoint(
     ]
     assert receipt["sources"][-1]["status"] == "ok"
     assert receipt["sources"][-1]["issues"] == []
+    assert h10_calls == ["archive", "current"]
 
 
 def test_v5_h10_degradation_updates_report_and_stops_before_analysis(
@@ -530,6 +552,12 @@ def test_v5_h10_degradation_updates_report_and_stops_before_analysis(
         lambda *_args, **_kwargs: _ready_collection(database),
     )
     monkeypatch.setattr(data_module, "SQLiteSnapshotStore", DummyStore)
+    monkeypatch.setattr(data_module, "H10ArchiveClient", object)
+    monkeypatch.setattr(
+        h10_store_module,
+        "refresh_h10_archive_store",
+        lambda *_args, **_kwargs: object(),
+    )
     monkeypatch.setattr(
         h10_store_module,
         "refresh_h10_store",
@@ -611,6 +639,12 @@ def test_v5_h10_exception_records_unavailable_before_propagating(
         lambda *_args, **_kwargs: _ready_collection(database),
     )
     monkeypatch.setattr(data_module, "SQLiteSnapshotStore", DummyStore)
+    monkeypatch.setattr(data_module, "H10ArchiveClient", object)
+    monkeypatch.setattr(
+        h10_store_module,
+        "refresh_h10_archive_store",
+        lambda *_args, **_kwargs: object(),
+    )
 
     def fail_refresh(*_args, **_kwargs):
         raise RuntimeError("H.10 endpoint unavailable")

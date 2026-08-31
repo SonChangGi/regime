@@ -303,6 +303,7 @@ def _validate_artifact_record(
     context: str,
     expected_path: str,
     require_row_count: bool,
+    allow_zero_row_count: bool = False,
 ) -> dict[str, Any]:
     record = _require_object(value, context=context)
     expected_keys = {"path", "sha256"}
@@ -313,7 +314,15 @@ def _validate_artifact_record(
         raise PublicContractError(f"{context}.path is invalid")
     _require_sha256(record["sha256"], context=f"{context}.sha256")
     if require_row_count:
-        _require_positive_integer(record["row_count"], context=f"{context}.row_count")
+        if allow_zero_row_count:
+            if type(record["row_count"]) is not int or record["row_count"] < 0:
+                raise PublicContractError(
+                    f"{context}.row_count must be a non-negative integer"
+                )
+        else:
+            _require_positive_integer(
+                record["row_count"], context=f"{context}.row_count"
+            )
     return record
 
 
@@ -394,6 +403,11 @@ def _validate_v5_comparison_inputs(
         model.get("research_artifacts"),
         context="V5 payload.model.research_artifacts",
     )
+    fx_ablation = _require_object(
+        model.get("fx_ablation"),
+        context="V5 payload.model.fx_ablation",
+    )
+    fx_status = fx_ablation.get("status")
     bindings = (
         (
             "fx_ablation_oos",
@@ -417,7 +431,21 @@ def _validate_v5_comparison_inputs(
             context=f"V5 comparison.inputs.v5.{field}",
             expected_path=expected_path,
             require_row_count=True,
+            allow_zero_row_count=(field == "fx_ablation_oos"),
         )
+        if field == "fx_ablation_oos":
+            if fx_status == "evaluated":
+                _require_positive_integer(
+                    record["row_count"],
+                    context="V5 comparison.inputs.v5.fx_ablation_oos.row_count",
+                )
+            elif fx_status in {"unavailable", "insufficient_history"}:
+                _require_zero_integer(
+                    record["row_count"],
+                    context="V5 comparison.inputs.v5.fx_ablation_oos.row_count",
+                )
+            else:
+                raise PublicContractError("V5 payload FX ablation status is invalid")
         if not isinstance(payload_record, dict) or record != payload_record:
             raise PublicContractError(
                 f"V5 comparison {field} record does not match the payload manifest"
@@ -633,6 +661,46 @@ def _validate_fx_comparison(
 ) -> None:
     context = "V5 comparison.fx_ablation"
     summary = _require_object(value, context=context)
+    model = _require_object(payload.get("model"), context="V5 payload.model")
+    ablation = _require_object(
+        model.get("fx_ablation"),
+        context="V5 payload.model.fx_ablation",
+    )
+    status = ablation.get("status")
+    if status in {"unavailable", "insufficient_history"}:
+        _require_exact_keys(
+            summary,
+            {"comparison_status", "reason", "source_status"},
+            context=context,
+        )
+        reason = ablation.get("status_reason")
+        if (
+            summary.get("comparison_status") != "unavailable"
+            or summary.get("source_status") != status
+            or not isinstance(reason, str)
+            or not reason
+            or summary.get("reason") != reason
+        ):
+            raise PublicContractError(
+                "V5 comparison FX unavailable state does not match payload"
+            )
+        gate = _require_object(ablation.get("gate"), context="V5 payload FX gate")
+        origins = _require_object(
+            ablation.get("common_evaluation_origins"),
+            context="V5 payload FX common origins",
+        )
+        if (
+            ablation.get("promotion_allowed") is not False
+            or ablation.get("core_champion_promoted") is not False
+            or ablation.get("variant_metrics") != []
+            or gate.get("passed_variants") != []
+            or origins.get("count") != 0
+        ):
+            raise PublicContractError(
+                "V5 comparison FX unavailable state is inconsistent"
+            )
+        return
+
     _require_exact_keys(
         summary,
         {
@@ -646,15 +714,10 @@ def _validate_fx_comparison(
         },
         context=context,
     )
-    model = _require_object(payload.get("model"), context="V5 payload.model")
-    ablation = _require_object(
-        model.get("fx_ablation"),
-        context="V5 payload.model.fx_ablation",
-    )
     if (
         summary.get("comparison_status") != "evaluated"
-        or summary.get("source_status") != ablation.get("status")
-        or ablation.get("status") != "evaluated"
+        or summary.get("source_status") != status
+        or status != "evaluated"
         or summary.get("aggregate_crosscheck") is not True
         or summary.get("payload_gate_metric_crosscheck") is not True
         or summary.get("interpretation")

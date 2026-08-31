@@ -1508,16 +1508,31 @@ def command_build(args: argparse.Namespace) -> int:
             h10_source = None
             additional_operational_records: tuple[object, ...] = ()
             if contract_version == "v5":
-                from regime_lab.data import H10Client, SQLiteSnapshotStore
-                from regime_lab.h10_store import refresh_h10_store
+                from regime_lab.data import (
+                    H10ArchiveClient,
+                    H10Client,
+                    SQLiteSnapshotStore,
+                )
+                from regime_lab.h10_store import (
+                    refresh_h10_archive_store,
+                    refresh_h10_store,
+                )
 
-                print("Federal Reserve H.10 FX snapshot 갱신", flush=True)
+                print("Federal Reserve H.10 공식 아카이브 갱신", flush=True)
                 try:
                     with SQLiteSnapshotStore(database) as h10_store:
+                        h10_requested_at = datetime.now(timezone.utc)
+                        refresh_h10_archive_store(
+                            h10_store,
+                            H10ArchiveClient(),
+                            requested_at=h10_requested_at,
+                            as_of=expected_cutoff,
+                        )
+                        print("Federal Reserve H.10 FX snapshot 갱신", flush=True)
                         h10_refresh = refresh_h10_store(
                             h10_store,
                             H10Client(),
-                            requested_at=datetime.now(timezone.utc),
+                            requested_at=h10_requested_at,
                             as_of=expected_cutoff,
                         )
                 except Exception:
