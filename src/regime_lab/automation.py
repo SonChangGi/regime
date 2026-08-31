@@ -24,6 +24,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from typing import Any, Callable, Iterator, Mapping, Sequence
 import uuid
@@ -653,8 +654,11 @@ def _run(
     timeout: float | None = None,
     heartbeat: Callable[[], None] | None = None,
     heartbeat_interval: float = 120.0,
+    output_activity: Callable[[], None] | None = None,
     env: Mapping[str, str] | None = None,
 ) -> bytes:
+    if capture and output_activity is not None:
+        raise AutomationError("captured commands cannot stream output activity")
     process_env = None
     if env is not None:
         process_env = os.environ.copy()
@@ -681,41 +685,85 @@ def _run(
             list(args),
             cwd=cwd,
             stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE if capture else None,
+            stdout=subprocess.PIPE if capture or output_activity is not None else None,
             stderr=subprocess.PIPE if capture else None,
             env=process_env,
             start_new_session=True,
         )
-        deadline = time.monotonic() + timeout if timeout is not None else None
-        while True:
-            wait_for = heartbeat_interval
-            if deadline is not None:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    process.kill()
-                    process.wait()
-                    label = Path(args[0]).name if args else "command"
-                    raise AutomationError(
-                        f"{label} timed out after {timeout:g} seconds"
-                    )
-                wait_for = min(wait_for, remaining)
-            try:
-                stdout, stderr = process.communicate(timeout=wait_for)
-                break
-            except subprocess.TimeoutExpired:
-                try:
-                    heartbeat()
-                except BaseException:
+        output_reader: threading.Thread | None = None
+        if output_activity is not None:
+            assert process.stdout is not None
+
+            def forward_stdout() -> None:
+                binary_stdout = getattr(sys.stdout, "buffer", None)
+                while True:
                     try:
-                        os.killpg(process.pid, signal.SIGTERM)
-                        process.wait(timeout=10)
-                    except (ProcessLookupError, subprocess.TimeoutExpired):
+                        line = process.stdout.readline()
+                    except (OSError, ValueError):
+                        break
+                    if not line:
+                        break
+                    output_activity()
+                    try:
+                        if binary_stdout is not None:
+                            binary_stdout.write(line)
+                            binary_stdout.flush()
+                        else:
+                            sys.stdout.write(line.decode("utf-8", errors="replace"))
+                            sys.stdout.flush()
+                    except (BrokenPipeError, OSError, ValueError):
+                        # Continue draining the pipe so the child cannot block.
+                        pass
+
+            output_reader = threading.Thread(
+                target=forward_stdout,
+                name="regime-child-stdout",
+                daemon=True,
+            )
+            output_reader.start()
+        deadline = time.monotonic() + timeout if timeout is not None else None
+        try:
+            while True:
+                wait_for = heartbeat_interval
+                if deadline is not None:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
                         try:
                             os.killpg(process.pid, signal.SIGKILL)
                         except ProcessLookupError:
                             pass
                         process.wait()
-                    raise
+                        label = Path(args[0]).name if args else "command"
+                        raise AutomationError(
+                            f"{label} timed out after {timeout:g} seconds"
+                        )
+                    wait_for = min(wait_for, remaining)
+                try:
+                    if output_activity is None:
+                        stdout, stderr = process.communicate(timeout=wait_for)
+                    else:
+                        process.wait(timeout=wait_for)
+                        stdout, stderr = b"", b""
+                    break
+                except subprocess.TimeoutExpired:
+                    try:
+                        heartbeat()
+                    except BaseException:
+                        try:
+                            os.killpg(process.pid, signal.SIGTERM)
+                            process.wait(timeout=10)
+                        except (ProcessLookupError, subprocess.TimeoutExpired):
+                            try:
+                                os.killpg(process.pid, signal.SIGKILL)
+                            except ProcessLookupError:
+                                pass
+                            process.wait()
+                        raise
+        finally:
+            if output_reader is not None:
+                output_reader.join(timeout=10)
+            if process.stdout is not None and output_activity is not None:
+                process.stdout.close()
         completed = subprocess.CompletedProcess(
             list(args), process.returncode, stdout or b"", stderr or b""
         )
@@ -996,6 +1044,7 @@ def _heartbeat_status(
             if (
                 document.get("completed_origins") != new_completed
                 or document.get("total_origins") != new_total
+                or progress.get("activity_detected") is True
             ):
                 document["last_progress_at"] = now
             document["completed_origins"] = new_completed
@@ -2336,10 +2385,19 @@ def _build_candidate(
     settings.reviewed_selection_family_path.unlink(missing_ok=True)
 
     last_progress_count: int | None = None
-    last_progress_monotonic = time.monotonic()
+    initial_progress_monotonic = time.monotonic()
+    last_checkpoint_progress_monotonic = initial_progress_monotonic
+    last_child_activity_monotonic = initial_progress_monotonic
+    last_reported_child_activity_monotonic = initial_progress_monotonic
+
+    def note_child_activity() -> None:
+        nonlocal last_child_activity_monotonic
+        last_child_activity_monotonic = time.monotonic()
 
     def heartbeat() -> None:
-        nonlocal last_progress_count, last_progress_monotonic
+        nonlocal last_checkpoint_progress_monotonic, last_progress_count
+        nonlocal last_reported_child_activity_monotonic
+        heartbeat_monotonic = time.monotonic()
         report = _load_collection_report(settings, target=target)
         stage = "train_models" if report and report.get("ready_for_training") else "collect_live_data"
         progress = (
@@ -2351,11 +2409,26 @@ def _build_candidate(
             completed = int(progress["completed_origins"])
             if completed != last_progress_count:
                 last_progress_count = completed
-                last_progress_monotonic = time.monotonic()
+                last_checkpoint_progress_monotonic = heartbeat_monotonic
+        child_activity_detected = (
+            last_child_activity_monotonic
+            > last_reported_child_activity_monotonic
+        )
+        if child_activity_detected:
+            last_reported_child_activity_monotonic = last_child_activity_monotonic
+            if progress is not None:
+                progress = dict(progress)
+                progress["activity_detected"] = True
+                if progress.get("current_model") is None:
+                    progress["current_model"] = "post_base_analysis"
         _heartbeat_status(settings, stage=stage, progress=progress)
         if (
             stage == "train_models"
-            and time.monotonic() - last_progress_monotonic
+            and heartbeat_monotonic
+            - max(
+                last_checkpoint_progress_monotonic,
+                last_child_activity_monotonic,
+            )
             > settings.no_progress_timeout.total_seconds()
         ):
             raise AutomationError(
@@ -2403,6 +2476,7 @@ def _build_candidate(
             cwd=settings.root,
             heartbeat=heartbeat if started_at is not None else None,
             heartbeat_interval=settings.heartbeat_interval.total_seconds(),
+            output_activity=note_child_activity if started_at is not None else None,
         )
         if started_at is not None:
             _heartbeat_status(

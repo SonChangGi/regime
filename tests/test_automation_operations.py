@@ -748,6 +748,30 @@ def test_run_emits_heartbeats_while_subprocess_is_alive(tmp_path: Path) -> None:
     assert len(beats) >= 2
 
 
+def test_run_streams_child_stdout_and_reports_activity(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    activity: list[bool] = []
+
+    output = automation._run(
+        [
+            sys.executable,
+            "-u",
+            "-c",
+            "import time; print('post-base progress', flush=True); time.sleep(0.08)",
+        ],
+        cwd=tmp_path,
+        heartbeat=lambda: None,
+        heartbeat_interval=0.02,
+        output_activity=lambda: activity.append(True),
+    )
+
+    assert output == b""
+    assert activity
+    assert "post-base progress" in capsys.readouterr().out
+
+
 def test_database_lock_receipt_is_retryable_instead_of_permanently_blocked(
     tmp_path: Path,
 ) -> None:

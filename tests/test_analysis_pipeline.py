@@ -49,6 +49,52 @@ def _minimal_weekly_dataset(rows: int = 700) -> WeeklyDataset:
     )
 
 
+def test_selection_diagnostics_derive_differences_from_serialized_metrics() -> None:
+    table = pd.DataFrame(
+        [
+            {
+                "model": "challenger",
+                "reference_model": "markov",
+                "selected": True,
+                "gate_passed": True,
+                "gate_reason": "passed",
+                "log_loss": 0.234567894,
+                "reference_log_loss": 0.345678905,
+                "absolute_log_loss_improvement": 0.345678905 - 0.234567894,
+                "brier": 0.123456784,
+                "reference_brier": 0.234567895,
+                "brier_difference": 0.123456784 - 0.234567895,
+                "fallback_count": 0,
+                "n_predictions": 52,
+                "bootstrap_block_weeks": 4,
+                "bootstrap_effective_block_weeks": 4,
+                "bootstrap_resamples": 1_999,
+                "bootstrap_seed": 17,
+                "raw_p_value": 0.01,
+                "holm_adjusted_p_value": 0.02,
+                "alpha": 0.05,
+                "minimum_log_loss_improvement": 0.01,
+                "brier_tolerance": 0.0,
+            }
+        ]
+    )
+
+    row = pipeline._selection_diagnostic_rows(table)[0]
+
+    np.testing.assert_allclose(
+        row["absolute_log_loss_improvement"],
+        row["reference_log_loss"] - row["log_loss"],
+        atol=1e-10,
+        rtol=0.0,
+    )
+    np.testing.assert_allclose(
+        row["brier_difference"],
+        row["brier"] - row["reference_brier"],
+        atol=1e-10,
+        rtol=0.0,
+    )
+
+
 def test_market_context_uses_scale_free_state_metrics_and_current_percentiles() -> None:
     index = pd.date_range("2024-01-05", periods=60, freq="W-FRI")
     position = np.arange(60, dtype=float)

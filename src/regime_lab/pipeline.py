@@ -398,10 +398,8 @@ def _selection_diagnostic_rows(table: pd.DataFrame | None) -> list[dict[str, Any
         for name in (
             "log_loss",
             "reference_log_loss",
-            "absolute_log_loss_improvement",
             "brier",
             "reference_brier",
-            "brier_difference",
             "raw_p_value",
             "holm_adjusted_p_value",
             "alpha",
@@ -409,6 +407,20 @@ def _selection_diagnostic_rows(table: pd.DataFrame | None) -> list[dict[str, Any
             "brier_tolerance",
         ):
             values[name] = _json_number(row.get(name))
+        log_loss = values["log_loss"]
+        reference_log_loss = values["reference_log_loss"]
+        values["absolute_log_loss_improvement"] = (
+            _json_number(reference_log_loss - log_loss)
+            if reference_log_loss is not None and log_loss is not None
+            else None
+        )
+        brier = values["brier"]
+        reference_brier = values["reference_brier"]
+        values["brier_difference"] = (
+            _json_number(brier - reference_brier)
+            if brier is not None and reference_brier is not None
+            else None
+        )
         for name in (
             "fallback_count",
             "n_predictions",

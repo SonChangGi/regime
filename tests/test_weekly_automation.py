@@ -255,6 +255,66 @@ def test_model_build_watchdog_fails_when_no_checkpoint_progress(
         )
 
 
+def test_model_build_watchdog_accepts_streamed_post_base_progress(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = replace(
+        _settings(tmp_path),
+        no_progress_timeout=timedelta(minutes=45),
+    )
+    monkeypatch.setattr(
+        automation,
+        "_load_collection_report",
+        lambda *_args, **_kwargs: {"ready_for_training": True},
+    )
+    monkeypatch.setattr(
+        automation,
+        "_walkforward_checkpoint_progress",
+        lambda *_args, **_kwargs: {
+            "completed_origins": 556,
+            "total_origins": 556,
+            "current_origin": None,
+            "current_model": None,
+        },
+    )
+    clock = [0.0]
+    monkeypatch.setattr(automation.time, "monotonic", lambda: clock[0])
+
+    def active_run(
+        *_args,
+        heartbeat=None,
+        output_activity=None,
+        **_kwargs,
+    ) -> bytes:
+        assert heartbeat is not None
+        assert output_activity is not None
+        heartbeat()
+        for elapsed in (46 * 60, 92 * 60):
+            clock[0] = float(elapsed)
+            output_activity()
+            heartbeat()
+        return b""
+
+    class ChildCompleted(RuntimeError):
+        pass
+
+    monkeypatch.setattr(automation, "_run", active_run)
+    monkeypatch.setattr(
+        automation,
+        "_candidate_context",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ChildCompleted()),
+    )
+
+    with pytest.raises(ChildCompleted):
+        automation._build_candidate(
+            settings,
+            target=LIVE_TARGET,
+            context=CANDIDATE_CONTEXT,
+            started_at=LIVE_TARGET,
+        )
+
+
 def test_runtime_authorization_drift_blocks_before_quota_or_build(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
