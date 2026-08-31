@@ -3,7 +3,7 @@
   "generation_id": "20260827T150939.045526Z",
   "payload": {
     "path": "publication/live/regime-results.json",
-    "payload_contract_sha256": "94cba7225ea360cd1ea3a07dd6d391f8babe02561e0fa2357cdf6f59a38ab9d3"
+    "payload_contract_sha256": "1ea72d1b3680b38558bf80f92f1bbc44e3d9a911b7a66b01bd15443d150caec0"
   },
   "comparison_sidecar": {
     "path": "publication/live/v5-vs-v4-comparison.json",
