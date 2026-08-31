@@ -13,6 +13,7 @@ KEYCHAIN_SERVICES: Mapping[str, str] = {
     "FRED_API_KEY": "regime-fred-api-key",
     "ALPHA_VANTAGE_API_KEY": "regime-alpha-vantage-api-key",
 }
+SECURITY_EXECUTABLE = "/usr/bin/security"
 
 
 class KeychainError(RuntimeError):
@@ -20,16 +21,23 @@ class KeychainError(RuntimeError):
 
 
 def read_keychain_secret(service: str, *, account: str | None = None) -> str:
-    command = ["security", "find-generic-password"]
+    command = [SECURITY_EXECUTABLE, "find-generic-password"]
     if account:
         command.extend(["-a", account])
     command.extend(["-s", service, "-w"])
-    completed = subprocess.run(
-        command,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
+    try:
+        completed = subprocess.run(
+            command,
+            check=False,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise KeychainError(
+            f"Keychain item cannot be read: service={service}"
+        ) from exc
     if completed.returncode != 0:
         raise KeychainError(f"Keychain item is unavailable: service={service}")
     secret = completed.stdout.rstrip("\r\n")
@@ -38,29 +46,68 @@ def read_keychain_secret(service: str, *, account: str | None = None) -> str:
     return secret
 
 
+def verify_provider_keychain_access(*, account: str | None = None) -> None:
+    """Read and validate every provider item without exposing its value."""
+
+    with provider_secrets_from_keychain(account=account):
+        pass
+
+
 def load_provider_secrets(*, account: str | None = None) -> dict[str, str]:
     # Try the explicit account first, then service-only lookup because Keychain
     # Access can assign a different account label without changing the secret.
     selected_account = getpass.getuser() if account is None else account
     values: dict[str, str] = {}
-    for env_name, service in KEYCHAIN_SERVICES.items():
-        try:
-            values[env_name] = read_keychain_secret(service, account=selected_account)
-        except KeychainError:
-            values[env_name] = read_keychain_secret(service)
+    try:
+        for env_name, service in KEYCHAIN_SERVICES.items():
+            try:
+                values[env_name] = read_keychain_secret(
+                    service,
+                    account=selected_account,
+                )
+            except KeychainError:
+                values[env_name] = read_keychain_secret(service)
+    except BaseException:
+        _clear_secret_mapping(values)
+        raise
     return values
 
 
+def _clear_secret_mapping(secrets: dict[str, str]) -> None:
+    for name in list(secrets):
+        secrets[name] = ""
+
+
 @contextmanager
-def provider_environment_from_keychain(
+def provider_secrets_from_keychain(
     *,
-    rights_acknowledged: bool,
     account: str | None = None,
-) -> Iterator[None]:
-    """Temporarily expose keys to provider constructors within this process."""
+) -> Iterator[dict[str, str]]:
+    """Load provider secrets once and clear retained references on exit."""
 
     secrets = load_provider_secrets(account=account)
-    updates = dict(secrets)
+    try:
+        yield secrets
+    finally:
+        _clear_secret_mapping(secrets)
+
+
+@contextmanager
+def provider_environment_from_secrets(
+    secrets: Mapping[str, str],
+    *,
+    rights_acknowledged: bool,
+) -> Iterator[None]:
+    """Temporarily expose already-validated provider keys to constructors."""
+
+    for env_name in KEYCHAIN_SERVICES:
+        value = secrets.get(env_name)
+        if not isinstance(value, str) or not value:
+            raise KeychainError(
+                f"Keychain item is empty: service={KEYCHAIN_SERVICES[env_name]}"
+            )
+    selected = {env_name: secrets[env_name] for env_name in KEYCHAIN_SERVICES}
+    updates = dict(selected)
     updates["ALFRED_ML_RIGHTS_ACK"] = "1" if rights_acknowledged else "0"
     previous = {name: os.environ.get(name) for name in updates}
     try:
@@ -72,6 +119,23 @@ def provider_environment_from_keychain(
                 os.environ.pop(name, None)
             else:
                 os.environ[name] = old_value
-        # Do not leave extra live references longer than the execution boundary.
-        for name in list(secrets):
-            secrets[name] = ""
+        for name in previous:
+            previous[name] = None
+        _clear_secret_mapping(selected)
+        _clear_secret_mapping(updates)
+
+
+@contextmanager
+def provider_environment_from_keychain(
+    *,
+    rights_acknowledged: bool,
+    account: str | None = None,
+) -> Iterator[None]:
+    """Temporarily expose keys to provider constructors within this process."""
+
+    with provider_secrets_from_keychain(account=account) as secrets:
+        with provider_environment_from_secrets(
+            secrets,
+            rights_acknowledged=rights_acknowledged,
+        ):
+            yield

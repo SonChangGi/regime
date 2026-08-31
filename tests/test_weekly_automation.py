@@ -138,6 +138,62 @@ def test_status_separates_health_check_from_full_pipeline_success(
     assert full["end_to_end_proven"] is True
 
 
+def test_status_marks_due_target_stale_until_matching_publication(
+    tmp_path: Path,
+) -> None:
+    settings = _settings(tmp_path)
+    old_target = datetime.fromisoformat("2026-08-21T20:00:00+00:00")
+    old_success = automation._status_document(
+        settings,
+        status="succeeded",
+        stage="already_current",
+        started_at=datetime.fromisoformat("2026-08-24T00:00:00+00:00"),
+        target=old_target,
+    )
+    automation.write_json_atomic(settings.status_path, old_success)
+
+    new_target = datetime.fromisoformat("2026-08-28T20:00:00+00:00")
+    failed = automation._status_document(
+        settings,
+        status="failed",
+        stage="failed",
+        started_at=datetime.fromisoformat("2026-08-31T06:17:00+00:00"),
+        target=new_target,
+    )
+
+    assert failed["public_data_as_of"] == old_target.isoformat()
+    assert failed["target_data_as_of"] == new_target.isoformat()
+    assert failed["publication_current"] is False
+
+
+def test_status_marks_two_week_stale_publication_false_before_new_cutoff_is_due(
+    tmp_path: Path,
+) -> None:
+    settings = _settings(tmp_path)
+    stale_target = datetime.fromisoformat("2026-08-14T20:00:00+00:00")
+    old_success = automation._status_document(
+        settings,
+        status="succeeded",
+        stage="already_current",
+        started_at=datetime.fromisoformat("2026-08-17T00:00:00+00:00"),
+        target=stale_target,
+    )
+    assert old_success["publication_current"] is True
+    automation.write_json_atomic(settings.status_path, old_success)
+
+    next_target = datetime.fromisoformat("2026-08-28T20:00:00+00:00")
+    not_due = automation._status_document(
+        settings,
+        status="skipped",
+        stage="not_due",
+        started_at=datetime.fromisoformat("2026-08-29T06:00:00+00:00"),
+        target=next_target,
+    )
+
+    assert not_due["public_data_as_of"] == stale_target.isoformat()
+    assert not_due["publication_current"] is False
+
+
 def test_checkpoint_progress_reports_completed_total_and_next_origin(
     tmp_path: Path,
 ) -> None:

@@ -44,7 +44,7 @@ from regime_lab.integrity import (
     canonical_json_sha256_v1,
     canonical_json_sha256_v1_without_generation_binding,
 )
-from regime_lab.keychain import KEYCHAIN_SERVICES
+from regime_lab.keychain import KEYCHAIN_SERVICES, verify_provider_keychain_access
 from regime_lab.path_safety import confined_mutable_path
 from regime_lab.provider_rights import (
     ProviderRightsError,
@@ -109,6 +109,7 @@ ALLOWED_REMOTE_DRIFT = frozenset(
     }
 )
 DEFAULT_RETRY_HOURS = (3, 9, 15, 21)
+TRANSIENT_RETRY_EARLY_GRACE = timedelta(minutes=5)
 HEALTH_SCHEMA_VERSION = 5
 GIT_NETWORK_TIMEOUT_SECONDS = 300.0
 GIT_NONINTERACTIVE_ENV = {
@@ -871,7 +872,14 @@ def _status_document(
         runtime_fingerprint_sha256 = build_runtime_fingerprint(settings.root)["sha256"]
     except RuntimeFingerprintError:
         runtime_fingerprint_sha256 = None
-    publication_current = bool(last_public_verification_at and public_data_as_of)
+    eligible_publication_cutoff = last_completed_week_cutoff(
+        started_at.astimezone(UTC) - settings.minimum_cutoff_age
+    )
+    publication_current = bool(
+        last_public_verification_at
+        and public_data_as_of
+        and public_data_as_of == eligible_publication_cutoff.isoformat()
+    )
     end_to_end_proven = bool(last_full_success_at)
     return {
         "schema_version": HEALTH_SCHEMA_VERSION,
@@ -1169,10 +1177,32 @@ def _recovery_fingerprint(settings: AutomationSettings) -> str:
         except OSError:
             digest.update(b"<missing>")
     if sys.platform == "darwin" and settings.root == project_root().resolve():
-        for service in sorted(KEYCHAIN_SERVICES.values()):
+        keychain_commands = [
+            (
+                "login-keychain",
+                [
+                    "/usr/bin/security",
+                    "show-keychain-info",
+                    str(Path.home() / "Library/Keychains/login.keychain-db"),
+                ],
+            ),
+            *(
+                (
+                    service,
+                    [
+                        "/usr/bin/security",
+                        "find-generic-password",
+                        "-s",
+                        service,
+                    ],
+                )
+                for service in sorted(KEYCHAIN_SERVICES.values())
+            ),
+        ]
+        for label, command in keychain_commands:
             try:
                 completed = subprocess.run(
-                    ["/usr/bin/security", "find-generic-password", "-s", service],
+                    command,
                     cwd=settings.root,
                     check=False,
                     stdin=subprocess.DEVNULL,
@@ -1183,7 +1213,7 @@ def _recovery_fingerprint(settings: AutomationSettings) -> str:
                 returncode: int | str = completed.returncode
             except (OSError, subprocess.TimeoutExpired):
                 returncode = "unavailable"
-            digest.update(f"{service}:{returncode}".encode("utf-8"))
+            digest.update(f"{label}:{returncode}".encode("utf-8"))
     return digest.hexdigest()
 
 
@@ -1191,7 +1221,7 @@ def _failure_policy(
     exc: BaseException,
     *,
     stage: str,
-    now: datetime,
+    attempt_started_at: datetime,
     settings: AutomationSettings,
 ) -> tuple[str, str, datetime | None]:
     if isinstance(exc, ScheduledRetry):
@@ -1215,14 +1245,22 @@ def _failure_policy(
         "backup",
     )
     if "ac power" in message:
-        return "ac_power_unavailable", "transient", now + settings.transient_retry_delay
+        return (
+            "ac_power_unavailable",
+            "transient",
+            attempt_started_at.astimezone(UTC) + settings.transient_retry_delay,
+        )
     if any(marker in message for marker in blocked_markers):
         return f"{stage}_blocked", "blocked", None
     if stage in {"collect_train_audit", "train_models", "audit_candidate"}:
         return "analysis_build_failed", "blocked", None
     if stage in {"publish_snapshot", "wait_for_pages", "deployment_recovery"}:
         return f"{stage}_failed", "resume", None
-    return f"{stage}_failed", "transient", now + settings.transient_retry_delay
+    return (
+        f"{stage}_failed",
+        "transient",
+        attempt_started_at.astimezone(UTC) + settings.transient_retry_delay,
+    )
 
 
 def _retry_guard(
@@ -1272,7 +1310,13 @@ def _retry_guard(
             next_retry = _parse_aware_datetime(raw_next, label="next_retry_at")
         except AutomationError:
             return None
-        if now < next_retry:
+        retry_grace = (
+            TRANSIENT_RETRY_EARLY_GRACE
+            if retry_class == "transient"
+            and error_code != "database_build_lock_busy"
+            else timedelta(0)
+        )
+        if now + retry_grace < next_retry:
             return _write_status(
                 settings,
                 status="skipped",
@@ -2163,13 +2207,16 @@ def _collection_failure(
     *,
     target: datetime,
     report: Mapping[str, Any],
+    attempt_started_at: datetime,
+    failure_at: datetime,
 ) -> ScheduledRetry:
+    retry_anchor = attempt_started_at.astimezone(UTC)
     if report.get("error_code") == "database_build_lock_busy":
         return ScheduledRetry(
             "another live build temporarily owns the snapshot database lock",
             error_code="database_build_lock_busy",
             retry_class="transient",
-            next_retry_at=datetime.now(UTC) + timedelta(minutes=30),
+            next_retry_at=failure_at.astimezone(UTC) + timedelta(minutes=30),
         )
     issues = [str(item) for item in report.get("issues", [])]
     if report.get("gate_error"):
@@ -2185,7 +2232,7 @@ def _collection_failure(
             "AC power was disconnected before model analysis",
             error_code="ac_power_unavailable",
             retry_class="transient",
-            next_retry_at=datetime.now(UTC) + settings.transient_retry_delay,
+            next_retry_at=retry_anchor + settings.transient_retry_delay,
         )
     if any(
         marker in normalized
@@ -2216,7 +2263,7 @@ def _collection_failure(
         "provider collection did not pass the strict training gate",
         error_code="provider_collection_degraded",
         retry_class="transient",
-        next_retry_at=datetime.now(UTC) + settings.transient_retry_delay,
+        next_retry_at=retry_anchor + settings.transient_retry_delay,
     )
 
 
@@ -2277,6 +2324,9 @@ def _build_candidate(
     started_at: datetime | None = None,
     run_id: str | None = None,
 ) -> bytes:
+    attempt_started_at = (started_at or datetime.now(UTC)).astimezone(UTC)
+    if sys.platform == "darwin" and settings.root == project_root().resolve():
+        verify_provider_keychain_access()
     settings.collection_report_path.unlink(missing_ok=True)
     settings.reviewed_payload_path.unlink(missing_ok=True)
     settings.comparison_path.unlink(missing_ok=True)
@@ -2363,13 +2413,19 @@ def _build_candidate(
     except AutomationError as exc:
         report = _load_collection_report(settings, target=target)
         if report is not None and report.get("ready_for_training") is not True:
-            raise _collection_failure(settings, target=target, report=report) from exc
+            raise _collection_failure(
+                settings,
+                target=target,
+                report=report,
+                attempt_started_at=attempt_started_at,
+                failure_at=datetime.now(UTC),
+            ) from exc
         if report is None:
             raise ScheduledRetry(
                 "live build failed before a validated collection receipt was written",
                 error_code="child_precollection_failed",
                 retry_class="transient",
-                next_retry_at=datetime.now(UTC) + settings.transient_retry_delay,
+                next_retry_at=attempt_started_at + settings.transient_retry_delay,
             ) from exc
         raise
     if _candidate_context(settings) != dict(context):
@@ -3315,7 +3371,7 @@ def run_weekly_release(
             error_code, retry_class, next_retry_at = _failure_policy(
                 exc,
                 stage=current_stage,
-                now=datetime.now(UTC),
+                attempt_started_at=started,
                 settings=settings,
             )
             fingerprint = _recovery_fingerprint(settings)

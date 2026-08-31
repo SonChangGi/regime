@@ -312,6 +312,181 @@ def test_retry_backoff_skips_external_provider_and_build_work(
     assert result["next_retry_at"] == (now + timedelta(hours=5)).isoformat()
 
 
+def test_transient_retry_allows_schedule_grace_without_relaxing_quota(
+    tmp_path: Path,
+) -> None:
+    settings = _settings(tmp_path)
+    now = datetime.fromisoformat("2026-08-18T21:17:00+00:00")
+    target, ready = automation.target_cutoff(
+        now, minimum_age=settings.minimum_cutoff_age
+    )
+    assert ready is True
+    document = {
+        "schema_version": automation.HEALTH_SCHEMA_VERSION,
+        "automation_id": settings.automation_id,
+        "status": "failed",
+        "stage": "collect_sources",
+        "started_at": (now - timedelta(hours=6)).isoformat(),
+        "heartbeat_at": (now - timedelta(hours=6)).isoformat(),
+        "updated_at": (now - timedelta(hours=6)).isoformat(),
+        "target_data_as_of": target.isoformat(),
+        "consecutive_failures": 1,
+        "error_code": "provider_degraded",
+        "retry_class": "transient",
+        "next_retry_at": (now + timedelta(minutes=1)).isoformat(),
+        "recovery_fingerprint": "unchanged",
+    }
+    _write_json(settings.status_path, document)
+
+    assert automation._retry_guard(settings, target=target, now=now) is None
+
+    document["retry_class"] = "quota"
+    _write_json(settings.status_path, document)
+    quota = automation._retry_guard(settings, target=target, now=now)
+    assert quota is not None
+    assert quota["stage"] == "retry_backoff"
+
+
+def test_transient_retry_deadline_uses_attempt_start_and_aligns_next_schedule(
+    tmp_path: Path,
+) -> None:
+    settings = _settings(tmp_path)
+    attempt_started_at = datetime.fromisoformat("2026-08-18T15:17:00+00:00")
+    failure_completed_at = datetime.fromisoformat("2026-08-18T15:23:00+00:00")
+    target, ready = automation.target_cutoff(
+        attempt_started_at, minimum_age=settings.minimum_cutoff_age
+    )
+    assert ready is True
+    error_code, retry_class, next_retry_at = automation._failure_policy(
+        RuntimeError("temporary network failure"),
+        stage="preflight",
+        attempt_started_at=attempt_started_at,
+        settings=settings,
+    )
+    assert next_retry_at == datetime.fromisoformat("2026-08-18T21:17:00+00:00")
+    _write_json(
+        settings.status_path,
+        {
+            "schema_version": automation.HEALTH_SCHEMA_VERSION,
+            "automation_id": settings.automation_id,
+            "status": "failed",
+            "stage": "failed",
+            "started_at": attempt_started_at.isoformat(),
+            "heartbeat_at": failure_completed_at.isoformat(),
+            "updated_at": failure_completed_at.isoformat(),
+            "target_data_as_of": target.isoformat(),
+            "consecutive_failures": 1,
+            "error_code": error_code,
+            "retry_class": retry_class,
+            "next_retry_at": next_retry_at.isoformat(),
+        },
+    )
+
+    assert automation._retry_guard(
+        settings,
+        target=target,
+        now=datetime.fromisoformat("2026-08-18T21:17:00+00:00"),
+    ) is None
+
+
+def test_transient_retry_grace_has_a_bounded_early_edge(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    now = datetime.fromisoformat("2026-08-18T21:17:00+00:00")
+    target, ready = automation.target_cutoff(
+        now, minimum_age=settings.minimum_cutoff_age
+    )
+    assert ready is True
+    document = {
+        "schema_version": automation.HEALTH_SCHEMA_VERSION,
+        "automation_id": settings.automation_id,
+        "status": "failed",
+        "stage": "failed",
+        "started_at": (now - timedelta(hours=6)).isoformat(),
+        "heartbeat_at": now.isoformat(),
+        "updated_at": now.isoformat(),
+        "target_data_as_of": target.isoformat(),
+        "consecutive_failures": 1,
+        "error_code": "provider_degraded",
+        "retry_class": "transient",
+        "next_retry_at": (
+            now + automation.TRANSIENT_RETRY_EARLY_GRACE + timedelta(seconds=1)
+        ).isoformat(),
+    }
+    _write_json(settings.status_path, document)
+
+    guarded = automation._retry_guard(settings, target=target, now=now)
+    assert guarded is not None
+    assert guarded["stage"] == "retry_backoff"
+
+    document["next_retry_at"] = (
+        now + automation.TRANSIENT_RETRY_EARLY_GRACE
+    ).isoformat()
+    _write_json(settings.status_path, document)
+    assert automation._retry_guard(settings, target=target, now=now) is None
+
+
+def test_keychain_parent_preflight_preserves_blocked_root_cause(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from regime_lab.keychain import KeychainError
+
+    settings = _settings(tmp_path)
+    target = datetime.fromisoformat("2026-08-14T20:00:00+00:00")
+    monkeypatch.setattr(automation.sys, "platform", "darwin")
+    monkeypatch.setattr(automation, "project_root", lambda: settings.root)
+    monkeypatch.setattr(
+        automation,
+        "verify_provider_keychain_access",
+        lambda: (_ for _ in ()).throw(
+            KeychainError("Keychain item cannot be read")
+        ),
+    )
+
+    with pytest.raises(KeychainError) as caught:
+        automation._build_candidate(settings, target=target, context={})
+
+    error_code, retry_class, next_retry_at = automation._failure_policy(
+        caught.value,
+        stage="collect_train_audit",
+        attempt_started_at=datetime.fromisoformat("2026-08-18T00:00:00+00:00"),
+        settings=settings,
+    )
+    assert error_code == "collect_train_audit_blocked"
+    assert retry_class == "blocked"
+    assert next_retry_at is None
+
+
+def test_recovery_fingerprint_tracks_keychain_lock_and_metadata_without_reading(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings(tmp_path)
+    monkeypatch.setattr(automation.sys, "platform", "darwin")
+    monkeypatch.setattr(automation, "project_root", lambda: settings.root)
+    monkeypatch.setattr(automation, "_run", lambda *_args, **_kwargs: b"stable")
+    keychain_locked = True
+    calls: list[tuple[list[str], dict[str, object]]] = []
+
+    def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        calls.append((command, kwargs))
+        returncode = 51 if command[1] == "show-keychain-info" and keychain_locked else 0
+        return subprocess.CompletedProcess(command, returncode)
+
+    monkeypatch.setattr(automation.subprocess, "run", run)
+    locked = automation._recovery_fingerprint(settings)
+    keychain_locked = False
+    unlocked = automation._recovery_fingerprint(settings)
+
+    assert locked != unlocked
+    assert calls
+    assert all("-w" not in command for command, _kwargs in calls)
+    assert any(command[1] == "show-keychain-info" for command, _kwargs in calls)
+    assert any(command[1] == "find-generic-password" for command, _kwargs in calls)
+    assert all(kwargs["stdout"] is subprocess.DEVNULL for _command, kwargs in calls)
+    assert all(kwargs["stderr"] is subprocess.DEVNULL for _command, kwargs in calls)
+
+
 def test_force_retry_bypasses_only_transient_backoff(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -578,18 +753,46 @@ def test_database_lock_receipt_is_retryable_instead_of_permanently_blocked(
 ) -> None:
     settings = _settings(tmp_path)
     target = datetime.fromisoformat("2026-08-14T20:00:00+00:00")
-    before = datetime.now(UTC)
+    attempt_started_at = datetime.fromisoformat("2026-08-18T00:00:00+00:00")
+    failure_at = attempt_started_at + timedelta(minutes=7)
 
     failure = automation._collection_failure(
         settings,
         target=target,
         report={"error_code": "database_build_lock_busy"},
+        attempt_started_at=attempt_started_at,
+        failure_at=failure_at,
     )
 
     assert failure.error_code == "database_build_lock_busy"
     assert failure.retry_class == "transient"
     assert failure.next_retry_at is not None
-    assert before + timedelta(minutes=29) < failure.next_retry_at
+    assert failure.next_retry_at == failure_at + timedelta(minutes=30)
+
+    _write_json(
+        settings.status_path,
+        {
+            "schema_version": automation.HEALTH_SCHEMA_VERSION,
+            "automation_id": settings.automation_id,
+            "status": "failed",
+            "stage": "failed",
+            "started_at": attempt_started_at.isoformat(),
+            "heartbeat_at": failure_at.isoformat(),
+            "updated_at": failure_at.isoformat(),
+            "target_data_as_of": target.isoformat(),
+            "consecutive_failures": 1,
+            "error_code": failure.error_code,
+            "retry_class": failure.retry_class,
+            "next_retry_at": failure.next_retry_at.isoformat(),
+        },
+    )
+    guarded = automation._retry_guard(
+        settings,
+        target=target,
+        now=failure.next_retry_at - timedelta(minutes=1),
+    )
+    assert guarded is not None
+    assert guarded["stage"] == "retry_backoff"
 
 
 def test_pages_wait_refreshes_heartbeat_on_every_poll(

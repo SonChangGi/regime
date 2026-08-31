@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 from datetime import datetime, timezone
 import json
 from pathlib import Path
@@ -18,7 +19,7 @@ from regime_lab.v5_preflight import V5PreflightError
 TARGET = datetime(2026, 8, 14, 20, tzinfo=timezone.utc)
 
 
-def test_build_backs_up_inside_lock_before_collection(
+def test_build_checks_keychain_then_backs_up_inside_lock_before_collection(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -34,6 +35,33 @@ def test_build_backs_up_inside_lock_before_collection(
         "_backup_database_before_mutation",
         lambda *_args, **_kwargs: events.append("backup"),
     )
+    monkeypatch.setattr(
+        cli, "verify_v5_preflight", lambda **_kwargs: (
+            events.append("v5_preflight")
+            or {"source_fingerprint_sha256": "a" * 64}
+        )
+    )
+    secrets = {"FRED_API_KEY": "secret-a", "ALPHA_VANTAGE_API_KEY": "secret-b"}
+
+    @contextmanager
+    def loaded_secrets(*_args, **_kwargs):
+        events.append("keychain_load")
+        try:
+            yield secrets
+        finally:
+            for name in secrets:
+                secrets[name] = ""
+            events.append("keychain_clear")
+
+    @contextmanager
+    def credentials(values, *_args, **_kwargs):
+        assert values is secrets
+        assert all(values.values())
+        events.append("credentials")
+        yield
+
+    monkeypatch.setattr(cli, "provider_secrets_from_keychain", loaded_secrets)
+    monkeypatch.setattr(cli, "provider_environment_from_secrets", credentials)
 
     def collect(*_args, **_kwargs):
         events.append("collect")
@@ -42,7 +70,7 @@ def test_build_backs_up_inside_lock_before_collection(
     monkeypatch.setattr(cli, "collect_live_data", collect)
     args = argparse.Namespace(
         profile="standard",
-        contract="v4",
+        contract="v5",
         config=tmp_path / "series.json",
         database=tmp_path / "regime.sqlite3",
         output=tmp_path / "result.json",
@@ -52,14 +80,22 @@ def test_build_backs_up_inside_lock_before_collection(
         expected_cutoff=TARGET,
         backup_directory=tmp_path / "backups",
         backup_source_code_fingerprint_sha256="a" * 64,
-        from_env=True,
+        from_env=False,
         require_ac_power=False,
     )
 
     with pytest.raises(RuntimeError, match="ordering assertion"):
         cli.command_build(args)
 
-    assert events == ["backup", "collect"]
+    assert events == [
+        "v5_preflight",
+        "keychain_load",
+        "backup",
+        "credentials",
+        "collect",
+        "keychain_clear",
+    ]
+    assert all(value == "" for value in secrets.values())
 
 
 def _degraded_collection(database: Path) -> LiveCollection:

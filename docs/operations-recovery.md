@@ -19,6 +19,30 @@
 체크포인트가 늘지 않으면 자식 process group을 종료하고 실패로 기록한다. 단순히
 process가 살아 있거나 heartbeat가 갱신된다는 이유만으로 계산 진행을 추정하지 않는다.
 
+## Keychain 접근 복구
+
+`Keychain item cannot be read`가 기록되면 로그인 Keychain을 잠금 해제하고 두 항목
+`regime-fred-api-key`, `regime-alpha-vantage-api-key`의 접근 제어에서
+`/usr/bin/security`를 허용한다. 키 값은 명령 인자로 전달하지 않는다.
+
+```bash
+/usr/bin/security show-keychain-info "$HOME/Library/Keychains/login.keychain-db"
+/usr/bin/security unlock-keychain "$HOME/Library/Keychains/login.keychain-db"
+/usr/bin/security find-generic-password -s regime-fred-api-key -w >/dev/null
+/usr/bin/security find-generic-password -s regime-alpha-vantage-api-key -w >/dev/null
+.venv/bin/regime-lab automation run --force-blocked-recovery
+```
+
+검증 중 macOS 확인 창이 뜨면 두 항목 모두 `항상 허용`을 선택한다. 읽기 사전점검은
+비밀을 출력하지 않고 완료되며, 실패하면 SQLite backup과 provider 호출 전에 실행을
+중단한다. macOS 로그인 암호 변경 뒤 Keychain 암호가 맞지 않을 때만 아래 명령으로
+현재 암호와 새 암호를 대화형 입력한다. 암호 옵션을 붙이거나 Keychain을 reset·삭제하지
+않는다.
+
+```bash
+/usr/bin/security set-keychain-password "$HOME/Library/Keychains/login.keychain-db"
+```
+
 ## 실행·게시 provenance
 
 `run-registry.jsonl`은 다음 상태를 순서대로 보존한다.

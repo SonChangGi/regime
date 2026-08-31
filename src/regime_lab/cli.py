@@ -63,7 +63,10 @@ from regime_lab.forecast_ledger import (
     operational_input_manifest_sha256,
     operational_inputs_for_generation,
 )
-from regime_lab.keychain import provider_environment_from_keychain
+from regime_lab.keychain import (
+    provider_environment_from_secrets,
+    provider_secrets_from_keychain,
+)
 from regime_lab.payload import write_dashboard_payload
 from regime_lab.io import write_json_atomic
 from regime_lab.integrity import (
@@ -1422,34 +1425,43 @@ def command_build(args: argparse.Namespace) -> int:
                     f"source={v5_preflight['source_fingerprint_sha256'][:12]}",
                     flush=True,
                 )
-            append_run_event(
-                run_registry,
-                run_id=run_id,
-                status="collecting",
-                detail={"expected_cutoff": expected_cutoff.isoformat()},
-            )
-            _backup_database_before_mutation(
-                database,
-                backup_directory=getattr(args, "backup_directory", None),
-                source_code_fingerprint_sha256=getattr(
-                    args,
-                    "backup_source_code_fingerprint_sha256",
-                    None,
-                ),
-            )
-            credentials = (
-                nullcontext()
+            provider_secrets_context = (
+                nullcontext(None)
                 if args.from_env
-                else provider_environment_from_keychain(rights_acknowledged=True)
+                else provider_secrets_from_keychain()
             )
-            with credentials:
-                collection = collect_live_data(
-                    config,
-                    database_path=database,
-                    now=build_started_at,
-                    expected_cutoff=expected_cutoff,
-                    progress=_flush_progress,
+            with provider_secrets_context as provider_secrets:
+                append_run_event(
+                    run_registry,
+                    run_id=run_id,
+                    status="collecting",
+                    detail={"expected_cutoff": expected_cutoff.isoformat()},
                 )
+                _backup_database_before_mutation(
+                    database,
+                    backup_directory=getattr(args, "backup_directory", None),
+                    source_code_fingerprint_sha256=getattr(
+                        args,
+                        "backup_source_code_fingerprint_sha256",
+                        None,
+                    ),
+                )
+                credentials = (
+                    nullcontext()
+                    if provider_secrets is None
+                    else provider_environment_from_secrets(
+                        provider_secrets,
+                        rights_acknowledged=True,
+                    )
+                )
+                with credentials:
+                    collection = collect_live_data(
+                        config,
+                        database_path=database,
+                        now=build_started_at,
+                        expected_cutoff=expected_cutoff,
+                        progress=_flush_progress,
+                    )
             gate_error: CollectionGateError | AnalysisPreconditionError | None = None
             try:
                 validate_collection_for_training(
