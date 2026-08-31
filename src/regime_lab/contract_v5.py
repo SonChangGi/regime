@@ -3480,6 +3480,563 @@ def _validate_decision_shadow_current_signal(
     }
 
 
+def _validate_allocation_candidate(value: Any, *, context: str) -> None:
+    candidate = _mapping(value, context)
+    if set(candidate) != {
+        "schema_version",
+        "role",
+        "policy_status",
+        "recommended_target",
+        "spec",
+        "selection",
+        "execution_contract",
+        "return_accounting",
+        "current_intent",
+        "performance",
+        "performance_path",
+        "sector_rotation",
+        "affects_official_forecast",
+        "affects_champion_selection",
+    }:
+        raise V5ContractError(f"{context} fields are invalid")
+    if (
+        candidate.get("schema_version")
+        != "regime-allocation-shadow-candidate/1"
+        or candidate.get("role")
+        != "research_only_no_forecast_or_champion_effect"
+        or candidate.get("affects_official_forecast") is not False
+        or candidate.get("affects_champion_selection") is not False
+    ):
+        raise V5ContractError(f"{context} identity is invalid")
+    policy_status = candidate.get("policy_status")
+    recommended_target = candidate.get("recommended_target")
+    if (policy_status, recommended_target) not in {
+        ("candidate_selected", "combined"),
+        ("baseline_preferred", "realistic_60_40"),
+    }:
+        raise V5ContractError(f"{context} policy decision is invalid")
+    spec = _mapping(candidate.get("spec"), f"{context}.spec")
+    if (
+        set(spec) != {"path", "sha256", "spec_id"}
+        or spec.get("path") != "config/allocation-shadow-v1.json"
+        or spec.get("spec_id") != "selection-payoff-anchor-sector-shadow-v1"
+    ):
+        raise V5ContractError(f"{context}.spec is invalid")
+    _sha256(spec.get("sha256"), f"{context}.spec.sha256")
+    selection = _mapping(candidate.get("selection"), f"{context}.selection")
+    if set(selection) != {
+        "end",
+        "start",
+        "weeks",
+        "payoff_method",
+        "shrinkage_pseudo_weeks",
+        "relative_volatility",
+        "calibration_skill",
+        "confidence_multiplier",
+        "confidence_candidates",
+        "target_state_payoffs",
+    }:
+        raise V5ContractError(f"{context}.selection fields are invalid")
+    if _iso_date(selection.get("start"), f"{context}.selection.start") > _iso_date(
+        selection.get("end"), f"{context}.selection.end"
+    ):
+        raise V5ContractError(f"{context}.selection bounds are reversed")
+    _integer(selection.get("weeks"), f"{context}.selection.weeks", minimum=52)
+    if selection.get("payoff_method") != (
+        "target_state_conditioned_next_open_to_close_relative_return"
+    ):
+        raise V5ContractError(f"{context}.selection payoff method is invalid")
+    relative_volatility = _number(
+        selection.get("relative_volatility"),
+        f"{context}.selection.relative_volatility",
+        minimum=0.0,
+    )
+    if relative_volatility <= 0.0:
+        raise V5ContractError(f"{context}.selection relative volatility is invalid")
+    confidence = _number(
+        selection.get("confidence_multiplier"),
+        f"{context}.selection.confidence_multiplier",
+        minimum=0.0,
+        maximum=1.0,
+    )
+    if confidence not in {0.0, 0.5, 0.75, 1.0}:
+        raise V5ContractError(f"{context}.selection confidence is invalid")
+    intent = _mapping(candidate.get("current_intent"), f"{context}.current_intent")
+    if set(intent) != {
+        "schema_version",
+        "forecast",
+        "prior",
+        "aim",
+        "shadow_aim",
+        "recommended",
+        "target",
+        "shadow_target",
+        "order_delta",
+        "cost",
+        "expected_returns",
+        "cash_accrual",
+        "timing",
+    } or intent.get("schema_version") != "regime-portfolio-intent/1":
+        raise V5ContractError(f"{context}.current_intent fields are invalid")
+    forecast = _mapping(intent.get("forecast"), f"{context}.current_intent.forecast")
+    if set(forecast) != {
+        "origin_date",
+        "target_week",
+        "model",
+        "probabilities",
+    }:
+        raise V5ContractError(f"{context}.current_intent.forecast fields are invalid")
+    origin = _iso_date(
+        forecast.get("origin_date"), f"{context}.current_intent.forecast.origin_date"
+    )
+    target = _iso_date(
+        forecast.get("target_week"), f"{context}.current_intent.forecast.target_week"
+    )
+    if target != origin + timedelta(days=7):
+        raise V5ContractError(f"{context}.current_intent target is not t+1")
+    timing = _mapping(intent.get("timing"), f"{context}.current_intent.timing")
+    validated_timing = _validate_decision_shadow_current_signal(
+        timing, context=f"{context}.current_intent.timing"
+    )
+    if (
+        validated_timing["origin_date"] != origin
+        or validated_timing["target_week"] != target
+        or validated_timing["forecast_model"] != forecast.get("model")
+    ):
+        raise V5ContractError(f"{context}.current_intent timing differs from forecast")
+    cash_accrual = _mapping(
+        intent.get("cash_accrual"), f"{context}.current_intent.cash_accrual"
+    )
+    if (
+        set(cash_accrual)
+        != {"source", "as_of", "annual_yield_percent", "weekly_factor"}
+        or cash_accrual.get("source") != "DGS3MO"
+        or _iso_date(
+            cash_accrual.get("as_of"), f"{context}.current_intent.cash_accrual.as_of"
+        )
+        != origin
+    ):
+        raise V5ContractError(f"{context}.current_intent cash accrual is invalid")
+    annual_yield = _number(
+        cash_accrual.get("annual_yield_percent"),
+        f"{context}.current_intent.cash_accrual.annual_yield_percent",
+    )
+    weekly_factor = _number(
+        cash_accrual.get("weekly_factor"),
+        f"{context}.current_intent.cash_accrual.weekly_factor",
+    )
+    if weekly_factor <= 0.0 or not math.isclose(
+        weekly_factor, 1.0 + annual_yield / 100.0 / 52.0, abs_tol=1e-12
+    ):
+        raise V5ContractError(f"{context}.current_intent cash factor is invalid")
+    for field in ("prior", "recommended", "target", "shadow_target"):
+        block = _mapping(intent.get(field), f"{context}.current_intent.{field}")
+        if field == "prior" and block.get("basis") not in {
+            "reconstructed_strategy_close",
+            "prospective_ledger_close",
+            "prospective_cash_genesis",
+        }:
+            raise V5ContractError(
+                f"{context}.current_intent.prior basis is invalid"
+            )
+        weights = _mapping(
+            block.get("weights"), f"{context}.current_intent.{field}.weights"
+        )
+        if not weights or not set(weights).issubset(
+            {
+                "SPY",
+                "TLT",
+                "XLB",
+                "XLC",
+                "XLE",
+                "XLF",
+                "XLI",
+                "XLK",
+                "XLP",
+                "XLRE",
+                "XLU",
+                "XLV",
+                "XLY",
+            }
+        ):
+            raise V5ContractError(f"{context}.current_intent.{field} weights are invalid")
+        values = [
+            _number(value, f"{context}.current_intent.{field}.weights.{asset}")
+            for asset, value in weights.items()
+        ]
+        if any(value < -1e-10 or value > 1.0 for value in values):
+            raise V5ContractError(
+                f"{context}.current_intent.{field} weights are invalid"
+            )
+        cash = _number(block.get("cash"), f"{context}.current_intent.{field}.cash")
+        if cash < -1e-10 or not math.isclose(
+            sum(values) + cash, 1.0, abs_tol=1e-8
+        ):
+            raise V5ContractError(
+                f"{context}.current_intent.{field} is not self-financing"
+            )
+    for field in ("aim", "shadow_aim"):
+        block = _mapping(intent.get(field), f"{context}.current_intent.{field}")
+        weights = _mapping(
+            block.get("weights"), f"{context}.current_intent.{field}.weights"
+        )
+        values = [
+            _number(value, f"{context}.current_intent.{field}.weights.{asset}")
+            for asset, value in weights.items()
+        ]
+        if any(value < 0.0 or value > 1.0 for value in values) or sum(values) > 1.0 + 1e-8:
+            raise V5ContractError(f"{context}.current_intent.{field} is invalid")
+    expected_returns = _mapping(
+        intent.get("expected_returns"), f"{context}.current_intent.expected_returns"
+    )
+    if set(expected_returns) != {"basis", "recommended", "shadow"} or expected_returns.get(
+        "basis"
+    ) != "selection_frozen_weekly_relative_payoff":
+        raise V5ContractError(f"{context}.current_intent expected returns are invalid")
+    for field in ("recommended", "shadow"):
+        raw_expected = expected_returns.get(field)
+        if raw_expected is None and field == "recommended":
+            continue
+        values = _mapping(
+            raw_expected, f"{context}.current_intent.expected_returns.{field}"
+        )
+        for asset, value in values.items():
+            if asset not in {
+                "SPY",
+                "TLT",
+                "XLB",
+                "XLC",
+                "XLE",
+                "XLF",
+                "XLI",
+                "XLK",
+                "XLP",
+                "XLRE",
+                "XLU",
+                "XLV",
+                "XLY",
+            }:
+                raise V5ContractError(
+                    f"{context}.current_intent expected-return asset is invalid"
+                )
+            _number(
+                value,
+                f"{context}.current_intent.expected_returns.{field}.{asset}",
+            )
+    cost = _mapping(intent.get("cost"), f"{context}.current_intent.cost")
+    if set(cost) != {"bps_per_traded_notional", "estimated_rate"}:
+        raise V5ContractError(f"{context}.current_intent.cost fields are invalid")
+    primary_cost_bps = _number(
+        cost.get("bps_per_traded_notional"),
+        f"{context}.current_intent.cost.bps_per_traded_notional",
+        minimum=0.0,
+    )
+    if not math.isclose(primary_cost_bps, 10.0, abs_tol=1e-12, rel_tol=0.0):
+        raise V5ContractError(f"{context}.current_intent primary cost is invalid")
+    order_delta = _mapping(
+        intent.get("order_delta"), f"{context}.current_intent.order_delta"
+    )
+    if set(order_delta) != {"weights", "one_way_turnover", "full_l1_turnover"}:
+        raise V5ContractError(
+            f"{context}.current_intent.order_delta fields are invalid"
+        )
+    delta_weights = _mapping(
+        order_delta.get("weights"),
+        f"{context}.current_intent.order_delta.weights",
+    )
+    for asset, value in delta_weights.items():
+        if asset not in {
+            "SPY",
+            "TLT",
+            "XLB",
+            "XLC",
+            "XLE",
+            "XLF",
+            "XLI",
+            "XLK",
+            "XLP",
+            "XLRE",
+            "XLU",
+            "XLV",
+            "XLY",
+        }:
+            raise V5ContractError(
+                f"{context}.current_intent.order_delta asset is invalid"
+            )
+        _number(value, f"{context}.current_intent.order_delta.weights.{asset}")
+    intent_one_way = _number(
+        order_delta.get("one_way_turnover"),
+        f"{context}.current_intent.order_delta.one_way_turnover",
+        minimum=0.0,
+    )
+    intent_full_l1 = _number(
+        order_delta.get("full_l1_turnover"),
+        f"{context}.current_intent.order_delta.full_l1_turnover",
+        minimum=0.0,
+    )
+    estimated_cost = _number(
+        cost.get("estimated_rate"),
+        f"{context}.current_intent.cost.estimated_rate",
+        minimum=0.0,
+    )
+    if not math.isclose(
+        estimated_cost,
+        intent_full_l1 * primary_cost_bps / 10_000.0,
+        abs_tol=1e-12,
+        rel_tol=1e-10,
+    ):
+        raise V5ContractError(f"{context}.current_intent estimated cost is inconsistent")
+    recommended = _mapping(
+        intent.get("recommended"), f"{context}.current_intent.recommended"
+    )
+    if recommended.get("policy") != recommended_target:
+        raise V5ContractError(
+            f"{context}.current_intent recommended policy is inconsistent"
+        )
+    recommended_action = recommended.get("action")
+    allowed_actions = {
+        "initial_allocate",
+        "rebalance",
+        "band_hold",
+        "economic_hold",
+        "no_trade",
+    }
+    if recommended_action not in allowed_actions:
+        raise V5ContractError(f"{context}.current_intent action is invalid")
+    hold_actions = {"band_hold", "economic_hold", "no_trade"}
+    if recommended_action in hold_actions and (
+        not math.isclose(intent_one_way, 0.0, abs_tol=1e-12)
+        or not math.isclose(intent_full_l1, 0.0, abs_tol=1e-12)
+        or not math.isclose(estimated_cost, 0.0, abs_tol=1e-12)
+        or any(
+            not math.isclose(float(value), 0.0, abs_tol=1e-12)
+            for value in delta_weights.values()
+        )
+    ):
+        raise V5ContractError(f"{context}.current_intent hold has a trade")
+
+    performance = _mapping(candidate.get("performance"), f"{context}.performance")
+    if set(performance) != {
+        "evaluation_start_week",
+        "evaluation_end_week",
+        "strategies",
+        "cost_sensitivity",
+        "economic_gate",
+    }:
+        raise V5ContractError(f"{context}.performance fields are invalid")
+    evaluation_start = _iso_date(
+        performance.get("evaluation_start_week"),
+        f"{context}.performance.evaluation_start_week",
+    )
+    evaluation_end = _iso_date(
+        performance.get("evaluation_end_week"),
+        f"{context}.performance.evaluation_end_week",
+    )
+    if evaluation_start > evaluation_end:
+        raise V5ContractError(f"{context}.performance bounds are reversed")
+    economic_gate = _mapping(
+        performance.get("economic_gate"), f"{context}.performance.economic_gate"
+    )
+    boolean_gate_fields = {
+        "calibration_skill_passed",
+        "primary_return_and_ce_improved",
+        "20bps_ce_improved",
+        "annualized_one_way_turnover_passed",
+        "maximum_drawdown_passed",
+        "positive_selection_momentum_passed",
+        "minimum_recurring_activity_passed",
+        "ablation_improvement_passed",
+    }
+    if set(economic_gate) != {
+        *boolean_gate_fields,
+        "recurring_executed_rebalances",
+    }:
+        raise V5ContractError(f"{context}.performance.economic_gate fields are invalid")
+    for field in boolean_gate_fields:
+        if not isinstance(economic_gate.get(field), bool):
+            raise V5ContractError(
+                f"{context}.performance.economic_gate.{field} must be boolean"
+            )
+    _integer(
+        economic_gate.get("recurring_executed_rebalances"),
+        f"{context}.performance.economic_gate.recurring_executed_rebalances",
+    )
+    gate_passed = all(economic_gate[field] is True for field in boolean_gate_fields)
+    expected_policy = "candidate_selected" if gate_passed else "baseline_preferred"
+    expected_target = "combined" if gate_passed else "realistic_60_40"
+    if policy_status != expected_policy or recommended_target != expected_target:
+        raise V5ContractError(f"{context} policy decision differs from economic gate")
+
+    path = _sequence(
+        candidate.get("performance_path"),
+        f"{context}.performance_path",
+        nonempty=True,
+    )
+    if len(path) > 260:
+        raise V5ContractError(f"{context}.performance_path is not bounded")
+    prior_week: date | None = None
+    strategy_names = {
+        "realistic_60_40",
+        "spy_buy_and_hold",
+        "regime_only",
+        "momentum_only",
+        "combined",
+    }
+    prior_gross_wealth = {name: 1.0 for name in strategy_names}
+    prior_net_wealth = {name: 1.0 for name in strategy_names}
+    peak_net_wealth = {name: 1.0 for name in strategy_names}
+    for index, raw_row in enumerate(path):
+        row_context = f"{context}.performance_path[{index}]"
+        row = _mapping(raw_row, row_context)
+        if set(row) != {"week", "date", "strategies"} or row.get("week") != row.get("date"):
+            raise V5ContractError(f"{row_context} identity is invalid")
+        week = _iso_date(row.get("week"), f"{row_context}.week")
+        if prior_week is not None and week <= prior_week:
+            raise V5ContractError(f"{context}.performance_path is not ordered")
+        prior_week = week
+        strategies = _mapping(row.get("strategies"), f"{row_context}.strategies")
+        if set(strategies) != strategy_names:
+            raise V5ContractError(f"{row_context}.strategies are invalid")
+        for name, raw_metrics in strategies.items():
+            metrics = _mapping(raw_metrics, f"{row_context}.strategies.{name}")
+            if set(metrics) != {
+                "gross_return",
+                "net_return",
+                "gross_wealth",
+                "net_wealth",
+                "drawdown",
+                "one_way_turnover",
+                "full_l1_turnover",
+                "transaction_cost_rate",
+                "action",
+            }:
+                raise V5ContractError(f"{row_context}.strategies.{name} fields are invalid")
+            for field in (
+                "gross_return",
+                "net_return",
+                "gross_wealth",
+                "net_wealth",
+                "drawdown",
+                "one_way_turnover",
+                "full_l1_turnover",
+                "transaction_cost_rate",
+            ):
+                _number(metrics.get(field), f"{row_context}.strategies.{name}.{field}")
+            gross_return = float(metrics["gross_return"])
+            net_return = float(metrics["net_return"])
+            gross_wealth = float(metrics["gross_wealth"])
+            net_wealth = float(metrics["net_wealth"])
+            drawdown = float(metrics["drawdown"])
+            one_way = float(metrics["one_way_turnover"])
+            full_l1 = float(metrics["full_l1_turnover"])
+            transaction_cost = float(metrics["transaction_cost_rate"])
+            if gross_wealth <= 0.0 or net_wealth <= 0.0:
+                raise V5ContractError(f"{row_context}.strategies.{name} wealth is invalid")
+            if one_way < 0.0 or full_l1 < 0.0 or transaction_cost < 0.0:
+                raise V5ContractError(f"{row_context}.strategies.{name} turnover is invalid")
+            if not math.isclose(
+                transaction_cost,
+                full_l1 * primary_cost_bps / 10_000.0,
+                abs_tol=1e-12,
+                rel_tol=1e-10,
+            ):
+                raise V5ContractError(
+                    f"{row_context}.strategies.{name} transaction cost is inconsistent"
+                )
+            if not math.isclose(
+                net_return,
+                (1.0 + gross_return) * (1.0 - transaction_cost) - 1.0,
+                abs_tol=1e-12,
+                rel_tol=1e-10,
+            ):
+                raise V5ContractError(
+                    f"{row_context}.strategies.{name} net return is inconsistent"
+                )
+            expected_gross_wealth = prior_gross_wealth[name] * (1.0 + gross_return)
+            expected_net_wealth = prior_net_wealth[name] * (1.0 + net_return)
+            if not math.isclose(
+                gross_wealth,
+                expected_gross_wealth,
+                abs_tol=1e-12,
+                rel_tol=1e-10,
+            ) or not math.isclose(
+                net_wealth,
+                expected_net_wealth,
+                abs_tol=1e-12,
+                rel_tol=1e-10,
+            ):
+                raise V5ContractError(
+                    f"{row_context}.strategies.{name} wealth recursion is inconsistent"
+                )
+            peak_net_wealth[name] = max(peak_net_wealth[name], net_wealth)
+            expected_drawdown = net_wealth / peak_net_wealth[name] - 1.0
+            if not math.isclose(
+                drawdown,
+                expected_drawdown,
+                abs_tol=1e-12,
+                rel_tol=1e-10,
+            ):
+                raise V5ContractError(
+                    f"{row_context}.strategies.{name} drawdown is inconsistent"
+                )
+            action = metrics.get("action")
+            if action not in allowed_actions:
+                raise V5ContractError(
+                    f"{row_context}.strategies.{name} action is invalid"
+                )
+            if action in hold_actions and (
+                not math.isclose(one_way, 0.0, abs_tol=1e-12)
+                or not math.isclose(full_l1, 0.0, abs_tol=1e-12)
+                or not math.isclose(transaction_cost, 0.0, abs_tol=1e-12)
+            ):
+                raise V5ContractError(
+                    f"{row_context}.strategies.{name} hold has a trade"
+                )
+            prior_gross_wealth[name] = gross_wealth
+            prior_net_wealth[name] = net_wealth
+    if prior_week != evaluation_end or _iso_date(
+        path[0]["week"], f"{context}.performance_path[0].week"
+    ) != evaluation_start:
+        raise V5ContractError(f"{context}.performance bounds differ from path")
+    sector = _mapping(candidate.get("sector_rotation"), f"{context}.sector_rotation")
+    if (
+        sector.get("policy_status") != policy_status
+        or sector.get("selected_strategy") != recommended_target
+    ):
+        raise V5ContractError(f"{context}.sector_rotation policy is inconsistent")
+    ranking = _sequence(sector.get("ranking"), f"{context}.sector_rotation.ranking")
+    if len(ranking) > 11:
+        raise V5ContractError(f"{context}.sector_rotation.ranking is not bounded")
+    selected_weight = 0.0
+    selected_count = 0
+    for index, raw_row in enumerate(ranking):
+        row = _mapping(raw_row, f"{context}.sector_rotation.ranking[{index}]")
+        if set(row) != {
+            "symbol",
+            "score",
+            "relative_momentum",
+            "regime_relative_payoff",
+            "ci_lower",
+            "ci_upper",
+            "target_weight",
+            "selected",
+        }:
+            raise V5ContractError(f"{context}.sector_rotation.ranking fields are invalid")
+        weight = _number(
+            row.get("target_weight"),
+            f"{context}.sector_rotation.ranking[{index}].target_weight",
+        )
+        if weight < 0.0 or weight > 0.05 + 1e-10:
+            raise V5ContractError(f"{context}.sector symbol cap is invalid")
+        if row.get("selected") is True:
+            selected_count += 1
+            selected_weight += weight
+        elif row.get("selected") is not False:
+            raise V5ContractError(f"{context}.sector selected flag is invalid")
+    if selected_count > 3 or selected_weight > 0.15 + 1e-10:
+        raise V5ContractError(f"{context}.sector sleeve cap is invalid")
+
+
 def _validate_decision_shadow(
     research: Mapping[str, Any],
     *,
@@ -3511,6 +4068,8 @@ def _validate_decision_shadow(
     }
     if is_v2:
         expected_shadow_fields.add("current_signal")
+        if "allocation_candidate" in shadow:
+            expected_shadow_fields.add("allocation_candidate")
     if set(shadow) != expected_shadow_fields:
         raise V5ContractError(f"{context} fields are invalid")
     if shadow.get("role") != "research_only_no_forecast_or_champion_effect":
@@ -3520,6 +4079,11 @@ def _validate_decision_shadow(
         validated_current_signal = _validate_decision_shadow_current_signal(
             shadow.get("current_signal"), context=f"{context}.current_signal"
         )
+        if "allocation_candidate" in shadow:
+            _validate_allocation_candidate(
+                shadow["allocation_candidate"],
+                context=f"{context}.allocation_candidate",
+            )
     spec = _mapping(shadow.get("spec"), f"{context}.spec")
     if set(spec) != {"path", "sha256", "spec_id"}:
         raise V5ContractError(f"{context}.spec fields are invalid")

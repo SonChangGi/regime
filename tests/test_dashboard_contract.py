@@ -1506,16 +1506,15 @@ def test_model_forecast_selector_controls_the_one_week_forecast_layer() -> None:
     document = HTML_PATH.read_text(encoding="utf-8")
     script = JS_PATH.read_text(encoding="utf-8")
     styles = CSS_PATH.read_text(encoding="utf-8")
-    assert '<label for="model-forecast-select">1주 예측 모델</label>' in document
+    assert '<label for="model-forecast-select">비교 모델</label>' in document
     assert 'id="model-forecast-select"' in document
     assert (
-        'aria-controls="next-regime-card history transition-card '
-        'model-forecast-explorer conditional-stats"'
+        'aria-controls="history model-forecast-explorer conditional-stats"'
     ) in document
     assert 'aria-describedby="model-forecast-scope"' in document
     assert (
         'id="model-forecast-scope" class="sr-only">'
-        "선택 모델의 1주 예측 레이어"
+        "모델 비교와 예측 국면별 자산 성과에 적용"
     ) in document
     assert "관측 소속도와 1주 예측확률" in document
     assert 'id="chart-readout-actual"' in document
@@ -1529,6 +1528,8 @@ def test_model_forecast_selector_controls_the_one_week_forecast_layer() -> None:
     assert "function renderModelForecast()" in script
     assert "function renderForecastSurfaces()" in script
     assert "function forecastForWeek(" in script
+    assert "const decisionModel = operatingChampionName();" in script
+    assert "forecastForWeek(week, decisionModel)" in script
     assert "function oneWeekDepartureProbability(" in script
     assert 'dom["model-forecast-select"].addEventListener("change"' in script
     assert "function actualNextWeekForWeek(" in script
@@ -1585,8 +1586,9 @@ def test_label_copy_forecast_disclosure_and_model_section_stay_clear() -> None:
         assert f'id="{element_id}"' in document
     assert "function renderContractOverview()" in script
     assert "function forecastAvailability(" in script
-    assert 'dom["next-regime-card"].hidden = suppressed' in script
-    assert 'dom["transition-card"].hidden = suppressed' in script
+    assert 'classList.toggle("is-expired-forecast", policy.expiredLatest)' in script
+    assert 'dom["next-regime-card"].hidden = suppressed' not in script
+    assert 'dom["transition-card"].hidden = suppressed' not in script
     assert 'id="forecast-window-section"' in document
     assert '<details id="forecast-window-card"' in document
     forecast_details = document.split('<details id="forecast-window-card"', 1)[1].split(">", 1)[0]
@@ -1612,7 +1614,7 @@ def test_label_copy_forecast_disclosure_and_model_section_stay_clear() -> None:
     assert "@media (max-width: 760px)" in styles
 
 
-def test_results_first_layout_keeps_equal_cards_and_wide_history() -> None:
+def test_results_first_layout_keeps_decision_flow_and_wide_history() -> None:
     document = HTML_PATH.read_text(encoding="utf-8")
     script = JS_PATH.read_text(encoding="utf-8")
     styles = CSS_PATH.read_text(encoding="utf-8")
@@ -1626,8 +1628,9 @@ def test_results_first_layout_keeps_equal_cards_and_wide_history() -> None:
     assert "const desiredTicks = Math.min(7, history.length)" in script
     assert "function scrollChartDateIntoView" in script
     assert "requestAnimationFrame(() => scrollChartDateIntoView(state.chartPinnedDate))" in script
-    assert ".hero-grid {\n  grid-template-columns: repeat(3, minmax(0, 1fr));" in styles
-    assert ".hero-grid > .transition-card {\n    grid-column: auto;" in styles
+    assert ".overview-section .decision-pipeline" in styles
+    assert "grid-template-columns: minmax(220px, 0.9fr)" in styles
+    assert ".decision-transition" in styles
     assert "#history.analysis-grid" in styles
     assert ".factor-list {\n  margin-top: 16px;\n  grid-template-columns: repeat(4" in styles
     assert ".chart-point.is-active" in styles
@@ -1657,10 +1660,11 @@ def test_v5_only_sections_fail_closed_for_v4_payloads() -> None:
 
 def test_full_model_and_conditional_tables_are_collapsed_by_default() -> None:
     document = HTML_PATH.read_text(encoding="utf-8")
-    assert document.count('class="compact-table-details"') == 3
     assert "<summary>전체 모델 보기</summary>" in document
     assert "<summary>전체 이탈 모델 표</summary>" in document
     assert "상세 성과 표" in document
+    assert "<summary>현재 모델 진단</summary>" in document
+    assert "<summary>진단 지표</summary>" in document
     assert 'class="compact-table-details" open' not in document
 
 
@@ -1765,7 +1769,7 @@ process.stdout.write(JSON.stringify({{
     assert result["elapsed"] == {"status": "elapsed", "current": False, "remaining_seconds": 0}
 
 
-def test_expired_latest_forecast_hides_current_dom_surfaces_but_preserves_history() -> None:
+def test_expired_latest_forecast_marks_context_but_preserves_decision_flow() -> None:
     program = f"""
 const api = require({json.dumps(str(JS_PATH))});
 const payload = {{
@@ -1773,12 +1777,24 @@ const payload = {{
   forecast: {{status: "active", target_at: "2026-08-21T20:00:00Z"}}
 }};
 function surfaces() {{
+  function node() {{
+    const classes = [];
+    return {{
+      hidden: false,
+      classes,
+      classList: {{toggle(name, active) {{
+        const index = classes.indexOf(name);
+        if (active && index < 0) classes.push(name);
+        if (!active && index >= 0) classes.splice(index, 1);
+      }}}}
+    }};
+  }}
   return {{
-    "next-regime-card": {{hidden: false}},
-    "transition-card": {{hidden: false}},
-    "model-forecast-field": {{hidden: false}},
-    "model-forecast-explorer": {{hidden: false}},
-    history: {{hidden: false}}
+    "next-regime-card": node(),
+    "transition-card": node(),
+    "model-forecast-field": node(),
+    "model-forecast-explorer": node(),
+    history: node()
   }};
 }}
 const latest = surfaces();
@@ -1800,18 +1816,14 @@ process.stdout.write(JSON.stringify({{expiredPolicy, latest, historicalPolicy, h
         "showCurrentForecast": False,
         "preserveHistory": True,
     }
-    assert all(
-        result["latest"][surface]["hidden"]
-        for surface in (
-            "next-regime-card",
-            "transition-card",
-            "model-forecast-field",
-            "model-forecast-explorer",
-        )
-    )
+    assert all(not node["hidden"] for node in result["latest"].values())
+    for surface in ("next-regime-card", "transition-card", "model-forecast-explorer"):
+        assert "is-expired-forecast" in result["latest"][surface]["classes"]
+    assert result["latest"]["model-forecast-field"]["classes"] == []
     assert result["latest"]["history"]["hidden"] is False
     assert result["historicalPolicy"]["expiredLatest"] is False
     assert all(not node["hidden"] for node in result["historical"].values())
+    assert all(node["classes"] == [] for node in result["historical"].values())
 
 
 def test_payload_state_metadata_and_forecast_models_are_runtime_driven() -> None:
@@ -2476,6 +2488,30 @@ def test_v5_browser_accepts_both_decision_shadow_generations() -> None:
     payload = _valid_browser_payload_with_operating_forecast()
     payload["research"]["prospective_decision_shadow"] = zero_weeks
     assert _browser_validation_errors(payload) == []
+
+    allocation_candidate = _valid_browser_decision_shadow_v2()
+    allocation_candidate["allocation_candidate"] = {
+        "schema_version": "regime-allocation-shadow-candidate/1",
+        "role": "research_only_no_forecast_or_champion_effect",
+        "affects_official_forecast": False,
+        "affects_champion_selection": False,
+    }
+    payload = _valid_browser_payload_with_operating_forecast()
+    payload["research"]["prospective_decision_shadow"] = allocation_candidate
+    assert _browser_validation_errors(payload) == []
+
+
+def test_v5_browser_rejects_allocation_candidate_identity_tamper() -> None:
+    shadow = _valid_browser_decision_shadow_v2()
+    shadow["allocation_candidate"] = {
+        "schema_version": "regime-allocation-shadow-candidate/1",
+        "role": "research_only_no_forecast_or_champion_effect",
+        "affects_official_forecast": True,
+        "affects_champion_selection": False,
+    }
+    payload = _valid_browser_payload_with_operating_forecast()
+    payload["research"]["prospective_decision_shadow"] = shadow
+    assert _browser_validation_errors(payload)
 
 
 def test_v5_browser_rejects_decision_shadow_contract_and_numeric_tamper() -> None:
@@ -3337,9 +3373,13 @@ def test_conditional_performance_leads_with_asset_class_mean_comparison() -> Non
     assert 'createElement("th", "conditional-matrix-asset")' in script
     assert '`conditional-matrix-cell state-${code}' in script
     assert 'cell.style.setProperty("--heat"' in script
-    assert 'createElement("td", "conditional-matrix-overall")' in script
+    assert 'createElement("td", "conditional-matrix-overall")' not in script
+    assert 'createElement("span", "conditional-ci-bound", `하 ${formatSignedPercent' not in script
+    assert 'createElement("span", "conditional-ci-bound", `상 ${formatSignedPercent' not in script
+    assert '" is-uncertain"' in script
     assert '`${value > 0 ? "+" : ""}${formatSignedPercent(value, comparisonDigits)}`' in script
-    assert 'sampleValues.length === 1 ? `n ${formatNumber(sampleValues[0], 0)}` : ""' in script
+    assert 'sampleValues.length === 1 ? `n ${formatNumber(sampleValues[0], 0)}` : ""' not in script
+    assert '표본 ${sample}, 95% 구간 ${intervalText.replace("CI ", "")}' in script
     assert "unconditional_benchmark_mean_return" in script
     assert "excess_mean_return" in script
     assert "표본 부족" in script
@@ -3347,7 +3387,7 @@ def test_conditional_performance_leads_with_asset_class_mean_comparison() -> Non
     assert 'renderConditionalDetail();\n      syncViewUrl();\n      dom["screen-reader-status"]' in script
     assert ".conditional-matrix-cell.is-positive" in styles
     assert ".conditional-matrix-cell.is-negative" in styles
-    assert ".conditional-matrix-overall" in styles
+    assert ".conditional-matrix-cell.is-uncertain" in styles
 
 
 def test_url_view_state_core_split_and_optional_benchmark_helpers() -> None:
@@ -3574,18 +3614,21 @@ def test_decision_action_and_shadow_are_visible_before_conditional_results() -> 
     assert 'id="conditional-support-summary"' in document
     assert "진입 없음" in document
     assert '`성과 ${formatNumber(observedOutcomeRows, 0)} · ${formatNumber(forecastOutcomeRows, 0)}`' in script
-    assert '`연수익 ${spyReturnGap === null ? "—" : `${formatSignedPercent(spyReturnGap)}p`}`' in script
+    assert '`SPY 대비 연수익 ${spyReturnGap === null ? "—" : `${formatSignedPercent(spyReturnGap)}p`}`' in script
+    assert '"후보는 최초 배분 후 유지"' in script
     assert ".hero-grid > .decision-action-card" in styles
-    assert "grid-column: 1 / -1;" in styles
+    assert 'data-flow-stage="regime"' in document
+    assert 'data-flow-stage="forecast"' in document
+    assert 'data-flow-stage="allocation"' in document
     assert ".decision-shadow-economic-summary" in styles
     assert ".conditional-support-summary" in styles
-    assert 'probability_shadow: "국면 전략"' in script
+    assert 'probability_shadow: "위험 국면 전략"' in script
     assert 'spy_buy_and_hold: "SPY"' in script
     assert 'static_60_40: "60/40"' in script
     assert 'vol_target_60_40: "변동 60/40"' in script
     assert "공식 예측·선정 미반영" not in script
     assert '["연간 매수+매도", "annualized_turnover"' in script
-    assert '매수와 매도 비중을 모두 합산한 연환산 값' in script
+    assert '매수와 매도 비중을 모두 합산한 연환산 full-L1 값' in script
     assert "--site-nav-height: 57px" in styles
     assert "#conditional-stat-table col:nth-child(10)" in styles
     assert "evaluation_start_week" in script
@@ -3789,6 +3832,188 @@ def test_styles_have_no_remote_assets_or_gradients() -> None:
     assert "url(" not in styles
     assert "gradient" not in styles
     assert "@import" not in styles
+
+
+def test_decision_first_views_and_investment_charts_are_explicit() -> None:
+    document = HTML_PATH.read_text(encoding="utf-8")
+    script = JS_PATH.read_text(encoding="utf-8")
+    styles = CSS_PATH.read_text(encoding="utf-8")
+    for view, label in (
+        ("execution", "결정"),
+        ("performance", "성과"),
+        ("assets", "자산"),
+        ("model", "모델"),
+    ):
+        assert f'data-dashboard-view="{view}"' in document
+        assert f">{label}<" in document
+        assert f'data-active-view="{view}"' in styles
+    assert 'createElement("strong", null, "국면 판단")' not in script
+    assert "보유 유지" in script
+    assert "decision-allocation-flow" in script
+    assert "allocation_candidate" in script
+    assert "baseline_preferred" in script
+    assert "renderPerformanceLineChart" in script
+    assert "renderPerformanceDrawdownChart" in script
+    assert "Gross → Cost → Net" in script
+    assert "투자자 one-way · 연환산" in script
+    assert "full-L1" in script
+    assert "candidate && isObject(candidate.sector_rotation)" in script
+    assert "research.sector_rotation" in script
+    assert 'id="model-health-strip"' in document
+    assert "function renderModelHealthStrip" in script
+    assert "min-height: 44px" in styles
+    assert ".conditional-ci-label" in styles
+    assert "word-break: keep-all" in styles
+    assert "text-wrap: balance" in styles
+
+
+def test_default_execution_view_has_regime_forecast_allocation_flow_in_order() -> None:
+    document = HTML_PATH.read_text(encoding="utf-8")
+    styles = CSS_PATH.read_text(encoding="utf-8")
+    stage_positions = [
+        document.index('data-flow-stage="regime"'),
+        document.index('data-flow-stage="forecast"'),
+        document.index('data-flow-stage="allocation"'),
+    ]
+    assert stage_positions == sorted(stage_positions)
+    for index, heading in enumerate(("국면 판단", "모델 예측", "자산배분"), start=1):
+        assert f'<span class="decision-stage-index" aria-hidden="true">{index}</span>' in document
+        assert f"<strong>{heading}</strong>" in document
+    assert 'class="hero-grid decision-pipeline"' in document
+    assert "order: -1" not in styles
+    assert "order: -2" not in styles
+    assert ".decision-stage:not(:last-child)::after" in styles
+
+
+def test_flow_keeps_official_allocation_separate_from_comparison_model() -> None:
+    document = HTML_PATH.read_text(encoding="utf-8")
+    script = JS_PATH.read_text(encoding="utf-8")
+    assert '<span class="horizon-label">공식 모델</span>' in document
+    assert '<label for="model-forecast-select">비교 모델</label>' in document
+    assert "const decisionModel = operatingChampionName();" in script
+    assert "forecastForWeek(week, decisionModel)" in script
+    assert "renderDecisionShadowCurrentSummary();" in script
+    selector_handler = script.split('dom["model-forecast-select"].addEventListener("change"', 1)[1]
+    selector_handler = selector_handler.split("});", 1)[0]
+    assert "renderDecisionShadowCurrentSummary" not in selector_handler
+
+
+def test_nonessential_decision_copy_is_collapsed_after_primary_flow() -> None:
+    document = HTML_PATH.read_text(encoding="utf-8")
+    flow_end = document.index('data-flow-stage="allocation"')
+    disclosure = document.index('class="decision-evidence-disclosure card"')
+    assert flow_end < disclosure
+    assert "<summary>국면 판단 근거</summary>" in document
+    assert "<summary>발행 일정</summary>" not in document
+    assert 'class="decision-evidence-disclosure card" open' not in document
+    assert 'class="compact-table-details model-health-details" open' not in document
+    assert 'class="compact-table-details model-forecast-diagnostics" open' not in document
+    assert "발행 시점 경과 · 이번 주 신규 매매 없음" not in document
+    assert "발행 시점 경과 · 이번 주 신규 매매 없음" not in JS_PATH.read_text(encoding="utf-8")
+
+
+def test_allocation_candidate_contract_drives_execution_and_performance_views() -> None:
+    program = f"""
+const dashboard = require({json.dumps(str(JS_PATH))});
+const candidate = {{
+  policy_status: "baseline_preferred",
+  recommended_target: "realistic_60_40",
+  current_intent: {{
+    prior: {{weights: {{SPY: 0.55, TLT: 0.35}}, cash: 0.10}},
+    recommended: {{weights: {{SPY: 0.60, TLT: 0.40}}, cash: 0.00}},
+    target: {{weights: {{SPY: 0.60, TLT: 0.40}}, cash: 0.00}},
+    shadow_target: {{weights: {{SPY: 0.72, TLT: 0.23, XLK: 0.05}}, cash: 0.00}},
+    order_delta: {{weights: {{SPY: 0.05, TLT: 0.05}}}},
+    cost: {{bps_per_traded_notional: 10, estimated_rate: 0.0001}},
+    timing: {{}},
+  }},
+  performance: {{
+    evaluation_start_week: "2023-01-06",
+    evaluation_end_week: "2026-08-21",
+    strategies: {{
+      realistic_60_40: {{weeks: 189, annualized_one_way_turnover: 0.4, annualized_full_l1_turnover: 0.8}},
+      regime_only: {{weeks: 189}},
+      momentum_only: {{weeks: 189}},
+      combined: {{weeks: 189, annualized_one_way_turnover: 0.7, annualized_full_l1_turnover: 1.4}},
+    }},
+  }},
+  performance_path: [{{week: "2026-08-21", date: "2026-08-21", strategies: {{}}}}],
+  sector_rotation: {{ranking: [
+    {{symbol: "XLK", relative_momentum: 1.2, target_weight: 0.05, selected: true}},
+    {{symbol: "XLE", relative_momentum: -0.4, target_weight: 0.0, selected: false}},
+  ]}},
+}};
+const shadow = {{allocation_candidate: candidate}};
+const historical = {{strategies: {{spy_buy_and_hold: {{weeks: 189}}}}}};
+const strategies = dashboard.decisionPerformanceStrategies(shadow, historical);
+const snapshot = dashboard.decisionPortfolioSnapshot(shadow, historical, strategies, {{}});
+const legacyStrategies = {{
+  probability_shadow: {{weeks: 189}},
+  static_60_40: {{weeks: 189}},
+  spy_buy_and_hold: {{weeks: 189}},
+  vol_target_60_40: {{weeks: 189}},
+}};
+console.log(JSON.stringify({{
+  gate: snapshot.gateStatus,
+  current: snapshot.current,
+  target: snapshot.target,
+  shadowTarget: snapshot.candidateTarget,
+  costRate: snapshot.costRate,
+  primary: dashboard.decisionPerformanceMetadata(shadow, historical).primaryKey,
+  selectedPrimary: dashboard.decisionPerformanceMetadata(
+    {{allocation_candidate: {{...candidate, policy_status: "candidate_selected", recommended_target: "combined"}}}},
+    historical,
+  ).primaryKey,
+  strategies: Object.keys(strategies).sort(),
+  candidateKeys: dashboard.decisionPerformanceStrategyKeys(
+    shadow,
+    strategies,
+    "realistic_60_40",
+  ),
+  legacyKeys: dashboard.decisionPerformanceStrategyKeys(
+    {{}},
+    legacyStrategies,
+    "probability_shadow",
+  ),
+  pathLength: dashboard.decisionPerformanceRows(shadow, historical).length,
+  turnover: dashboard.turnoverValues(strategies.combined),
+  sectors: dashboard.normalizeSectorRankingRows(candidate.sector_rotation),
+  view: dashboard.dashboardViewFromHash("#conditional-stats"),
+}}));
+"""
+    result = json.loads(_run_node(program).stdout)
+    assert result["gate"] == "baseline_preferred"
+    assert result["current"] == {"SPY": 0.55, "TLT": 0.35, "CASH": 0.1}
+    assert result["target"] == {"SPY": 0.6, "TLT": 0.4, "CASH": 0}
+    assert result["shadowTarget"] == {"SPY": 0.72, "TLT": 0.23, "XLK": 0.05, "CASH": 0}
+    assert result["costRate"] == 0.0001
+    assert result["primary"] == "realistic_60_40"
+    assert result["selectedPrimary"] == "combined"
+    assert result["strategies"] == [
+        "combined",
+        "momentum_only",
+        "realistic_60_40",
+        "regime_only",
+        "spy_buy_and_hold",
+    ]
+    assert result["candidateKeys"] == [
+        "realistic_60_40",
+        "spy_buy_and_hold",
+        "combined",
+        "regime_only",
+        "momentum_only",
+    ]
+    assert result["legacyKeys"] == [
+        "probability_shadow",
+        "static_60_40",
+        "spy_buy_and_hold",
+        "vol_target_60_40",
+    ]
+    assert result["pathLength"] == 1
+    assert result["turnover"] == {"oneWay": 0.7, "fullL1": 1.4, "inferred": False}
+    assert result["sectors"][0]["symbol"] == "XLK"
+    assert result["sectors"][0]["selected"] is True
+    assert result["view"] == "assets"
 
 
 def test_v4_uses_the_same_transition_dashboard_surfaces_as_v3() -> None:

@@ -12,6 +12,8 @@ import pandas as pd
 import pytest
 
 from regime_lab.analysis.decision_shadow import load_decision_shadow_spec
+from regime_lab.allocation.shadow import load_allocation_shadow_spec
+from regime_lab.cli import _forecast_ledger_entry
 from regime_lab.data import AsOfValue, HealthStatus
 from regime_lab.forecast_ledger import (
     ConflictingEvaluationError,
@@ -180,6 +182,56 @@ def _states(*weeks: date) -> pd.Series:
         index=pd.DatetimeIndex(pd.to_datetime(list(weeks))),
         dtype=object,
     )
+
+
+def _with_allocation_candidate(
+    entry: ForecastLedgerEntry,
+    *,
+    spy_weight: float = 0.55,
+) -> ForecastLedgerEntry:
+    forecast = json.loads(json.dumps(entry.forecast))
+    shadow = forecast["decision_shadow"]
+    allocation_spec = load_allocation_shadow_spec()
+    # This fixture isolates the frozen-target evaluator to the anchor assets;
+    # production snapshots carry the full 11-sector universe.
+    allocation_spec["assets"]["sectors"] = []
+    allocation_identity = {
+        "path": "config/allocation-shadow-v1.json",
+        "sha256": canonical_json_sha256_v1(allocation_spec),
+        "spec_id": allocation_spec["spec_id"],
+    }
+    signal = shadow["current_signal"]
+    target_weights = {"SPY": spy_weight, "TLT": 1.0 - spy_weight}
+    current_intent = {
+        "schema_version": "regime-portfolio-intent/1",
+        "forecast": {
+            "origin_date": signal["origin_date"],
+            "target_week": signal["target_week"],
+            "model": signal["forecast_model"],
+            "probabilities": forecast["model_forecasts"][0]["probabilities"],
+        },
+        "recommended": {
+            "policy": "realistic_60_40",
+            "weights": target_weights,
+            "cash": 0.0,
+            "action": "rebalance",
+        },
+        "cash_accrual": {
+            "source": "DGS3MO",
+            "as_of": signal["origin_date"],
+            "annual_yield_percent": 5.2,
+            "weekly_factor": 1.001,
+        },
+        "timing": signal,
+    }
+    shadow["allocation_candidate"] = {
+        "schema_version": "regime-allocation-shadow-candidate/1",
+        "spec": allocation_identity,
+        "spec_snapshot": allocation_spec,
+        "current_intent": current_intent,
+        "current_intent_sha256": canonical_json_sha256_v1(current_intent),
+    }
+    return replace(entry, forecast=forecast)
 
 
 def test_operational_input_preserves_the_exact_asof_revision_identity() -> None:
@@ -460,6 +512,160 @@ def test_due_forecast_matures_once_with_split_safe_self_financing_accounting(
         with pytest.raises(sqlite3.IntegrityError, match="append-only"):
             ledger._connection.execute("DELETE FROM forecast_evaluation_ledger")
         ledger._connection.rollback()
+
+
+def test_allocation_maturity_uses_frozen_target_and_rejects_intent_tamper(
+    tmp_path: Path,
+) -> None:
+    entry = _with_allocation_candidate(_v2_entry(), spy_weight=0.55)
+    prices = _price_panel(date(2026, 8, 21), date(2026, 8, 28))
+    states = _states(date(2026, 8, 21), date(2026, 8, 28))
+    evaluated_at = datetime(2026, 8, 28, 21, 0, tzinfo=UTC)
+
+    with ForecastLedger(tmp_path / "allocation.sqlite3", clock=lambda: evaluated_at) as ledger:
+        ledger.append(entry)
+        report = mature_forecast_evaluations(
+            ledger,
+            canonical=prices,
+            states=states,
+            evaluated_at=evaluated_at,
+        )
+        assert len(report.appended) == 1
+        evaluation = ledger.read_evaluation(entry.key)
+        assert evaluation is not None and evaluation.status == "completed"
+        allocation = evaluation.evaluation["allocation_candidate"]
+        assert allocation["current_intent_sha256"] == entry.forecast[
+            "decision_shadow"
+        ]["allocation_candidate"]["current_intent_sha256"]
+        assert allocation["portfolio"]["applied_target_weights"] == pytest.approx(
+            {"SPY": 0.55, "TLT": 0.45}
+        )
+        # The legacy v2 decoder asks for a different SPY weight; the allocation
+        # evaluator must not recompute from those probabilities at maturity.
+        assert evaluation.evaluation["forecast"]["requested_target_weights"][
+            "SPY"
+        ] != 0.55
+
+    tampered_forecast = json.loads(json.dumps(entry.forecast))
+    tampered_forecast["decision_shadow"]["allocation_candidate"][
+        "current_intent"
+    ]["recommended"]["weights"] = {"SPY": 0.9, "TLT": 0.1}
+    tampered = replace(
+        entry,
+        input_snapshot_sha256="f" * 64,
+        forecast=tampered_forecast,
+    )
+    with ForecastLedger(tmp_path / "tampered.sqlite3", clock=lambda: evaluated_at) as ledger:
+        ledger.append(tampered)
+        report = mature_forecast_evaluations(
+            ledger,
+            canonical=prices,
+            states=states,
+            evaluated_at=evaluated_at,
+        )
+        assert len(report.appended) == 1
+        assert report.appended[0].status == "partial"
+        assert "allocation candidate snapshot hash is inconsistent" in str(
+            report.appended[0].evaluation["reason"]
+        )
+
+
+def test_cli_freezes_allocation_intent_and_spec_snapshot() -> None:
+    decision_spec = load_decision_shadow_spec()
+    allocation_spec = load_allocation_shadow_spec()
+    origin = date(2026, 8, 21)
+    target = date(2026, 8, 28)
+    signal = {
+        "origin_date": origin.isoformat(),
+        "target_week": target.isoformat(),
+        "scheduled_entry_at": "2026-08-24T09:30:00-04:00",
+        "decision_at": DECISION.isoformat(),
+        "forecast_model": "causal_dynamic_ensemble",
+        "status": "scheduled",
+        "action": "trade_at_scheduled_open",
+    }
+    current_intent = {
+        "schema_version": "regime-portfolio-intent/1",
+        "forecast": {"origin_date": origin.isoformat(), "target_week": target.isoformat()},
+        "recommended": {
+            "policy": "realistic_60_40",
+            "weights": {"SPY": 0.6, "TLT": 0.4},
+            "cash": 0.0,
+            "action": "rebalance",
+        },
+        "cash_accrual": {"weekly_factor": 1.001},
+        "timing": signal,
+    }
+    allocation_candidate = {
+        "schema_version": "regime-allocation-shadow-candidate/1",
+        "spec": {
+            "path": "config/allocation-shadow-v1.json",
+            "sha256": canonical_json_sha256_v1(allocation_spec),
+            "spec_id": allocation_spec["spec_id"],
+        },
+        "current_intent": current_intent,
+    }
+    payload = {
+        "meta": {"generation_id": "g1", "generated_at": DECISION.isoformat()},
+        "forecast": {
+            "status": "active",
+            "decision_at": DECISION.isoformat(),
+            "target_at": TARGET.isoformat(),
+        },
+        "weekly": [
+            {
+                "date": origin.isoformat(),
+                "current": {"state": "risk_on"},
+                "next_week": {"date": target.isoformat()},
+                "model_forecasts": [],
+            }
+        ],
+        "model": {
+            "candidate_manifest_sha256": "b" * 64,
+            "champion": "causal_dynamic_ensemble",
+            "lifecycle": {"status": "frozen"},
+        },
+        "label": {"spec_sha256": "a" * 64},
+        "selection": {"operating_champion": "causal_dynamic_ensemble"},
+        "research": {
+            "prospective_decision_shadow": {
+                "schema_version": "regime-prospective-decision-shadow/2",
+                "spec": {
+                    "path": "config/decision-shadow-v2.json",
+                    "sha256": canonical_json_sha256_v1(decision_spec),
+                    "spec_id": decision_spec["spec_id"],
+                },
+                "execution_contract": decision_spec["execution"],
+                "current_signal": signal,
+                "allocation_candidate": allocation_candidate,
+            }
+        },
+    }
+    entry = _forecast_ledger_entry(
+        payload,
+        operational_inputs=(_operational_input(),),
+        published_at=DECISION + timedelta(minutes=5),
+    )
+    frozen = entry.forecast["decision_shadow"]["allocation_candidate"]
+    assert frozen["spec_snapshot"] == allocation_spec
+    assert frozen["current_intent_sha256"] == canonical_json_sha256_v1(
+        current_intent
+    )
+    payload["research"]["prospective_decision_shadow"]["allocation_candidate"][
+        "current_intent"
+    ]["recommended"]["weights"]["SPY"] = 0.9
+    assert frozen["current_intent"]["recommended"]["weights"]["SPY"] == 0.6
+
+    broken = json.loads(json.dumps(payload))
+    broken["research"]["prospective_decision_shadow"]["allocation_candidate"][
+        "spec"
+    ]["sha256"] = "0" * 64
+    with pytest.raises(ValueError, match="allocation candidate snapshot"):
+        _forecast_ledger_entry(
+            broken,
+            operational_inputs=(_operational_input(),),
+            published_at=DECISION + timedelta(minutes=5),
+        )
 
 
 def test_due_missing_target_data_stays_unresolved_and_retries_without_sealing(

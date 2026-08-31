@@ -34,6 +34,10 @@ from regime_lab.analysis.decision_shadow import (
     prospective_ledger_shadow_contract,
 )
 from regime_lab.analysis.models import model_manifest, model_manifest_sha256
+from regime_lab.allocation.shadow import (
+    load_allocation_shadow_spec,
+    rebase_allocation_candidate_intent,
+)
 from regime_lab.config import default_config_path, load_config, project_root
 from regime_lab.dataset import build_weekly_dataset
 from regime_lab.database_backup import create_database_backup
@@ -144,6 +148,37 @@ def _forecast_ledger_entry(
         != canonical_json_sha256_v1(spec_snapshot)
     ):
         raise ValueError("operational decision shadow spec is inconsistent")
+    frozen_shadow = {field: shadow[field] for field in shadow_fields} | {
+        "spec_snapshot": spec_snapshot
+    }
+    allocation_candidate = shadow.get("allocation_candidate")
+    if allocation_candidate is not None:
+        if not isinstance(allocation_candidate, Mapping):
+            raise ValueError("operational allocation candidate is invalid")
+        allocation_spec = load_allocation_shadow_spec()
+        allocation_identity = allocation_candidate.get("spec")
+        current_intent = allocation_candidate.get("current_intent")
+        if (
+            allocation_candidate.get("schema_version")
+            != "regime-allocation-shadow-candidate/1"
+            or not isinstance(allocation_identity, Mapping)
+            or allocation_identity.get("spec_id") != allocation_spec.get("spec_id")
+            or allocation_identity.get("sha256")
+            != canonical_json_sha256_v1(allocation_spec)
+            or not isinstance(current_intent, Mapping)
+            or current_intent.get("schema_version") != "regime-portfolio-intent/1"
+        ):
+            raise ValueError("operational allocation candidate snapshot is inconsistent")
+        frozen_intent = json.loads(
+            json.dumps(dict(current_intent), sort_keys=True, separators=(",", ":"))
+        )
+        frozen_shadow["allocation_candidate"] = {
+            "schema_version": allocation_candidate["schema_version"],
+            "spec": dict(allocation_identity),
+            "spec_snapshot": allocation_spec,
+            "current_intent": frozen_intent,
+            "current_intent_sha256": canonical_json_sha256_v1(frozen_intent),
+        }
     input_snapshot_sha256 = operational_input_manifest_sha256(operational_inputs)
     publication_at = published_at.astimezone(timezone.utc)
     return ForecastLedgerEntry(
@@ -167,9 +202,8 @@ def _forecast_ledger_entry(
             "selection": payload["selection"],
             "lifecycle": model["lifecycle"],
             "decision_shadow": {
-                field: shadow[field] for field in shadow_fields
-            }
-            | {"spec_snapshot": spec_snapshot},
+                **frozen_shadow,
+            },
         },
     )
 
@@ -1645,6 +1679,54 @@ def command_build(args: argparse.Namespace) -> int:
                     decision_shadow["prospective_ledger"] = (
                         prospective_ledger_shadow_contract(ledger_summary)
                     )
+                    allocation_candidate = decision_shadow.get(
+                        "allocation_candidate"
+                    )
+                    if isinstance(allocation_candidate, Mapping):
+                        origin_week = date.fromisoformat(
+                            str(payload["weekly"][-1]["date"])
+                        )
+                        prior_weights: Mapping[str, float] | None = None
+                        prior_cash = 1.0
+                        prior_basis = "prospective_cash_genesis"
+                        completed_candidates = [
+                            evaluation
+                            for evaluation in ledger.list_evaluations()
+                            if evaluation.status == "completed"
+                            and evaluation.forecast_key.target_at.date()
+                            == origin_week
+                            and isinstance(
+                                evaluation.evaluation.get(
+                                    "allocation_candidate"
+                                ),
+                                Mapping,
+                            )
+                            and evaluation.evaluation[
+                                "allocation_candidate"
+                            ].get("status")
+                            == "completed"
+                        ]
+                        if completed_candidates:
+                            prior_evaluation = max(
+                                completed_candidates,
+                                key=lambda item: item.evaluated_at,
+                            )
+                            prior_portfolio = prior_evaluation.evaluation[
+                                "allocation_candidate"
+                            ]["portfolio"]
+                            prior_weights = prior_portfolio["close_weights"]
+                            prior_cash = float(
+                                prior_portfolio["close_cash"]
+                            )
+                            prior_basis = "prospective_ledger_close"
+                        decision_shadow["allocation_candidate"] = (
+                            rebase_allocation_candidate_intent(
+                                allocation_candidate,
+                                prior_weights=prior_weights,
+                                prior_cash=prior_cash,
+                                prior_basis=prior_basis,
+                            )
+                        )
 
             def append_forecast_ledger(bound_payload: dict[str, Any]) -> None:
                 entry = _forecast_ledger_entry(

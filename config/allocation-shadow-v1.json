@@ -1,0 +1,97 @@
+{
+  "schema_version": "regime-allocation-shadow-spec/1",
+  "spec_id": "selection-payoff-anchor-sector-shadow-v1",
+  "role": "research_only_no_forecast_or_champion_effect",
+  "assets": {
+    "anchor": ["SPY", "TLT"],
+    "sectors": ["XLB", "XLC", "XLE", "XLF", "XLI", "XLK", "XLP", "XLRE", "XLU", "XLV", "XLY"]
+  },
+  "anchor_weights": {
+    "SPY": 0.6,
+    "TLT": 0.4
+  },
+  "payoff_decoder": {
+    "selection_lookback_weeks": 520,
+    "minimum_selection_weeks": 52,
+    "shrinkage_pseudo_weeks": 52.0,
+    "prior_relative_payoff": 0.0,
+    "confidence_multipliers": [0.5, 0.75, 1.0],
+    "default_confidence_multiplier": 0.5,
+    "maximum_spy_tilt": 0.2,
+    "target_weekly_relative_volatility": 0.03,
+    "signal_scale": 0.25
+  },
+  "execution": {
+    "signal_origin": "completed_weekly_close",
+    "first_tradable_point": "next_week_adjusted_open",
+    "target_return_window": "next_week_open_to_close",
+    "rebalance_frequency": "weekly",
+    "late_signal_policy": "no_trade",
+    "no_trade_one_way_band": 0.05,
+    "partial_adjustment": 0.5,
+    "one_way_trade_cap": 0.1,
+    "minimum_expected_benefit_cost_multiple": 2.0,
+    "initial_allocation_costed_from_cash": true,
+    "initial_allocation_exempt_from_trade_cap": true
+  },
+  "return_accounting": {
+    "method": "split_safe_price_only_weekly",
+    "gap_window": "prior_raw_close_to_target_raw_open_after_inferred_split",
+    "holding_window": "target_raw_open_to_raw_close",
+    "distribution_policy": "excluded_without_ex_date_for_all_strategies",
+    "cash_proxy": "availability_aligned_DGS3MO_annual_yield_divided_by_52"
+  },
+  "cost": {
+    "traded_notional_definition": "sum_absolute_risky_asset_orders_cash_is_funding_not_an_order",
+    "primary_bps_per_traded_notional": 10.0,
+    "sensitivity_bps_per_traded_notional": [10.0, 20.0]
+  },
+  "sector_rotation": {
+    "maximum_total_asset_weight": 0.15,
+    "maximum_equity_fraction": 0.25,
+    "maximum_symbol_weight": 0.05,
+    "top_n": 3,
+    "seasoning_weeks": 104,
+    "rebalance_frequency": "monthly",
+    "momentum_combination": {
+      "26_to_4_week": 0.5,
+      "52_to_4_week": 0.5
+    },
+    "combined_score_weights": {
+      "momentum": 0.8,
+      "regime": 0.2
+    },
+    "momentum_candidates": [
+      {"id": "26_to_4_week", "start_lag_weeks": 26, "end_lag_weeks": 4},
+      {"id": "52_to_4_week", "start_lag_weeks": 52, "end_lag_weeks": 4}
+    ],
+    "inception_dates": {
+      "XLB": "1998-12-22",
+      "XLC": "2018-06-18",
+      "XLE": "1998-12-22",
+      "XLF": "1998-12-22",
+      "XLI": "1998-12-22",
+      "XLK": "1998-12-22",
+      "XLP": "1998-12-22",
+      "XLRE": "2015-10-07",
+      "XLU": "1998-12-22",
+      "XLV": "1998-12-22",
+      "XLY": "1998-12-22"
+    }
+  },
+  "selection_gate": {
+    "minimum_calibration_predictions": 52,
+    "require_log_loss_better_than_majority": true,
+    "candidate_required_to_improve": ["cumulative_return", "certainty_equivalent_return"],
+    "maximum_annualized_one_way_turnover": 1.5,
+    "maximum_drawdown_shortfall": 0.02,
+    "require_20bps_certainty_equivalent_improvement": true,
+    "require_positive_momentum_selection_mean": true,
+    "minimum_recurring_executed_rebalances": 2,
+    "require_ablation_improvement": ["regime_only", "momentum_only"]
+  },
+  "metrics": {
+    "annualization_weeks": 52.1775,
+    "certainty_equivalent_risk_aversion": 3.0
+  }
+}

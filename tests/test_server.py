@@ -156,3 +156,50 @@ def test_serve_dashboard_accepts_prevalidated_frozen_bytes(
     assert handler.func.payload_bytes is payload
     assert handler.func.comparison_bytes is comparison
     assert handler.func.json_overrides_enabled is True
+
+
+def test_serve_dashboard_projects_selected_v5_payload_for_core_first_app(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    web_root = tmp_path / "web"
+    web_root.mkdir()
+    (web_root / "index.html").write_text("<!doctype html>", encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    class FakeServer:
+        def __init__(self, _address: tuple[str, int], handler: object) -> None:
+            captured["handler"] = handler
+
+        def serve_forever(self) -> None:
+            pass
+
+        def server_close(self) -> None:
+            pass
+
+    monkeypatch.setattr(server, "ThreadingHTTPServer", FakeServer)
+    monkeypatch.setattr(
+        server,
+        "build_dashboard_split",
+        lambda _document, *, payload_raw: (b'{"core":true}', b'{"research":true}'),
+    )
+    payload = (
+        b'{"meta":{"generation_id":"candidate"},"research":{},'
+        b'"padding":"selected-local-preview"}'
+    )
+
+    server.serve_dashboard(web_root, payload_bytes=payload)
+
+    handler = captured["handler"]
+    instance = object.__new__(handler.func)
+    instance.send_response = lambda _status: None
+    instance.send_header = lambda _name, _value: None
+    instance.end_headers = lambda: None
+    instance.wfile = BytesIO()
+    instance.path = "/data/regime-core.json"
+    assert instance._serve_override_json(include_body=True) is True
+    assert instance.wfile.getvalue() == b'{"core":true}'
+    instance.wfile = BytesIO()
+    instance.path = "/data/regime-research.json"
+    assert instance._serve_override_json(include_body=True) is True
+    assert instance.wfile.getvalue() == b'{"research":true}'

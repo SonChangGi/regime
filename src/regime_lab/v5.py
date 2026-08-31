@@ -32,6 +32,10 @@ from regime_lab.analysis.fx_ablation import (
 )
 from regime_lab.analysis.outcomes import ASSETS, HORIZONS, build_conditional_asset_statistics
 from regime_lab.analysis.label_spec import load_label_spec
+from regime_lab.allocation.shadow import (
+    allocation_calibration_evidence,
+    build_allocation_shadow_candidate,
+)
 from regime_lab.operating_contract import load_operating_contract
 from regime_lab.v5_artifacts import build_v5_research_artifact_manifest
 
@@ -1286,12 +1290,54 @@ def build_v5_payload(
         weekly,
         bootstrap_resamples=outcome_bootstrap_resamples,
     )
-    research["prospective_decision_shadow"] = build_decision_shadow(
+    decision_shadow = build_decision_shadow(
         weekly,
         canonical,
         forecast_model=str(selection["operating_champion"]),
         decision_at=shadow_decision_at,
     )
+    allocation_assets = (
+        "spy",
+        "tlt",
+        "xlb",
+        "xlc",
+        "xle",
+        "xlf",
+        "xli",
+        "xlk",
+        "xlp",
+        "xlre",
+        "xlu",
+        "xlv",
+        "xly",
+    )
+    allocation_columns = {
+        "dgs3mo",
+        *{
+            f"{asset}_{suffix}"
+            for asset in allocation_assets
+            for suffix in (
+                "close",
+                "raw_open",
+                "raw_close",
+                "dividend_amount",
+            )
+        },
+    }
+    if "selection_end" in original_model and allocation_columns <= set(canonical):
+        decision_shadow["allocation_candidate"] = build_allocation_shadow_candidate(
+            weekly,
+            canonical,
+            states,
+            forecast_model=str(selection["operating_champion"]),
+            selection_end=str(original_model["selection_end"]),
+            current_signal=decision_shadow["current_signal"],
+            calibration_evidence=allocation_calibration_evidence(
+                original_model,
+                forecast_model=str(selection["operating_champion"]),
+            ),
+        )
+    research["prospective_decision_shadow"] = decision_shadow
     forecast_comparison = model.get("forecast_comparison", {})
     comparison_models = (
         tuple(forecast_comparison.get("models", ()))

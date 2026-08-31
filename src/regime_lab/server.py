@@ -2,14 +2,20 @@
 
 from __future__ import annotations
 
+import json
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from regime_lab.dashboard_split import build_dashboard_split
+from regime_lab.publication_contract import PublicContractError
+
 
 class DashboardHandler(SimpleHTTPRequestHandler):
     payload_bytes: bytes | None = None
+    core_bytes: bytes | None = None
+    research_bytes: bytes | None = None
     comparison_bytes: bytes | None = None
     selection_family_bytes: bytes | None = None
     json_overrides_enabled = False
@@ -21,6 +27,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 
     def _override_json_bytes(self) -> bytes | None:
         request_path = urlsplit(self.path).path
+        if request_path == "/data/regime-core.json":
+            return self.core_bytes
+        if request_path == "/data/regime-research.json":
+            return self.research_bytes
         if request_path == "/data/regime-results.json":
             return self.payload_bytes
         if request_path == "/data/v5-vs-v4-comparison.json":
@@ -32,6 +42,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
     def _serve_override_json(self, *, include_body: bool) -> bool:
         request_path = urlsplit(self.path).path
         if request_path not in {
+            "/data/regime-core.json",
+            "/data/regime-research.json",
             "/data/regime-results.json",
             "/data/v5-vs-v4-comparison.json",
             "/data/selection-family-audit.json",
@@ -102,6 +114,31 @@ def _frozen_json_bytes(
     return selected.read_bytes() if selected is not None else None
 
 
+def _dashboard_split_bytes(payload: bytes | None) -> tuple[bytes | None, bytes | None]:
+    """Project a selected V5 payload so core-first loading cannot bypass it."""
+
+    if payload is None:
+        return None, None
+    try:
+        document = json.loads(payload)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None, None
+    if not isinstance(document, dict):
+        return None, None
+    meta = document.get("meta")
+    research = document.get("research")
+    if (
+        not isinstance(meta, dict)
+        or not isinstance(meta.get("generation_id"), str)
+        or not isinstance(research, dict)
+    ):
+        return None, None
+    try:
+        return build_dashboard_split(document, payload_raw=payload)
+    except PublicContractError:
+        return None, None
+
+
 def serve_dashboard(
     web_root: Path,
     host: str = "127.0.0.1",
@@ -122,6 +159,7 @@ def serve_dashboard(
         payload_bytes,
         label="dashboard payload",
     )
+    selected_core, selected_research = _dashboard_split_bytes(selected_payload)
     selected_comparison = _frozen_json_bytes(
         comparison,
         comparison_bytes,
@@ -137,12 +175,16 @@ def serve_dashboard(
         (DashboardHandler,),
         {
             "payload_bytes": selected_payload,
+            "core_bytes": selected_core,
+            "research_bytes": selected_research,
             "comparison_bytes": selected_comparison,
             "selection_family_bytes": selected_selection_family,
             "json_overrides_enabled": any(
                 value is not None
                 for value in (
                     payload,
+                    selected_core,
+                    selected_research,
                     comparison,
                     selection_family,
                     payload_bytes,

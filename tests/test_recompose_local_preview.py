@@ -85,7 +85,20 @@ def test_recompose_preserves_forecast_identity_and_unrelated_research(
     monkeypatch.setattr(
         MODULE,
         "build_decision_shadow",
-        lambda *args, **kwargs: {"schema_version": "shadow-v2"},
+        lambda *args, **kwargs: {
+            "schema_version": "shadow-v2",
+            "current_signal": {"action": "no_trade"},
+        },
+    )
+    monkeypatch.setattr(
+        MODULE,
+        "build_allocation_shadow_candidate",
+        lambda *args, **kwargs: {"schema_version": "allocation-v1"},
+    )
+    monkeypatch.setattr(
+        MODULE,
+        "allocation_calibration_evidence",
+        lambda *args, **kwargs: {"status": "passed"},
     )
     monkeypatch.setattr(MODULE, "reviewed_candidate_payload", lambda value: value)
     monkeypatch.setattr(MODULE, "validate_v5_payload", lambda value: None)
@@ -103,6 +116,7 @@ def test_recompose_preserves_forecast_identity_and_unrelated_research(
                 "conditional_outcome_bootstrap_resamples": 1_999,
             },
             "forecast_comparison": {"models": ["champion"]},
+            "selection_end": "2023-01-01",
         },
         "research": {"unchanged_evidence": {"status": "keep"}},
     }
@@ -123,7 +137,9 @@ def test_recompose_preserves_forecast_identity_and_unrelated_research(
         "forecast"
     ]
     assert candidate["research"]["prospective_decision_shadow"] == {
-        "schema_version": "shadow-v2"
+        "schema_version": "shadow-v2",
+        "current_signal": {"action": "no_trade"},
+        "allocation_candidate": {"schema_version": "allocation-v1"},
     }
 
 

@@ -294,6 +294,7 @@
     sidecarAvailability: { comparison: "pending", selection: "pending", research: "pending" },
     hydratingView: false,
     decisionShadowEntryTimer: null,
+    activeView: "execution",
   };
   let loadSequence = 0;
 
@@ -1162,15 +1163,12 @@
 
   function applyExpiredForecastDomState(elements, policy) {
     if (!isObject(elements) || !isObject(policy)) return;
-    if (policy.expiredLatest) {
-      for (const id of [
-        "next-regime-card",
-        "transition-card",
-        "model-forecast-field",
-        "model-forecast-explorer",
-      ]) {
-        if (elements[id]) elements[id].hidden = true;
-      }
+    for (const id of ["next-regime-card", "transition-card", "model-forecast-explorer"]) {
+      if (
+        elements[id]
+        && elements[id].classList
+        && typeof elements[id].classList.toggle === "function"
+      ) elements[id].classList.toggle("is-expired-forecast", policy.expiredLatest);
     }
     if (policy.preserveHistory && elements.history) elements.history.hidden = false;
   }
@@ -1228,10 +1226,10 @@
       dom["forecast-remaining-horizon"],
       `${formatDurationSeconds(availability.remaining_seconds)}${timingSuffix}`,
     );
-    dom["hero-results"].classList.toggle(
-      "has-expired-current-forecast",
-      !selectedForecastIsHistorical() && !availability.current,
-    );
+    dom["hero-results"].classList.remove("has-expired-current-forecast");
+    dom["hero-results"].dataset.forecastStatus = !selectedForecastIsHistorical() && !availability.current
+      ? "elapsed"
+      : "current";
     scheduleForecastExpiryRefresh(availability);
   }
 
@@ -3058,7 +3056,11 @@
       "historical_reconstructed_shadow", "prospective_ledger",
       ...(isV2Schema ? ["current_signal"] : []),
     ];
-    if (!hasExactKeys(raw, shadowFields)) {
+    const hasAllocationCandidate = isV2Schema && Object.hasOwn(raw, "allocation_candidate");
+    const acceptedShadowFields = hasAllocationCandidate
+      ? [...shadowFields, "allocation_candidate"]
+      : shadowFields;
+    if (!hasExactKeys(raw, acceptedShadowFields)) {
       errors.push(`${context} 필드가 계약과 정확히 일치하지 않습니다.`);
     }
     if (
@@ -3069,6 +3071,18 @@
     }
     if (isV2Schema) {
       validateDecisionShadowCurrentSignal(raw.current_signal, `${context}.current_signal`, errors);
+    }
+    if (hasAllocationCandidate) {
+      const candidate = raw.allocation_candidate;
+      if (
+        !isObject(candidate)
+        || candidate.schema_version !== "regime-allocation-shadow-candidate/1"
+        || candidate.role !== "research_only_no_forecast_or_champion_effect"
+        || candidate.affects_official_forecast !== false
+        || candidate.affects_champion_selection !== false
+      ) {
+        errors.push(`${context}.allocation_candidate identity가 올바르지 않습니다.`);
+      }
     }
 
     const spec = raw.spec;
@@ -4683,7 +4697,7 @@
   function initializeDom() {
     const ids = [
       "app-state", "loading-state", "error-state", "empty-state", "error-title", "error-detail", "retry-button",
-      "dashboard", "header-analysis-date", "header-data-as-of", "header-model-health", "header-analysis-coverage", "theme-toggle",
+      "dashboard", "dashboard-view-nav", "header-analysis-date", "header-data-as-of", "header-model-health", "header-analysis-coverage", "theme-toggle",
       "theme-toggle-text", "copy-view-link", "dashboard-subtitle", "date-form", "analysis-date", "week-select",
       "snap-note", "previous-week", "next-week", "latest-week", "history-window",
       "hero-results", "contract-overview-grid", "label-spec-identity", "membership-definition",
@@ -4716,7 +4730,9 @@
       "conditional-asset-select", "conditional-horizon-select", "conditional-comparison-title", "conditional-comparison-caption", "conditional-unavailable",
       "conditional-results", "conditional-support-summary", "conditional-stat-grid",
       "conditional-stat-scroll", "conditional-stat-table-caption", "conditional-stat-body",
+      "sector-ranking", "sector-ranking-title", "sector-ranking-caption", "sector-ranking-selection", "sector-ranking-grid",
       "champion-summary", "model-evidence-summary", "model-caption", "model-loss-caption",
+      "model-health-strip",
       "model-loss-chart", "model-loss-axis", "leaderboard-body",
       "model-forecast-field", "model-forecast-select", "model-forecast-explorer",
       "model-forecast-role", "model-forecast-title", "model-forecast-caption",
@@ -4764,6 +4780,47 @@
     dom["app-state"].hidden = true;
     dom["app-state"].setAttribute("aria-busy", "false");
     dom.dashboard.hidden = false;
+    applyDashboardView(state.activeView);
+  }
+
+  const DASHBOARD_VIEW_FRAGMENTS = Object.freeze({
+    execution: "overview",
+    performance: "decision-shadow-block",
+    assets: "conditional-stats",
+    model: "history",
+  });
+
+  function dashboardViewFromHash(hash = "") {
+    const fragment = String(hash || "").replace(/^#/, "");
+    const match = Object.entries(DASHBOARD_VIEW_FRAGMENTS)
+      .find(([, sectionId]) => sectionId === fragment);
+    return match ? match[0] : "execution";
+  }
+
+  function applyDashboardView(requestedView, options = {}) {
+    const view = Object.hasOwn(DASHBOARD_VIEW_FRAGMENTS, requestedView)
+      ? requestedView
+      : "execution";
+    state.activeView = view;
+    if (dom.dashboard) dom.dashboard.dataset.activeView = view;
+    const links = dom["dashboard-view-nav"]
+      ? [...dom["dashboard-view-nav"].querySelectorAll("[data-dashboard-view]")]
+      : [];
+    for (const link of links) {
+      if (link.dataset.dashboardView === view) link.setAttribute("aria-current", "page");
+      else link.removeAttribute("aria-current");
+    }
+    if (options.syncHash && typeof window !== "undefined" && window.history) {
+      const url = new URL(window.location.href);
+      url.hash = DASHBOARD_VIEW_FRAGMENTS[view];
+      window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+    }
+    if (options.focus) {
+      const target = document.getElementById(DASHBOARD_VIEW_FRAGMENTS[view]);
+      if (target && typeof target.scrollIntoView === "function") {
+        target.scrollIntoView({ block: "start", behavior: "smooth" });
+      }
+    }
   }
 
   function setupTheme() {
@@ -4917,6 +4974,15 @@
   function bindEvents() {
     dom["theme-toggle"].addEventListener("click", toggleTheme);
     dom["copy-view-link"].addEventListener("click", copyCurrentViewLink);
+    if (dom["dashboard-view-nav"]) {
+      dom["dashboard-view-nav"].addEventListener("click", (event) => {
+        const link = event.target.closest("[data-dashboard-view]");
+        if (!link || link.hidden) return;
+        event.preventDefault();
+        applyDashboardView(link.dataset.dashboardView, { focus: true, syncHash: true });
+        dom["screen-reader-status"].textContent = `${link.textContent.trim()} 화면으로 이동했습니다.`;
+      });
+    }
     dom["retry-button"].addEventListener("click", loadData);
     dom["date-form"].addEventListener("submit", (event) => event.preventDefault());
     dom["analysis-date"].addEventListener("change", () => {
@@ -5005,6 +5071,9 @@
     dom["probability-chart-wrap"].addEventListener("pointercancel", resetChartPreview);
     dom["probability-chart-wrap"].addEventListener("keydown", handleChartKeydown);
     dom["probability-chart-wrap"].addEventListener("blur", resetChartPreview);
+    window.addEventListener("hashchange", () => {
+      applyDashboardView(dashboardViewFromHash(window.location.hash));
+    });
   }
 
   function populateDateControls() {
@@ -5041,13 +5110,13 @@
   }
 
   function renderNextForecastSurface(week) {
-    const suppressed = suppressCurrentForecastSurface();
-    dom["next-regime-card"].hidden = suppressed;
-    if (suppressed) {
+    const decisionModel = operatingChampionName();
+    const forecast = forecastForWeek(week, decisionModel);
+    dom["next-regime-card"].hidden = !isObject(forecast);
+    if (!isObject(forecast)) {
       renderNextModelContext(null);
       return null;
     }
-    const forecast = forecastForWeek(week, state.comparisonModel);
     const forecastDate = firstValue(forecast, ["date", "target_date", "period_end"]);
     renderRegime("next", forecast, forecastDate);
     const selectedModel = textValue(isObject(forecast) ? forecast.model : null, "");
@@ -5200,32 +5269,17 @@
 
   function renderNextModelContext(result) {
     const model = textValue(isObject(result) ? result.model : null, "미기재");
-    const details = [`모델 ${model}`];
-    const inputLabel = {
-      markov: "입력 현재 국면·과거 전이",
-      persistence: "입력 현재 국면",
-      xgboost: "입력 PIT 구조 피처",
-      xgb_hazard_destination: "입력 PIT 피처·이탈/목적지",
-      causal_dynamic_ensemble: "입력 완료 OOS 예측 풀",
-      causal_multiscale_ensemble: "입력 완료 OOS 예측 풀 26·52·104주",
-      pca_ridge_logistic: "입력 PIT 피처 · fold 내부 PCA",
-      recency_weighted_xgboost_208w: "입력 PIT 피처 · 208주 최근 가중",
-      recency_weighted_ridge_logistic_208w: "입력 PIT 피처 · 208주 최근 가중",
-      discounted_markov_208w: "입력 현재 국면 · 최근 전이 가중",
-    }[model];
-    if (inputLabel) details.push(inputLabel);
-    if (isObject(result) && result.fallback === true) details.push("fallback");
-    const health = state.raw && isObject(state.raw.model)
-      ? state.raw.model.model_health
-      : null;
     const championName = operatingChampionName();
-    if (isV5Payload() && model && model !== championName) {
-      details.push("비교 예측");
-    } else if (isV5Payload() && isObject(health)) {
-      details.push(health.status === "review_due" ? "검토 필요" : "정상");
-      details.push(...modelHealthReasonLabels(health.reasons));
-    }
-    setText(dom["next-model-context-detail"], details.join(" · "));
+    const role = model === championName ? "공식 모델" : "비교 모델";
+    const timing = suppressCurrentForecastSurface()
+      ? "발행 경과"
+      : selectedForecastIsHistorical()
+        ? "과거 OOS"
+        : "";
+    setText(
+      dom["next-model-context-detail"],
+      [role, modelForecastLabel(model), timing].filter(Boolean).join(" · "),
+    );
   }
 
   function transitionHorizonRole(result, horizon, forecastTiming = null) {
@@ -5241,13 +5295,7 @@
   }
 
   function renderTransition(week, forecast = null) {
-    const suppressed = suppressCurrentForecastSurface();
-    dom["transition-card"].hidden = suppressed;
-    if (suppressed) {
-      dom["transition-horizon-bars"].replaceChildren();
-      dom["transition-risk-detail"].replaceChildren();
-      return;
-    }
+    dom["transition-card"].hidden = false;
     const riskByHorizon = isObject(week.transition_risk) ? week.transition_risk : null;
     const selectedForecast = isObject(forecast) ? forecast : forecastForWeek(week);
     const value = oneWeekDepartureProbability(week, selectedForecast);
@@ -6155,6 +6203,179 @@
     return null;
   }
 
+  function allocationCandidateForShadow(shadow) {
+    if (!isObject(shadow)) return null;
+    return isObject(shadow.allocation_candidate)
+      ? shadow.allocation_candidate
+      : isObject(shadow.portfolio_candidate)
+        ? shadow.portfolio_candidate
+        : null;
+  }
+
+  function normalizeAllocationWeightMap(candidate) {
+    if (Array.isArray(candidate)) {
+      const entries = candidate
+        .filter(isObject)
+        .map((row) => [
+          textValue(firstValue(row, ["asset", "symbol", "ticker"]), "").toUpperCase(),
+          finiteNumber(firstValue(row, ["weight", "target_weight", "value"])),
+        ])
+        .filter(([asset, weight]) => asset && weight !== null);
+      return entries.length ? Object.freeze(Object.fromEntries(entries)) : null;
+    }
+    if (!isObject(candidate)) return null;
+    const nested = [
+      candidate.weights,
+      candidate.asset_weights,
+      candidate.target_weights,
+      candidate.current_weights,
+      candidate.order_weights,
+      candidate.allocations,
+    ].find((value) => isObject(value) || Array.isArray(value));
+    if (nested) {
+      const normalized = normalizeAllocationWeightMap(nested);
+      const cash = finiteNumber(candidate.cash);
+      return normalized && cash !== null
+        ? Object.freeze({ ...normalized, CASH: cash })
+        : normalized;
+    }
+    const entries = Object.entries(candidate)
+      .filter(([key, value]) => /^[A-Za-z][A-Za-z0-9.-]{1,9}$/.test(key) && finiteNumber(value) !== null)
+      .map(([key, value]) => [key.toUpperCase(), finiteNumber(value)]);
+    return entries.length ? Object.freeze(Object.fromEntries(entries)) : null;
+  }
+
+  function firstWeightMap(nodes) {
+    for (const node of nodes) {
+      const weights = normalizeAllocationWeightMap(node);
+      if (weights) return weights;
+    }
+    return null;
+  }
+
+  function allocationGateStatus(candidate) {
+    if (!isObject(candidate)) return "unavailable";
+    const gate = isObject(candidate.gate) ? candidate.gate : {};
+    return textValue(firstValue(candidate, [
+      "policy_status", "selection_status", "gate_status", "promotion_status", "status",
+    ]) || firstValue(gate, ["status", "decision", "result"]), "unavailable").toLowerCase();
+  }
+
+  function decisionPortfolioSnapshot(shadow, historical, strategies, currentSignal) {
+    const candidate = allocationCandidateForShadow(shadow);
+    const intent = candidate && isObject(candidate.current_intent)
+      ? candidate.current_intent
+      : {};
+    const signalCandidate = candidate && isObject(candidate.current_signal)
+      ? candidate.current_signal
+      : isObject(intent.timing)
+        ? intent.timing
+        : {};
+    const gateStatus = allocationGateStatus(candidate);
+    const candidateTarget = firstWeightMap([
+      intent.shadow_target,
+      signalCandidate.target_portfolio,
+      signalCandidate.target_weights,
+      candidate && candidate.target_portfolio,
+      candidate && candidate.proposed_portfolio,
+      candidate && candidate.target_weights,
+      candidate && candidate.weights,
+    ]);
+    const legacyTarget = latestDecisionShadowWeights(shadow, historical, strategies);
+    const legacyTargetMap = legacyTarget
+      ? Object.freeze({ SPY: legacyTarget.spy, TLT: legacyTarget.tlt })
+      : null;
+    const current = firstWeightMap([
+      intent.prior,
+      signalCandidate.current_portfolio,
+      signalCandidate.pretrade_portfolio,
+      signalCandidate.current_weights,
+      candidate && candidate.current_portfolio,
+      candidate && candidate.pretrade_portfolio,
+      candidate && candidate.current_weights,
+      currentSignal && currentSignal.current_portfolio,
+      currentSignal && currentSignal.current_weights,
+    ]);
+    const baselinePreferred = gateStatus === "baseline_preferred";
+    const selected = ["candidate_selected", "selected", "promoted", "active", "approved"].includes(gateStatus)
+      || Boolean(candidate && (candidate.selected === true || candidate.promoted === true));
+    const baselineTarget = Object.freeze({ SPY: 0.6, TLT: 0.4 });
+    const recommendedTarget = firstWeightMap([
+      intent.target,
+      intent.recommended,
+      intent.aim,
+    ]);
+    const recommendedPolicy = textValue(
+      firstValue(intent.recommended, ["policy", "strategy"])
+        || firstValue(intent.aim, ["policy", "strategy"]),
+      baselinePreferred ? "realistic_60_40" : "",
+    );
+    const candidatePolicy = textValue(
+      firstValue(intent.shadow_target, ["policy", "strategy"])
+        || firstValue(intent.shadow_aim, ["policy", "strategy"]),
+      "",
+    );
+    const target = recommendedTarget
+      || (baselinePreferred ? baselineTarget : selected && candidateTarget ? candidateTarget : candidateTarget || legacyTargetMap);
+    let order = firstWeightMap([
+      intent.order_delta,
+      signalCandidate.order_weights,
+      signalCandidate.trade_weights,
+      signalCandidate.weight_changes,
+      candidate && candidate.order_weights,
+      candidate && candidate.trade_weights,
+      candidate && candidate.weight_changes,
+      candidate && candidate.orders,
+    ]);
+    if (!order && current && target) {
+      const assets = new Set([...Object.keys(current), ...Object.keys(target)]);
+      order = Object.freeze(Object.fromEntries(
+        [...assets].map((asset) => [asset, (target[asset] || 0) - (current[asset] || 0)]),
+      ));
+    }
+    const intentCost = isObject(intent.cost) ? intent.cost : {};
+    const costBps = finiteNumber(firstValue(intentCost, ["bps_per_traded_notional", "estimated_cost_bps", "cost_bps"]))
+      ?? finiteNumber(firstValue(signalCandidate, ["estimated_cost_bps", "cost_bps", "transaction_cost_bps"]))
+      ?? finiteNumber(firstValue(candidate, ["estimated_cost_bps", "cost_bps", "transaction_cost_bps"]));
+    const costRate = finiteNumber(firstValue(intentCost, ["estimated_rate", "estimated_cost_rate", "cost_rate"]))
+      ?? finiteNumber(firstValue(signalCandidate, ["estimated_cost_rate", "cost_rate", "transaction_cost_rate"]))
+      ?? finiteNumber(firstValue(candidate, ["estimated_cost_rate", "cost_rate", "transaction_cost_rate"]));
+    return Object.freeze({
+      candidate,
+      gateStatus,
+      baselinePreferred,
+      selected,
+      current,
+      currentIsModel: isObject(intent.prior),
+      target,
+      candidateTarget,
+      recommendedPolicy,
+      candidatePolicy,
+      order,
+      costBps,
+      costRate,
+    });
+  }
+
+  function allocationWeightText(weights, emptyLabel = "—", signed = false) {
+    if (!isObject(weights) || !Object.keys(weights).length) return emptyLabel;
+    return Object.entries(weights)
+      .filter(([, value]) => finiteNumber(value) !== null && Math.abs(finiteNumber(value)) >= 0.00005)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([asset, value]) => `${asset} ${signed && value > 0 ? "+" : ""}${formatSignedPercent(value)}`)
+      .join(" · ") || emptyLabel;
+  }
+
+  function allocationPolicyLabel(value) {
+    return {
+      realistic_60_40: "60/40 리밸런싱",
+      static_60_40: "60/40 고정",
+      combined: "국면·모멘텀 결합",
+      regime_only: "국면 배분",
+      momentum_only: "섹터 모멘텀",
+    }[textValue(value, "")] || textValue(value, "배분 전략");
+  }
+
   function clearDecisionShadowEntryTimer() {
     if (state.decisionShadowEntryTimer === null) return;
     if (typeof window !== "undefined" && typeof window.clearTimeout === "function") {
@@ -6225,11 +6446,8 @@
     card.classList.remove("is-actionable");
     container.replaceChildren();
     const forecast = isObject(state.raw && state.raw.forecast) ? state.raw.forecast : {};
-    const isV2Signal = isObject(shadow)
-      && shadow.schema_version === "regime-prospective-decision-shadow/2"
-      && currentSignal
-      && week.date === currentSignal.origin_date;
-    if (!isV2Signal) {
+    const isCurrentSignal = currentSignal && week.date === currentSignal.origin_date;
+    if (!isCurrentSignal) {
       setText(title, "진입 없음");
       status.hidden = true;
       status.className = "support-chip is-limited";
@@ -6254,58 +6472,113 @@
     }
     status.hidden = false;
     const timingPolicy = decisionShadowTimingPolicy(shadow, forecast);
-    const latestWeights = latestDecisionShadowWeights(shadow, historical, strategies);
+    const portfolio = decisionPortfolioSnapshot(shadow, historical, strategies, currentSignal);
     const actionable = currentSignal.status === "scheduled"
       && currentSignal.action === "trade_at_scheduled_open"
       && !timingPolicy.runtimeEntryClosed;
     card.classList.toggle("is-actionable", actionable);
     const statusText = timingPolicy.missedEntry
-      ? "마감"
+      ? "진입 경과"
       : timingPolicy.runtimeEntryClosed
-        ? "마감"
+        ? "진입 경과"
         : "예정";
     setText(
       title,
       actionable
         ? "다음 주 시가 진입"
-        : "진입 없음",
+        : "보유 유지",
     );
     status.className = `support-chip ${actionable ? "is-ok" : "is-limited"}`;
     setText(status, statusText);
-    const facts = createElement("dl", "decision-action-facts");
+    const nextIssueAt = firstValue(portfolio.candidate, [
+      "next_issue_at", "next_signal_at", "next_publication_at", "next_decision_at",
+    ]) || firstValue(shadow, ["next_issue_at", "next_signal_at", "next_publication_at"])
+      || firstValue(forecast, ["target_at"]);
+    const nextTargetWeek = firstValue(portfolio.candidate, ["next_target_week"])
+      || isoDateOffset(currentSignal.target_week, 7);
+    const nextEntryAt = firstValue(portfolio.candidate, ["next_entry_at", "next_scheduled_entry_at"]);
+    const nextEntryDate = nextEntryAt || firstNyseSessionDateOfWeek(nextTargetWeek);
+    const policy = createElement("p", "decision-policy");
+    policy.append(
+      createElement("span", null, "채택 전략"),
+      createElement("strong", null, allocationPolicyLabel(portfolio.recommendedPolicy)),
+    );
+    container.append(policy);
+    const facts = createElement("dl", "decision-action-facts decision-action-timing");
     for (const [label, value] of [
-      ["대상 주", formatDate(currentSignal.target_week)],
-      ["진입", formatDateTime(currentSignal.scheduled_entry_at)],
+      ["t+1 대상 주", formatDate(currentSignal.target_week)],
+      ["이번 진입", formatDateTime(currentSignal.scheduled_entry_at)],
+      ["다음 진입", nextEntryAt ? formatDateTime(nextEntryAt) : `${formatDate(nextEntryDate)} · 09:30 ET`],
     ]) {
       const fact = createElement("div");
       fact.append(createElement("dt", null, label), createElement("dd", null, value));
       facts.append(fact);
     }
     container.append(facts);
-    if (actionable && latestWeights) {
-      const weights = createElement("div", "decision-shadow-weight-chips");
-      weights.append(
-        createElement("strong", null, `SPY ${formatSignedPercent(latestWeights.spy)}`),
-        createElement("strong", null, `TLT ${formatSignedPercent(latestWeights.tlt)}`),
-      );
-      container.append(weights);
+    const timingDetails = createElement("details", "decision-timing-details");
+    timingDetails.append(createElement("summary", null, "발행 일정"));
+    const timingMeta = createElement("dl", "decision-timing-meta");
+    for (const [label, value] of [
+      ["이번 발행", formatDateTime(currentSignal.decision_at || forecast.decision_at)],
+      ["다음 발행", formatDateTime(nextIssueAt)],
+    ]) {
+      const fact = createElement("div");
+      fact.append(createElement("dt", null, label), createElement("dd", null, value));
+      timingMeta.append(fact);
+    }
+    timingDetails.append(timingMeta);
+    container.append(timingDetails);
+    const flow = createElement("div", "decision-allocation-flow");
+    const noNewTrade = timingPolicy.noNewEntry || !actionable;
+    const costLabel = noNewTrade
+      ? "0.00%"
+      : portfolio.costRate !== null
+        ? formatSignedPercent(portfolio.costRate, 2)
+        : portfolio.costBps !== null
+          ? `${formatNumber(portfolio.costBps, 1)}bp 단가`
+          : "—";
+    for (const [label, value, className] of [
+      [portfolio.currentIsModel ? "현재 보유" : "현재", allocationWeightText(portfolio.current, noNewTrade ? "보유 유지" : "—"), "is-current"],
+      ["채택 목표", allocationWeightText(portfolio.target), "is-target"],
+      ["주문", noNewTrade ? "없음" : allocationWeightText(portfolio.order, "—", true), "is-order"],
+      ["비용", costLabel, "is-cost"],
+    ]) {
+      const item = createElement("div", `decision-allocation-step ${className}`);
+      item.append(createElement("span", null, label), createElement("strong", null, value));
+      if (className === "is-cost" && portfolio.costBps !== null) {
+        item.title = `거래 단가 ${formatNumber(portfolio.costBps, 1)}bp`;
+      }
+      flow.append(item);
+    }
+    container.append(flow);
+    if (portfolio.baselinePreferred && portfolio.candidateTarget) {
+      const candidateDetails = createElement("details", "decision-candidate-details");
+      candidateDetails.append(createElement(
+        "summary",
+        null,
+        `국면·모델 후보 · ${allocationPolicyLabel(portfolio.candidatePolicy)}`,
+      ));
+      const observer = createElement("p", "decision-observer-portfolio");
+      observer.append(createElement("strong", null, allocationWeightText(portfolio.candidateTarget)));
+      candidateDetails.append(observer);
+      container.append(candidateDetails);
     }
     card.setAttribute(
       "aria-label",
-      `${title.textContent}, 대상 주 ${formatDate(currentSignal.target_week)}, 진입 ${formatDateTime(currentSignal.scheduled_entry_at)}, ${statusText}${actionable && latestWeights ? `, SPY ${formatSignedPercent(latestWeights.spy)}, TLT ${formatSignedPercent(latestWeights.tlt)}` : ""}`,
+      `${title.textContent}, 대상 주 ${formatDate(currentSignal.target_week)}, ${portfolio.currentIsModel ? "전략 보유" : "현재"} ${allocationWeightText(portfolio.current, "보유 유지")}, 목표 ${allocationWeightText(portfolio.target)}, 주문 ${noNewTrade ? "없음" : allocationWeightText(portfolio.order, "없음", true)}, 예상 비용 ${costLabel}${portfolio.costBps !== null ? `, 거래 단가 ${formatNumber(portfolio.costBps, 1)}bp` : ""}, 다음 진입 ${nextEntryAt ? formatDateTime(nextEntryAt) : formatDate(nextEntryDate)}`,
     );
   }
 
-  function decisionShadowEconomicAssessment(historical) {
-    const strategies = isObject(historical) && isObject(historical.strategies)
-      ? historical.strategies
-      : null;
+  function decisionShadowEconomicAssessment(historical, strategiesValue = null) {
+    const strategies = isObject(strategiesValue)
+      ? strategiesValue
+      : isObject(historical) && isObject(historical.strategies)
+        ? historical.strategies
+        : null;
     if (!strategies) return null;
-    const strategy = isObject(strategies.probability_shadow)
-      ? strategies.probability_shadow
-      : {};
-    const spy = isObject(strategies.spy_buy_and_hold) ? strategies.spy_buy_and_hold : {};
-    const balanced = isObject(strategies.static_60_40) ? strategies.static_60_40 : {};
+    const strategy = strategySummaryRow(strategies, "combined");
+    const spy = strategySummaryRow(strategies, "spy_buy_and_hold");
+    const balanced = strategySummaryRow(strategies, "realistic_60_40");
     const weeks = finiteNumber(strategy.weeks) || 0;
     const minimumWeeks = finiteNumber(historical.minimum_evaluation_weeks) || 0;
     const complete = historical.status === "completed" && weeks >= minimumWeeks;
@@ -6333,31 +6606,494 @@
     });
   }
 
-  function renderDecisionShadowEconomicSummary(historical) {
-    const assessment = decisionShadowEconomicAssessment(historical);
+  function renderDecisionShadowEconomicSummary(historical, shadow = null) {
+    const assessment = decisionShadowEconomicAssessment(
+      historical,
+      decisionPerformanceStrategies(shadow, historical),
+    );
     const status = dom["decision-shadow-economic-status"];
     const conclusion = dom["decision-shadow-economic-conclusion"];
     const metrics = dom["decision-shadow-economic-metrics"];
-    if (!status || !conclusion || !metrics || !assessment) return;
+    if (!status || !conclusion || !metrics) return;
+    if (!assessment) {
+      dom["decision-shadow-economic-summary"].hidden = true;
+      return;
+    }
+    dom["decision-shadow-economic-summary"].hidden = false;
+    const gateStatus = allocationGateStatus(allocationCandidateForShadow(shadow));
+    const candidate = allocationCandidateForShadow(shadow);
+    const candidatePerformance = candidate && isObject(candidate.performance)
+      ? candidate.performance
+      : {};
+    const economicGate = isObject(candidatePerformance.economic_gate)
+      ? candidatePerformance.economic_gate
+      : {};
+    const recurringRebalances = finiteNumber(economicGate.recurring_executed_rebalances);
     const insufficient = assessment.status === "insufficient";
     const confirmed = assessment.status === "confirmed";
     const spyReturnGap = assessment.strategy.annualized_return !== null
       && assessment.spy.annualized_return !== null
       ? assessment.strategy.annualized_return - assessment.spy.annualized_return
       : null;
-    status.className = `support-chip ${confirmed ? "is-ok" : "is-limited"}`;
-    setText(status, insufficient ? "평가 중" : "SPY 대비");
+    const balancedReturnGap = assessment.strategy.annualized_return !== null
+      && assessment.balanced.annualized_return !== null
+      ? assessment.strategy.annualized_return - assessment.balanced.annualized_return
+      : null;
+    const returnComparison = `SPY 대비 연수익 ${spyReturnGap === null ? "—" : `${formatSignedPercent(spyReturnGap)}p`}`;
+    const baselineConclusion = recurringRebalances === 0
+      ? "후보는 최초 배분 후 유지"
+      : `후보 vs 60/40 연수익 ${balancedReturnGap === null ? "—" : `${formatSignedPercent(balancedReturnGap)}p`}`;
+    status.className = `support-chip ${["candidate_selected", "selected"].includes(gateStatus) || confirmed ? "is-ok" : "is-limited"}`;
+    setText(
+      status,
+      gateStatus === "baseline_preferred"
+        ? "60/40 유지"
+        : ["candidate_selected", "selected"].includes(gateStatus)
+          ? "선정"
+          : insufficient
+            ? "평가 중"
+            : "SPY 대비",
+    );
     setText(
       conclusion,
       insufficient
         ? `평가 ${formatNumber(assessment.weeks, 0)}주`
-        : `연수익 ${spyReturnGap === null ? "—" : `${formatSignedPercent(spyReturnGap)}p`}`,
+        : gateStatus === "baseline_preferred"
+          ? baselineConclusion
+          : returnComparison,
     );
     setText(metrics, "");
     dom["decision-shadow-economic-summary"].setAttribute(
       "aria-label",
       `${status.textContent}, ${conclusion.textContent}, ${metrics.textContent}`,
     );
+  }
+
+  function decisionPerformanceStrategies(shadow, historical) {
+    const candidate = allocationCandidateForShadow(shadow);
+    const candidatePerformance = candidate && isObject(candidate.performance)
+      ? candidate.performance
+      : candidate && isObject(candidate.backtest)
+        ? candidate.backtest
+        : null;
+    const legacy = historical && isObject(historical.strategies) ? historical.strategies : {};
+    const candidateStrategies = candidatePerformance && isObject(candidatePerformance.strategies)
+      ? candidatePerformance.strategies
+      : candidate && isObject(candidate.strategies)
+        ? candidate.strategies
+        : {};
+    const merged = { ...legacy, ...candidateStrategies };
+    return Object.keys(merged).length ? merged : null;
+  }
+
+  function decisionPerformanceRows(shadow, historical) {
+    const candidate = allocationCandidateForShadow(shadow);
+    const candidatePerformance = candidate && isObject(candidate.performance)
+      ? candidate.performance
+      : candidate && isObject(candidate.backtest)
+        ? candidate.backtest
+        : null;
+    for (const value of [
+      candidatePerformance && candidatePerformance.series,
+      candidatePerformance && candidatePerformance.performance_path,
+      candidatePerformance && candidatePerformance.wealth_path,
+      candidate && candidate.performance_path,
+      candidate && candidate.wealth_path,
+      candidate && candidate.weekly_path,
+      historical && historical.performance_path,
+      historical && historical.wealth_path,
+      historical && historical.weekly_path,
+      historical && historical.series,
+    ]) {
+      if (Array.isArray(value) && value.length) return value.filter(isObject);
+    }
+    return [];
+  }
+
+  function decisionPerformanceMetadata(shadow, historical) {
+    const candidate = allocationCandidateForShadow(shadow);
+    const performance = candidate && isObject(candidate.performance) ? candidate.performance : {};
+    return Object.freeze({
+      start: firstValue(performance, ["evaluation_start_week", "start", "sample_start"])
+        || firstValue(historical, ["evaluation_start_week", "first_tradable_week", "first_tradable_at"]),
+      end: firstValue(performance, ["evaluation_end_week", "end", "sample_end"])
+        || firstValue(historical, ["evaluation_end_week"]),
+      candidateAvailable: Object.keys(performance).length > 0,
+      primaryKey: candidate && candidate.recommended_target === "combined"
+        ? "combined"
+        : candidate && candidate.recommended_target === "realistic_60_40"
+          ? "realistic_60_40"
+          : "probability_shadow",
+    });
+  }
+
+  function decisionPerformanceStrategyKeys(shadow, strategies, primaryKey) {
+    const candidate = allocationCandidateForShadow(shadow);
+    const performance = candidate && isObject(candidate.performance) ? candidate.performance : {};
+    const candidateStrategies = isObject(performance.strategies)
+      ? performance.strategies
+      : candidate && isObject(candidate.strategies)
+        ? candidate.strategies
+        : null;
+    if (candidateStrategies) {
+      return [...new Set([
+        primaryKey,
+        "realistic_60_40",
+        "spy_buy_and_hold",
+        "combined",
+        "regime_only",
+        "momentum_only",
+      ])].filter((key) => (
+        isObject(candidateStrategies[key])
+        || (key === "spy_buy_and_hold" && isObject(strategies && strategies.spy_buy_and_hold))
+      ));
+    }
+    return [
+      "probability_shadow",
+      "static_60_40",
+      "spy_buy_and_hold",
+      "vol_target_60_40",
+    ].filter((key) => isObject(strategies && strategies[key]));
+  }
+
+  const DECISION_STRATEGY_ALIASES = Object.freeze({
+    probability_shadow: Object.freeze(["probability_shadow", "combined", "candidate", "allocation_candidate", "active"]),
+    realistic_60_40: Object.freeze(["realistic_60_40", "static_60_40", "60_40", "balanced", "baseline"]),
+    static_60_40: Object.freeze(["static_60_40", "realistic_60_40", "60_40", "balanced", "baseline"]),
+    regime_only: Object.freeze(["regime_only", "risk_regime_only"]),
+    momentum_only: Object.freeze(["momentum_only", "sector_momentum_only"]),
+    combined: Object.freeze(["combined", "probability_shadow", "candidate", "allocation_candidate", "active"]),
+    spy_buy_and_hold: Object.freeze(["spy_buy_and_hold", "spy", "SPY"]),
+    vol_target_60_40: Object.freeze(["vol_target_60_40", "risk_target_60_40", "vol_target"]),
+  });
+
+  function performanceRowNode(row, strategyKey) {
+    if (!isObject(row)) return null;
+    const aliases = DECISION_STRATEGY_ALIASES[strategyKey] || [strategyKey];
+    const strategies = isObject(row.strategies) ? row.strategies : {};
+    for (const alias of aliases) {
+      if (isObject(strategies[alias])) return strategies[alias];
+      if (isObject(row[alias])) return row[alias];
+    }
+    return null;
+  }
+
+  function performanceRowValue(row, strategyKey, measure) {
+    const aliases = DECISION_STRATEGY_ALIASES[strategyKey] || [strategyKey];
+    const measureAliases = {
+      wealth: ["net_wealth", "wealth", "wealth_index", "net_wealth_index", "cumulative_wealth"],
+      grossWealth: ["gross_wealth", "gross_wealth_index"],
+      drawdown: ["drawdown", "net_drawdown"],
+    }[measure] || [measure];
+    const node = performanceRowNode(row, strategyKey);
+    const nested = finiteNumber(firstValue(node, measureAliases));
+    if (nested !== null) return nested;
+    for (const alias of aliases) {
+      for (const metric of measureAliases) {
+        const flat = finiteNumber(firstValue(row, [
+          `${alias}_${metric}`,
+          `${metric}_${alias}`,
+        ]));
+        if (flat !== null) return flat;
+      }
+    }
+    return null;
+  }
+
+  function performanceRowDate(row) {
+    const value = firstValue(row, ["date", "week", "week_end", "target_week", "period_end"]);
+    return typeof value === "string" ? value.slice(0, 10) : null;
+  }
+
+  function strategySummaryRow(strategies, strategyKey) {
+    if (!isObject(strategies)) return {};
+    for (const alias of DECISION_STRATEGY_ALIASES[strategyKey] || [strategyKey]) {
+      if (isObject(strategies[alias])) return strategies[alias];
+    }
+    return {};
+  }
+
+  function performanceRangeLabel(rows, fallbackStart, fallbackEnd) {
+    const dates = rows.map(performanceRowDate).filter(isIsoDate).sort();
+    const start = dates[0] || fallbackStart;
+    const end = dates[dates.length - 1] || fallbackEnd;
+    return start && end ? `${formatDate(start)}–${formatDate(end)}` : "동일 평가 구간";
+  }
+
+  function svgLinePath(values, xForIndex, yForValue) {
+    let started = false;
+    return values.map((value, index) => {
+      if (finiteNumber(value) === null) return null;
+      const command = started ? "L" : "M";
+      started = true;
+      return `${command}${xForIndex(index).toFixed(2)},${yForValue(value).toFixed(2)}`;
+    }).filter(Boolean).join(" ");
+  }
+
+  function renderPerformanceLineChart(rows, strategyKeys, labels, evaluationRange, primaryKey) {
+    const card = createElement("section", "performance-visual performance-wealth-card");
+    const heading = createElement("div", "performance-visual-heading");
+    heading.append(
+      createElement("strong", null, "누적 자산"),
+      createElement("span", null, "지수 · 시작 1.0"),
+    );
+    card.append(heading);
+    const series = strategyKeys.map((key) => ({
+      key,
+      label: labels[key],
+      values: rows.map((row) => performanceRowValue(row, key, "wealth")),
+    })).filter((item) => item.values.some((value) => finiteNumber(value) !== null));
+    if (rows.length < 8 || !series.length) return null;
+    const width = 960;
+    const height = 286;
+    const margin = { top: 18, right: 18, bottom: 34, left: 54 };
+    const values = series.flatMap((item) => item.values).filter((value) => finiteNumber(value) !== null);
+    const low = Math.min(...values);
+    const high = Math.max(...values);
+    const padding = Math.max(0.03, (high - low) * 0.08);
+    const yMin = low - padding;
+    const yMax = high + padding;
+    const innerWidth = width - margin.left - margin.right;
+    const innerHeight = height - margin.top - margin.bottom;
+    const xForIndex = (index) => margin.left + innerWidth * index / Math.max(1, rows.length - 1);
+    const yForValue = (value) => margin.top + innerHeight * (yMax - value) / Math.max(0.000001, yMax - yMin);
+    const svg = createSvg("svg", {
+      class: "performance-chart",
+      viewBox: `0 0 ${width} ${height}`,
+      role: "img",
+      "aria-label": `${evaluationRange} 누적 자산 지수. ${series.map((item) => item.label).join(", ")} 비교`,
+    });
+    for (let index = 0; index < 4; index += 1) {
+      const value = yMin + (yMax - yMin) * index / 3;
+      const y = yForValue(value);
+      svg.append(createSvg("line", { class: "performance-grid-line", x1: margin.left, x2: width - margin.right, y1: y, y2: y }));
+      const label = createSvg("text", { class: "performance-axis-label", x: margin.left - 8, y: y + 4, "text-anchor": "end" });
+      label.textContent = formatNumber(value, 2);
+      svg.append(label);
+    }
+    for (const item of series) {
+      svg.append(createSvg("path", {
+        class: `performance-series performance-series-${item.key}${item.key === primaryKey ? " is-primary" : ""}`,
+        d: svgLinePath(item.values, xForIndex, yForValue),
+        fill: "none",
+      }));
+    }
+    const firstLabel = createSvg("text", { class: "performance-axis-label", x: margin.left, y: height - 8, "text-anchor": "start" });
+    firstLabel.textContent = formatDate(performanceRowDate(rows[0]));
+    const lastLabel = createSvg("text", { class: "performance-axis-label", x: width - margin.right, y: height - 8, "text-anchor": "end" });
+    lastLabel.textContent = formatDate(performanceRowDate(rows[rows.length - 1]));
+    svg.append(firstLabel, lastLabel);
+    const legend = createElement("div", "performance-legend");
+    for (const item of series) {
+      const legendItem = createElement("span", `performance-legend-${item.key}${item.key === primaryKey ? " is-primary" : ""}`);
+      legendItem.append(createElement("i"), createElement("span", null, item.label));
+      legend.append(legendItem);
+    }
+    card.append(svg, legend);
+    return card;
+  }
+
+  function drawdownSeries(rows, strategyKey) {
+    let peak = null;
+    return rows.map((row) => {
+      const supplied = performanceRowValue(row, strategyKey, "drawdown");
+      if (supplied !== null) return supplied;
+      const wealth = performanceRowValue(row, strategyKey, "wealth");
+      if (wealth === null) return null;
+      peak = peak === null ? wealth : Math.max(peak, wealth);
+      return peak > 0 ? wealth / peak - 1 : null;
+    });
+  }
+
+  function renderPerformanceDrawdownChart(rows, strategyKeys, labels, evaluationRange, primaryKey) {
+    const series = strategyKeys.map((key) => ({ key, label: labels[key], values: drawdownSeries(rows, key) }))
+      .filter((item) => item.values.some((value) => finiteNumber(value) !== null));
+    if (rows.length < 8 || !series.length) return null;
+    const card = createElement("section", "performance-visual performance-drawdown-card");
+    const heading = createElement("div", "performance-visual-heading");
+    heading.append(
+      createElement("strong", null, "낙폭"),
+      createElement("span", null, "고점 대비"),
+    );
+    const width = 960;
+    const height = 190;
+    const margin = { top: 16, right: 18, bottom: 28, left: 54 };
+    const values = series.flatMap((item) => item.values).filter((value) => finiteNumber(value) !== null);
+    const yMin = Math.min(-0.01, ...values);
+    const innerWidth = width - margin.left - margin.right;
+    const innerHeight = height - margin.top - margin.bottom;
+    const xForIndex = (index) => margin.left + innerWidth * index / Math.max(1, rows.length - 1);
+    const yForValue = (value) => margin.top + innerHeight * (0 - value) / Math.max(0.000001, -yMin);
+    const zeroY = yForValue(0);
+    const svg = createSvg("svg", {
+      class: "performance-chart performance-drawdown-chart",
+      viewBox: `0 0 ${width} ${height}`,
+      role: "img",
+      "aria-label": `${evaluationRange} 낙폭. 0선 포함`,
+    });
+    svg.append(createSvg("line", { class: "performance-zero-line", x1: margin.left, x2: width - margin.right, y1: zeroY, y2: zeroY }));
+    for (const item of [...series].reverse()) {
+      const line = svgLinePath(item.values, xForIndex, yForValue);
+      if (!line) continue;
+      if (item.key === primaryKey) {
+        const area = `${line} L${xForIndex(rows.length - 1).toFixed(2)},${zeroY.toFixed(2)} L${xForIndex(0).toFixed(2)},${zeroY.toFixed(2)} Z`;
+        svg.append(createSvg("path", { class: "performance-drawdown-area", d: area }));
+      }
+      svg.append(createSvg("path", { class: `performance-series performance-series-${item.key}${item.key === primaryKey ? " is-primary" : ""}`, d: line, fill: "none" }));
+    }
+    const minLabel = createSvg("text", { class: "performance-axis-label", x: margin.left - 8, y: yForValue(yMin) + 4, "text-anchor": "end" });
+    minLabel.textContent = formatSignedPercent(yMin, 0);
+    const zeroLabel = createSvg("text", { class: "performance-axis-label", x: margin.left - 8, y: zeroY + 4, "text-anchor": "end" });
+    zeroLabel.textContent = "0%";
+    svg.append(minLabel, zeroLabel);
+    card.append(heading, svg);
+    return card;
+  }
+
+  function renderPerformanceFallback(strategies, strategyKeys, labels, evaluationRange, evaluationWeeks, primaryKey) {
+    const card = createElement("section", "performance-visual performance-fallback-card");
+    const heading = createElement("div", "performance-visual-heading");
+    heading.append(
+      createElement("strong", null, "누적 성과"),
+      createElement("span", null, "누적 수익률"),
+    );
+    const rows = strategyKeys.map((key) => ({
+      key,
+      label: labels[key],
+      value: finiteNumber(strategySummaryRow(strategies, key).cumulative_return),
+    })).filter((item) => item.value !== null);
+    const scale = Math.max(0.01, ...rows.map((row) => Math.abs(row.value)));
+    const bars = createElement("div", "performance-summary-bars");
+    for (const row of rows) {
+      const item = createElement("div", `performance-summary-bar ${row.key === primaryKey ? "is-primary" : ""}`);
+      const track = createElement("span", "performance-summary-track");
+      const fill = createElement("i");
+      fill.style.width = `${Math.max(2, Math.abs(row.value) / scale * 100)}%`;
+      track.append(fill);
+      item.append(createElement("span", null, row.label), track, createElement("strong", null, formatSignedPercent(row.value)));
+      bars.append(item);
+    }
+    card.append(heading, bars);
+    return card;
+  }
+
+  function renderPerformanceBridge(strategyMetrics, evaluationRange, evaluationWeeks) {
+    const gross = finiteNumber(strategyMetrics.gross_cumulative_return);
+    const net = finiteNumber(strategyMetrics.cumulative_return);
+    if (gross === null || net === null) return null;
+    const costDrag = net - gross;
+    const card = createElement("section", "performance-visual performance-bridge-card");
+    const heading = createElement("div", "performance-visual-heading");
+    heading.append(
+      createElement("strong", null, "Gross → Cost → Net"),
+      createElement("span", null, "누적 수익률"),
+    );
+    const bridge = createElement("div", "performance-bridge");
+    for (const [label, value, operator] of [
+      ["Gross", gross, ""],
+      ["Cost drag", costDrag, "+"],
+      ["Net", net, "="],
+    ]) {
+      const step = createElement("div", `performance-bridge-step is-${label.toLowerCase().replace(/\s+/g, "-")}`);
+      if (operator) step.append(createElement("span", "performance-bridge-operator", operator));
+      step.append(createElement("small", null, label), createElement("strong", null, formatSignedPercent(value, 2)));
+      bridge.append(step);
+    }
+    card.append(heading, bridge);
+    return card;
+  }
+
+  function turnoverValues(strategyMetrics) {
+    const fullL1 = finiteNumber(firstValue(strategyMetrics, [
+      "annualized_full_l1_turnover", "full_l1_turnover", "annualized_turnover",
+    ]));
+    const suppliedOneWay = finiteNumber(firstValue(strategyMetrics, [
+      "annualized_one_way_turnover", "one_way_turnover", "investor_turnover",
+    ]));
+    return Object.freeze({
+      oneWay: suppliedOneWay !== null ? suppliedOneWay : fullL1 === null ? null : fullL1 / 2,
+      fullL1,
+      inferred: suppliedOneWay === null && fullL1 !== null,
+    });
+  }
+
+  function renderPerformanceTurnover(strategies, strategyKeys, labels, evaluationRange, evaluationWeeks, primaryKey) {
+    const rows = strategyKeys.map((key) => ({
+      key,
+      label: labels[key],
+      ...turnoverValues(strategySummaryRow(strategies, key)),
+    })).filter((item) => item.oneWay !== null);
+    if (!rows.length) return null;
+    const scale = Math.max(0.01, ...rows.map((row) => row.oneWay));
+    const card = createElement("section", "performance-visual performance-turnover-card");
+    const heading = createElement("div", "performance-visual-heading");
+    heading.append(
+      createElement("strong", null, "회전율"),
+      createElement("span", null, "투자자 one-way · 연환산"),
+    );
+    const bars = createElement("div", "performance-turnover-bars");
+    for (const row of rows) {
+      const item = createElement("div", `performance-turnover-row ${row.key === primaryKey ? "is-primary" : ""}`);
+      const track = createElement("span", "performance-turnover-track");
+      const fill = createElement("i");
+      fill.style.width = `${Math.max(2, row.oneWay / scale * 100)}%`;
+      track.append(fill);
+      item.append(createElement("span", null, row.label), track, createElement("strong", null, formatSignedPercent(row.oneWay)));
+      item.title = `투자자 one-way ${formatSignedPercent(row.oneWay)} · full-L1 ${formatSignedPercent(row.fullL1)}${row.inferred ? " · one-way는 full-L1의 1/2 환산" : ""}`;
+      bars.append(item);
+    }
+    card.append(heading, bars);
+    return card;
+  }
+
+  function renderPerformanceDetailTable(strategies, strategyKeys, labels, evaluationComplete, primaryKey) {
+    const metrics = [
+      ["연수익", "annualized_return", (value) => formatSignedPercent(value), true],
+      ["Sharpe", "sharpe", (value) => formatNumber(value, 2), true],
+      ["MDD", "maximum_drawdown", (value) => formatSignedPercent(value), false],
+      ["연간 매수+매도", "annualized_turnover", (value) => formatSignedPercent(value), false],
+    ];
+    const details = createElement("details", "performance-detail compact-table-details");
+    details.append(createElement("summary", null, "상세 지표 · full-L1 회전율"));
+    const scroll = createElement("div", "table-scroll performance-detail-scroll");
+    scroll.tabIndex = 0;
+    const strategyTable = createElement("table", "decision-shadow-table");
+    strategyTable.append(createElement("caption", "sr-only", "위험 국면 기반 주간 리밸런싱 전략 성과 비교"));
+    const strategyHead = createElement("thead");
+    const strategyHeadRow = createElement("tr");
+    strategyHeadRow.append(createElement("th", null, "지표"));
+    for (const key of strategyKeys) {
+      const heading = createElement("th", key === primaryKey ? "is-shadow" : null, labels[key]);
+      heading.setAttribute("scope", "col");
+      strategyHeadRow.append(heading);
+    }
+    strategyHead.append(strategyHeadRow);
+    const strategyBody = createElement("tbody");
+    for (const [label, field, formatter, requiresCompleteSample] of metrics) {
+      const row = createElement("tr");
+      const rowHeading = createElement("th", null, label);
+      rowHeading.setAttribute("scope", "row");
+      if (field === "annualized_turnover") {
+        rowHeading.title = "매수와 매도 비중을 모두 합산한 연환산 full-L1 값";
+        rowHeading.setAttribute("aria-label", "연간 매수와 매도 비중 합계 full-L1");
+      }
+      row.append(rowHeading);
+      for (const key of strategyKeys) {
+        const strategyMetrics = strategySummaryRow(strategies, key);
+        const rawValue = field === "annualized_turnover"
+          ? firstValue(strategyMetrics, ["annualized_full_l1_turnover", "annualized_turnover"])
+          : strategyMetrics[field];
+        const value = requiresCompleteSample && !evaluationComplete ? "—" : formatter(rawValue);
+        const cell = createElement("td", key === primaryKey ? "is-shadow" : null, value);
+        cell.setAttribute("data-label", labels[key]);
+        row.append(cell);
+      }
+      strategyBody.append(row);
+    }
+    strategyTable.append(strategyHead, strategyBody);
+    scroll.append(strategyTable);
+    details.append(scroll);
+    return details;
   }
 
   function renderDecisionShadow() {
@@ -6373,9 +7109,7 @@
     const historical = shadow && isObject(shadow.historical_reconstructed_shadow)
       ? shadow.historical_reconstructed_shadow
       : null;
-    const strategies = historical && isObject(historical.strategies)
-      ? historical.strategies
-      : null;
+    const strategies = decisionPerformanceStrategies(shadow, historical);
     renderDecisionShadowCurrentSummary(shadow, historical, strategies);
     if (!strategies) {
       block.hidden = true;
@@ -6384,12 +7118,18 @@
       return;
     }
     if (nav) nav.hidden = false;
-    renderDecisionShadowEconomicSummary(historical);
+    renderDecisionShadowEconomicSummary(historical, shadow);
     const isV2 = shadow.schema_version === "regime-prospective-decision-shadow/2";
+    const performanceMetadata = decisionPerformanceMetadata(shadow, historical);
+    const primaryKey = performanceMetadata.primaryKey;
     const labels = {
-      probability_shadow: "국면 전략",
+      probability_shadow: "위험 국면 전략",
       spy_buy_and_hold: "SPY",
       static_60_40: "60/40",
+      realistic_60_40: primaryKey === "realistic_60_40" ? "실행 기준 · 60/40" : "60/40",
+      regime_only: "위험 국면",
+      momentum_only: "섹터 모멘텀",
+      combined: primaryKey === "combined" ? "실행 기준 · 결합" : "관찰 후보 · 결합",
       vol_target_60_40: "변동 60/40",
     };
     grid.replaceChildren();
@@ -6399,80 +7139,55 @@
       createElement("strong", null, "주간 리밸런싱"),
       createElement("span", null, ""),
     );
-    const shadowMetrics = isObject(strategies.probability_shadow) ? strategies.probability_shadow : {};
+    const shadowMetrics = strategySummaryRow(strategies, primaryKey);
     const evaluationWeeks = finiteNumber(shadowMetrics.weeks) || 0;
-    const minimumEvaluationWeeks = finiteNumber(historical.minimum_evaluation_weeks) || 0;
-    const evaluationComplete = historical.status === "completed"
-      && evaluationWeeks >= minimumEvaluationWeeks;
-    const commonEvaluationStart = isV2
-      ? historical.evaluation_start_week
-      : historical.first_tradable_at;
-    const commonEvaluationEnd = isV2 ? historical.evaluation_end_week : null;
-    const strategyKeys = [
-      "probability_shadow",
-      "spy_buy_and_hold",
-      "static_60_40",
-      "vol_target_60_40",
-    ];
-    const metrics = [
-      ["연수익", "annualized_return", (value) => formatSignedPercent(value), true],
-      ["Sharpe", "sharpe", (value) => formatNumber(value, 2), true],
-      ["MDD", "maximum_drawdown", (value) => formatSignedPercent(value), false],
-      ["연간 매수+매도", "annualized_turnover", (value) => formatSignedPercent(value), false],
-    ];
-    const strategyTable = createElement("table", "decision-shadow-table");
-    strategyTable.append(createElement("caption", "sr-only", "주간 리밸런싱 전략 성과 비교"));
-    const strategyHead = createElement("thead");
-    const strategyHeadRow = createElement("tr");
-    strategyHeadRow.append(createElement("th", null, "지표"));
-    for (const key of strategyKeys) {
-      const heading = createElement("th", key === "probability_shadow" ? "is-shadow" : null, labels[key]);
-      heading.setAttribute("scope", "col");
-      strategyHeadRow.append(heading);
-    }
-    strategyHead.append(strategyHeadRow);
-    const strategyBody = createElement("tbody");
-    for (const [label, field, formatter, requiresCompleteSample] of metrics) {
-      const row = createElement("tr");
-      const rowHeading = createElement("th", null, label);
-      rowHeading.setAttribute("scope", "row");
-      if (field === "annualized_turnover") {
-        rowHeading.title = "매수와 매도 비중을 모두 합산한 연환산 값";
-        rowHeading.setAttribute("aria-label", "연간 매수와 매도 비중 합계");
-      }
-      row.append(rowHeading);
-      for (const key of strategyKeys) {
-        const strategyMetrics = isObject(strategies[key]) ? strategies[key] : {};
-        const value = requiresCompleteSample && !evaluationComplete
-          ? "—"
-          : formatter(strategyMetrics[field]);
-        const cell = createElement("td", key === "probability_shadow" ? "is-shadow" : null, value);
-        cell.setAttribute("data-label", labels[key]);
-        row.append(cell);
-      }
-      strategyBody.append(row);
-    }
-    strategyTable.append(strategyHead, strategyBody);
+    const minimumEvaluationWeeks = finiteNumber(historical && historical.minimum_evaluation_weeks) || 0;
+    const evaluationComplete = performanceMetadata.candidateAvailable
+      ? evaluationWeeks > 0
+      : historical && historical.status === "completed" && evaluationWeeks >= minimumEvaluationWeeks;
+    const commonEvaluationStart = performanceMetadata.start;
+    const commonEvaluationEnd = performanceMetadata.end;
+    const strategyKeys = decisionPerformanceStrategyKeys(shadow, strategies, primaryKey);
     const compactMonth = (value) => typeof value === "string" && value.length >= 7
       ? value.slice(0, 7).replace("-", ".")
       : null;
-    const evaluationRange = commonEvaluationStart && commonEvaluationEnd
+    const summarizedEvaluationRange = commonEvaluationStart && commonEvaluationEnd
       ? `${compactMonth(commonEvaluationStart)}–${compactMonth(commonEvaluationEnd)}`
       : commonEvaluationStart
         ? `${compactMonth(commonEvaluationStart)} 이후`
         : null;
-    reconstructedHeading.querySelector("span").textContent = [
-      evaluationRange,
-      `${formatNumber(evaluationWeeks, 0)}주`,
-      `비용 ${formatNumber(shadowMetrics.transaction_cost_bps, 1)}bp`,
-    ].filter(Boolean).join(" · ");
-    reconstructed.append(reconstructedHeading, strategyTable);
+    const performanceRows = decisionPerformanceRows(shadow, historical);
+    const evaluationRange = performanceRangeLabel(
+      performanceRows,
+      commonEvaluationStart,
+      commonEvaluationEnd,
+    ) || summarizedEvaluationRange || "동일 평가 구간";
+    reconstructedHeading.querySelector("span").textContent = [evaluationRange, `${formatNumber(evaluationWeeks, 0)}주`]
+      .filter(Boolean).join(" · ");
+    reconstructed.append(reconstructedHeading);
+    const wealthChart = renderPerformanceLineChart(performanceRows, strategyKeys, labels, evaluationRange, primaryKey);
+    const drawdownChart = renderPerformanceDrawdownChart(performanceRows, strategyKeys, labels, evaluationRange, primaryKey);
+    reconstructed.append(wealthChart || renderPerformanceFallback(
+      strategies, strategyKeys, labels, evaluationRange, evaluationWeeks, primaryKey,
+    ));
+    if (drawdownChart) reconstructed.append(drawdownChart);
+    const comparisonGrid = createElement("div", "performance-comparison-grid");
+    const bridge = renderPerformanceBridge(shadowMetrics, evaluationRange, evaluationWeeks);
+    const turnover = renderPerformanceTurnover(
+      strategies, strategyKeys, labels, evaluationRange, evaluationWeeks, primaryKey,
+    );
+    if (bridge) comparisonGrid.append(bridge);
+    if (turnover) comparisonGrid.append(turnover);
+    if (comparisonGrid.children.length) reconstructed.append(comparisonGrid);
+    reconstructed.append(renderPerformanceDetailTable(
+      strategies, strategyKeys, labels, evaluationComplete, primaryKey,
+    ));
     const forecast = isObject(state.raw && state.raw.forecast) ? state.raw.forecast : {};
     const timingPolicy = decisionShadowTimingPolicy(shadow, forecast);
     scheduleDecisionShadowEntryRerender(timingPolicy);
     grid.append(reconstructed);
     setText(dom["decision-shadow-caption"], "");
-    const firstTradable = isV2 ? historical.first_tradable_week : historical.first_tradable_at;
+    const firstTradable = performanceMetadata.start;
     block.title = firstTradable
       ? `${isV2 ? formatDate(firstTradable) : formatDateTime(firstTradable)} 이후 주간 성과`
       : "주간 전략 성과";
@@ -6819,10 +7534,10 @@
     dom["conditional-stat-grid"].setAttribute("aria-label", `${basisLabel} 자산별 평균 수익률`);
     setText(
       dom["conditional-stats-title"],
-      state.outcomeBasis === "forecast" ? "예측 국면별 자산 성과" : "실제 국면별 자산 성과",
+      state.outcomeBasis === "forecast" ? "예측 위험 국면별 자산 성과" : "실제 위험 국면별 자산 성과",
     );
     setText(dom["conditional-stats-caption"], `${basisLabel} · 다음 주 시가 진입 · ${horizonLabel} 보유`);
-    setText(dom["conditional-comparison-caption"], "Δ 전체 대비");
+    setText(dom["conditional-comparison-caption"], "평균 수익률");
 
     const table = createElement("table", "conditional-matrix");
     table.append(createElement("caption", "sr-only", `${basisLabel} ${horizonLabel} 자산 성과 행렬`));
@@ -6832,30 +7547,11 @@
     assetHead.setAttribute("scope", "col");
     headRow.append(assetHead);
     for (const code of STATE_ORDER) {
-      const stateRows = comparisonRows.filter(
-        (row) => row.state === code && row.status === "ok",
-      );
-      const sampleValues = [...new Set(
-        stateRows
-          .map((row) => conditionalSampleCounts(row).sample)
-          .filter((value) => finiteNumber(value) !== null),
-      )];
       const heading = createElement("th", `state-${code}`);
       heading.setAttribute("scope", "col");
-      heading.append(
-        createElement("strong", null, stateMeta(code).label),
-        createElement(
-          "small",
-          null,
-          sampleValues.length === 1 ? `n ${formatNumber(sampleValues[0], 0)}` : "",
-        ),
-      );
+      heading.append(createElement("strong", null, stateMeta(code).label));
       headRow.append(heading);
     }
-    const overallHead = createElement("th", "conditional-matrix-overall-head");
-    overallHead.setAttribute("scope", "col");
-    overallHead.append(createElement("strong", null, "전체"));
-    headRow.append(overallHead);
     thead.append(headRow);
 
     const tbody = createElement("tbody");
@@ -6877,6 +7573,12 @@
         const supportOk = Boolean(row && row.status === "ok");
         const decisionMetrics = conditionalDecisionMetrics(row, targetWeekSemantics);
         const value = displayValue(supportOk ? finiteNumber(decisionMetrics.mean) : null);
+        const intervalLower = displayValue(supportOk ? finiteNumber(decisionMetrics.lower) : null);
+        const intervalUpper = displayValue(supportOk ? finiteNumber(decisionMetrics.upper) : null);
+        const intervalIncludesZero = intervalLower !== null
+          && intervalUpper !== null
+          && intervalLower <= 0
+          && intervalUpper >= 0;
         const publishedExcess = supportOk ? finiteNumber(decisionMetrics.excess) : null;
         const excess = publishedExcess !== null
           ? displayValue(publishedExcess)
@@ -6896,36 +7598,23 @@
           : `${value > 0 ? "+" : ""}${formatSignedPercent(value, comparisonDigits)}`;
         const cell = createElement(
           "td",
-          `conditional-matrix-cell state-${code}${value === null ? " is-limited" : value < 0 ? " is-negative" : " is-positive"}`,
+          `conditional-matrix-cell state-${code}${value === null ? " is-limited" : intervalIncludesZero ? " is-uncertain" : value < 0 ? " is-negative" : " is-positive"}`,
         );
         if (value !== null) {
           const heat = Math.round(8 + Math.min(1, Math.abs(value) / comparisonScale) * 24);
           cell.style.setProperty("--heat", `${heat}%`);
         }
-        cell.append(
-          createElement("strong", null, formatted),
-          createElement(
-            "small",
-            null,
-            statusLabel || `Δ ${excess === null ? "—" : `${excess > 0 ? "+" : ""}${formatSignedPercent(excess, comparisonDigits)}`}`,
-          ),
-        );
+        const intervalText = intervalLower === null || intervalUpper === null
+          ? "CI —"
+          : `CI ${formatSignedPercent(intervalLower, comparisonDigits)}–${formatSignedPercent(intervalUpper, comparisonDigits)}`;
+        cell.append(createElement("strong", null, formatted));
+        if (statusLabel) cell.append(createElement("small", "conditional-cell-sample", statusLabel));
         cell.setAttribute(
           "aria-label",
-          `${basisLabel}, ${stateMeta(code).label}, ${asset}, 수익률 ${formatted}, 전체 평균 대비 ${formatSignedPercent(excess, comparisonDigits)}, 표본 ${sample}${statusLabel ? `, ${statusLabel}` : ""}`,
+          `${basisLabel}, ${stateMeta(code).label}, ${asset}, 수익률 ${formatted}, 전체 평균 대비 ${formatSignedPercent(excess, comparisonDigits)}, 표본 ${sample}, 95% 구간 ${intervalText.replace("CI ", "")}${intervalIncludesZero ? ", 0 포함" : ""}${statusLabel ? `, ${statusLabel}` : ""}`,
         );
         bodyRow.append(cell);
       }
-      const overallCell = createElement("td", "conditional-matrix-overall");
-      const overallFormatted = benchmarkValue === null
-        ? "—"
-        : `${benchmarkValue > 0 ? "+" : ""}${formatSignedPercent(benchmarkValue, comparisonDigits)}`;
-      overallCell.append(createElement("strong", null, overallFormatted));
-      overallCell.setAttribute(
-        "aria-label",
-        `${asset} 전체 국면 평균 ${overallFormatted}`,
-      );
-      bodyRow.append(overallCell);
       tbody.append(bodyRow);
     }
     table.append(thead, tbody);
@@ -7007,13 +7696,133 @@
     }
   }
 
+  function sectorRotationPayload(payload = state.raw) {
+    const research = isObject(payload) && isObject(payload.research) ? payload.research : null;
+    const shadow = research && isObject(research.prospective_decision_shadow)
+      ? research.prospective_decision_shadow
+      : null;
+    const candidate = allocationCandidateForShadow(shadow);
+    return candidate && isObject(candidate.sector_rotation)
+      ? candidate.sector_rotation
+      : research && isObject(research.sector_rotation)
+        ? research.sector_rotation
+        : null;
+  }
+
+  function normalizeSectorRankingRows(rotation) {
+    if (!isObject(rotation)) return [];
+    const collection = [rotation.ranking, rotation.rows, rotation.sectors, rotation.candidates]
+      .find((value) => Array.isArray(value) || isObject(value));
+    let rows = [];
+    if (Array.isArray(collection)) {
+      rows = collection.filter(isObject);
+    } else if (isObject(collection)) {
+      rows = Object.entries(collection).map(([symbol, value]) => (
+        isObject(value) ? { symbol, ...value } : { symbol, score: value }
+      ));
+    }
+    const explicitlySelected = new Set(
+      (Array.isArray(rotation.selected)
+        ? rotation.selected
+        : Array.isArray(rotation.selection)
+          ? rotation.selection
+          : [rotation.selected, rotation.selection, rotation.chosen])
+        .map((value) => isObject(value) ? firstValue(value, ["symbol", "ticker", "asset"]) : value)
+        .filter((value) => typeof value === "string")
+        .map((value) => value.toUpperCase()),
+    );
+    return rows.map((row, index) => {
+      const symbol = textValue(firstValue(row, ["symbol", "ticker", "asset", "sector"]), "").toUpperCase();
+      const compositeScore = finiteNumber(row.score);
+      const relativeMomentum = finiteNumber(firstValue(row, [
+        "relative_momentum", "relative_momentum_score", "momentum_score",
+      ]));
+      const score = compositeScore ?? relativeMomentum ?? finiteNumber(row.value);
+      const metricLabel = compositeScore !== null && relativeMomentum !== null
+        ? "결합 점수"
+        : "상대 모멘텀";
+      const rank = finiteNumber(firstValue(row, ["rank", "position"])) || index + 1;
+      const targetWeight = finiteNumber(firstValue(row, ["target_weight", "weight"]));
+      const selected = row.selected === true
+        || row.is_selected === true
+        || explicitlySelected.has(symbol)
+        || (targetWeight !== null && targetWeight > 0);
+      return Object.freeze({ symbol, score, rank, targetWeight, selected, metricLabel });
+    }).filter((row) => row.symbol && row.score !== null)
+      .sort((left, right) => left.rank - right.rank || right.score - left.score)
+      .slice(0, 11);
+  }
+
+  function renderSectorRanking() {
+    const section = dom["sector-ranking"];
+    const grid = dom["sector-ranking-grid"];
+    if (!section || !grid) return false;
+    const rotation = sectorRotationPayload();
+    const rows = normalizeSectorRankingRows(rotation);
+    if (!rows.length) {
+      section.hidden = true;
+      grid.replaceChildren();
+      return false;
+    }
+    const selected = rows.filter((row) => row.selected);
+    const research = isObject(state.raw && state.raw.research) ? state.raw.research : {};
+    const shadow = isObject(research.prospective_decision_shadow)
+      ? research.prospective_decision_shadow
+      : {};
+    const candidate = allocationCandidateForShadow(shadow);
+    const intent = candidate && isObject(candidate.current_intent) ? candidate.current_intent : {};
+    const intentForecast = isObject(intent.forecast) ? intent.forecast : {};
+    const asOf = firstValue(rotation, ["as_of", "date", "week", "origin_date"])
+      || firstValue(intentForecast, ["origin_date"])
+      || firstValue(shadow.current_signal, ["origin_date"]);
+    const metricLabel = rows[0].metricLabel || "상대 모멘텀";
+    setText(dom["sector-ranking-title"], "섹터 순위");
+    setText(
+      dom["sector-ranking-caption"],
+      [asOf ? formatDate(String(asOf).slice(0, 10), false) : null, metricLabel, `n ${rows.length}`]
+        .filter(Boolean).join(" · "),
+    );
+    if (selected.length) {
+      dom["sector-ranking-selection"].hidden = false;
+      dom["sector-ranking-selection"].className = "support-chip is-ok";
+      setText(dom["sector-ranking-selection"], `선정 ${selected.map((row) => row.symbol).join(" · ")}`);
+    } else {
+      dom["sector-ranking-selection"].hidden = true;
+    }
+    const scale = Math.max(0.000001, ...rows.map((row) => Math.abs(row.score)));
+    grid.replaceChildren();
+    for (const row of rows) {
+      const item = createElement("div", `sector-ranking-row${row.selected ? " is-selected" : ""}`);
+      const rank = createElement("span", "sector-rank", formatNumber(row.rank, 0));
+      const symbol = createElement("strong", "sector-symbol", row.symbol);
+      const track = createElement("span", "sector-score-track");
+      const fill = createElement("i", row.score >= 0 ? "is-positive" : "is-negative");
+      const width = Math.abs(row.score) / scale * 50;
+      fill.style.left = `${row.score >= 0 ? 50 : 50 - width}%`;
+      fill.style.width = `${Math.max(1.5, width)}%`;
+      track.append(fill);
+      const value = createElement("span", "sector-score", `${row.score > 0 ? "+" : ""}${formatNumber(row.score, 2)}`);
+      if (row.selected) value.append(createElement("i", "sector-selection-marker", "●"));
+      item.append(rank, symbol, track, value);
+      item.setAttribute(
+        "aria-label",
+        `${row.rank}위 ${row.symbol}, ${row.metricLabel} ${formatNumber(row.score, 2)}${row.selected ? ", 선정" : ""}`,
+      );
+      grid.append(item);
+    }
+    section.hidden = false;
+    return true;
+  }
+
   function renderConditionalStats() {
     const section = dom["conditional-stats"];
     if (!isV5Payload()) {
       section.hidden = true;
       dom["conditional-stats-nav"].hidden = true;
+      if (dom["sector-ranking"]) dom["sector-ranking"].hidden = true;
       return;
     }
+    const hasSectorRanking = renderSectorRanking();
     dom["conditional-stats-nav"].hidden = false;
     const hasResearchRows = state.researchAvailable && conditionalStatsRows().length > 0;
     dom["conditional-unavailable"].hidden = hasResearchRows;
@@ -7023,7 +7832,9 @@
     if (controls) controls.hidden = !hasResearchRows;
     if (!hasResearchRows) {
       const pending = state.sidecarAvailability.research === "pending";
+      dom["conditional-unavailable"].hidden = hasSectorRanking;
       setText(dom["conditional-unavailable"], pending ? "불러오는 중" : "자산 성과 없음");
+      setText(dom["conditional-stats-title"], hasSectorRanking ? "자산·섹터" : "위험 국면별 자산 성과");
       setText(dom["conditional-stats-caption"], "");
       section.hidden = false;
       return;
@@ -7403,7 +8214,7 @@
     const supported = isV5Payload()
       && models.length > 0
       && forecasts.length === models.length
-      && !suppressCurrentForecastSurface();
+      && Boolean(week);
     dom["model-forecast-field"].hidden = !supported;
     dom["model-forecast-explorer"].hidden = !supported;
     if (!supported) return;
@@ -7472,13 +8283,12 @@
     const officialState = officialForecast && officialForecast.state;
     const officialModelLabel = modelForecastLabel(operatingName);
     const agreement = forecast.state === officialState
-      ? "현재 예측과 국면 일치"
-      : `현재 ${officialModelLabel} ${stateMeta(officialState).ko}`;
+      ? "공식 예측과 일치"
+      : `${officialModelLabel} ${stateMeta(officialState).ko}`;
+    dom["model-forecast-caption"].hidden = isChampion;
     setText(
       dom["model-forecast-caption"],
-      isChampion
-        ? "현재 확률은 위 요약과 동일 · 아래는 선정 구간→추적진단"
-        : `${formatDate(week.date, false)} 관측 → ${formatDate(forecast.date, false)} 예측 · ${agreement}`,
+      isChampion ? "" : `${formatDate(week.date)} → ${formatDate(forecast.date)} · ${agreement}`,
     );
     const meta = stateMeta(forecast.state);
     setText(dom["model-forecast-symbol"], meta.symbol);
@@ -7506,6 +8316,70 @@
     );
   }
 
+  function renderModelHealthStrip(model) {
+    const container = dom["model-health-strip"];
+    if (!container) return;
+    const probabilityHealth = isObject(model && model.probability_health)
+      ? model.probability_health
+      : {};
+    const earlyWarning = isObject(model && model.early_warning_health)
+      ? model.early_warning_health
+      : {};
+    const predictionCount = finiteNumber(firstValue(probabilityHealth, ["n_predictions", "n", "sample_size"]))
+      ?? finiteNumber(firstValue(earlyWarning, ["n_predictions", "n", "sample_size"]));
+    const selectionCalibration = finiteNumber(firstValue(probabilityHealth, [
+      "selection_calibration_error", "selection_ece",
+    ]));
+    const recentCalibration = finiteNumber(firstValue(probabilityHealth, [
+      "calibration_error", "ece", "expected_calibration_error",
+    ]));
+    const drift = finiteNumber(firstValue(probabilityHealth, ["calibration_drift", "ece_drift"]));
+    const metrics = [
+      {
+        label: "Log loss",
+        value: formatNumber(firstValue(probabilityHealth, ["log_loss", "multiclass_log_loss"]), 4),
+        detail: `Brier ${formatNumber(firstValue(probabilityHealth, ["brier", "brier_score"]), 4)}`,
+      },
+      {
+        label: "Calibration",
+        value: selectionCalibration !== null && recentCalibration !== null
+          ? `${formatSignedPercent(selectionCalibration, 1)} → ${formatSignedPercent(recentCalibration, 1)}`
+          : formatSignedPercent(recentCalibration, 1),
+        detail: drift === null ? "ECE" : `drift ${drift > 0 ? "+" : ""}${formatSignedPercent(drift, 1)}p`,
+      },
+      {
+        label: "Transition recall",
+        value: formatPercent(firstValue(earlyWarning, ["on_time_recall", "transition_recall"]), 1),
+        detail: `precision ${formatPercent(firstValue(earlyWarning, ["precision", "transition_precision"]), 1)}`,
+      },
+      {
+        label: "Detection delay",
+        value: `${formatNumber(firstValue(earlyWarning, ["mean_detection_delay_forecast_weeks", "mean_detection_delay_weeks"]), 2)}주`,
+        detail: `false alarm ${formatNumber(firstValue(earlyWarning, ["false_alarms_per_year", "false_alarm_rate"]), 2)}/년`,
+      },
+    ];
+    const hasMetrics = metrics.some((metric) => !metric.value.includes("—"));
+    container.replaceChildren();
+    if (!hasMetrics) {
+      container.hidden = true;
+      return;
+    }
+    for (const metric of metrics) {
+      const item = createElement("div", "model-health-metric");
+      item.append(
+        createElement("span", null, metric.label),
+        createElement("strong", null, metric.value),
+        createElement("small", null, metric.detail),
+      );
+      container.append(item);
+    }
+    if (predictionCount !== null) {
+      container.setAttribute("aria-label", `모델 진단, 평가 표본 ${formatNumber(predictionCount, 0)}주`);
+      container.dataset.subtitle = `retrospective · n ${formatNumber(predictionCount, 0)}주`;
+    }
+    container.hidden = false;
+  }
+
   function renderModel() {
     const model = state.raw.model || {};
     const champion = model.champion;
@@ -7519,6 +8393,7 @@
       createElement("strong", null, modelForecastLabel(championName)),
     );
     renderModelEvidenceSummary(model, championName, holdoutDiagnostic);
+    renderModelHealthStrip(model);
     renderTransitionModels();
     dom["model-caption"].textContent = "2023년 이후 Log loss";
 
@@ -8032,6 +8907,7 @@
 
   function init() {
     initializeDom();
+    state.activeView = dashboardViewFromHash(window.location.hash);
     setupTheme();
     revealActiveProjectLink();
     window.addEventListener("load", revealActiveProjectLink, { once: true });
@@ -8093,6 +8969,15 @@
     analysisCoverageSummary,
     conditionalSupportSummary,
     decisionShadowEconomicAssessment,
+    allocationCandidateForShadow,
+    decisionPortfolioSnapshot,
+    decisionPerformanceStrategies,
+    decisionPerformanceRows,
+    decisionPerformanceMetadata,
+    decisionPerformanceStrategyKeys,
+    turnoverValues,
+    normalizeSectorRankingRows,
+    dashboardViewFromHash,
     decisionShadowTimingPolicy,
     firstNyseSessionDateOfWeek,
     validateCoreEnvelope,

@@ -1127,6 +1127,208 @@ def _investment_shadow_contract(
     return shadow
 
 
+def _allocation_candidate_contract(
+    shadow: Mapping[str, Any],
+) -> Mapping[str, Any] | None:
+    candidate = shadow.get("allocation_candidate")
+    if candidate is None:
+        return None
+    if not isinstance(candidate, Mapping):
+        raise ForecastLedgerError("allocation candidate snapshot is invalid")
+    spec = candidate.get("spec")
+    spec_snapshot = candidate.get("spec_snapshot")
+    intent = candidate.get("current_intent")
+    if (
+        candidate.get("schema_version") != "regime-allocation-shadow-candidate/1"
+        or not isinstance(spec, Mapping)
+        or not isinstance(spec_snapshot, Mapping)
+        or not isinstance(intent, Mapping)
+        or intent.get("schema_version") != "regime-portfolio-intent/1"
+        or spec.get("path") != "config/allocation-shadow-v1.json"
+        or spec.get("spec_id") != spec_snapshot.get("spec_id")
+        or spec.get("sha256") != canonical_json_sha256_v1(spec_snapshot)
+        or candidate.get("current_intent_sha256")
+        != canonical_json_sha256_v1(intent)
+    ):
+        raise ForecastLedgerError("allocation candidate snapshot hash is inconsistent")
+    return candidate
+
+
+def _allocation_assets(candidate: Mapping[str, Any]) -> tuple[str, ...]:
+    spec = candidate["spec_snapshot"]
+    raw_assets = spec.get("assets")
+    if not isinstance(raw_assets, Mapping):
+        raise ForecastLedgerError("allocation candidate assets are invalid")
+    assets = tuple(
+        str(value)
+        for value in (*raw_assets.get("anchor", ()), *raw_assets.get("sectors", ()))
+    )
+    if not assets or len(set(assets)) != len(assets):
+        raise ForecastLedgerError("allocation candidate assets are invalid")
+    return assets
+
+
+def _completed_prior_allocation_portfolio(
+    evaluation: ForecastEvaluationEntry | None,
+    assets: Sequence[str],
+) -> tuple[np.ndarray, float, str]:
+    if evaluation is None:
+        return np.zeros(len(assets), dtype=float), 1.0, "cash_genesis"
+    raw_candidate = evaluation.evaluation.get("allocation_candidate")
+    if not isinstance(raw_candidate, Mapping) or raw_candidate.get("status") != "completed":
+        return np.zeros(len(assets), dtype=float), 1.0, "cash_segment_restart"
+    portfolio = raw_candidate.get("portfolio")
+    if not isinstance(portfolio, Mapping):
+        raise ForecastLedgerError("prior allocation candidate portfolio is invalid")
+    raw_weights = portfolio.get("close_weights")
+    if not isinstance(raw_weights, Mapping):
+        raise ForecastLedgerError("prior allocation candidate weights are invalid")
+    weights = np.asarray([float(raw_weights.get(asset, 0.0)) for asset in assets])
+    cash = float(portfolio.get("close_cash"))
+    if (
+        not np.isfinite(weights).all()
+        or not math.isfinite(cash)
+        or (weights < -1e-12).any()
+        or cash < -1e-12
+        or not math.isclose(float(weights.sum()) + cash, 1.0, abs_tol=1e-8)
+    ):
+        raise ForecastLedgerError("prior allocation candidate closing state is invalid")
+    return weights, cash, "prior_completed_allocation_evaluation"
+
+
+def _evaluate_allocation_candidate_week(
+    candidate: Mapping[str, Any],
+    *,
+    target_week: date,
+    gap_relatives: Mapping[str, float],
+    open_to_close_relatives: Mapping[str, float],
+    prior_evaluation: ForecastEvaluationEntry | None,
+) -> dict[str, Any]:
+    intent = candidate["current_intent"]
+    forecast = intent.get("forecast")
+    timing = intent.get("timing")
+    recommended = intent.get("recommended")
+    cash_accrual = intent.get("cash_accrual")
+    if not all(
+        isinstance(value, Mapping)
+        for value in (forecast, timing, recommended, cash_accrual)
+    ):
+        raise ForecastLedgerError("allocation candidate intent is incomplete")
+    if (
+        str(forecast.get("target_week")) != target_week.isoformat()
+        or str(timing.get("target_week")) != target_week.isoformat()
+    ):
+        raise ForecastLedgerError("allocation candidate target identity is invalid")
+    assets = _allocation_assets(candidate)
+    raw_target = recommended.get("weights")
+    if not isinstance(raw_target, Mapping):
+        raise ForecastLedgerError("allocation candidate frozen target is invalid")
+    requested = np.asarray(
+        [float(raw_target.get(asset, 0.0)) for asset in assets], dtype=float
+    )
+    requested_cash = float(recommended.get("cash"))
+    if (
+        not np.isfinite(requested).all()
+        or not math.isfinite(requested_cash)
+        or (requested < -1e-12).any()
+        or requested_cash < -1e-12
+        or not math.isclose(float(requested.sum()) + requested_cash, 1.0, abs_tol=1e-8)
+    ):
+        raise ForecastLedgerError("allocation candidate frozen target is invalid")
+    prior_weights, prior_cash, prior_source = _completed_prior_allocation_portfolio(
+        prior_evaluation, assets
+    )
+    gaps = np.asarray([float(gap_relatives[asset]) for asset in assets], dtype=float)
+    intraday = np.asarray(
+        [float(open_to_close_relatives[asset]) for asset in assets], dtype=float
+    )
+    held = prior_weights > 1e-12
+    requested_assets = requested > 1e-12
+    if (
+        bool((~np.isfinite(gaps[held])).any())
+        or bool((gaps[held] <= 0.0).any())
+        or bool((~np.isfinite(intraday[held | requested_assets])).any())
+        or bool((intraday[held | requested_assets] <= 0.0).any())
+    ):
+        raise ForecastLedgerError("allocation candidate return relatives are unavailable")
+    safe_gaps = np.where(np.isfinite(gaps), gaps, 1.0)
+    if prior_source == "cash_genesis" or prior_source == "cash_segment_restart":
+        gap_factor = 1.0
+        pretrade = prior_weights.copy()
+        pretrade_cash = prior_cash
+    else:
+        gap_factor = float(prior_cash + np.dot(prior_weights, safe_gaps))
+        if not math.isfinite(gap_factor) or gap_factor <= 0.0:
+            raise ForecastLedgerError("allocation candidate gap wealth is invalid")
+        pretrade = prior_weights * safe_gaps / gap_factor
+        pretrade_cash = prior_cash / gap_factor
+    frozen_action = str(recommended.get("action"))
+    timing_action = str(timing.get("action"))
+    trade_actions = {"rebalance", "initial_allocate"}
+    hold_actions = {"no_trade", "band_hold", "economic_hold"}
+    if timing_action == "no_trade" or frozen_action in hold_actions:
+        applied = pretrade.copy()
+        applied_cash = float(pretrade_cash)
+        action = "no_trade"
+        full_l1 = 0.0
+        one_way = 0.0
+    elif timing_action == "trade_at_scheduled_open" and frozen_action in trade_actions:
+        applied = requested.copy()
+        applied_cash = requested_cash
+        full_l1 = float(np.abs(applied - pretrade).sum())
+        one_way = 0.5 * (full_l1 + abs(applied_cash - pretrade_cash))
+        action = frozen_action
+    else:
+        raise ForecastLedgerError("allocation candidate frozen action is invalid")
+    spec = candidate["spec_snapshot"]
+    cost_bps = float(spec["cost"]["primary_bps_per_traded_notional"])
+    transaction_cost = full_l1 * cost_bps / 10_000.0
+    cash_factor = float(cash_accrual.get("weekly_factor"))
+    if not math.isfinite(cash_factor) or cash_factor <= 0.0:
+        raise ForecastLedgerError("allocation candidate cash factor is invalid")
+    safe_intraday = np.where(np.isfinite(intraday), intraday, 1.0)
+    holding_factor = float(np.dot(applied, safe_intraday) + applied_cash * cash_factor)
+    if not math.isfinite(holding_factor) or holding_factor <= 0.0:
+        raise ForecastLedgerError("allocation candidate holding wealth is invalid")
+    gross_factor = gap_factor * holding_factor
+    net_factor = gap_factor * (1.0 - transaction_cost) * holding_factor
+    close_weights = applied * safe_intraday / holding_factor
+    close_cash = applied_cash * cash_factor / holding_factor
+    return {
+        "status": "completed",
+        "schema_version": "regime-allocation-candidate-evaluation/1",
+        "spec": dict(candidate["spec"]),
+        "current_intent_sha256": str(candidate["current_intent_sha256"]),
+        "frozen_policy": str(recommended.get("policy")),
+        "portfolio": {
+            "prior_source": prior_source,
+            "pretrade_weights": {
+                asset: float(pretrade[index]) for index, asset in enumerate(assets)
+            },
+            "pretrade_cash": float(pretrade_cash),
+            "applied_target_weights": {
+                asset: float(applied[index]) for index, asset in enumerate(assets)
+            },
+            "applied_cash": float(applied_cash),
+            "close_weights": {
+                asset: float(close_weights[index]) for index, asset in enumerate(assets)
+            },
+            "close_cash": float(close_cash),
+        },
+        "execution": {
+            "action": action,
+            "one_way_turnover": float(one_way),
+            "full_l1_turnover": float(full_l1),
+            "transaction_cost_bps": cost_bps,
+            "transaction_cost_rate": float(transaction_cost),
+        },
+        "returns": {
+            "gross_return": float(gross_factor - 1.0),
+            "net_return": float(net_factor - 1.0),
+        },
+    }
+
+
 def _completed_prior_portfolio(
     evaluation: ForecastEvaluationEntry,
 ) -> tuple[np.ndarray, float]:
@@ -1271,6 +1473,8 @@ def _evaluate_completed_week(
     evaluated_at: datetime,
     prior_evaluation: ForecastEvaluationEntry | None,
     genesis_source: str,
+    allocation_gap_relatives: Mapping[str, float] | None = None,
+    allocation_open_to_close_relatives: Mapping[str, float] | None = None,
 ) -> ForecastEvaluationEntry:
     # Import lazily so the private ledger remains usable without importing the
     # dashboard composer and to avoid a module cycle.
@@ -1476,6 +1680,22 @@ def _evaluate_completed_week(
             "net_return": net_factor - 1.0,
         },
     }
+    allocation_candidate = _allocation_candidate_contract(shadow)
+    if allocation_candidate is not None:
+        if (
+            allocation_gap_relatives is None
+            or allocation_open_to_close_relatives is None
+        ):
+            raise ForecastLedgerError(
+                "allocation candidate return frames are unavailable"
+            )
+        document["allocation_candidate"] = _evaluate_allocation_candidate_week(
+            allocation_candidate,
+            target_week=target_week,
+            gap_relatives=allocation_gap_relatives,
+            open_to_close_relatives=allocation_open_to_close_relatives,
+            prior_evaluation=prior_evaluation,
+        )
     return ForecastEvaluationEntry(
         forecast_key=entry.key,
         evaluated_at=evaluated_at,
@@ -1514,6 +1734,7 @@ def mature_forecast_evaluations(
     from regime_lab.analysis.decision_shadow import (
         split_safe_price_only_return_frames,
     )
+    from regime_lab.allocation.shadow import split_safe_asset_return_frames
 
     try:
         gap_frame, intraday_frame = split_safe_price_only_return_frames(canonical)
@@ -1522,6 +1743,9 @@ def mature_forecast_evaluations(
         gap_frame = pd.DataFrame(index=canonical.index)
         intraday_frame = pd.DataFrame(index=canonical.index)
         return_frame_error = str(exc)
+    allocation_return_cache: dict[
+        tuple[str, ...], tuple[pd.DataFrame, pd.DataFrame]
+    ] = {}
     entries = list(ledger.list_entries())
     existing = {
         item.forecast_key.as_sql_tuple(): item for item in ledger.list_evaluations()
@@ -1720,6 +1944,34 @@ def mature_forecast_evaluations(
             unresolved[entry.key] = "target_price_relatives_unavailable"
             previous_v2 = entry
             continue
+        allocation_gaps: Mapping[str, float] | None = None
+        allocation_intraday: Mapping[str, float] | None = None
+        try:
+            allocation_candidate = _allocation_candidate_contract(shadow)
+        except ForecastLedgerError:
+            allocation_candidate = None
+        if allocation_candidate is not None:
+            allocation_assets = _allocation_assets(allocation_candidate)
+            try:
+                if allocation_assets not in allocation_return_cache:
+                    allocation_return_cache[allocation_assets] = (
+                        split_safe_asset_return_frames(canonical, allocation_assets)
+                    )
+                allocation_gap_frame, allocation_intraday_frame = (
+                    allocation_return_cache[allocation_assets]
+                )
+                allocation_gaps = {
+                    asset: float(allocation_gap_frame.loc[canonical_at, asset])
+                    for asset in allocation_assets
+                }
+                allocation_intraday = {
+                    asset: float(allocation_intraday_frame.loc[canonical_at, asset])
+                    for asset in allocation_assets
+                }
+            except (KeyError, TypeError, ValueError):
+                unresolved[entry.key] = "allocation_candidate_prices_unavailable"
+                previous_v2 = entry
+                continue
         try:
             evaluation = _evaluate_completed_week(
                 entry,
@@ -1732,6 +1984,8 @@ def mature_forecast_evaluations(
                 evaluated_at=evaluation_clock,
                 prior_evaluation=prior_evaluation,
                 genesis_source=genesis_source,
+                allocation_gap_relatives=allocation_gaps,
+                allocation_open_to_close_relatives=allocation_intraday,
             )
         except (ForecastLedgerError, KeyError, TypeError, ValueError) as exc:
             evaluation = _partial_evaluation(

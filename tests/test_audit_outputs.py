@@ -1226,6 +1226,78 @@ def test_v5_decision_shadow_audit_binds_v2_spec_and_late_no_trade() -> None:
         audit_outputs._audit_v5_decision_shadow(payload)
 
 
+def test_v5_allocation_candidate_audit_binds_spec_and_official_forecast(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        audit_outputs,
+        "_validate_allocation_candidate",
+        lambda candidate, *, context: None,
+    )
+    local_spec = json.loads(
+        (ROOT / "config" / "allocation-shadow-v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    probabilities = {
+        "risk_on": 0.2,
+        "transition": 0.7,
+        "risk_off": 0.1,
+    }
+    candidate = {
+        "policy_status": "baseline_preferred",
+        "recommended_target": "realistic_60_40",
+        "spec": {
+            "path": "config/allocation-shadow-v1.json",
+            "spec_id": local_spec["spec_id"],
+            "sha256": audit_outputs.canonical_json_sha256(local_spec),
+        },
+        "current_intent": {
+            "forecast": {
+                "origin_date": "2026-08-21",
+                "target_week": "2026-08-28",
+                "model": "causal_dynamic_ensemble",
+                "probabilities": probabilities,
+            },
+            "recommended": {"policy": "realistic_60_40"},
+            "target": {
+                "weights": {"SPY": 0.6, "TLT": 0.4},
+                "cash": 0.0,
+            },
+        },
+    }
+    payload = {
+        "selection": {"operating_champion": "causal_dynamic_ensemble"},
+        "weekly": [
+            {
+                "date": "2026-08-21",
+                "model_forecasts": [
+                    {
+                        "model": "causal_dynamic_ensemble",
+                        "date": "2026-08-28",
+                        "probabilities": probabilities,
+                    }
+                ],
+            }
+        ],
+    }
+
+    assert audit_outputs._audit_v5_allocation_candidate(payload, candidate) == {
+        "status": "verified",
+        "policy_status": "baseline_preferred",
+        "recommended_target": "realistic_60_40",
+        "forecast_model": "causal_dynamic_ensemble",
+    }
+
+    broken = deepcopy(candidate)
+    broken["current_intent"]["forecast"]["model"] = "markov"
+    with pytest.raises(
+        audit_outputs.AuditFailure,
+        match="differs from the official forecast",
+    ):
+        audit_outputs._audit_v5_allocation_candidate(payload, broken)
+
+
 def test_current_live_decision_shadow_spec_remains_auditable() -> None:
     payload = json.loads(
         (ROOT / "publication" / "live" / "regime-results.json").read_text(

@@ -16,7 +16,7 @@ def test_document_has_language_landmarks_and_skip_link() -> None:
     assert 'class="skip-link" href="#main-content"' in HTML
     assert '<nav class="site-nav" aria-label="연결 프로젝트 바로가기">' in HTML
     assert '<header class="page-header" aria-labelledby="page-title">' in HTML
-    assert '<nav class="section-nav" aria-label="페이지 섹션 바로가기">' in HTML
+    assert '<nav class="section-nav" aria-label="페이지 섹션 바로가기" id="dashboard-view-nav">' in HTML
     assert '<main id="main-content" tabindex="-1">' in HTML
     assert 'id="data-health"' in HTML
 
@@ -31,15 +31,14 @@ def test_interactive_controls_have_accessible_names() -> None:
     assert '<label for="week-select">' in HTML
     assert '<label for="history-window">' in HTML
     assert '<label for="transition-horizon-select">' in HTML
-    assert '<label for="model-forecast-select">1주 예측 모델</label>' in HTML
+    assert '<label for="model-forecast-select">비교 모델</label>' in HTML
     assert 'id="model-forecast-select"' in HTML
     assert (
-        'aria-controls="next-regime-card history transition-card '
-        'model-forecast-explorer conditional-stats"'
+        'aria-controls="history model-forecast-explorer conditional-stats"'
     ) in HTML
     assert 'aria-describedby="model-forecast-scope"' in HTML
     assert 'id="model-forecast-scope" class="sr-only"' in HTML
-    assert "선택 모델의 1주 예측 레이어" in HTML
+    assert "모델 비교와 예측 국면별 자산 성과에 적용" in HTML
     assert 'id="history-series-select"' not in HTML
     assert 'id="chart-readout-actual"' in HTML
     assert 'id="chart-readout-entropy"' in HTML
@@ -234,7 +233,7 @@ def test_collapsed_detail_cards_omit_general_warning_surfaces() -> None:
     assert '"전향적 shadow"' in JS
     assert '"core 비승격"' in JS
     assert "실제 OOS ${formatNumber(evaluationOrigins, 0)}개" in JS
-    assert '"검토 필요"' in JS
+    assert '"검토 필요"' not in JS
     assert "개인·비상업 파생 결과" not in HTML
     assert '<details class="research-notice-details operations-details">' in HTML
     assert "데이터 · 출처 · 운영" in HTML

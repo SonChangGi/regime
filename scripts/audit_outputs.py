@@ -30,6 +30,8 @@ from regime_lab.contract_v5 import (
     V5_FORECAST_COMPARISON_MODELS as CONTRACT_V5_FORECAST_COMPARISON_MODELS,
     V5_SCHEMA_VERSION as CONTRACT_V5_SCHEMA_VERSION,
     V5_STANDARD_CORE_MODELS,
+    V5ContractError,
+    _validate_allocation_candidate,
 )
 from regime_lab.feature_quality import verify_feature_quality_artifact
 from regime_lab.frozen_v4 import (
@@ -6808,6 +6810,133 @@ def _audit_v5_model_conditioned(
     }
 
 
+def _audit_v5_allocation_candidate(
+    payload: Mapping[str, Any],
+    candidate: Any,
+) -> dict[str, Any]:
+    """Verify the optional allocation result against its spec and official forecast."""
+
+    if candidate is None:
+        return {"status": "legacy_absent"}
+    require(
+        isinstance(candidate, Mapping),
+        "v5 allocation candidate is invalid",
+    )
+    try:
+        _validate_allocation_candidate(
+            candidate,
+            context=(
+                "payload.research.prospective_decision_shadow."
+                "allocation_candidate"
+            ),
+        )
+    except V5ContractError as exc:
+        raise AuditFailure(f"v5 allocation candidate contract failed: {exc}") from exc
+
+    spec = candidate.get("spec")
+    require(isinstance(spec, Mapping), "v5 allocation candidate spec is invalid")
+    spec_path = PROJECT_ROOT / str(spec.get("path", ""))
+    require(
+        spec_path.is_file() and not spec_path.is_symlink(),
+        "v5 allocation candidate spec is missing or non-regular",
+    )
+    local_spec = json.loads(spec_path.read_text(encoding="utf-8"))
+    require(
+        isinstance(local_spec, Mapping)
+        and local_spec.get("schema_version")
+        == "regime-allocation-shadow-spec/1"
+        and local_spec.get("spec_id") == spec.get("spec_id")
+        and local_spec.get("role")
+        == "research_only_no_forecast_or_champion_effect"
+        and spec.get("sha256") == canonical_json_sha256(local_spec),
+        "v5 allocation candidate spec identity/hash mismatch",
+    )
+
+    selection = payload.get("selection")
+    weekly = payload.get("weekly")
+    intent = candidate.get("current_intent")
+    require(
+        isinstance(selection, Mapping)
+        and isinstance(weekly, Sequence)
+        and not isinstance(weekly, (str, bytes))
+        and bool(weekly)
+        and isinstance(intent, Mapping),
+        "v5 allocation candidate payload binding inputs are invalid",
+    )
+    latest_week = weekly[-1]
+    forecast = intent.get("forecast")
+    require(
+        isinstance(latest_week, Mapping) and isinstance(forecast, Mapping),
+        "v5 allocation candidate forecast binding is invalid",
+    )
+    champion = selection.get("operating_champion")
+    model_forecasts = latest_week.get("model_forecasts")
+    require(
+        isinstance(champion, str)
+        and champion
+        and isinstance(model_forecasts, Sequence)
+        and not isinstance(model_forecasts, (str, bytes)),
+        "v5 allocation candidate operating forecast binding is invalid",
+    )
+    operating_rows = [
+        row
+        for row in model_forecasts
+        if isinstance(row, Mapping) and row.get("model") == champion
+    ]
+    require(
+        len(operating_rows) == 1,
+        "v5 allocation candidate operating forecast is not unique",
+    )
+    operating = operating_rows[0]
+    expected_probabilities = operating.get("probabilities")
+    actual_probabilities = forecast.get("probabilities")
+    require(
+        forecast.get("origin_date") == latest_week.get("date")
+        and forecast.get("target_week") == operating.get("date")
+        and forecast.get("model") == champion
+        and isinstance(expected_probabilities, Mapping)
+        and isinstance(actual_probabilities, Mapping)
+        and set(expected_probabilities) == set(STATE_ORDER)
+        and set(actual_probabilities) == set(STATE_ORDER)
+        and all(
+            np.isclose(
+                float(actual_probabilities[state]),
+                float(expected_probabilities[state]),
+                atol=1e-12,
+            )
+            for state in STATE_ORDER
+        ),
+        "v5 allocation candidate differs from the official forecast",
+    )
+
+    policy_status = candidate.get("policy_status")
+    recommended_target = candidate.get("recommended_target")
+    recommended = intent.get("recommended")
+    target = intent.get("target")
+    require(
+        isinstance(recommended, Mapping)
+        and recommended.get("policy") == recommended_target
+        and isinstance(target, Mapping)
+        and isinstance(target.get("weights"), Mapping),
+        "v5 allocation candidate recommendation binding is invalid",
+    )
+    weights = target["weights"]
+    cash = target.get("cash")
+    values = np.asarray([*weights.values(), cash], dtype=float)
+    require(
+        np.isfinite(values).all()
+        and (values >= 0.0).all()
+        and np.isclose(float(values.sum()), 1.0, atol=1e-8),
+        "v5 allocation candidate target weights are invalid",
+    )
+    return {
+        "status": "verified",
+        "policy_status": str(policy_status),
+        "recommended_target": str(recommended_target),
+        "forecast_model": champion,
+    }
+
+
 def _audit_v5_decision_shadow(payload: Mapping[str, Any]) -> dict[str, Any]:
     """Bind the decision shadow to its immutable execution spec and accounting."""
 
@@ -6837,11 +6966,17 @@ def _audit_v5_decision_shadow(payload: Mapping[str, Any]) -> dict[str, Any]:
     }
     if investment_aligned:
         expected_shadow_fields.add("current_signal")
+        if "allocation_candidate" in raw:
+            expected_shadow_fields.add("allocation_candidate")
     require(
         set(raw) == expected_shadow_fields
         and raw.get("role")
         == "research_only_no_forecast_or_champion_effect",
         "v5 decision shadow fields/role are invalid",
+    )
+    allocation_summary = _audit_v5_allocation_candidate(
+        payload,
+        raw.get("allocation_candidate"),
     )
     spec = raw.get("spec")
     execution = raw.get("execution_contract")
@@ -7438,6 +7573,7 @@ def _audit_v5_decision_shadow(payload: Mapping[str, Any]) -> dict[str, Any]:
         "current_signal_action": current_action,
         "ledger_entries": ledger_entries,
         "realized_evaluations": realized_evaluations,
+        "allocation_candidate": allocation_summary,
     }
 
 

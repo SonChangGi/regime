@@ -93,6 +93,7 @@ logistic으로 동일 origin에서 평가한다. 화면용 context의 6/9 기준
 
 세부 계약은 [v5 사전등록](docs/structural-v5-preregistration.md),
 [V5 공개 결정](docs/v5-release-decision.md), [방법론](docs/methodology.md),
+[T+1 자산배분 구현 원칙](docs/allocation-research.md),
 [피처 카탈로그](docs/feature-catalog.md),
 [연구 참고문헌](docs/references.md)에 고정한다. 공개물에는 파생 결과와 상태만
 포함하며 H.10 원자료·로컬 DB·provider payload는 포함하지 않는다.

@@ -31,6 +31,10 @@ from regime_lab.analysis.labels import (  # noqa: E402
     RegimeLabelConfig,
 )
 from regime_lab.artifact_inventory import write_artifact_inventory  # noqa: E402
+from regime_lab.allocation.shadow import (  # noqa: E402
+    allocation_calibration_evidence,
+    build_allocation_shadow_candidate,
+)
 from regime_lab.collection import last_completed_week_cutoff, weekly_cutoffs  # noqa: E402
 from regime_lab.config import load_config, project_root  # noqa: E402
 from regime_lab.contract_v5 import validate_v5_payload  # noqa: E402
@@ -339,6 +343,18 @@ def _recompose_payload_with_frames(
         forecast_model=champion,
         prospective_ledger_summary=_prospective_ledger_summary(payload),
         decision_at=decision_at,
+    )
+    decision_shadow["allocation_candidate"] = build_allocation_shadow_candidate(
+        weekly,
+        canonical,
+        states,
+        forecast_model=champion,
+        selection_end=str(model["selection_end"]),
+        current_signal=decision_shadow["current_signal"],
+        calibration_evidence=allocation_calibration_evidence(
+            model,
+            forecast_model=champion,
+        ),
     )
     print("V2 decision shadow 및 전체 V5 계약 검증", flush=True)
 

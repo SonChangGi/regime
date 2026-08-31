@@ -475,6 +475,48 @@ partial records.  A terminal partial closes that portfolio segment, while the
 next valid consecutive forecast starts a new cash-funded segment rather than
 propagating the failure indefinitely.
 
+위의 trailing-volatility-targeted 60/40은 기존 decision-shadow v2의 비교군이다.
+아래 allocation candidate의 선택 게이트에는 사용하지 않는다.
+
+### 비용 반영 자산배분 후보
+
+`prospective_decision_shadow.allocation_candidate`는 공식 국면 예측과 champion을
+바꾸지 않는 별도 후보다. 동결한 pre-2023 selection 구간에서 목표 주
+`S(t+1)`별 시가→종가 `SPY-TLT` 및 섹터-SPY 상대수익을 52주의 0 prior로
+축소한다. 공개된 다음 주 국면 확률로 기대 상대수익을 만들고, selection
+상대수익 변동성으로 크기를 조절한 `tanh` tilt를 60/40에 더한다. 기본 confidence는
+selection 예측이 52개 이상이고 모델 Log loss가 majority보다 낮을 때 0.50,
+아니면 0이다. 이 변동성은 포트폴리오 변동성 목표가 아니다.
+
+후보는 drifted pre-trade 가중치에서 5%p investor one-way band, 50% partial
+adjustment, 주간 one-way 10% cap을 순서대로 적용한다. 동적 주문의 기대편익이
+거래비용의 두 배 이하면 보유한다. 현금은 목표 주 직전 완료된 DGS3MO를 52로
+나눈 주간 수익률을 얻는다.
+
+investor one-way 회전율은 risky-asset 변화와 현금 변화를 모두 포함한 L1의
+절반이다. 비용은 risky-asset 주문의 `full-L1`에 10bp를 곱하고, 20bp도 함께
+계산한다. 최초 현금 진입은 비용을 차감하지만 대표 연환산 one-way 회전율에서는
+제외한다. 최초 진입 포함 회전율과 full-L1은 별도 필드다.
+
+섹터 순위는 목표 진입 월이 바뀔 때 갱신한다. 신호는 SPY 대비 26→4주와 52→4주
+수익의 횡단면 z-score를 같은 비중으로 합친다. 104주 이상 거래된 ETF만 포함하고,
+sleeve는 전체 15%와 주식 비중의 25% 중 작은 값으로 제한한다. 상위 3개를 종목당
+최대 5%로 담으며, 결합 점수는 모멘텀 80%와 동결한 국면 상대수익 z-score 20%다.
+pre-2023 월별 상위 섹터의 평균 상대수익이 양수가 아니면 sleeve를 비운다.
+
+승격은 공통 2023+ 재구성 OOS에서 `combined`를 cost-aware 60/40과 비교한다.
+10bp 누적수익과 CER 우위, 20bp CER 우위, 최초 진입 제외 연환산 one-way 회전율
+150% 이하, 60/40 대비 최대낙폭 열위 2%p 이내, 최초 진입 후 실제 리밸런싱 2회
+이상, `regime_only`와 `momentum_only` 양쪽 대비 10bp 누적수익과 CER 우위를 모두
+요구한다. 모델 calibration과 양의 pre-2023 섹터 모멘텀도 필수다. 하나라도
+실패하면 `policy_status=baseline_preferred`이고 실행 기준은 cost-aware 60/40이다.
+
+현재 intent는 전체 명세, 현금 factor, target, action, canonical hash와 함께 운영
+예측 원장에 동결한다. 새 예측은 직전 완료 candidate 종가에 rebase하며, 이전
+segment가 없으면 현금에서 시작한다. 만기에는 나중에 재계산한 aim이 아니라 동결한
+target을 평가한다. 자세한 산식과 출처는
+[`allocation-research.md`](allocation-research.md)에 정리했다.
+
 The label sensitivity grid is preregistered in
 `config/label-sensitivity-grid.json`; its required output includes occupancy,
 episode count, flip rate, transition Jaccard, forward-return separation, and
