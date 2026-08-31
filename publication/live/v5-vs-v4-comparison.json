@@ -37,64 +37,64 @@
       {
         "accuracy": 0.6271186440677966,
         "balanced_accuracy": 0.5037037037037037,
-        "brier": 0.5900859705010689,
+        "brier": 0.5900859698263741,
         "delta_vs_v4_control": {
           "brier": 0.0,
           "log_loss": 0.0
         },
         "fallback_count": 0,
-        "feature_columns_sha256": "75b611e1a9aacf442ae46249ec256c08107ddf295f9e21a8ad10c543341ae488",
+        "feature_columns_sha256": "75c1d5a1657fe928ea83c3ec5908e1b60e211e6cd8e42feb9a148cb978471ee0",
         "feature_count": 502,
         "fx_feature_count": 0,
-        "log_loss": 1.1106423783734476,
+        "log_loss": 1.1106423773350649,
         "n_predictions": 59,
         "variant": "v4_control"
       },
       {
         "accuracy": 0.6101694915254238,
         "balanced_accuracy": 0.3925925925925926,
-        "brier": 0.590937445391641,
+        "brier": 0.5909374435276764,
         "delta_vs_v4_control": {
-          "brier": 0.0008514748905720237,
-          "log_loss": 0.008825096848790182
+          "brier": 0.000851473701302341,
+          "log_loss": 0.00882509557046185
         },
         "fallback_count": 0,
-        "feature_columns_sha256": "46faaa7c88bc799db1b3c6614a37092923ffb116549fa3e41a0b59ac08e1694e",
+        "feature_columns_sha256": "694106fc45a70ff39b1a94a4e774264d52bb5142c3dfbfc275770fb23f2773c7",
         "feature_count": 507,
         "fx_feature_count": 5,
-        "log_loss": 1.1194674752222378,
+        "log_loss": 1.1194674729055267,
         "n_predictions": 59,
         "variant": "v4_plus_broad_index"
       },
       {
         "accuracy": 0.576271186440678,
         "balanced_accuracy": 0.3592592592592592,
-        "brier": 0.6117431835668398,
+        "brier": 0.6117431838142456,
         "delta_vs_v4_control": {
-          "brier": 0.02165721306577084,
-          "log_loss": 0.052360816980679514
+          "brier": 0.02165721398787157,
+          "log_loss": 0.05236081445835672
         },
         "fallback_count": 0,
-        "feature_columns_sha256": "95494184a1b0b997f8b85f5938516473f7c3af8535c1d960aa95aae46efba823",
+        "feature_columns_sha256": "215f6b8e9e43f2a39625158bffcf5195c7400abf56bc37204bcce0fc67133d7d",
         "feature_count": 556,
         "fx_feature_count": 54,
-        "log_loss": 1.163003195354127,
+        "log_loss": 1.1630031917934216,
         "n_predictions": 59,
         "variant": "v4_plus_bilateral_panel"
       },
       {
         "accuracy": 0.6271186440677966,
         "balanced_accuracy": 0.4962962962962963,
-        "brier": 0.591130616056599,
+        "brier": 0.5911306142365799,
         "delta_vs_v4_control": {
-          "brier": 0.001044645555530077,
-          "log_loss": 0.011457601898694048
+          "brier": 0.0010446444102057972,
+          "log_loss": 0.011457593945327194
         },
         "fallback_count": 0,
-        "feature_columns_sha256": "75081e562965deebfab11fe91e53db6b72bfb6d059987e41e5831054b5623b97",
+        "feature_columns_sha256": "072654662f1e1b50687a5366a381441d9ca5b8d3c8c469eb202415ddc1987156",
         "feature_count": 583,
         "fx_feature_count": 81,
-        "log_loss": 1.1220999802721416,
+        "log_loss": 1.122099971280392,
         "n_predictions": 59,
         "variant": "v4_plus_all_fx"
       }
@@ -118,21 +118,21 @@
       "fx_ablation_oos": {
         "path": "fx-ablation-oos.csv",
         "row_count": 236,
-        "sha256": "672d99ae401acfa9b29c759d9df0eb7e03407b0a498a60640987a33577362f77"
+        "sha256": "5d800a2d83fec4a16a0a0933ad0ec80d204f7dff85213c143c553f80b5fb7fee"
       },
       "oos_predictions": {
         "path": "oos-predictions.csv",
-        "row_count": 6094,
-        "sha256": "92fb3ae938404e883062ebb1c0309f605fca886ac1032eebd1054125c80aeec3"
+        "row_count": 6105,
+        "sha256": "fa26d2ffe9c5033abe80eda4d2075b94774b2d642066ae7038c8f186947ef690"
       },
       "regime_results": {
         "path": "regime-results.json",
-        "sha256": "cc4db2f49373de20a7211c95d14b6bcc85b314b814af72a75d58f69d9c459bd3"
+        "sha256": "7e23cb5b9e407af2e9345ad4169e09e71a03d8808398b8afc8a392378a8138e3"
       },
       "selection_diagnostics": {
         "path": "selection-diagnostics.csv",
         "row_count": 11,
-        "sha256": "464a7dec1edbad64237ef20bc249879b2c0dab0720024e3901b86a668f51bc2b"
+        "sha256": "5ac72d2bd9a1aff6e2ca9f53a74b417565bb9cc5c3b069b466130064d008b203"
       }
     }
   },
@@ -142,44 +142,44 @@
   "schema_version": "regime-v5-v4-matched-comparison/1",
   "v5_causal_multiscale_ensemble_vs_v5_markov": {
     "common_keys": {
-      "count": 554,
-      "sha256": "6bed1bdd25a170aca00cc30299324b418150ea63eda50c943f3f03101d328306"
+      "count": 555,
+      "sha256": "0d7a8f8d4e9f82172aae9c043f89f8b7ce26a1a20622768627ed1a342cd27e44"
     },
     "join": {
-      "common_key_count": 554,
-      "left_key_count": 554,
+      "common_key_count": 555,
+      "left_key_count": 555,
       "left_model": "causal_multiscale_ensemble",
       "model_equivalence": "fixed_pair_same_origin_and_target",
-      "right_key_count": 554,
+      "right_key_count": 555,
       "right_model": "markov"
     },
     "post_selection_holdout": {
       "common_keys": {
-        "count": 189,
-        "sha256": "bd740ddc0940173b77a5ac74f51160a65003029e683375bf5175d920d4c322fe"
+        "count": 190,
+        "sha256": "77e70d88f76ad13c9083a59e1fcd1bccda32811d3977e5867e069ce6620498c3"
       },
       "delta_left_minus_right": {
-        "balanced_accuracy": -0.00462543991955755,
-        "brier": -0.052162837960023356,
+        "balanced_accuracy": -0.004679534910361438,
+        "brier": -0.051937905456513334,
         "fallback_rate": 0.0,
-        "log_loss": -0.1122531747401248
+        "log_loss": -0.11203464585334244
       },
       "metrics": {
         "causal_multiscale_ensemble": {
-          "balanced_accuracy": 0.7997988939165409,
-          "brier": 0.2950614908302097,
+          "balanced_accuracy": 0.8008266987418141,
+          "brier": 0.2937370722629511,
           "fallback_count": 0,
           "fallback_rate": 0.0,
-          "log_loss": 0.4852291972564278,
-          "n": 189
+          "log_loss": 0.4833687097490076,
+          "n": 190
         },
         "v5_markov": {
-          "balanced_accuracy": 0.8044243338360985,
-          "brier": 0.34722432879023307,
+          "balanced_accuracy": 0.8055062336521756,
+          "brier": 0.3456749777194644,
           "fallback_count": 0,
           "fallback_rate": 0.0,
-          "log_loss": 0.5974823719965526,
-          "n": 189
+          "log_loss": 0.59540335560235,
+          "n": 190
         }
       }
     },
@@ -190,17 +190,17 @@
       },
       "delta_left_minus_right": {
         "balanced_accuracy": -0.0031152647975078995,
-        "brier": -0.009664364725024244,
+        "brier": -0.009595253161367168,
         "fallback_rate": 0.0,
-        "log_loss": -0.0310994646657613
+        "log_loss": -0.031189113541991997
       },
       "metrics": {
         "causal_multiscale_ensemble": {
           "balanced_accuracy": 0.8965507686693927,
-          "brier": 0.1692603842222822,
+          "brier": 0.16932949578593928,
           "fallback_count": 0,
           "fallback_rate": 0.0,
-          "log_loss": 0.32641767257874227,
+          "log_loss": 0.32632802370251157,
           "n": 365
         },
         "v5_markov": {
@@ -217,22 +217,22 @@
       "artifact_role": "selection_family_independently_recomputed",
       "models": {
         "causal_dynamic_ensemble": {
-          "brier": 0.16955456554547,
+          "brier": 0.16962578590595362,
           "fallback_count": 0,
           "gate_passed": true,
           "gate_reason": "passed",
-          "log_loss": 0.326615842106794,
+          "log_loss": 0.326524404503818,
           "matched_metric_crosscheck": true,
           "n_predictions": 365,
           "reference_model": "markov",
           "selected": true
         },
         "causal_multiscale_ensemble": {
-          "brier": 0.1692603842222822,
+          "brier": 0.1693294957859393,
           "fallback_count": 0,
           "gate_passed": true,
           "gate_reason": "passed",
-          "log_loss": 0.32641767257874227,
+          "log_loss": 0.32632802370251157,
           "matched_metric_crosscheck": true,
           "n_predictions": 365,
           "reference_model": "markov",
@@ -260,7 +260,7 @@
     },
     "join": {
       "common_key_count": 552,
-      "left_key_count": 554,
+      "left_key_count": 555,
       "left_model": "markov",
       "model_equivalence": "exact_name",
       "right_key_count": 552,
