@@ -433,8 +433,25 @@ def test_keychain_parent_preflight_preserves_blocked_root_cause(
 
     settings = _settings(tmp_path)
     target = datetime.fromisoformat("2026-08-14T20:00:00+00:00")
+    preserved_paths = (
+        settings.collection_report_path,
+        settings.reviewed_payload_path,
+        settings.candidate_comparison_path,
+        settings.reviewed_generation_manifest_path,
+        settings.reviewed_selection_family_path,
+    )
+    for path in preserved_paths:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"preserved before credential preflight")
     monkeypatch.setattr(automation.sys, "platform", "darwin")
     monkeypatch.setattr(automation, "project_root", lambda: settings.root)
+    monkeypatch.setattr(
+        automation,
+        "_run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("child work must not start before Keychain preflight")
+        ),
+    )
     monkeypatch.setattr(
         automation,
         "verify_provider_keychain_access",
@@ -455,6 +472,11 @@ def test_keychain_parent_preflight_preserves_blocked_root_cause(
     assert error_code == "collect_train_audit_blocked"
     assert retry_class == "blocked"
     assert next_retry_at is None
+    assert all(
+        path.read_bytes() == b"preserved before credential preflight"
+        for path in preserved_paths
+    )
+    assert not (settings.state_directory / "database-backups").exists()
 
 
 def test_recovery_fingerprint_tracks_keychain_lock_and_metadata_without_reading(

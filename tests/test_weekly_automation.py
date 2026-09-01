@@ -614,6 +614,31 @@ def test_candidate_context_rejects_nonignored_untracked_python_shadow(
         automation._candidate_context(settings)
 
 
+def test_project_gitignore_excludes_finder_metadata_but_not_python_shadow(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / ".gitignore").write_bytes((ROOT / ".gitignore").read_bytes())
+    subprocess.run(["git", "init", str(root)], check=True, capture_output=True)
+    (root / ".DS_Store").write_bytes(b"finder metadata")
+    (root / "sitecustomize.py").write_text(
+        "raise RuntimeError('shadow')\n",
+        encoding="utf-8",
+    )
+
+    status = subprocess.run(
+        ["git", "status", "--porcelain", "--untracked-files=all"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.splitlines()
+
+    assert "?? .DS_Store" not in status
+    assert "?? sitecustomize.py" in status
+
+
 def test_candidate_context_is_content_based_not_inode_or_mtime(tmp_path: Path) -> None:
     root = tmp_path / "repo"
     (root / "config").mkdir(parents=True)
@@ -1267,6 +1292,29 @@ def test_cached_v5_candidate_schema4_binds_selection_family(
         target=LIVE_TARGET,
         context=CANDIDATE_CONTEXT,
     ) is None
+
+
+def test_git_preflight_reports_nonignored_worktree_changes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings(tmp_path)
+
+    def run(args: list[str], **_kwargs: object) -> bytes:
+        command = tuple(args)
+        if command == ("git", "branch", "--show-current"):
+            return b"main\n"
+        if command == ("git", "status", "--porcelain", "--untracked-files=all"):
+            return b"?? sitecustomize.py\n"
+        raise AssertionError(f"unexpected command: {command}")
+
+    monkeypatch.setattr(automation, "_run", run)
+
+    with pytest.raises(
+        automation.AutomationError,
+        match="non-ignored working tree changes",
+    ):
+        automation._git_preflight(settings)
 
 
 def test_git_preflight_rejects_invalid_remote_v5_comparison(

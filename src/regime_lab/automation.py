@@ -1603,7 +1603,9 @@ def _git_preflight(settings: AutomationSettings) -> RemotePublication:
         capture=True,
     ).decode().strip()
     if dirty:
-        raise AutomationError("tracked working tree changes block weekly automation")
+        raise AutomationError(
+            "non-ignored working tree changes block weekly automation"
+        )
     origin_url = _run(
         ["git", "remote", "get-url", settings.remote],
         cwd=settings.root,

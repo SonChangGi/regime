@@ -1,4 +1,6 @@
 .venv/
+# Finder metadata is unrelated to the reproducible source/runtime state.
+.DS_Store
 __pycache__/
 *.py[cod]
 .pytest_cache/
