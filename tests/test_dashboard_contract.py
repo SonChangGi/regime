@@ -3750,7 +3750,7 @@ def test_history_window_never_claims_more_weeks_than_are_available() -> None:
     assert "preferredHistoryWindow: 52" in script
     assert "const requested = state.preferredHistoryWindow" in script
     assert 'option.textContent = available ? `전체 · ${available}주` : "전체"' in script
-    assert "option.disabled = weeks > available" in script
+    assert 'option.disabled = state.historyAvailability === "ready" && weeks > available' in script
     assert "`${range} · ${history.length}주`" in script
 
 

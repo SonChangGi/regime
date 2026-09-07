@@ -80,6 +80,130 @@
     }));
     return { ...official, leaderboard: [...(official.leaderboard || []), ...research] };
   }
+  function forecastEvaluation(payload = {}, { asOf, window = 52 } = {}) {
+    const nameOf = (value) => typeof value === "string" ? value : value?.name ?? value?.model ?? value?.id ?? null;
+    const dateOf = (value) => typeof value === "string" && /^\d{4}-\d{2}-\d{2}/.test(value)
+      && Number.isFinite(Date.parse(value)) ? value.slice(0, 10) : null;
+    const weekly = [...(payload.weekly || [])].filter((row) => dateOf(row.date)).sort((a, b) => a.date.localeCompare(b.date));
+    const cutoff = dateOf(asOf) || weekly.at(-1)?.date || null;
+    const available = weekly.filter((row) => row.date <= cutoff);
+    const count = [26, 52, 104].includes(Number(window)) ? Number(window) : 52;
+    const origins = window === "all" ? available : available.slice(-count);
+    const comparisonModel = forecastComparisonModel(payload);
+    const research = forecastImprovementModels(payload);
+    const officialNames = payload.model?.forecast_comparison?.models
+      || (payload.model?.leaderboard || []).map(nameOf);
+    const names = [...new Set([...officialNames, ...research.map((row) => row.id)])].filter(Boolean);
+    const actualByDate = new Map(weekly.map((row) => [row.date, row.current?.state]));
+    const researchByModel = new Map(research.map((model) => [model.id,
+      new Map([...(model.history || []), model.latest].filter(Boolean).map((row) => [dateOf(row.origin_date), row]))]));
+    const rowsByModel = new Map(names.map((name) => [name, []]));
+    const scope = { start: origins[0]?.date || null, end: origins.at(-1)?.date || null,
+      asOf: cutoff, originCount: origins.length, completedCount: 0, pendingCount: 0,
+      excludedCount: 0, completedStart: null, completedEnd: null };
+    for (const week of origins) {
+      const current = FORECAST_STATES.indexOf(week.current?.state);
+      const forecasts = names.map((name) => researchByModel.has(name) ? researchByModel.get(name).get(week.date)
+        : (week.model_forecasts || []).find((item) => item.model === name));
+      const targets = forecasts.map((row) => dateOf(row?.target_date ?? row?.date));
+      const knownTargets = targets.filter(Boolean);
+      if (knownTargets.length && knownTargets.every((target) => target > cutoff)) { scope.pendingCount += 1; continue; }
+      const candidates = forecasts.map((row) => {
+        const target = dateOf(row?.target_date ?? row?.date);
+        const raw = FORECAST_STATES.map((state) => number(row?.probabilities?.[state]));
+        if (!target || target <= week.date || raw.some((p) => p === null || p < 0 || p > 1)
+          || Math.abs(raw.reduce((total, p) => total + p, 0) - 1) > 1e-6) return null;
+        // Match analysis.validation.evaluate_predictions, including hard 0/1 baselines.
+        const clipped = raw.map((p) => Math.max(1e-9, Math.min(1, p)));
+        const total = clipped.reduce((sum, p) => sum + p, 0);
+        const probability = clipped.map((p) => p / total);
+        const predicted = probability.reduce((best, p, index) => p > probability[best] ? index : best, 0);
+        return { target, raw, probability, predicted, current, fallback: row.fallback === true };
+      });
+      // Every displayed model is evaluated on exactly the same completed origins.
+      if (!names.length || current < 0 || candidates.some((row) => !row)
+        || candidates.some((row) => row.target !== candidates[0].target)) { scope.excludedCount += 1; continue; }
+      const actual = FORECAST_STATES.indexOf(actualByDate.get(candidates[0].target));
+      if (actual < 0) { scope.excludedCount += 1; continue; }
+      scope.completedCount += 1;
+      scope.completedStart ??= candidates[0].target;
+      scope.completedEnd = candidates[0].target;
+      candidates.forEach((row, index) => rowsByModel.get(names[index]).push({ ...row, actual, origin: week.date }));
+    }
+    const leaderboard = names.map((name) => ({
+      ...(comparisonModel.leaderboard || []).find((row) => nameOf(row) === name),
+      name, evaluation_split: "holdout", ...forecastEvaluationMetrics(rowsByModel.get(name)), scope_rank: null,
+    }));
+    [...leaderboard].filter((row) => row.n_predictions > 0).sort((a, b) =>
+      a.log_loss - b.log_loss || a.calibration_error - b.calibration_error || a.name.localeCompare(b.name))
+      .forEach((row, index) => { row.scope_rank = index + 1; });
+    const referenceName = nameOf(payload.selection?.operating_champion) || nameOf(payload.model?.champion);
+    const reference = rowsByModel.get(referenceName) || [];
+    const referenceLoss = leaderboard.find((row) => row.name === referenceName)?.log_loss;
+    const comparisons = Object.fromEntries(leaderboard.map((metric) => {
+      const rows = rowsByModel.get(metric.name);
+      const n = reference.length === rows.length ? reference.length : 0;
+      return [metric.name, { samePredictions: n ? rows.filter((row, index) => row.predicted === reference[index].predicted).length : 0,
+        comparedWeeks: n,
+        meanProbabilityDifference: n ? rows.reduce((total, row, index) => total
+          + row.raw.reduce((sum, p, state) => sum + Math.abs(p - reference[index].raw[state]), 0), 0) / (3 * n) : null,
+        logLossDifference: n && number(referenceLoss) !== null ? metric.log_loss - referenceLoss : null }];
+    }));
+    return { leaderboard, scope, comparisons };
+  }
+  function forecastEvaluationMetrics(rows) {
+    const n = rows.length, safeRatio = (a, b) => b ? a / b : 0;
+    const metrics = { log_loss: null, brier: null, accuracy: null, balanced_accuracy: null, macro_f1: null,
+      transition_precision: null, transition_recall: null, transition_event_count: 0, on_time_departure_count: 0,
+      false_alarm_count: 0, exposure_years: n / 52.1775, false_alarms_per_year: null, detected_event_count: 0,
+      mean_detection_delay_forecast_weeks: null, transition_state_precision: null, transition_state_recall: null,
+      calibration_error: null, n_predictions: n, fallback_count: 0, worsening_event_count: 0,
+      on_time_worsening_count: 0, recovery_event_count: 0, on_time_recovery_count: 0,
+      period_start: rows[0]?.origin || null, period_end: rows.at(-1)?.target || null };
+    if (!n) return metrics;
+    const confusion = FORECAST_STATES.map(() => [0, 0, 0]), events = [], bins = Array.from({ length: 10 }, () => []);
+    let loss = 0, brier = 0, correct = 0;
+    rows.forEach((row, index) => {
+      const { actual, current, predicted, probability } = row;
+      confusion[actual][predicted] += 1;
+      correct += Number(actual === predicted);
+      loss -= Math.log(probability[actual]);
+      brier += probability.reduce((total, p, state) => total + (p - Number(state === actual)) ** 2, 0);
+      const confidence = probability[predicted];
+      const bin = Array.from({ length: 10 }, (_, i) => (i + 1) * 0.1).findIndex((upper) => confidence <= upper);
+      bins[bin < 0 ? 9 : bin].push({ confidence, correct: Number(actual === predicted) });
+      const event = actual !== current, alert = predicted !== current;
+      if (event) { events.push(index); metrics.transition_event_count += 1; }
+      metrics.on_time_departure_count += Number(event && alert);
+      metrics.false_alarm_count += Number(!event && alert);
+      metrics.fallback_count += Number(row.fallback);
+      metrics.worsening_event_count += Number(actual > current);
+      metrics.on_time_worsening_count += Number(actual > current && predicted > current);
+      metrics.recovery_event_count += Number(actual < current);
+      metrics.on_time_recovery_count += Number(actual < current && predicted < current);
+    });
+    const actualCounts = confusion.map((row) => row.reduce((sum, value) => sum + value, 0));
+    const predictedCounts = FORECAST_STATES.map((_, state) => confusion.reduce((sum, row) => sum + row[state], 0));
+    const represented = actualCounts.filter((value) => value > 0).length;
+    const delays = [];
+    events.forEach((position, index) => {
+      const end = events[index + 1] ?? n;
+      for (let next = position; next < end; next += 1) {
+        if (rows[next].predicted === rows[position].actual) { delays.push(next - position); break; }
+      }
+    });
+    return { ...metrics, log_loss: loss / n, brier: brier / n, accuracy: correct / n,
+      balanced_accuracy: actualCounts.reduce((total, value, state) => total + safeRatio(confusion[state][state], value), 0) / represented,
+      macro_f1: actualCounts.reduce((total, value, state) => total + safeRatio(2 * confusion[state][state], value + predictedCounts[state]), 0) / 3,
+      transition_precision: safeRatio(metrics.on_time_departure_count, metrics.on_time_departure_count + metrics.false_alarm_count),
+      transition_recall: safeRatio(metrics.on_time_departure_count, metrics.transition_event_count),
+      false_alarms_per_year: metrics.false_alarm_count / metrics.exposure_years,
+      detected_event_count: delays.length,
+      mean_detection_delay_forecast_weeks: delays.length ? delays.reduce((sum, delay) => sum + delay, 0) / delays.length : null,
+      transition_state_precision: safeRatio(confusion[1][1], predictedCounts[1]),
+      transition_state_recall: safeRatio(confusion[1][1], actualCounts[1]),
+      calibration_error: bins.reduce((total, bin) => total + Math.abs(bin.reduce((sum, row) => sum + row.correct - row.confidence, 0)) / n, 0) };
+  }
   function researchForecastForWeek(payload, modelName, date) {
     const model = forecastImprovementModels(payload).find((row) => row.id === modelName);
     if (!model) return null;
@@ -488,5 +612,5 @@
 
     return { renderPerformanceLineChart, renderPerformanceDrawdownChart, renderPerformanceFallback, renderPerformanceBridge, renderPerformanceTurnover, renderPerformanceDetailTable, turnoverValues };
   }
-  return Object.freeze({ conditionalMetrics, portfolioAdjustment, forecastTiming, modelQuality, forecastImprovementModels, forecastComparisonModel, researchForecastForWeek, validateForecastImprovement, FORECAST_RESEARCH_IDS, contextPosition, researchScope, sensitivityRanges, createPerformanceRenderers });
+  return Object.freeze({ conditionalMetrics, portfolioAdjustment, forecastTiming, modelQuality, forecastImprovementModels, forecastComparisonModel, forecastEvaluation, researchForecastForWeek, validateForecastImprovement, FORECAST_RESEARCH_IDS, contextPosition, researchScope, sensitivityRanges, createPerformanceRenderers });
 });

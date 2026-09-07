@@ -11,10 +11,10 @@
     <title>US Market Regime Lab | Quant Research</title>
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23111727'/%3E%3Cpath d='M14 43 26 31l9 8 15-20' fill='none' stroke='%2334d399' stroke-width='7' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
     <link rel="stylesheet" href="./styles.css?v=a5691ee73b3cb9c1cf0833e0a2e109045085cb305f9b685a4313914f6508f8a3">
-    <link rel="stylesheet" href="./insights.css?v=73dd7ab3ac577b5d53ff63375c4cf2683362bde747dd268498efbcb7abf0c388">
-    <script src="./insights.js?v=aa1dfe6a440b49682f3895cbd6fde1ebba4ef74c1444170b6bd76f500dad9da3" defer></script>
+    <link rel="stylesheet" href="./insights.css?v=1b186aa1f8d974c75cfa919581b1d84cda1b392c580de25135151942ee57f3e3">
+    <script src="./insights.js?v=b100598800092b5ebf944bc360a8552b9cdd64424baa4ddf4263bf33e5b46c51" defer></script>
     <script src="./operating-contract.generated.js?v=5078635e5a1fb2b9300e56f045b51c4e85ee047a21a3f64a15cd4e69261c9a20" defer></script>
-    <script src="./app.js?v=8d5902d8aaaa3450fc87181a558b9f976141dc7e5698aad8bee2afe618b57d4c" defer></script>
+    <script src="./app.js?v=7e8fcefa7b7fa25371894365d301f2eacda31c3e369d368933b6dfb1fe059f6a" defer></script>
   </head>
   <body id="top">
     <a class="skip-link" href="#main-content">본문으로 건너뛰기</a>
@@ -337,7 +337,7 @@
               </div>
               <div class="history-heading-controls">
                 <div class="field-group inline-field">
-                  <label for="history-window">표시 기간</label>
+                  <label for="history-window">예측 분석 기간</label>
                   <select id="history-window">
                     <option value="26" selected>26주</option>
                     <option value="52">52주</option>
@@ -527,7 +527,7 @@
           <div class="card-heading">
             <div>
               <h2 id="model-title">모델 비교</h2>
-              <p id="model-caption" class="section-caption">선정 구간과 2023년 이후 진단</p>
+              <p id="model-caption" class="section-caption">선택한 관측 주까지 완료된 예측 평가</p>
             </div>
             <div class="model-heading-controls">
               <div id="model-forecast-field" class="field-group model-forecast-field forecast-layer-field v5-only" hidden>
@@ -539,10 +539,21 @@
                 ></select>
                 <span id="model-forecast-scope" class="sr-only">선택 모델의 요약·상세 지표, 예측 차트, 비교표와 예측 국면별 자산 성과에 적용</span>
               </div>
-              <div id="champion-summary" class="champion-summary" aria-label="선정 모델"></div>
+              <div class="field-group model-evaluation-field">
+                <label for="model-evaluation-window">평가 기간</label>
+                <select id="model-evaluation-window" aria-controls="model-quality-brief model-health-strip history model-loss-chart leaderboard-body" aria-describedby="model-evaluation-note">
+                  <option value="26">26주</option>
+                  <option value="52" selected>52주</option>
+                  <option value="104">104주</option>
+                  <option value="all">전체</option>
+                </select>
+              </div>
+              <div id="champion-summary" class="champion-summary" aria-label="선택 모델"></div>
             </div>
           </div>
+          <p id="model-evaluation-note" class="section-caption"></p>
           <div id="model-quality-brief" class="model-quality-brief" aria-live="polite"></div>
+          <div id="model-input-comparison" class="model-input-comparison" aria-live="polite" hidden></div>
           <div id="model-evidence-summary" class="model-evidence-summary" aria-label="모델 선정 근거" aria-live="polite"></div>
           <details class="compact-table-details model-health-details">
             <summary>선택 모델 상세 지표</summary>
@@ -567,9 +578,9 @@
               <div id="model-forecast-probabilities" class="probability-list" aria-label="선택 모델의 다음 주 국면별 예측 확률"></div>
               <details class="compact-table-details model-forecast-diagnostics">
                 <summary>진단 지표</summary>
-                <dl class="model-forecast-metrics" aria-label="선택 모델의 2023년 이후 진단 지표">
-                  <div><dt>2023년 이후 순위</dt><dd id="model-forecast-rank">—</dd></div>
-                  <div><dt>예측 오차 · 선정→이후</dt><dd id="model-forecast-log-loss">—</dd></div>
+                <dl class="model-forecast-metrics" aria-label="선택 모델과 평가 기간의 진단 지표">
+                  <div><dt>선택 기간 순위</dt><dd id="model-forecast-rank">—</dd></div>
+                  <div><dt>예측 오차 · 선정→선택 기간</dt><dd id="model-forecast-log-loss">—</dd></div>
                   <div><dt>Brier</dt><dd id="model-forecast-brier">—</dd></div>
                   <div><dt>보정 오차</dt><dd id="model-forecast-calibration">—</dd></div>
                 </dl>
@@ -583,16 +594,16 @@
             </figcaption>
             <div class="loss-legend" aria-label="Log loss 기호 범례">
               <span><i class="loss-marker selection" aria-hidden="true"></i>선정 구간</span>
-              <span><i class="loss-marker holdout" aria-hidden="true"></i>2023년 이후</span>
+              <span><i class="loss-marker holdout" aria-hidden="true"></i><span id="model-loss-period-label">선택 기간</span></span>
             </div>
             <div id="model-loss-chart" class="model-loss-chart"></div>
             <div id="model-loss-axis" class="fixed-axis model-loss-axis" aria-hidden="true"><span>0</span><span>0.55</span><span>1.10</span></div>
           </figure>
           <details class="compact-table-details">
             <summary>전체 모델 보기</summary>
-            <div class="table-scroll" tabindex="0" aria-label="2023년 이후 모델 진단 지표 표">
+            <div class="table-scroll" tabindex="0" aria-label="선택 기간 모델 진단 지표 표">
               <table id="leaderboard-table">
-                <caption class="sr-only">2023년 이후 진단 지표</caption>
+                <caption class="sr-only">선택 기간 진단 지표</caption>
                 <thead>
                   <tr>
                     <th scope="col">순위</th>

@@ -451,6 +451,16 @@ html[data-theme="dark"] {
 .model-quality-brief > div { min-width: 0; padding: 12px 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-soft); }
 .model-quality-brief span, .model-quality-brief small { display: block; color: var(--ink-soft); font-size: 11px; }
 .model-quality-brief strong { display: block; margin: 4px 0; color: var(--ink-strong); font: 700 22px var(--mono); }
+.model-heading-controls { flex-wrap: wrap; justify-content: flex-end; }
+.model-forecast-field { flex: 1 1 290px; min-width: 260px; }
+.model-evaluation-field { flex: 0 0 auto; }
+.model-evaluation-field select { min-height: 44px; min-width: 88px; }
+.champion-summary { flex: 1 1 180px; }
+.champion-summary small { margin-top: 4px; color: var(--ink-soft); font-size: 10px; }
+#model-evaluation-note { margin: 0 0 12px; }
+.model-input-comparison { display: flex; flex-wrap: wrap; gap: 8px 20px; margin: -6px 0 20px; color: var(--ink-soft); font-size: 11px; }
+.model-input-comparison > span { font-variant-numeric: tabular-nums; }
+.model-input-comparison small { flex-basis: 100%; font-size: 11px; }
 .context-plane { position: relative; height: 205px; margin: 10px 20px 24px; border: 1px solid var(--line); background: var(--surface-soft); }
 .context-plane::before { content: ""; position: absolute; left: 50%; height: 100%; border-left: 1px dashed var(--line-strong); }
 .context-plane::after { content: ""; position: absolute; top: 50%; width: 100%; border-top: 1px dashed var(--line-strong); }
@@ -512,6 +522,11 @@ html[data-theme="dark"] {
 .research-methods-body .forecast-timing dt { color: var(--ink-soft); font-size: 11px; }
 .research-methods-body .forecast-timing dd { margin: 4px 0; font-size: 12px; }
 @media (max-width: 700px) {
+  .model-heading-controls { display: grid; grid-template-columns: minmax(0, 1fr) auto; width: 100%; }
+  .model-forecast-field { grid-column: 1 / -1; min-width: 0; width: 100%; }
+  .model-evaluation-field { grid-column: 2; grid-row: 2; }
+  .champion-summary { grid-column: 1; grid-row: 2; min-width: 0; }
+  .model-input-comparison { gap: 6px 12px; }
   .execution-brief { margin-bottom: 12px; padding: 10px; }
   .execution-brief > span { display: grid; gap: 3px; }
   .execution-brief > span + span { padding-left: 10px; }
