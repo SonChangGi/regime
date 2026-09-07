@@ -184,7 +184,11 @@ def _forecast_ledger_entry(
             "current_intent_sha256": canonical_json_sha256_v1(frozen_intent),
         }
     input_snapshot_sha256 = operational_input_manifest_sha256(operational_inputs)
+    if published_at.tzinfo is None or published_at.utcoffset() is None:
+        raise ValueError("operational publication clock must include a timezone")
     publication_at = published_at.astimezone(timezone.utc)
+    if not decision_at <= publication_at < target_at:
+        raise ValueError("operational publication must follow decision and precede target")
     return ForecastLedgerEntry(
         origin_week=date.fromisoformat(str(latest["date"])),
         decision_at=decision_at,
@@ -1694,6 +1698,13 @@ def command_build(args: argparse.Namespace) -> int:
                     canonical=dataset.canonical,
                     states=_prospective_actual_states(benchmark),
                     evaluated_at=datetime.fromisoformat(str(decision_value)),
+                    label_spec_sha256=str(payload["label"]["spec_sha256"]),
+                )
+                from regime_lab.forecast_ledger import build_operational_diagnostics
+                payload.setdefault("research", {})["operational_diagnostics"] = build_operational_diagnostics(
+                    ledger.list_probability_forecasts(), ledger.list_evaluations(),
+                    probability_evaluations=ledger.list_probability_evaluations(),
+                    as_of=datetime.fromisoformat(str(decision_value)),
                 )
                 ledger_summary = ledger.public_summary(
                     pending_key=prospective_key,

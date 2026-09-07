@@ -42,7 +42,8 @@ def test_operational_scores_use_frozen_baseline_and_do_not_change_hashes():
             "probabilities": {"risk_on": 0.4, "transition": 0.3, "risk_off": 0.3},
         }
     )
-    entry = replace(entry, forecast=forecast)
+    forecast["local_publication_at"] = entry.decision_at.isoformat()
+    entry = replace(entry, forecast=forecast, inserted_at=entry.decision_at)
     evaluation = _completed(entry)
     hashes = entry.forecast_sha256, evaluation.evaluation_sha256
     result = build_operational_diagnostics([entry], [evaluation], as_of=entry.target_at)

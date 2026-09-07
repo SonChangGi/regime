@@ -33,7 +33,8 @@ def generation():
     dataset = SimpleNamespace(canonical=canonical, features=canonical.copy(), input_vintages=(), availability_basis="reconstructed_market")
     benchmark = SimpleNamespace(champion="selected", predictions=predictions,
         state_label_history=pd.DataFrame({"date": dates, "state": ["risk_on"] * 4}),
-        transition_benchmark=SimpleNamespace(predictions=pd.DataFrame({"value": [1]})),
+        transition_benchmark=SimpleNamespace(predictions=pd.DataFrame({"value": [1]}),
+            latest_candidate_forecasts=lambda: pd.DataFrame({"future_value": [4]})),
         model_conditioned_asset_outcomes=pd.DataFrame({"value": [2]}),
         feature_ablation=SimpleNamespace(predictions=pd.DataFrame({"value": [3]})))
     payload = {
@@ -100,6 +101,27 @@ def fake_studies(monkeypatch, tmp_path, *, downside_cutoff=CUTOFF, matched=2):
                 "models": [{"id": model, "history": history, "latest": latest, "metrics": metrics}
                            for model in ["boundary_filtered_history", "boundary_student_t"]]}
     monkeypatch.setattr(publication, "build_forecast_improvement", forecast)
+    def forecast_audit(payload, canonical, states, baseline, transitions, candidates, cache, **kwargs):
+        seen["forecast_audit"] = {"payload": payload, "canonical": canonical, "states": states,
+            "baseline": baseline, "transitions": transitions, "candidates": candidates, "cache": cache, **kwargs}
+        blocks = {
+            "forecast_research": {"schema_version": "regime-forecast-research/1", "data_as_of": CUTOFF,
+                "selected_model": "test", "automatic_promotion": False,
+                "models": [{"id": "test", "label": "Test", "history": []}]},
+            "calibration_audit": {"schema_version": "regime-calibration-audit/1", "data_as_of": CUTOFF,
+                "rows": [{"model": "test", "horizon_weeks": 4, "evaluation_split": "retrospective_diagnostic", "n_predictions": 2}]},
+            "forecast_information": {"schema_version": "regime-forecast-information/1", "data_as_of": CUTOFF,
+                "rows": [], "status": "not_evaluable", "blocks": {"vix3m": {"status": "unavailable"}}}}
+        provenance = {"schema_version": "regime-forecast-publication-build/1", "data_as_of": CUTOFF,
+            "source_generation_id": payload["meta"]["generation_id"], "automatic_promotion": False,
+            "evidence_track": "reconstructed_market", "official_payload_sha256": "a" * 64,
+            "recipe_sha256": "b" * 64, "information_snapshot_sha256": "c" * 64}
+        provenance["cache_key"] = canonical_json_sha256_v1(provenance)
+        for name, block in blocks.items():
+            block["publication_provenance"] = provenance
+            block["artifacts"] = [{"label": "전체 결과 JSON", "url": f"./data/{name}.json"}]
+        return {"blocks": blocks, "provenance": provenance}
+    monkeypatch.setattr(publication, "build_forecast_publication_research", forecast_audit)
     return seen
 
 
@@ -140,7 +162,15 @@ def test_composition_uses_generation_inputs_and_preserves_official_decisions(mon
     assert receipt["outputs"]["forecast_improvement"] == canonical_json_sha256_v1(research["forecast_improvement"])
     assert research["forecast_improvement"]["models"][0]["latest"]["actual"] is None
     assert seen["forecast"]["states"].eq("risk_on").all()
-    assert len(messages) == 9
+    assert len(messages) == 10
+    assert receipt["forecast_audit_present"] is True
+    assert receipt["forecast_audit"]["data_as_of"] == CUTOFF
+    audit = seen["forecast_audit"]
+    assert audit["candidates"].equals(benchmark.transition_benchmark.latest_candidate_forecasts())
+    assert audit["transitions"].equals(benchmark.transition_benchmark.predictions)
+    assert audit["payload"] is payload
+    for name in ("forecast_research", "calibration_audit", "forecast_information"):
+        assert receipt["outputs"][name] == canonical_json_sha256_v1(research[name])
 
 
 @pytest.mark.parametrize("profile,mode,contract", [("quick", "live", "v5"), ("standard", "demo", "v5"), ("full", "replay", "v5"), ("standard", "live", "v4")])
@@ -234,7 +264,9 @@ def test_cli_composes_before_publication_and_does_not_cut_over_on_failure(monkey
     monkeypatch.setattr(cli, "_prospective_actual_states", lambda b: pd.Series("risk_on", index=dataset.canonical.index))
     monkeypatch.setattr(cli, "build_research_replay_input_document", lambda **k: {})
     monkeypatch.setattr(cli, "mature_forecast_evaluations", lambda *a, **k: SimpleNamespace(unresolved_due=()))
-    ledger = SimpleNamespace(public_summary=lambda **k: {}, list_evaluations=lambda: [])
+    ledger = SimpleNamespace(public_summary=lambda **k: {}, list_evaluations=lambda: [],
+                             list_probability_forecasts=lambda: [],
+                             list_probability_evaluations=lambda: [])
     monkeypatch.setattr(cli, "ForecastLedger", lambda p: nullcontext(ledger))
     monkeypatch.setattr(cli, "prospective_ledger_shadow_contract", lambda v: {})
 
@@ -249,6 +281,9 @@ def test_cli_composes_before_publication_and_does_not_cut_over_on_failure(monkey
     def publish(actual, *args, **kwargs):
         events.append("publish")
         assert actual["research_complete"] is True
+        scores = actual["research"]["operational_diagnostics"]["probability_scores"]
+        assert scores["evaluation_basis"] == "independent_of_investment_execution"
+        assert scores["prospective_completed_weeks"] == 0
         assert callable(kwargs["finalization"])
         return actual
 
@@ -264,3 +299,49 @@ def test_cli_composes_before_publication_and_does_not_cut_over_on_failure(monkey
         assert events == ["source_check", "compose", "source_check", "publish"]
     assert output.read_bytes() == b"previous complete result"
     assert (artifacts / "marker").read_bytes() == b"previous complete artifacts"
+
+
+@pytest.mark.parametrize("damage", ["missing_block", "stale_block", "malformed_block", "exception"])
+def test_normal_generation_cannot_publish_missing_stale_or_malformed_forecast_audit(monkeypatch, tmp_path, generation, damage):
+    fake_studies(monkeypatch, tmp_path)
+    original = publication.build_forecast_publication_research
+    def broken(*args, **kwargs):
+        if damage == "exception":
+            raise RuntimeError("required forecast study failed")
+        value = original(*args, **kwargs)
+        if damage == "missing_block":
+            del value["blocks"]["forecast_information"]
+        elif damage == "stale_block":
+            value["blocks"]["calibration_audit"]["data_as_of"] = "2026-08-28T20:00:00+00:00"
+        else:
+            value["blocks"]["forecast_research"]["automatic_promotion"] = True
+        return value
+    monkeypatch.setattr(publication, "build_forecast_publication_research", broken)
+    before = deepcopy(generation[0])
+    with pytest.raises((RuntimeError, ValueError)):
+        compose(generation, tmp_path)
+    assert generation[0] == before
+
+
+@pytest.mark.parametrize("damage", ["missing", "false_marker", "provenance", "hash", "generation", "link"])
+def test_completed_marker_rejects_partial_or_unbound_extensions(monkeypatch, tmp_path, generation, damage):
+    from regime_lab.research.contract import validate_research_extensions
+    fake_studies(monkeypatch, tmp_path)
+    result = compose(generation, tmp_path)
+    research = result["research"]
+    build = research["extensions"]["build"]
+    if damage == "missing":
+        del research["forecast_information"]
+    elif damage == "false_marker":
+        build["forecast_audit_present"] = False
+    elif damage == "provenance":
+        research["forecast_research"]["publication_provenance"] = {}
+    elif damage == "hash":
+        research["calibration_audit"]["rows"][0]["n_predictions"] = 999
+    elif damage == "generation":
+        build["generation_id"] = "wrong"
+    else:
+        research["forecast_information"]["artifacts"] = []
+        build["outputs"]["forecast_information"] = canonical_json_sha256_v1(research["forecast_information"])
+    with pytest.raises(ValueError, match="forecast publication"):
+        validate_research_extensions(research, data_as_of=CUTOFF)

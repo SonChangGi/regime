@@ -128,6 +128,7 @@ def test_selection_evaluation_recomputes_all_supplemental_metrics() -> None:
     assert transitions["fast"]["mean_detection_delay_forecast_weeks"] == 0.0
     assert transitions["fast"]["false_alarm_count"] == 0
     assert transitions["markov"]["detected_event_count"] == 4
+
     assert transitions["markov"]["missed_event_count"] == 2
     assert transitions["markov"]["mean_detection_delay_forecast_weeks"] == 1.0
     assert transitions["noisy"]["false_alarm_count"] == 2
@@ -138,6 +139,20 @@ def test_selection_evaluation_recomputes_all_supplemental_metrics() -> None:
     assert set(mcs["retained_models"]).union(mcs["eliminated_models"]) == set(
         document["candidate_set"]
     )
+
+
+@pytest.mark.parametrize("origin,target", [
+    ("2023-01-06", "2023-01-13"),
+    ("2022-12-30", "2023-01-06"),
+    ("2022-12-25", "2023-01-01"),
+])
+def test_selection_strings_cannot_override_frozen_dates(origin, target):
+    predictions = _selection_predictions()
+    first = predictions.origin_date.eq(predictions.origin_date.min())
+    predictions.loc[first, "origin_date"] = pd.Timestamp(origin, tz="UTC")
+    predictions.loc[first, "target_date"] = pd.Timestamp(target, tz="UTC")
+    with pytest.raises(ValueError, match="cutoff|cross-boundary"):
+        build_selection_evaluation(predictions, _selection_diagnostics(), evidence_status="synthetic_fixture")
 
 
 def test_selection_evaluation_rejects_any_holdout_or_nonselection_row() -> None:

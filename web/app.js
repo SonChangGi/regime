@@ -306,6 +306,7 @@
     pendingHistoryWeek: null,
     weekSelectionRevision: 0,
     comparisonModel: null,
+    forecastResearchModel: null,
     researchAvailable: true,
     sidecarAvailability: { comparison: "pending", selection: "pending", research: "pending" },
     hydratingView: false,
@@ -1226,21 +1227,25 @@
       `국면 정의 버전 ${textValue(label.spec_version, "미기재")}, 식별자 ${shortHash}`,
     );
     const membershipText = label.membership_semantics === "distance_to_anchor_not_posterior"
-      ? "현재 막대는 이번 주가 각 국면에 얼마나 가까운지, 다음 주 막대는 지금까지의 데이터로 계산한 다음 주 국면 확률입니다."
-      : "현재 막대와 다음 주 확률은 서로 다른 값을 보여줍니다.";
+      ? "소속도는 국면 기준에 가까운 정도, 예측확률은 다음 주 국면별 가능성입니다."
+      : "현재 국면과 다음 주 예측을 관측일 기준으로 표시합니다.";
     setText(dom["membership-definition"], membershipText);
 
     const forecast = isObject(state.raw.forecast) ? state.raw.forecast : {};
     const availability = forecastAvailability(state.raw);
-    setText(dom["forecast-origin-at"], formatDateTime(forecast.origin_at));
-    setText(dom["forecast-decision-at"], forecast.decision_at ? formatDateTime(forecast.decision_at) : "발행시각 없음");
-    setText(dom["forecast-target-at"], formatDateTime(forecast.target_at));
+    const week = selectedWeek() || state.weekly.at(-1) || { date: forecast.origin_at?.slice(0, 10) };
+    const timing = INSIGHTS.selectedForecastTiming(state.raw, week);
+    setText(dom["forecast-origin-at"], timing.historical ? formatDate(week.date) : formatDateTime(timing.origin));
+    setText(dom["forecast-decision-at"], timing.issuedAt ? formatDateTime(timing.issuedAt) : "과거 재구성");
+    setText(dom["forecast-target-at"], timing.historical ? formatDate(timing.target) : formatDateTime(timing.target));
+    setText(dom["latest-publication-info"], `최신 발행 ${formatDateTime(timing.latestIssuedAt)} · 기준 ${formatDate(timing.latestOrigin?.slice(0, 10))} → 대상 ${formatDate(timing.latestTarget?.slice(0, 10))}`);
+    dom["latest-publication-info"].hidden = !timing.historical;
     const timingSuffix = forecast.timing_status === "late_nowcast"
       ? " · 늦은 nowcast"
       : "";
     setText(
       dom["forecast-remaining-horizon"],
-      `${formatDurationSeconds(availability.remaining_seconds)}${timingSuffix}`,
+      timing.historical ? "과거 예측 조회" : `${availability.current ? "대상까지 " : "대상 시각 경과 · "}${formatDurationSeconds(availability.remaining_seconds)}${timingSuffix}`,
     );
     dom["hero-results"].classList.remove("has-expired-current-forecast");
     dom["hero-results"].dataset.forecastStatus = !selectedForecastIsHistorical() && !availability.current
@@ -3560,6 +3565,7 @@
 
   function validateV5ResearchContract(research, model, errors, payload = null) {
     errors.push(...INSIGHTS.validateForecastImprovement({ ...(payload || {}), research }));
+    errors.push(...INSIGHTS.validateForecastResearch({ ...(payload || {}), research }));
     const improvement = isObject(research) ? research.forecast_improvement : null;
     if (isObject(improvement) && Object.hasOwn(improvement, "asset_statistics")) {
       // Reuse the full existing asset contract (execution, support, bootstrap,
@@ -4762,7 +4768,7 @@
       "theme-toggle-text", "copy-view-link", "dashboard-subtitle", "date-form", "analysis-date", "week-select",
       "snap-note", "previous-week", "next-week", "latest-week", "history-window",
       "hero-results", "contract-overview-grid", "label-spec-identity", "membership-definition",
-      "forecast-window-section",
+      "forecast-window-section", "latest-publication-info", "next-direction-summary", "multistate-forecast", "forecast-alert-research", "duration-estimate-note",
       "forecast-origin-at", "forecast-decision-at",
       "forecast-target-at", "forecast-remaining-horizon",
       "current-regime-card", "current-horizon", "current-regime-symbol", "current-regime-name",
@@ -4806,7 +4812,7 @@
       "source-freshness", "source-health-body", "feature-catalog", "footer-model-version", "footer-schema-version",
       "footer-generated-at", "screen-reader-status", "execution-brief", "conditional-weighting",
       "conditional-weighting-description", "conditional-cell-detail", "context-plane", "model-quality-brief",
-      "holdings-calculator", "holdings-form", "holdings-inputs", "holdings-total", "holdings-result", "holdings-target-basis", "research-upgrades",
+      "holdings-calculator", "holdings-form", "holdings-inputs", "holdings-total", "holdings-result", "holdings-target-basis", "research-upgrades", "forecast-method-notes",
     ];
     for (const id of ids) dom[id] = document.getElementById(id);
   }
@@ -4848,6 +4854,7 @@
 
   const DASHBOARD_VIEW_FRAGMENTS = Object.freeze({
     execution: "overview",
+    transition: "transition-outlook",
     performance: "decision-shadow-block",
     assets: "conditional-stats",
     model: "history",
@@ -4880,7 +4887,7 @@
       window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
     }
     if (options.focus) {
-      const target = document.getElementById(DASHBOARD_VIEW_FRAGMENTS[view]);
+      const target = document.getElementById("shared-date-controls") || document.getElementById(DASHBOARD_VIEW_FRAGMENTS[view]);
       if (target && typeof target.scrollIntoView === "function") {
         target.scrollIntoView({ block: "start", behavior: "smooth" });
       }
@@ -4990,6 +4997,7 @@
       weighting: params.get("weighting") === "weekly" ? "weekly" : "episode",
       horizon: TRANSITION_HORIZONS.includes(requestedHorizon) ? requestedHorizon : 1,
       asset: requestedAssets[0] || "SPY",
+      ...(params.has("research_model") ? { researchModel: params.get("research_model") } : {}),
       ...(params.has("alert") ? { alert: DECISION_RESEARCH_TARGETS.includes(params.get("alert")) ? params.get("alert") : DECISION_RESEARCH_TARGETS[0] } : {}),
       ...(params.has("budget") ? { budget: DECISION_RESEARCH_BUDGETS.map(String).includes(params.get("budget")) ? Number(params.get("budget")) : DECISION_RESEARCH_BUDGETS[0] } : {}),
       ...(params.has("strategies") ? { strategies: normalizePerformanceSelection(params.get("strategies").split(","), payload, { researchPending }) } : {}),
@@ -5027,6 +5035,8 @@
     url.searchParams.set("weighting", state.outcomeWeighting);
     url.searchParams.set("horizon", String(state.outcomeHorizon));
     url.searchParams.set("assets", state.outcomeAsset);
+    if (state.forecastResearchModel) url.searchParams.set("research_model", state.forecastResearchModel);
+    else url.searchParams.delete("research_model");
     const target = DECISION_RESEARCH_TARGETS.includes(state.decisionResearchTarget) ? state.decisionResearchTarget : DECISION_RESEARCH_TARGETS[0];
     const budget = DECISION_RESEARCH_BUDGETS.includes(state.decisionResearchBudget) ? state.decisionResearchBudget : DECISION_RESEARCH_BUDGETS[0];
     if (target !== DECISION_RESEARCH_TARGETS[0]) url.searchParams.set("alert", target);
@@ -5220,6 +5230,7 @@
     dom["week-select"].value = week.date;
     dom["previous-week"].disabled = index === 0;
     dom["next-week"].disabled = index === state.weekly.length - 1;
+    dom["latest-week"].disabled = index === state.weekly.length - 1;
     renderSelectedWeek();
     syncViewUrl();
     if (announce) {
@@ -5232,6 +5243,7 @@
     const forecast = forecastForWeek(week, decisionModel);
     dom["next-regime-card"].hidden = !isObject(forecast);
     if (!isObject(forecast)) {
+      dom["next-direction-summary"].replaceChildren();
       renderNextModelContext(null);
       return null;
     }
@@ -5259,6 +5271,15 @@
       );
     }
     renderNextModelContext(forecast);
+    dom["next-direction-summary"].replaceChildren();
+    const directions = INSIGHTS.forecastDirections(week.current?.state, forecast.probabilities);
+    if (directions) {
+      for (const [key, label] of [["stay", "유지"], ["worsening", "악화"], ["recovery", "회복"]]) {
+        const item = createElement("div", `forecast-direction ${key}`);
+        item.append(createElement("span", null, label), createElement("strong", null, formatPercent(directions[key])));
+        dom["next-direction-summary"].append(item);
+      }
+    }
     return forecast;
   }
 
@@ -5444,19 +5465,20 @@
     const researchDetail = dom["transition-risk-detail"];
     container.replaceChildren();
     researchDetail.replaceChildren();
+    renderMultistateForecast(week);
     const riskByHorizon = isObject(week.transition_risk) ? week.transition_risk : null;
     if (!isObject(riskByHorizon)) {
       container.hidden = true;
       return;
     }
 
-    for (const horizon of [4, 13]) {
-      const result = riskByHorizon[`${horizon}w`];
-      const value = probability(isObject(result) ? result.probability : null);
+    for (const result of INSIGHTS.transitionOutlook(week)) {
+      const { horizon, probability: value } = result;
       const row = createElement("div", "transition-horizon-row");
+      row.dataset.horizon = String(horizon);
       const heading = createElement("div", "transition-horizon-heading");
       heading.append(
-        createElement("span", null, `${horizon}주 이탈`),
+        createElement("span", null, `${horizon}주 내 이탈 · ${formatDate(result.target, false)}까지`),
         createElement("strong", null, formatPercent(value)),
       );
       const meter = createElement("span", "transition-horizon-meter");
@@ -5464,6 +5486,16 @@
       meterFill.style.width = value === null ? "0" : `${(value * 100).toFixed(2)}%`;
       meter.append(meterFill);
       row.append(heading, meter);
+      const comparison = createElement("div", "horizon-comparison");
+      comparison.append(createElement("span", null, `모델 예측 ${formatPercent(value)}`),
+        createElement("span", null, `과거 KM 기준률 ${formatPercent(result.baseline)}`));
+      row.append(comparison);
+      const destinations = createElement("dl", "first-destination-list");
+      appendMetric(destinations, "기간 내 유지", formatPercent(result.noDeparture));
+      if (result.firstDestination) for (const code of STATE_ORDER.filter((code) => code !== week.current?.state)) {
+        appendMetric(destinations, `최초 이탈 → ${stateMeta(code).ko}`, formatPercent(result.firstDestination[code]));
+      }
+      row.append(destinations, createElement("p", "horizon-model-note", `${modelForecastLabel(result.model)} · 방향 분해 ${modelForecastLabel(result.directionModel)}${result.fallback ? ` · 보조값 (${result.fallbackReason || "상세 사유 없음"})` : ""}`));
       row.setAttribute(
         "aria-label",
         `${horizon}주 국면 이탈 확률 ${formatPercent(value)}`,
@@ -5471,6 +5503,71 @@
       container.append(row);
     }
     container.hidden = false;
+  }
+
+  function renderMultistateForecast(week) {
+    const container = dom["multistate-forecast"];
+    if (!container) return;
+    container.replaceChildren();
+    const block = state.raw.research?.forecast_research;
+    if (!block || INSIGHTS.validateForecastResearch(state.raw).length) {
+      const message = state.sidecarAvailability.research === "pending"
+        ? "국면 예측 연구를 불러오는 중입니다."
+        : state.sidecarAvailability.research === "unavailable"
+          ? "연구 결과를 불러오지 못했습니다. 새로고침해 다시 확인해 주세요."
+          : "기간 내 위험회피 진입 · 선택 주의 경로 연구 결과가 아직 없습니다.";
+      container.setAttribute("aria-busy", String(state.sidecarAvailability.research === "pending"));
+      container.append(createElement("p", "section-caption", message));
+      return;
+    }
+    container.setAttribute("aria-busy", "false");
+    if (!block.models.some((item) => item.id === state.forecastResearchModel)) state.forecastResearchModel = block.selected_model;
+    const heading = createElement("div", "research-scope-heading");
+    heading.append(createElement("h3", null, "국면 예측 연구"));
+    const field = createElement("label", "forecast-research-model-field", "연구 비교 모델");
+    const select = createElement("select");
+    select.id = "forecast-research-model";
+    select.setAttribute("aria-label", "연구 비교 모델");
+    for (const model of block.models) {
+      const role = model.role === "challenger" ? "후보" : "기준선";
+      const option = createElement("option", null, model.label.endsWith(role) ? model.label : `${model.label} · ${role}`);
+      option.value = model.id; select.append(option);
+    }
+    select.value = state.forecastResearchModel;
+    select.addEventListener("change", () => {
+      state.forecastResearchModel = select.value;
+      renderMultistateForecast(selectedWeek());
+      syncViewUrl();
+    });
+    field.append(select); heading.append(field); container.append(heading);
+    const result = INSIGHTS.researchForecastRow(state.raw, week.date, state.forecastResearchModel);
+    if (!result) container.append(createElement("p", "research-empty", "선택 주의 이 모델 예측이 없습니다. 다른 주나 모델을 선택해 주세요."));
+    else {
+      if (result.next_state) {
+        const probabilities = createElement("dl", "research-next-state first-destination-list");
+        for (const code of STATE_ORDER) appendMetric(probabilities, `다음 주 ${stateMeta(code).ko}`, formatPercent(result.next_state[code]));
+        container.append(probabilities);
+      }
+      if ([1, 4, 13].every((horizon) => result.horizons?.[`${horizon}w`])) {
+        const rows = [4, 13].map((horizon) => {
+          const item = result.horizons[`${horizon}w`];
+          return [`${horizon}주`, formatPercent(item.any_risk_off_entry), formatPercent(item.any_risk_off_occupancy), ...STATE_ORDER.map((code) => formatPercent(item.endpoint[code]))];
+        });
+        appendResearchTable(container, ["기간", result.current_state === "risk_off" ? "위험회피 재진입" : "위험회피 진입", "기간 중 위험회피 관측", ...STATE_ORDER.map((code) => `기간 말 ${stateMeta(code).ko}`)], rows, "4·13주 경로 확률");
+      } else container.append(createElement("p", "research-empty", "4·13주 경로 예측 없음 · 다상태 모델을 선택하세요."));
+    }
+    const metrics = (Array.isArray(block.metrics) ? block.metrics : []).filter((row) => row.target === "next_state" && row.horizon_weeks === 1
+      && row.period === "retrospective_2023_2026" && !row.stratum);
+    const labels = new Map(block.models.map((model) => [model.id, model.label]));
+    if (metrics.length) {
+      container.append(createElement("h4", null, "후보와 기준선"), createElement("p", "section-caption", "1주 예측 · 2023–2026 진단"));
+      appendResearchTable(container, ["모델", "표본", "Log loss ↓", "Brier ↓", "악화 Brier ↓", "악화 포착", "회복 포착", "오경보/년"], metrics.map((row) => [
+        `${row.model === state.forecastResearchModel ? "선택 · " : ""}${labels.get(row.model) || row.model}`, `${formatNumber(row.weeks, 0)}주`,
+        formatNumber(row.log_loss, 4), formatNumber(row.brier, 4), formatNumber(row.worsening_brier, 4),
+        `${formatNumber(row.worsening_hits, 0)}/${formatNumber(row.worsening_events, 0)}`, `${formatNumber(row.recovery_hits, 0)}/${formatNumber(row.recovery_events, 0)}`, formatNumber(row.departure_false_alarms_per_year, 2),
+      ]), "후보별 예측 점수");
+    }
+    appendForecastArtifactLinks(container, block.artifacts);
   }
 
   function makeLinePath(points) {
@@ -5979,7 +6076,9 @@
   }
 
   function renderTimeline() {
-    const history = selectedHistory();
+    // This is a date navigator, independent of the evaluation cutoff/window.
+    // Selecting an older origin must not remove the route back to newer dates.
+    const history = state.weekly;
     dom["regime-timeline"].replaceChildren();
     if (!history.length) {
       dom["regime-timeline"].append(createElement("p", "empty-inline", "표시할 국면 타임라인이 없습니다."));
@@ -6179,16 +6278,18 @@
       return;
     }
     const supported = duration.status === "ok";
-    const median = finiteNumber(duration.median_remaining_weeks);
-    const rmst = finiteNumber(duration.restricted_mean_remaining_weeks);
+    const estimate = INSIGHTS.durationEstimate(duration);
     dom["duration-context"].replaceChildren();
     appendMetric(dom["duration-context"], "현재 지속", `${formatNumber(duration.elapsed_weeks, 0)}주`);
     appendMetric(
       dom["duration-context"],
-      median === null ? "52주 제한 잔여기간" : "중앙 잔여기간",
-      median === null && rmst === null ? "—" : `${formatNumber(median === null ? rmst : median, 1)}주`,
+      estimate.restricted ? `${formatNumber(estimate.restriction, 0)}주 제한 평균 잔여기간` : "중앙 잔여기간",
+      estimate.value === null ? "—" : `${formatNumber(estimate.value, 1)}주`,
     );
-    setText(dom["duration-context-caption"], supported ? "현재 상태의 과거 지속 패턴" : duration.status === "insufficient_tail_support" ? "현재 지속 연령의 표본 부족" : "표본 축적 중");
+    appendMetric(dom["duration-context"], "추정치 95% 구간", estimate.lower === null || estimate.upper === null ? "자료 없음" : `${formatNumber(estimate.lower, 1)}–${formatNumber(estimate.upper, 1)}주`);
+    appendMetric(dom["duration-context"], "과거 완료 / 검열 구간", `${formatNumber(estimate.completed, 0)} / ${formatNumber(estimate.censored, 0)}개`);
+    appendMetric(dom["duration-context"], "현재 연령 이후 완료 / 지원 표본", `${formatNumber(estimate.supportedCompleted, 0)} / ${formatNumber(estimate.supportedAtRisk, 0)}개`);
+    setText(dom["duration-context-caption"], supported ? "과거 지속패턴" : duration.status === "insufficient_tail_support" ? "현재 지속 연령의 표본 부족" : "표본 축적 중");
     setText(
       dom["duration-research-detail"],
       `상태별 Kaplan–Meier · 완료 구간 ${formatNumber(duration.completed_spells, 0)}개 · 검열 구간 ${formatNumber(duration.censored_spells, 0)}개${isObject(duration.support) ? ` · 현재 지속 연령 이후 완료 ${formatNumber(duration.support.completed_at_current_age, 0)}개` : ""}`,
@@ -6197,7 +6298,7 @@
     for (const horizon of [4, 13]) {
       const departure = probability(duration.departure_probability && duration.departure_probability[`${horizon}w`]);
       const block = createElement("div", "duration-baseline");
-      block.append(createElement("span", null, `${horizon}주 이탈 · 과거 KM`), createElement("strong", null, formatPercent(departure)));
+      block.append(createElement("span", null, `${horizon}주 이탈 · 과거 KM`), createElement("strong", null, formatPercent(departure)), createElement("small", null, `해당 연령 생존 표본 ${formatNumber(duration.support?.horizon_at_risk?.[`${horizon}w`], 0)}개`));
       dom["duration-baselines"].append(block);
     }
     card.hidden = false;
@@ -7122,18 +7223,113 @@
     const sensitivity = research.label_sensitivity;
     const coherence = state.raw?.model?.directional_transition?.coherence_evidence;
     const scope = INSIGHTS.researchScope(state.raw || {});
+    const alerts = dom["forecast-alert-research"];
+    if (alerts) {
+      alerts.replaceChildren(); alerts.hidden = !decisionResearch;
+      if (decisionResearch) renderDecisionResearch(decisionResearch, alerts);
+    }
     container.replaceChildren();
-    container.hidden = !extensions && !allocation && !decisionResearch && !research.operational_diagnostics && !sensitivity && !coherence;
-    if (container.hidden) return;
+    container.hidden = !extensions && !allocation && !decisionResearch && !research.operational_diagnostics && !sensitivity && !coherence && !research.calibration_audit && !research.forecast_information;
+    if (container.hidden) { renderForecastMethodNotes(research); return; }
     const heading = createElement("div", "research-scope-heading");
-    heading.append(createElement("h2", null, "확장 연구"), createElement("span", "research-scope", `전체 연구 · 기준 ${formatDate(typeof scope.asOf === "string" ? scope.asOf.slice(0, 10) : scope.asOf)}`));
+    heading.append(createElement("h2", null, "확장 연구"), createElement("span", "research-scope", `자료 ${formatDate(typeof scope.asOf === "string" ? scope.asOf.slice(0, 10) : scope.asOf)}`));
     container.append(heading);
-    if (allocation) renderAllocationResearch(allocation, container);
+    renderForecastAuditPanels(research, container);
     if (extensions) renderResearchExtensions(extensions, container, scope);
     if (sensitivity) renderLabelSensitivity(sensitivity, container);
     if (coherence) renderDirectionalCoherence(coherence, container);
-    if (decisionResearch) renderDecisionResearch(decisionResearch, container);
     if (research.operational_diagnostics) renderOperationalDiagnostics(research.operational_diagnostics, container);
+    if (allocation) {
+      const assetResearch = createElement("div");
+      assetResearch.setAttribute("data-dashboard-view", "performance");
+      renderAllocationResearch(allocation, assetResearch);
+      container.append(assetResearch);
+    }
+  }
+
+  function forecastEvidenceLabel(value) {
+    return { selection: "선정", holdout: "과거 진단", retrospective_diagnostic: "과거 진단", retrospective_reconstruction: "과거 재구성", prospective: "실제 발행 후", prospective_only: "전향적 축적", operational_oos: "실제 발행 후" }[value] || value || "구간 미기재";
+  }
+
+  function formatResearchDelta(value) {
+    const number = finiteNumber(value);
+    return number !== null && number !== 0 && Math.abs(number) < 0.0001 ? number.toExponential(2) : formatNumber(number, 4);
+  }
+
+  function renderForecastMethodNotes(research) {
+    const container = dom["forecast-method-notes"];
+    if (!container) return;
+    container.replaceChildren();
+    if (research.calibration_audit) container.append(createElement("p", null, "보정은 과거 구간으로 선택하고, 최종 확률은 1·4·13주 이탈 확률의 순서를 맞춘 값입니다."));
+    const notes = research.forecast_information?.notes;
+    const prospective = [];
+    for (const note of [...new Set(Array.isArray(notes) ? notes.filter((value) => typeof value === "string") : [])]) {
+      const source = /^(fomc|bls|cftc_tff|board_ebp): prospective_only\b/.exec(note)?.[1];
+      const label = { fomc: "FOMC 일정", bls: "CPI·고용 일정", cftc_tff: "CFTC 포지션", board_ebp: "EBP" }[source];
+      if (label) prospective.push(label);
+      else if (/^모든 비교는 같은 origin|^2023년 이후 holdout|^확률 점수 차이는/.test(note)) continue;
+      else container.append(createElement("p", null, note.startsWith("VIX3M은") ? "VIX3M 비교는 이전 관측일 종가를 이용한 과거 재구성입니다." : note));
+    }
+    if (prospective.length) container.append(createElement("p", null, `${prospective.join(" · ")}: 실제 최초 확보 시점부터 평가 자료를 축적합니다.`));
+  }
+
+  function appendForecastArtifactLinks(container, artifacts) {
+    const links = createElement("nav", "source-links forecast-artifact-links");
+    links.setAttribute("aria-label", "전체 연구 결과 파일");
+    for (const artifact of (Array.isArray(artifacts) ? artifacts : [])) {
+      if (typeof artifact?.url !== "string" || !/^(https:\/\/|\.\/data\/|\/data\/)/.test(artifact.url)) continue;
+      const link = createElement("a", null, artifact.label || "전체 결과");
+      link.href = artifact.url; links.append(link);
+    }
+    if (links.children.length) container.append(links);
+  }
+
+  function renderForecastAuditPanels(research, container) {
+    renderForecastMethodNotes(research);
+    const calibration = research.calibration_audit;
+    if (calibration?.schema_version === "regime-calibration-audit/1") {
+      const section = createElement("section", "research-extension");
+      section.append(createElement("h3", null, "확률 보정 검증"), createElement("p", "section-caption", `자료 ${formatDate(calibration.data_as_of?.slice(0, 10))}`));
+      const rows = Array.isArray(calibration.rows) ? calibration.rows.filter(isObject) : [];
+      if (rows.length) {
+        const publishedRows = rows.filter((row) => Number.isFinite(row.previous_published_log_loss) && Number.isFinite(row.final_log_loss));
+        if (publishedRows.length) appendResearchTable(section, ["기간", "동일 표본", "기존 발행 Log loss", "새 최종 연구 Log loss", "차이"], publishedRows.map((row) => [
+          `${formatNumber(row.horizon_weeks, 0)}주`, `${formatNumber(row.n_predictions, 0)}주`,
+          formatNumber(row.previous_published_log_loss, 4), formatNumber(row.final_log_loss, 4), formatResearchDelta(row.final_log_loss - row.previous_published_log_loss),
+        ]), "발행 모델 보정 비교");
+        const detail = createElement("details", "research-calibration-detail");
+        detail.append(createElement("summary", null, "모든 모델·기간의 보정 근거"));
+        appendResearchTable(detail, ["모델·기간", "평가 구간", "동일 표본", "기존 발행 Log loss", "무보정 Log loss", "새 보정 연구 Log loss", "새 최종 연구 Log loss", "기존 발행 Brier", "무보정 Brier", "새 최종 연구 Brier", "선택 보정"], rows.map((row) => [
+          `${modelForecastLabel(row.model)} · ${formatNumber(row.horizon_weeks, 0)}주`, forecastEvidenceLabel(row.evidence_track || row.evaluation_split),
+          `${formatNumber(row.n_predictions, 0)}주`, formatNumber(row.previous_published_log_loss, 4), formatNumber(row.raw_log_loss, 4), formatNumber(row.calibrated_log_loss, 4), formatNumber(row.final_log_loss, 4),
+          formatNumber(row.previous_published_brier, 4), formatNumber(row.raw_brier, 4), formatNumber(row.final_brier, 4), row.selected_method || "구간별 선택",
+        ]), "모든 모델의 보정 점수");
+        section.append(detail);
+      } else section.append(createElement("p", "research-empty", "완료된 보정 비교 표본이 없습니다."));
+      const latest = (Array.isArray(calibration.latest_rows) ? calibration.latest_rows : []).filter((row) => Number.isFinite(row.previous_published_probability));
+      if (latest.length) {
+        section.append(createElement("h4", null, "최근 이탈 확률"));
+        appendResearchTable(section, ["기간", "기존 발행", "무보정·정합화 연구", "새 보정·정합화 연구", "대상"], latest.map((row) => [
+          `${formatNumber(row.horizon_weeks, 0)}주`, formatPercent(row.previous_published_probability), formatPercent(row.identity_final_probability), formatPercent(row.final_probability), formatDate(row.target_end?.slice(0, 10)),
+        ]), "최근 이탈 확률 보정 비교");
+      }
+      appendForecastArtifactLinks(section, calibration.artifacts);
+      container.append(section);
+    }
+    const information = research.forecast_information;
+    if (information?.schema_version === "regime-forecast-information/1") {
+      const section = createElement("section", "research-extension");
+      section.append(createElement("h3", null, "추가 정보 비교"), createElement("p", "section-caption", `자료 ${formatDate(information.data_as_of?.slice(0, 10))}`));
+      const rows = Array.isArray(information.rows) ? information.rows.filter(isObject) : [];
+      if (rows.length) appendResearchTable(section, ["추가 입력", "모델 / 기준선", "평가 구간", "동일 표본", "기준 Log loss", "추가 후 Log loss", "Δ Log loss", "Δ Brier", "Δ 악화 Brier"], rows.map((row) => [
+        row.feature_block === "vix3m_term_structure" ? "VIX3M 기간구조" : row.feature_block, `${modelForecastLabel(row.model)} / ${modelForecastLabel(row.baseline_model)}`,
+        forecastEvidenceLabel(row.evidence_track || row.evaluation_split), `${formatNumber(row.matched_n, 0)}주`,
+        formatNumber(row.baseline_log_loss, 4), formatNumber(row.candidate_log_loss, 4), formatResearchDelta(row.delta_log_loss), formatResearchDelta(row.delta_brier), formatResearchDelta(row.delta_worsening_brier),
+      ]), "추가 입력별 예측 점수");
+      else section.append(createElement("p", "research-empty", "비교 가능한 완료 표본이 없습니다."));
+      appendForecastArtifactLinks(section, information.artifacts);
+      container.append(section);
+    }
   }
 
   function renderLabelSensitivity(value, container) {
@@ -7268,8 +7464,8 @@
 
   function renderDecisionResearch(research, container) {
     const section = createElement("section", "decision-research-panel");
-    section.append(createElement("h3", null, "조기 경보와 실제 손익"));
-    section.append(createElement("p", "section-caption", "전환 모델·시장 경보 기준 · 전체 검증 기간"));
+    section.append(createElement("h3", null, "악화·이탈 경보 정책 검증"));
+    section.append(createElement("p", "section-caption", `2023년 이후 진단 · 자료 ${formatDate(state.raw?.meta?.data_as_of?.slice(0, 10))}`));
     const controls = createElement("div", "research-filter-controls");
     const target = createElement("select"), budget = createElement("select");
     const targets = DECISION_RESEARCH_TARGETS.map((value) => [value, value === "risk_worsening" ? "위험 악화" : "모든 국면 이탈"]);
@@ -7301,7 +7497,10 @@
     target.addEventListener("change", updateSelection); budget.addEventListener("change", updateSelection);
     controls.append(target, budget); section.append(controls, table); render();
     const matrix = research.forecast_actual_loss_matrix?.rows || [];
-    appendResearchTable(section, ["예측", "실제", "표본", "평균 수익", "하락 수익 합", "위험 악화"], matrix.map((row) => [stateMeta(row.predicted).ko, stateMeta(row.actual).ko, formatNumber(row.n, 0), formatSignedPercent(row.mean_return, 2), formatSignedPercent(row.negative_return_sum, 2), formatNumber(row.worsening_events, 0)]), "예측 국면과 실제 국면별 SPY 성과");
+    const losses = createElement("details", "compact-table-details");
+    losses.append(createElement("summary", null, "국면 오분류와 이후 SPY 수익"));
+    appendResearchTable(losses, ["예측", "실제", "표본", "평균 수익", "하락 수익 합", "위험 악화"], matrix.map((row) => [stateMeta(row.predicted).ko, stateMeta(row.actual).ko, formatNumber(row.n, 0), formatSignedPercent(row.mean_return, 2), formatSignedPercent(row.negative_return_sum, 2), formatNumber(row.worsening_events, 0)]), "예측 국면과 실제 국면별 SPY 성과");
+    section.append(losses);
     container.append(section);
   }
 
@@ -7310,7 +7509,13 @@
     section.append(createElement("h3", null, "실제 발행 후 운영 기록"));
     const timing = value.timing || {};
     const scores = value.probability_scores || {};
-    appendResearchTable(section, ["발행", "진입시각 확인", "정시 발행", "완료 평가", "최장 연속 평가"], [[formatNumber(timing.issued_entry_count, 0), formatNumber(timing.deadline_observed_entries, 0), `${formatNumber(timing.on_time_entries, 0)}/${formatNumber(timing.deadline_observed_entries, 0)}`, `${formatNumber(scores.completed_weeks, 0)}주`, `${formatNumber(value.longest_continuous_completed_weeks, 0)}주`]], "실제 운영의 발행·완료 표본");
+    const independent = scores.evaluation_basis === "independent_of_investment_execution";
+    const completed = `${formatNumber(scores.completed_weeks, 0)}주${Number.isInteger(scores.completed_entries) ? ` / ${formatNumber(scores.completed_entries, 0)}건` : ""}`;
+    appendResearchTable(section, ["발행", "매매 시각 확인", "매매 예정시각 전 발행", independent ? "라벨 확정 평가 전체" : "완료 평가", "최장 연속 평가"], [[formatNumber(timing.issued_entry_count, 0), formatNumber(timing.deadline_observed_entries, 0), `${formatNumber(timing.on_time_entries, 0)}/${formatNumber(timing.deadline_observed_entries, 0)}`, completed, `${formatNumber(value.longest_continuous_completed_weeks, 0)}주`]], "실제 운영의 발행·완료 표본");
+    if (Object.hasOwn(scores, "prospective_completed_weeks")) {
+      appendResearchTable(section, ["대상 시각 전 저장·발행 확인", "지연·발행 미확인 제외", "Log loss", "Brier"], [[`${formatNumber(scores.prospective_completed_weeks, 0)}주`, `${formatNumber(scores.excluded_late_or_unverified_weeks, 0)}주`, formatNumber(scores.log_loss, 4), formatNumber(scores.brier, 4)]], "대상 시각 전 저장·발행이 확인된 국면 예측의 확률 성과");
+    }
+    if (Number.isInteger(scores.duplicate_target_entries)) section.append(createElement("p", "section-caption", `동일 대상 중복 ${formatNumber(scores.duplicate_target_entries, 0)}건 제외`));
     const rows = Object.entries(scores.benchmarks || {});
     if (rows.length) appendResearchTable(section, ["비교 기준", "동일 표본", "Log loss 개선", "Brier 개선"], rows.map(([key, row]) => [key, formatNumber(row.matched_n, 0), formatNumber(row.log_loss_improvement, 4), formatNumber(row.brier_improvement, 4)]), "실제 발행 후 확률 성과");
     container.append(section);
@@ -8461,6 +8666,11 @@
       majority: "다수 국면",
       persistence: "직전 국면 유지",
       markov: "Markov",
+      binary_xgboost: "이탈 XGBoost",
+      markov_hazard: "Markov 위험률",
+      empirical_first_passage: "과거 최초 이탈 비율",
+      boundary_existing_vol_control: "경계 · 기존 변동성 대조",
+      boundary_vix3m_augmented: "경계 + VIX3M",
       elastic_net_logistic: "Elastic-net Logistic",
       calibrated_linear_svm: "보정 Linear SVM",
       random_forest: "Random Forest",
@@ -8564,9 +8774,6 @@
         createElement("span", null, `예측 국면 일치 ${comparison.samePredictions}/${comparison.comparedWeeks}주`),
         createElement("span", null, `확률 차이 평균 ${formatNumber(comparison.meanProbabilityDifference * 100, 3)}%p`),
       );
-      if (comparison.samePredictions === comparison.comparedWeeks) {
-        difference.append(createElement("small", null, "같은 국면을 예측해 포착·오경보 횟수가 같습니다."));
-      }
     }
   }
 
@@ -8721,9 +8928,11 @@
         detail: `최빈국면 기준 · 정밀도 ${formatPercent(quality.precision, 1)}`,
       },
       {
-        label: "변화 후 인식 지연",
+        label: "인식한 전환의 평균 지연",
         value: quality.delay === null ? "—" : `${formatNumber(quality.delay, 2)}주`,
-        detail: `오경보 ${formatNumber(quality.falseAlarms, 2)}회/년`,
+        detail: quality.detected === null || quality.events === null
+          ? "인식·미인식 건수 자료 없음"
+          : `인식 ${formatNumber(quality.detected, 0)}/${formatNumber(quality.events, 0)}건 · 미인식 ${formatNumber(quality.events - quality.detected, 0)}건 · 다음 전환 또는 선택 기간 말까지`,
       },
     ];
     const hasMetrics = metrics.some((metric) => !metric.value.includes("—"));
@@ -9275,6 +9484,7 @@
       state.outcomeWeighting = view.weighting || "episode";
       state.outcomeAsset = view.asset;
       state.outcomeHorizon = view.horizon;
+      state.forecastResearchModel = view.researchModel || null;
       state.decisionResearchTarget = view.alert || DECISION_RESEARCH_TARGETS[0];
       state.decisionResearchBudget = view.budget || DECISION_RESEARCH_BUDGETS[0];
       state.performanceVisible = view.strategies || null;
@@ -9342,6 +9552,7 @@
       state.outcomeWeighting = finalView.weighting || "episode";
       state.outcomeAsset = finalView.asset;
       state.outcomeHorizon = finalView.horizon;
+      state.forecastResearchModel = finalView.researchModel || null;
       state.decisionResearchTarget = finalView.alert || DECISION_RESEARCH_TARGETS[0];
       state.decisionResearchBudget = finalView.budget || DECISION_RESEARCH_BUDGETS[0];
       state.performanceVisible = finalView.strategies || null;
@@ -9353,6 +9564,9 @@
       }
       renderAnalysisCoverage();
       renderModel();
+      // Core paints before research arrives. Refresh the visible outlook even
+      // when neither the selected date nor the official comparison model changed.
+      if (selectedWeek()) renderTransitionHorizons(selectedWeek());
       if (INSIGHTS.FORECAST_RESEARCH_IDS.includes(state.comparisonModel)) renderForecastSurfaces();
       renderConditionalStats();
       renderDecisionShadow();

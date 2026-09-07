@@ -235,3 +235,77 @@ def test_research_assets_reuse_full_existing_return_contract(payload_with_assets
         row["n"] = 0
     errors = run_js("console.log(JSON.stringify(api.validatePayload(input).errors))", payload_with_assets)
     assert errors
+
+
+@pytest.fixture
+def path_payload():
+    from datetime import datetime, timedelta
+    result = json.loads((ROOT / "publication/live/regime-results.json").read_text())
+    origin = result["meta"]["data_as_of"]
+    probabilities = {
+        1: ({"risk_on": .8, "transition": .15, "risk_off": .05}, {"no_departure": .8, "risk_on": 0, "transition": .15, "risk_off": .05}, .05),
+        4: ({"risk_on": .6, "transition": .25, "risk_off": .15}, {"no_departure": .5, "risk_on": 0, "transition": .4, "risk_off": .1}, .2),
+        13: ({"risk_on": .4, "transition": .35, "risk_off": .25}, {"no_departure": .3, "risk_on": 0, "transition": .5, "risk_off": .2}, .4),
+    }
+    row = {"origin_date": origin, "current_state": "risk_on", "horizons": {f"{h}w": {
+        "target_date": (datetime.fromisoformat(origin) + timedelta(weeks=h)).isoformat(),
+        "horizon_weeks": h, "endpoint": endpoint, "first_departure": first,
+        "any_risk_off_entry": hit, "any_risk_off_occupancy": hit,
+    } for h, (endpoint, first, hit) in probabilities.items()}}
+    result["research"]["forecast_research"] = {"schema_version": "regime-forecast-research/1", "data_as_of": origin,
+        "selected_model": "directional_duration_hazard", "models": [{"id": "directional_duration_hazard", "label": "방향별 지속 위험률", "history": [], "latest": row}]}
+    return result
+
+
+def test_optional_paths_use_exact_origin_and_keep_first_destination_distinct_from_entry(path_payload):
+    result = run_js("""
+console.log(JSON.stringify({errors:insights.validateForecastResearch(input),
+ latest:insights.multistateForecastForWeek(input,input.weekly.at(-1).date),
+ old:insights.multistateForecastForWeek(input,input.weekly.at(-2).date)}));
+""", path_payload)
+    assert result["errors"] == [] and result["old"] is None
+    horizon = result["latest"]["horizons"]["13w"]
+    assert horizon["first_departure"]["risk_off"] == .2
+    assert horizon["any_risk_off_entry"] == .4
+    assert horizon["endpoint"]["risk_off"] == .25
+
+
+@pytest.mark.parametrize("change", ["nan", "sum", "reverse", "duplicate", "wrong_state", "wrong_target", "entry_gt_occupancy", "one_week_path", "timezone", "cutoff"])
+def test_optional_path_contract_rejects_corrupt_temporal_and_event_probabilities(path_payload, change):
+    block = path_payload["research"]["forecast_research"]
+    model = block["models"][0]
+    row = model["latest"]
+    item = row["horizons"]["13w"]
+    if change == "nan": item["any_risk_off_entry"] = None
+    elif change == "sum": item["endpoint"]["risk_on"] += .1
+    elif change == "reverse": item["any_risk_off_entry"] = item["any_risk_off_occupancy"] = .1
+    elif change == "duplicate": model["history"].extend([copy.deepcopy(row), copy.deepcopy(row)])
+    elif change == "wrong_state": row["current_state"] = "transition"
+    elif change == "wrong_target": item["target_date"] = row["horizons"]["4w"]["target_date"]
+    elif change == "entry_gt_occupancy": item["any_risk_off_entry"] = .5
+    elif change == "one_week_path": row["horizons"]["1w"]["any_risk_off_entry"] = row["horizons"]["1w"]["any_risk_off_occupancy"] = .1
+    elif change == "timezone": item["target_date"] = item["target_date"].split("+")[0]
+    else: block["data_as_of"] = "2026-09-04T21:00:00Z"
+    assert run_js("console.log(JSON.stringify(insights.validateForecastResearch(input)));", path_payload)
+
+
+@pytest.mark.parametrize("shift", [-1, 1])
+def test_path_week_alignment_accepts_dst_hour_shift_but_rejects_two_hours(path_payload, shift):
+    from datetime import datetime, timedelta
+    row = path_payload["research"]["forecast_research"]["models"][0]["latest"]
+    target = row["horizons"]["13w"]["target_date"]
+    row["horizons"]["13w"]["target_date"] = (datetime.fromisoformat(target) + timedelta(hours=shift)).isoformat()
+    assert run_js("console.log(JSON.stringify(insights.validateForecastResearch(input)));", path_payload) == []
+    row["horizons"]["13w"]["target_date"] = (datetime.fromisoformat(target) + timedelta(hours=shift * 2)).isoformat()
+    assert run_js("console.log(JSON.stringify(insights.validateForecastResearch(input)));", path_payload)
+
+
+def test_one_week_only_research_row_has_no_invented_multistate_forecast(path_payload):
+    path_payload["research"]["forecast_research"]["models"][0]["latest"]["horizons"] = {}
+    assert run_js("console.log(JSON.stringify(insights.validateForecastResearch(input)));", path_payload) == []
+    assert run_js("console.log(JSON.stringify(insights.multistateForecastForWeek(input,input.weekly.at(-1).date)));", path_payload) is None
+
+
+def test_direction_summary_aggregates_state_order_without_confusing_transition_with_worsening():
+    result = run_js("console.log(JSON.stringify(['risk_on','transition','risk_off'].map(state=>insights.forecastDirections(state,input))));", {"risk_on": .2, "transition": .5, "risk_off": .3})
+    assert result == [{"stay": .2, "worsening": .8, "recovery": 0}, {"stay": .5, "worsening": .3, "recovery": .2}, {"stay": .3, "worsening": 0, "recovery": .7}]

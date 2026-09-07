@@ -37,6 +37,7 @@ const context=vm.createContext({module:{exports:{}},require:require('module').cr
  URL,URLSearchParams,Intl,Date,setTimeout,clearTimeout});
 const program=source.replace('const dashboardApi = Object.freeze({',`const dashboardApi = Object.freeze({
  test:{state,dom,bindEvents,selectWeek,renderModel,forecastComparisonForView,
+ renderContractOverview,renderTransitionHorizons,renderDurationContext,renderNextForecastSurface,renderTimeline,renderOperationalDiagnostics,renderDecisionResearch,renderForecastAuditPanels,renderMultistateForecast,applyDashboardView,
  configure(){
   renderContractOverview=()=>{};renderRegime=()=>{};renderNextForecastSurface=week=>week.next_week;
   renderTransition=()=>{};renderSemanticLabels=()=>{};renderHeaderDataAsOf=()=>{};
@@ -51,6 +52,7 @@ let current=new URL('http://localhost/?model=causal_dynamic_ensemble&window=52#h
 context.window={addEventListener(){},get location(){return current},history:{replaceState(_a,_b,value){current=new URL(value,current)}}};
 const api=context.module.exports.test;api.configure();
 for(const id of [...source.matchAll(/dom\["([^"]+)"\]/g)].map(match=>match[1]))api.dom[id]=node();
+api.dom.dashboard=node();
 for(const id of ['history-window','model-evaluation-window'])for(const value of ['26','52','104','all']){
  const option=node('option');option.value=value;api.dom[id].append(option);
 }
@@ -99,7 +101,7 @@ chooseModel('boundary_filtered_history');console.log(JSON.stringify({dynamic,mul
     assert "0.6349" in result["multi"]["quality"]
     assert "0/14회" in result["multi"]["quality"]
     assert "51/51주" in result["multi"]["comparison"]
-    assert "포착·오경보 횟수가 같습니다" in result["multi"]["comparison"]
+    assert "예측 국면 일치 51/51주" in result["multi"]["comparison"]
     assert "선택 모델 멀티스케일 앙상블" in result["multi"]["summary"]
     assert result["multi"]["selectedRows"] == ["causal_multiscale_ensemble"]
     assert result["multi"]["qualityModel"] == "causal_multiscale_ensemble"
@@ -227,3 +229,210 @@ console.log(JSON.stringify({previous,pending,pendingCaption,loaded:snapshot()}))
     assert result["loaded"]["metricValues"] != result["previous"]["metricValues"]
     assert result["loaded"]["rank"] == "1 / 13"
     assert "0.4953" in result["loaded"]["metricValues"][1]
+
+
+def test_historical_timing_uses_selected_origin_and_target_with_latest_publication_separate():
+    result = run_js("""
+api.selectWeek(full.weekly.length-2,false); api.renderContractOverview();
+const old={origin:api.dom['forecast-origin-at'].textContent,target:api.dom['forecast-target-at'].textContent,
+ issued:api.dom['forecast-decision-at'].textContent,latest:api.dom['latest-publication-info'].textContent,latestHidden:api.dom['latest-publication-info'].hidden};
+api.dom['latest-week'].listeners.click();api.renderContractOverview();
+console.log(JSON.stringify({old,current:{origin:api.dom['forecast-origin-at'].textContent,target:api.dom['forecast-target-at'].textContent,
+ issued:api.dom['forecast-decision-at'].textContent,latestHidden:api.dom['latest-publication-info'].hidden,disabled:api.dom['latest-week'].disabled}}));
+""")
+    assert "8월 28일" in result["old"]["origin"]
+    assert "9월 4일" in result["old"]["target"]
+    assert "과거 재구성" in result["old"]["issued"]
+    assert "9월 6일" in result["old"]["latest"] and "9월 11일" in result["old"]["latest"]
+    assert not result["old"]["latestHidden"] and result["current"]["latestHidden"]
+    assert "9월 4일" in result["current"]["origin"]
+    assert "9월 11일" in result["current"]["target"] and result["current"]["disabled"]
+
+
+def test_period_predictions_directions_and_duration_render_real_values_for_each_origin():
+    result = run_js("""
+function view(index){api.selectWeek(index,false);const week=full.weekly[index];
+ api.renderTransitionHorizons(week);api.renderDurationContext(week.duration_context);api.renderNextForecastSurface(week);
+ return {horizon:api.dom['transition-horizon-bars'].textContent,duration:api.dom['duration-context'].textContent,
+ direction:api.dom['next-direction-summary'].textContent,
+ research:api.dom['multistate-forecast'].textContent};}
+console.log(JSON.stringify({latest:view(full.weekly.length-1),previous:view(full.weekly.length-2)}));
+""")
+    latest = result["latest"]
+    for value in ("50.7%", "63.7%", "45.5%", "78.2%", "최초 이탈", "6.9%"):
+        assert value in latest["horizon"]
+    for value in ("3–8주", "46 / 1개", "46 / 47개"):
+        assert value in latest["duration"]
+    assert "추정치 95% 구간" in latest["duration"]
+    assert "유지 80.7%" in latest["direction"] and "악화 19.3%" in latest["direction"]
+    assert result["previous"]["horizon"] != latest["horizon"]
+    assert result["previous"]["duration"] != latest["duration"]
+    assert "국면 예측 연구" in latest["research"]
+    assert "연구 비교 모델" in latest["research"]
+
+
+def test_model_timeline_remains_navigable_after_past_click_and_shared_latest_returns():
+    result = run_js("""
+api.selectWeek(full.weekly.length-1,false);api.applyDashboardView('model');api.renderTimeline();
+const old=api.dom['regime-timeline'].children.find(item=>item.dataset.date==='2026-08-28');
+old.focus=()=>{};old.listeners.click();api.renderTimeline();
+const past={week:snapshot().week,end:api.dom['timeline-end'].textContent,view:api.dom.dashboard.dataset.activeView,
+ next:!api.dom['next-week'].disabled,latest:!api.dom['latest-week'].disabled};
+api.dom['next-week'].listeners.click();const next=snapshot().week;
+api.dom['previous-week'].listeners.click();api.dom['latest-week'].listeners.click();
+console.log(JSON.stringify({past,next,latest:snapshot().week}));
+""")
+    assert result["past"] == {"week": "2026-08-28", "end": "2026-09-04", "view": "model", "next": True, "latest": True}
+    assert result["next"] == result["latest"] == "2026-09-04"
+
+
+def test_detection_delay_is_displayed_with_recognized_and_unrecognized_denominators():
+    result = run_js("""
+(async()=>{api.selectWeek(full.weekly.length-1,false);await chooseWindow('model-evaluation-window','all');
+chooseModel('boundary_filtered_history');console.log(JSON.stringify(api.dom['model-health-strip'].textContent));})();
+""")
+    assert "인식한 전환의 평균 지연 0.56주" in result
+    assert "인식 36/40건 · 미인식 4건" in result
+
+
+def test_operational_scores_distinguish_mature_labels_from_verified_prospective_denominator():
+    result = run_js("""
+const target=node(); api.renderOperationalDiagnostics({timing:{issued_entry_count:10,deadline_observed_entries:9,on_time_entries:7},
+ probability_scores:{completed_weeks:8,prospective_completed_weeks:5,excluded_late_or_unverified_weeks:3,
+ log_loss:.321,brier:.123,evaluation_basis:'independent_of_investment_execution'}},target);
+console.log(JSON.stringify(target.textContent));
+""")
+    assert "라벨 확정 평가 전체" in result and "8주" in result
+    assert "대상 시각 전 저장·발행 확인" in result and "5주" in result
+    assert "매매 예정시각 전 발행" in result
+    assert "지연·발행 미확인 제외" in result and "3주" in result
+    assert "0.321" in result and "0.123" in result
+    assert "라벨 확정 평가 전체" in result
+
+
+def test_alert_controls_change_actual_policy_rows_without_reusing_current_week_scope():
+    result = run_js("""
+const target=node();api.renderDecisionResearch(full.research.decision_research_v2,target);
+const panel=target.children[0],controls=panel.children.find(item=>item.className==='research-filter-controls');
+const [event,budget]=controls.children,table=panel.children[3];
+const before=table.textContent;event.value='all_departure';event.listeners.change();const changed=table.textContent;
+budget.value='8';budget.listeners.change();console.log(JSON.stringify({before,changed,otherBudget:table.textContent,
+ caption:panel.children[1].textContent}));
+""")
+    assert result["before"] != result["changed"]
+    assert result["changed"] != result["otherBudget"]
+    assert "2023년 이후 진단" in result["caption"]
+
+
+def test_optional_audit_panels_distinguish_previous_publication_new_research_and_empty_prospective_information():
+    result = run_js("""
+const target=node();api.renderForecastAuditPanels({calibration_audit:{schema_version:'regime-calibration-audit/1',data_as_of:full.meta.data_as_of,
+ rows:[{model:'markov_hazard',horizon_weeks:13,evaluation_split:'retrospective_diagnostic',n_predictions:179,
+ previous_published_log_loss:.4377,raw_log_loss:.3196,calibrated_log_loss:.442,final_log_loss:null,raw_brier:.089,final_brier:null,
+ previous_published_brier:.1393,selected_method:'past_block_selection'}],
+ artifacts:[{label:'전체 JSON',url:'./data/calibration.json'},{label:'bad',url:'javascript:alert(1)'}]},
+ forecast_information:{schema_version:'regime-forecast-information/1',data_as_of:full.meta.data_as_of,rows:[],
+ notes:['일정 정보는 전향적 축적 중입니다.']}},target);
+console.log(JSON.stringify({text:target.textContent,methods:api.dom['forecast-method-notes'].textContent,links:target.querySelectorAll('a').map(item=>({href:item.href,text:item.textContent}))}));
+""")
+    assert "기존 발행 Log loss" in result["text"]
+    assert "새 보정 연구 Log loss" in result["text"]
+    assert "새 최종 연구 Log loss" in result["text"]
+    assert "0.4377" in result["text"] and "0.3196" in result["text"] and "—" in result["text"]
+    assert "운영 반영 여부는 별도" not in result["text"]
+    assert "전향적 축적" not in result["text"] and "전향적 축적" in result["methods"]
+    assert "비교 가능한 완료 표본이 없습니다" in result["text"]
+    assert result["links"] == [{"href": "./data/calibration.json", "text": "전체 JSON"}]
+
+
+def test_operational_duplicate_entries_do_not_inflate_displayed_week_count():
+    result = run_js("""
+const target=node();api.renderOperationalDiagnostics({probability_scores:{completed_weeks:2,completed_entries:4,
+ prospective_completed_weeks:2,duplicate_target_entries:2,excluded_late_or_unverified_weeks:0,
+ evaluation_basis:'independent_of_investment_execution',log_loss:1.3539324,brier:.8309954}},target);
+console.log(JSON.stringify(target.textContent));
+""")
+    assert "2주 / 4건" in result
+    assert "대상 시각 전 저장·발행 확인" in result and "2주" in result
+    assert "동일 대상 중복 2건 제외" in result
+    assert "1.3539" in result and "0.831" in result
+
+
+def test_information_comparison_preserves_small_deltas_and_prospective_evidence_labels():
+    result = run_js("""
+const target=node();api.renderForecastAuditPanels({forecast_information:{
+ schema_version:'regime-forecast-information/1',data_as_of:full.meta.data_as_of,
+ rows:[{feature_block:'vix3m_term_structure',model:'boundary_vix3m_augmented',
+ baseline_model:'boundary_existing_vol_control',evaluation_split:'holdout',matched_n:191,
+ baseline_log_loss:.3731897933,candidate_log_loss:.3738624464,delta_log_loss:.0006726532,
+ delta_brier:.0004161311,delta_worsening_brier:.0000063045474}],
+ notes:['board_ebp: prospective_only — revised monthly history not backdated']
+}},target);console.log(JSON.stringify({text:target.textContent,methods:api.dom['forecast-method-notes'].textContent}));
+""")
+    assert "191주" in result["text"] and "과거 진단" in result["text"]
+    assert "VIX3M 기간구조" in result["text"] and "경계 + VIX3M" in result["text"]
+    assert "0.3732" in result["text"] and "0.3739" in result["text"]
+    assert "6.30e-6" in result["text"]
+    assert "EBP: 실제 최초 확보 시점" in result["methods"]
+    assert "최초 확보" not in result["text"]
+    assert "prospective_only" not in result["methods"]
+
+
+def test_optional_method_notes_are_grouped_without_repetition_and_clear_on_rerender():
+    result = run_js("""
+const target=node();api.renderForecastAuditPanels({forecast_information:{schema_version:'regime-forecast-information/1',
+ notes:['fomc: prospective_only — schedule','bls: prospective_only — schedule','fomc: prospective_only — schedule',
+ '모든 비교는 같은 origin/target에서 재계산한 기준선과 후보를 사용합니다.']}},target);
+const notes=api.dom['forecast-method-notes'].textContent;
+api.renderForecastAuditPanels({},target);console.log(JSON.stringify({notes,cleared:api.dom['forecast-method-notes'].textContent}));
+""")
+    assert result["notes"].count("실제 최초 확보 시점") == 1
+    assert "FOMC 일정 · CPI·고용 일정" in result["notes"]
+    assert "모든 비교는" not in result["notes"]
+    assert result["cleared"] == ""
+
+
+RESEARCH_RENDER_FIXTURE = r"""
+const origin=full.meta.data_as_of;
+const horizons=Object.fromEntries([1,4,13].map(h=>[`${h}w`,{horizon_weeks:h,target_date:new Date(Date.parse(origin)+h*7*86400000).toISOString(),
+ endpoint:h===1?{risk_on:.8,transition:.15,risk_off:.05}:h===4?{risk_on:.6,transition:.25,risk_off:.15}:{risk_on:.4,transition:.35,risk_off:.25},
+ first_departure:h===1?{no_departure:.8,risk_on:0,transition:.15,risk_off:.05}:h===4?{no_departure:.5,risk_on:0,transition:.4,risk_off:.1}:{no_departure:.3,risk_on:0,transition:.5,risk_off:.2},
+ any_risk_off_entry:h===1?.05:h===4?.2:.4,any_risk_off_occupancy:h===1?.05:h===4?.2:.4}]));
+const block={schema_version:'regime-forecast-research/1',data_as_of:origin,selected_model:'paths',automatic_promotion:false,
+ models:[{id:'paths',label:'방향 위험률',role:'challenger',history:[],latest:{origin_date:origin,current_state:'risk_on',next_state:horizons['1w'].endpoint,horizons}},
+ {id:'asymmetric',label:'비대칭 경계',role:'challenger',history:[],latest:{origin_date:origin,current_state:'risk_on',next_state:{risk_on:.3,transition:.5,risk_off:.2},horizons:{}}}],
+ metrics:[{model:'paths',horizon_weeks:1,target:'next_state',period:'retrospective_2023_2026',weeks:191,log_loss:.54,brier:.33,worsening_brier:.083,worsening_events:19,worsening_hits:0,recovery_events:21,recovery_hits:0,departure_false_alarms_per_year:0},
+ {model:'asymmetric',horizon_weeks:1,target:'next_state',period:'retrospective_2023_2026',weeks:191,log_loss:.36,brier:.22,worsening_brier:.076,worsening_events:19,worsening_hits:0,recovery_events:21,recovery_hits:16,departure_false_alarms_per_year:.82}]};
+"""
+
+
+def test_research_selector_changes_native_probabilities_without_replacing_official_model():
+    result = run_js(RESEARCH_RENDER_FIXTURE + r"""
+api.state.raw={...full,research:{...full.research,forecast_research:block}};
+const official=JSON.stringify(api.state.raw.weekly.at(-1).next_week);
+api.renderMultistateForecast(full.weekly.at(-1));const paths=api.dom['multistate-forecast'].textContent;
+const control=api.dom['multistate-forecast'].querySelector('select');control.value='asymmetric';control.listeners.change();
+console.log(JSON.stringify({paths,asymmetric:api.dom['multistate-forecast'].textContent,
+ officialUnchanged:official===JSON.stringify(api.state.raw.weekly.at(-1).next_week),query:Object.fromEntries(current.searchParams)}));
+""")
+    assert "다음 주 위험선호 80.0%" in result["paths"]
+    assert "위험회피 진입" in result["paths"] and "40.0%" in result["paths"]
+    assert "다음 주 위험선호 30.0%" in result["asymmetric"]
+    assert "4·13주 경로 예측 없음 · 다상태 모델" in result["asymmetric"]
+    assert "191주" in result["paths"] and "후보와 기준선" in result["paths"]
+    assert result["officialUnchanged"] and result["query"]["research_model"] == "asymmetric"
+
+
+def test_pending_research_is_labeled_loading_then_renders_when_evidence_arrives():
+    result = run_js(RESEARCH_RENDER_FIXTURE + r"""
+api.state.raw={...full,research:{...full.research}};delete api.state.raw.research.forecast_research;
+api.state.sidecarAvailability.research='pending';api.renderMultistateForecast(full.weekly.at(-1));
+const pending={text:api.dom['multistate-forecast'].textContent,busy:api.dom['multistate-forecast'].attrs['aria-busy']};
+api.state.raw={...full,research:{...full.research,forecast_research:block}};api.state.sidecarAvailability.research='ready';
+api.renderTransitionHorizons(full.weekly.at(-1));console.log(JSON.stringify({pending,ready:api.dom['multistate-forecast'].textContent,
+ busy:api.dom['multistate-forecast'].attrs['aria-busy']}));
+""")
+    assert "불러오는 중" in result["pending"]["text"]
+    assert "결과가 아직 없습니다" not in result["pending"]["text"]
+    assert result["pending"]["busy"] == "true" and result["busy"] == "false"
+    assert "40.0%" in result["ready"]

@@ -89,7 +89,8 @@ def test_candidate_selection_cannot_see_diagnostic_outcomes():
     for field in ("origin_date", "target_date"):
         shifted_ns = source[field].astype("int64").to_numpy() + 100 * 7 * 86400 * 1_000_000_000
         source[field] = pd.to_datetime(shifted_ns, unit="ns", utc=True)
-    source["evaluation_split"] = np.where(source.origin_date.dt.year < 2023, "selection", "holdout")
+    source = source.loc[~((source.origin_date.dt.year < 2023) & (source.target_date.dt.year >= 2023))].copy()
+    source["evaluation_split"] = np.where(source.target_date.dt.year < 2023, "selection", "holdout")
     original = build_causal_calibration(source)
     assert original.selection
     changed = source.copy()

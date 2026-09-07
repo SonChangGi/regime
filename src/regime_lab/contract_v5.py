@@ -5123,7 +5123,14 @@ def validate_v5_payload(payload: Mapping[str, Any]) -> None:
     )
     from regime_lab.research.contract import validate_research_extensions
     try:
-        validate_research_extensions(payload["research"])
+        validate_research_extensions(payload["research"], data_as_of=payload["meta"]["data_as_of"])
+        if "forecast_research" in payload["research"]:
+            official_states = {row["date"]: row["current"]["state"] for row in weekly}
+            for candidate in payload["research"]["forecast_research"]["models"]:
+                for row in [*candidate["history"], *([candidate["latest"]] if "latest" in candidate else [])]:
+                    week_date = str(row["origin_date"])[:10]
+                    if week_date in official_states and row["current_state"] != official_states[week_date]:
+                        raise ValueError("forecast research current state differs from the official label")
         if "forecast_improvement" in payload["research"]:
             from regime_lab.research.forecast_contract import validate_forecast_improvement
             validate_forecast_improvement(payload["research"]["forecast_improvement"], data_as_of=payload["meta"]["data_as_of"], outcome_resamples=expected_outcome_resamples)

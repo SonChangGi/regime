@@ -19,6 +19,7 @@ import pandas as pd
 from regime_lab.integrity import canonical_json_sha256_v1
 
 from .labels import STATE_ORDER
+from .causal_calibration import validate_frozen_splits
 from .model_confidence_set import model_confidence_set
 from .validation import PROBABILITY_COLUMNS
 
@@ -109,6 +110,7 @@ def _validate_inputs(
         )
     frame["origin_date"] = pd.to_datetime(frame["origin_date"], errors="raise", utc=True)
     frame["target_date"] = pd.to_datetime(frame["target_date"], errors="raise", utc=True)
+    validate_frozen_splits(frame)
     if not (frame["origin_date"] < frame["target_date"]).all():
         raise ValueError("every selection origin must precede its target")
     if frame.duplicated(["model", "origin_date", "target_date"]).any():

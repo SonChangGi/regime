@@ -37,6 +37,10 @@ from scripts.package_public_demo import (  # noqa: E402
     validate_v5_comparison_sidecar,
 )
 from regime_lab.publication_contract import validate_index_asset_versions  # noqa: E402
+from regime_lab.forecast_exports import (  # noqa: E402
+    build_forecast_exports,
+    validate_forecast_exports,
+)
 from regime_lab.web_contract import (  # noqa: E402
     BrowserContractError,
     validate_generated_browser_contract,
@@ -122,15 +126,18 @@ def verify_public_package(directory: str | Path) -> dict[str, Any]:
     result_version = payload.get("meta", {}).get("result_version")
     expected_files = set(BASE_EXPECTED_FILES)
     expected_history_files: dict[str, bytes] = {}
+    expected_forecast_files: dict[str, bytes] = {}
     generation_document: dict[str, Any] | None = None
     if result_version == V5_RESULT_VERSION:
         try:
             expected_history_files, _ = build_history_chunks(
                 payload, payload_raw=payload_raw
             )
-        except (TypeError, ValueError) as exc:
+            expected_forecast_files = build_forecast_exports(payload)
+        except (PackagingError, TypeError, ValueError) as exc:
             raise VerificationError(str(exc)) from exc
         expected_files.update(expected_history_files)
+        expected_files.update(expected_forecast_files)
         expected_files.add(CORE_PAYLOAD_DESTINATION)
         expected_files.add(RESEARCH_SIDECAR_DESTINATION)
         expected_files.add(V5_COMPARISON_DESTINATION)
@@ -259,6 +266,10 @@ def verify_public_package(directory: str | Path) -> dict[str, Any]:
                 payload=payload,
                 payload_raw=payload_raw,
             )
+            validate_forecast_exports(
+                {name: (package_root / name).read_bytes() for name in expected_forecast_files},
+                payload=payload,
+            )
             comparison = _load_json(
                 package_root / V5_COMPARISON_DESTINATION,
                 label="V5/V4 comparison sidecar",
@@ -343,6 +354,7 @@ def verify_public_package(directory: str | Path) -> dict[str, Any]:
         "comparison_included": result_version == V5_RESULT_VERSION,
         "core_research_split_included": result_version == V5_RESULT_VERSION,
         "history_chunks_included": len(expected_history_files),
+        "forecast_downloads_included": len(expected_forecast_files),
         "selection_family_included": (
             SELECTION_FAMILY_DESTINATION in expected_files
         ),

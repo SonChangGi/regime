@@ -354,6 +354,9 @@ class ForecastLedgerEntry:
     input_snapshot_sha256: str
     operational_inputs: tuple[OperationalInput, ...]
     forecast: Mapping[str, Any] = field(default_factory=dict)
+    # Database receipt metadata is outside the immutable forecast/hash. It is
+    # populated on read, never trusted from an append caller.
+    inserted_at: datetime | None = field(default=None, compare=False)
 
     def __post_init__(self) -> None:
         if isinstance(self.origin_week, datetime) or not isinstance(
@@ -437,6 +440,8 @@ class ForecastLedgerEntry:
         )
         object.__setattr__(self, "operational_inputs", inputs)
         object.__setattr__(self, "forecast", normalized_forecast)
+        if self.inserted_at is not None:
+            object.__setattr__(self, "inserted_at", ensure_utc(self.inserted_at, field_name="inserted_at"))
 
     @property
     def key(self) -> ForecastLedgerKey:
@@ -620,6 +625,8 @@ class ForecastLedger:
         self._clock = clock
         with self._connection:
             self._connection.executescript(_LEDGER_SCHEMA)
+            from regime_lab.forecast_probability import PROBABILITY_SCHEMA
+            self._connection.executescript(PROBABILITY_SCHEMA)
 
     def close(self) -> None:
         with self._lock:
@@ -736,7 +743,7 @@ class ForecastLedger:
                 self._connection.execute("BEGIN IMMEDIATE")
                 forecast = self._connection.execute(
                     """
-                    SELECT 1 FROM forecast_ledger
+                    SELECT forecast_sha256 FROM forecast_ledger
                     WHERE origin_week = ? AND decision_at = ? AND target_at = ?
                       AND label_spec_sha256 = ? AND model_manifest_sha256 = ?
                       AND input_snapshot_sha256 = ?
@@ -747,6 +754,8 @@ class ForecastLedger:
                     raise ForecastLedgerError(
                         "forecast evaluation requires an existing forecast entry"
                     )
+                if forecast["forecast_sha256"] != entry.evaluation["forecast_sha256"]:
+                    raise ForecastLedgerError("forecast evaluation reference hash differs from original")
                 existing = self._connection.execute(
                     """
                     SELECT evaluation_sha256
@@ -805,7 +814,11 @@ class ForecastLedger:
                 """,
                 key.as_sql_tuple(),
             ).fetchone()
-        return self._row_to_evaluation(row) if row is not None else None
+        if row is None:
+            return None
+        evaluation = self._row_to_evaluation(row)
+        self._validate_evaluation_reference(evaluation)
+        return evaluation
 
     def list_evaluations(self) -> tuple[ForecastEvaluationEntry, ...]:
         with self._lock:
@@ -817,7 +830,36 @@ class ForecastLedger:
                          input_snapshot_sha256
                 """
             ).fetchall()
-        return tuple(self._row_to_evaluation(row) for row in rows)
+        evaluations = tuple(self._row_to_evaluation(row) for row in rows)
+        for evaluation in evaluations:
+            self._validate_evaluation_reference(evaluation)
+        return evaluations
+
+    def _validate_evaluation_reference(self, evaluation: ForecastEvaluationEntry) -> None:
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT forecast_json, forecast_sha256 FROM forecast_ledger WHERE "
+                "origin_week = ? AND decision_at = ? AND target_at = ? AND label_spec_sha256 = ? "
+                "AND model_manifest_sha256 = ? AND input_snapshot_sha256 = ?",
+                evaluation.forecast_key.as_sql_tuple(),
+            ).fetchone()
+        if (row is None or row["forecast_sha256"] != evaluation.evaluation["forecast_sha256"]
+                or _json_sha256(json.loads(row["forecast_json"])) != row["forecast_sha256"]):
+            raise ForecastLedgerError("stored evaluation reference hash differs from original")
+
+    def list_probability_evaluations(self) -> tuple[dict[str, Any], ...]:
+        from regime_lab.forecast_probability import read_probability_evaluations
+        with self._lock:
+            return read_probability_evaluations(self._connection)
+
+    def list_probability_forecasts(self):
+        """Read frozen forecasts without reloading unrelated provider input rows."""
+        from regime_lab.forecast_probability import FORECAST_PROJECTION, probability_forecast_from_row
+        with self._lock:
+            rows = self._connection.execute(
+                f"SELECT {FORECAST_PROJECTION} FROM forecast_ledger ORDER BY target_at, decision_at"
+            ).fetchall()
+        return tuple(probability_forecast_from_row(row) for row in rows)
 
     def public_summary(
         self,
@@ -919,6 +961,7 @@ class ForecastLedger:
             input_snapshot_sha256=row["input_snapshot_sha256"],
             operational_inputs=inputs,
             forecast=json.loads(row["forecast_json"]),
+            inserted_at=datetime.fromisoformat(row["inserted_at"]),
         )
         if entry.operational_inputs_sha256 != row["operational_inputs_sha256"]:
             raise ForecastLedgerError("stored operational input hash is invalid")
@@ -1711,6 +1754,7 @@ def mature_forecast_evaluations(
     canonical: pd.DataFrame,
     states: pd.Series,
     evaluated_at: datetime,
+    label_spec_sha256: str | None = None,
 ) -> ForecastMaturityReport:
     """Mature due v2 forecasts once, preserving transient gaps for retry.
 
@@ -1727,6 +1771,11 @@ def mature_forecast_evaluations(
     if not isinstance(states, pd.Series):
         raise TypeError("states must be a Series")
     evaluation_clock = ensure_utc(evaluated_at, field_name="evaluated_at")
+    # This independent ledger matures even if execution prices are missing or
+    # an old investment evaluation is already terminal/partial.
+    from regime_lab.forecast_probability import mature_probability_evaluations
+    mature_probability_evaluations(ledger, states=states, evaluated_at=evaluation_clock,
+                                  label_spec_sha256=label_spec_sha256)
     canonical_dates = _date_index(canonical.index, context="canonical")
     state_dates = _date_index(states.index, context="states")
     # Use the exact return decomposition shared by reconstructed and benchmark
@@ -2145,7 +2194,10 @@ def read_operational_diagnostics(
                 "SELECT * FROM forecast_evaluation_ledger ORDER BY target_at, decision_at"
             )
         ]
-    return build_operational_diagnostics(entries, evaluations, as_of=as_of)
+        from regime_lab.forecast_probability import read_probability_evaluations
+        probability_evaluations = read_probability_evaluations(connection)
+    return build_operational_diagnostics(entries, evaluations, as_of=as_of,
+        probability_evaluations=probability_evaluations or None)
 
 
 def build_operational_diagnostics(
@@ -2153,6 +2205,7 @@ def build_operational_diagnostics(
     evaluations: Sequence[ForecastEvaluationEntry],
     *,
     as_of: datetime | None = None,
+    probability_evaluations: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Read-only scores, deadlines and segmented benchmarks of frozen entries.
 
@@ -2162,11 +2215,16 @@ def build_operational_diagnostics(
     completed evaluation's immutable return legs, with the same late policy.
     """
     from regime_lab.analysis.decision_shadow import _run_self_financing_strategy
+    from regime_lab.forecast_probability import issue_evidence, probability_summary
 
     clock = ensure_utc(as_of or _utc_now(), field_name="as_of")
     by_key = {entry.key.as_sql_tuple(): entry for entry in entries}
     if len(by_key) != len(entries):
         raise ValueError("operational diagnostics received duplicate forecast keys")
+    for evaluation in evaluations:
+        original = by_key.get(evaluation.forecast_key.as_sql_tuple())
+        if original is None or original.forecast_sha256 != evaluation.evaluation["forecast_sha256"]:
+            raise ForecastLedgerError("operational evaluation reference hash differs from original")
     states = ("risk_on", "transition", "risk_off")
     timing_rows = []
     for entry in entries:
@@ -2177,13 +2235,18 @@ def build_operational_diagnostics(
                 datetime.fromisoformat(str(signal["scheduled_entry_at"])),
                 field_name="scheduled_entry_at",
             )
+            receipt = issue_evidence(entry, deadline=scheduled)
+            issued_at = receipt["issued_at"]
             timing_rows.append(
                 {
                     "target_week": str(signal.get("target_week")),
                     "decision_at": entry.decision_at.isoformat(),
                     "scheduled_entry_at": scheduled.isoformat(),
-                    "lead_seconds": (scheduled - entry.decision_at).total_seconds(),
-                    "on_time": entry.decision_at < scheduled,
+                    "issued_at": issued_at,
+                    "lead_seconds": ((scheduled - datetime.fromisoformat(issued_at)).total_seconds()
+                                     if issued_at else None),
+                    "on_time": receipt["eligible"],
+                    "issue_evidence": receipt,
                 }
             )
     completed = sorted(
@@ -2230,7 +2293,8 @@ def build_operational_diagnostics(
                 "log_loss": float(-np.log(max(q[states.index(actual)], 1e-9))),
                 "brier": float(((q - truth) ** 2).sum()),
             }
-        probability_rows.append(row)
+        if issue_evidence(entry)["eligible"]:
+            probability_rows.append(row)
         target = date.fromisoformat(str(document["target_week"]))
         identity = (
             entry.label_spec_sha256,
@@ -2350,14 +2414,15 @@ def build_operational_diagnostics(
                 else None
             ),
             "median_lead_seconds": (
-                float(np.median([r["lead_seconds"] for r in timing_rows]))
-                if timing_rows
+                float(np.median([r["lead_seconds"] for r in timing_rows if r["lead_seconds"] is not None]))
+                if any(r["lead_seconds"] is not None for r in timing_rows)
                 else None
             ),
             "duplicate_target_weeks": sum(n > 1 for n in target_counts.values()),
             "rows": timing_rows,
         },
-        "probability_scores": {
+        "probability_scores": probability_summary(probability_evaluations) if probability_evaluations is not None else {
+            "evaluation_basis": "legacy_execution_completed_only",
             "completed_weeks": len(probability_rows),
             "log_loss": (
                 float(np.mean([r["log_loss"] for r in probability_rows]))

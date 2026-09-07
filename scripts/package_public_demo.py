@@ -66,6 +66,7 @@ from regime_lab.web_contract import (
     BrowserContractError,
     validate_generated_browser_contract,
 )
+from regime_lab.forecast_exports import build_forecast_exports, validate_forecast_exports
 
 
 GENERATED_BROWSER_CONTRACT = "operating-contract.generated.js"
@@ -515,6 +516,8 @@ def package_public_dashboard(
         files[RESEARCH_SIDECAR_DESTINATION] = research_raw
         history_files, _ = build_history_chunks(payload, payload_raw=payload_raw)
         files.update(history_files)
+        forecast_files = build_forecast_exports(payload)
+        files.update(forecast_files)
 
     is_live_derived = publication_mode == PUBLICATION_MODE_LIVE_DERIVED
     source_ids = sorted(
@@ -592,6 +595,10 @@ def package_public_dashboard(
             validate_history_chunks(
                 {path: _read_regular_file(staging / path, label="staged history") for path in history_files},
                 payload=staged_payload, payload_raw=staged_payload_raw,
+            )
+            validate_forecast_exports(
+                {path: _read_regular_file(staging / path, label="staged forecast download") for path in forecast_files},
+                payload=staged_payload,
             )
             staged_comparison_raw = _read_regular_file(
                 staging / V5_COMPARISON_DESTINATION,

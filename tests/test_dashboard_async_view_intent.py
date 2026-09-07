@@ -20,10 +20,11 @@ program=program.replace('const dashboardApi = Object.freeze({', `const dashboard
     configure(source,response){
       loadDashboardSource=async()=>source;loadResearchSidecar=()=>response;
       loadV5ComparisonSummary=async()=>null;loadSelectionFamilyAudit=async()=>null;
-      showAppState=()=>{};setText=()=>{};applyPayloadStateTheme=()=>{};
+      showAppState=(phase,...details)=>{if(phase==='error')throw new Error(details.join(' '))};setText=()=>{};applyPayloadStateTheme=()=>{};
       populateDateControls=()=>{};showDashboard=()=>{};restoreFragmentAfterRender=()=>{};
       renderStaticSections=()=>syncConditionalBasisControl();renderConditionalStats=()=>syncConditionalBasisControl();
       renderSelectedWeek=()=>{};renderAnalysisCoverage=()=>{};renderModel=()=>{};renderDecisionShadow=()=>{};
+      renderTransitionHorizons=()=>{};
       syncHistoryWindowControl=()=>{};setSnapNote=()=>{};ensureHistory=async()=>false;
     }
   },`);
@@ -33,7 +34,7 @@ context.document={documentElement:{dataset:{}}};
 let current=new URL('http://localhost/?week='+core.weekly.at(-1).date+'&model=xgboost&window=52&basis=forecast&horizon=1&assets=SPY#history');
 context.window={get location(){return current},history:{replaceState(_a,_b,value){current=new URL(value,current)}}};
 const node=()=>({value:'',hidden:false,disabled:false,setAttribute(){}});
-for(const name of ['analysis-date','week-select','previous-week','next-week','conditional-basis-field','screen-reader-status'])loader.dom[name]=node();
+for(const name of ['analysis-date','week-select','previous-week','next-week','latest-week','conditional-basis-field','screen-reader-status'])loader.dom[name]=node();
 loader.dom['conditional-basis-select']={...node(),options:[{value:'forecast'},{value:'observed'}]};
 function deferred(){let resolve;const promise=new Promise(r=>resolve=r);return {promise,resolve};}
 async function start(response){loader.configure(source,response.promise);const completion=loader.loadData();

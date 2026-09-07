@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from numbers import Real
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -19,19 +20,28 @@ STATE_DEFINITIONS = [
 
 
 def normalized_probabilities(values: Mapping[str, float] | list[float] | np.ndarray) -> dict[str, float]:
+    """Validate probabilities before correcting only numerical round-off.
+
+    Invalid model output must fail at the publication boundary; silently
+    replacing a broken vector would invent confidence without a fallback.
+    """
     if isinstance(values, Mapping):
-        raw = np.asarray([float(values.get(state, 0.0)) for state in STATE_ORDER], dtype=float)
+        if set(values) != set(STATE_ORDER):
+            raise ValueError("probabilities must contain exactly the three state keys")
+        supplied = [values[state] for state in STATE_ORDER]
     else:
-        raw = np.asarray(values, dtype=float).reshape(-1)
+        supplied = np.asarray(values, dtype=object).reshape(-1).tolist()
+    if any(isinstance(value, (bool, np.bool_)) or not isinstance(value, Real) for value in supplied):
+        raise ValueError("probabilities must be numeric, not boolean or text")
+    raw = np.asarray(supplied, dtype=float)
     if raw.shape != (len(STATE_ORDER),):
         raise ValueError(f"expected {len(STATE_ORDER)} probabilities, got {raw.shape}")
-    raw = np.where(np.isfinite(raw), raw, 0.0)
-    raw = np.clip(raw, 0.0, None)
+    if not np.isfinite(raw).all() or (raw < 0.0).any() or (raw > 1.0).any():
+        raise ValueError("probabilities must be finite and between zero and one")
     total = float(raw.sum())
-    if total <= 0:
-        raw = np.full(len(STATE_ORDER), 1.0 / len(STATE_ORDER))
-    else:
-        raw /= total
+    if not math.isclose(total, 1.0, rel_tol=0.0, abs_tol=1e-6):
+        raise ValueError("probabilities must sum to one within rounding tolerance")
+    raw /= total
     return {state: round(float(raw[index]), 8) for index, state in enumerate(STATE_ORDER)}
 
 

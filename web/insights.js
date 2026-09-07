@@ -40,6 +40,137 @@
       confirmedEntry: Boolean(signal.next_entry_at || signal.next_scheduled_entry_at),
     });
   }
+  // View contracts: dates belong to the selected origin; publication metadata
+  // belongs to the latest release. A historical reconstruction has no issue time.
+  function selectedForecastTiming(payload = {}, week = {}, now = Date.now()) {
+    const latest = payload.forecast || {};
+    const historical = week.date !== latest.origin_at?.slice(0, 10);
+    const origin = historical ? (week.data_as_of || week.date) : latest.origin_at;
+    const target = historical ? week.next_week?.date : latest.target_at;
+    return Object.freeze({ origin, target, historical,
+      issuedAt: historical ? null : (latest.issued_at || latest.published_at || latest.decision_at || null),
+      remainingSeconds: historical ? null : Math.max(0, (Date.parse(target) - now) / 1000),
+      latestOrigin: latest.origin_at, latestTarget: latest.target_at,
+      latestIssuedAt: latest.issued_at || latest.published_at || latest.decision_at || null,
+    });
+  }
+  function forecastDirections(current, probabilities) {
+    const index = FORECAST_STATES.indexOf(current);
+    if (index < 0 || !probabilities || FORECAST_STATES.some((key) => number(probabilities[key]) === null
+      || probabilities[key] < 0 || probabilities[key] > 1)
+      || Math.abs(FORECAST_STATES.reduce((sum, key) => sum + probabilities[key], 0) - 1) > 1e-5) return null;
+    return Object.freeze({ stay: probabilities[current],
+      worsening: FORECAST_STATES.slice(index + 1).reduce((sum, key) => sum + probabilities[key], 0),
+      recovery: FORECAST_STATES.slice(0, index).reduce((sum, key) => sum + probabilities[key], 0) });
+  }
+  function transitionOutlook(week = {}) {
+    return [4, 13].map((horizon) => {
+      const key = `${horizon}w`, model = week.transition_risk?.[key], direction = week.directional_risk?.[key];
+      return Object.freeze({ horizon, target: model?.target_end, model: model?.model,
+        probability: number(model?.probability), fallback: model?.fallback === true,
+        fallbackReason: model?.fallback_reason || "", noDeparture: number(direction?.no_departure),
+        firstDestination: direction?.first_destination || null, directionModel: direction?.model,
+        baseline: number(week.duration_context?.departure_probability?.[key]),
+        baselineSupport: number(week.duration_context?.support?.horizon_at_risk?.[key]),
+      });
+    });
+  }
+  function durationEstimate(duration = {}) {
+    const median = number(duration.median_remaining_weeks), restricted = median === null;
+    const field = restricted ? "restricted_mean_remaining_weeks" : "median_remaining_weeks";
+    const ci = duration.ci95?.[field];
+    return Object.freeze({ value: number(duration[field]), restricted,
+      restriction: number(duration.restriction_weeks),
+      lower: number(ci?.lower), upper: number(ci?.upper),
+      completed: number(duration.completed_spells), censored: number(duration.censored_spells),
+      supportedCompleted: number(duration.support?.completed_at_current_age),
+      supportedAtRisk: number(duration.support?.at_risk_at_current_age) });
+  }
+  // Optional research extension. Absent evidence never borrows the first-
+  // destination probability and is never extrapolated to a different origin.
+  function validateForecastResearch(payload = {}) {
+    const block = payload.research?.forecast_research;
+    if (block === undefined) return [];
+    const errors = [], prefix = "research.forecast_research";
+    const validDate = (value) => typeof value === "string" && /^\d{4}-\d{2}-\d{2}T.*(Z|[+-]\d{2}:\d{2})$/.test(value) && Number.isFinite(Date.parse(value));
+    const prob = (value) => number(value) !== null && value >= 0 && value <= 1;
+    const vector = (value) => value && Object.keys(value).length === 3 && FORECAST_STATES.every((key) => prob(value[key]));
+    const sum = (value) => FORECAST_STATES.reduce((total, key) => total + value[key], 0);
+    if (block?.schema_version !== "regime-forecast-research/1" || !validDate(block.data_as_of)
+      || Date.parse(block.data_as_of) !== Date.parse(payload.meta?.data_as_of)
+      || !Array.isArray(block.models) || !block.models.length) return [`${prefix}: schema, cutoff or models invalid`];
+    const ids = new Set(), actuals = new Map((payload.weekly || []).map((week) => [week.date, week.current?.state]));
+    let referenceDates = null;
+    for (const model of block.models) {
+      if (typeof model?.id !== "string" || !model.id || ids.has(model.id) || !Array.isArray(model.history)) {
+        errors.push(`${prefix}: duplicate or invalid model`); continue;
+      }
+      ids.add(model.id);
+      const historyDates = model.history.map((row) => row?.origin_date);
+      if (historyDates.some((date, index) => index > 0 && Date.parse(date) <= Date.parse(historyDates[index - 1]))
+        || (referenceDates && JSON.stringify(historyDates) !== JSON.stringify(referenceDates))) errors.push(`${prefix}.${model.id}: history origins must be chronological and matched`);
+      referenceDates = historyDates;
+      const dates = new Set();
+      for (const row of [...model.history, ...(model.latest ? [model.latest] : [])]) {
+        if (!validDate(row?.origin_date) || Date.parse(row.origin_date) > Date.parse(block.data_as_of)
+          || (dates.has(row.origin_date?.slice(0, 10)) && row !== model.latest) || !FORECAST_STATES.includes(row?.current_state)
+          || (actuals.has(row.origin_date?.slice(0, 10)) && actuals.get(row.origin_date.slice(0, 10)) !== row.current_state)) {
+          errors.push(`${prefix}.${model.id}: origin or state mismatch`); continue;
+        }
+        dates.add(row.origin_date.slice(0, 10));
+        if (row.next_state && (!vector(row.next_state) || Math.abs(sum(row.next_state) - 1) > 1e-8)) errors.push(`${prefix}.${model.id}: invalid next state`);
+        if (row.horizons && Object.keys(row.horizons).length === 0) continue; // one-week-only model
+        if (!row.horizons || Object.keys(row.horizons).length !== 3) errors.push(`${prefix}.${model.id}: incomplete horizons`);
+        let previousHit = 0, previousEntry = 0, previousDeparture = 0, previousFirst = null;
+        for (const horizon of [1, 4, 13]) {
+          const result = row.horizons?.[`${horizon}w`];
+          if (!result || result.horizon_weeks !== horizon || !validDate(result.target_date)
+            || Math.abs(Date.parse(result.target_date) - Date.parse(row.origin_date) - horizon * 7 * 86400000) > 3600000
+            || Date.parse(result.target_date.slice(0, 10)) - Date.parse(row.origin_date.slice(0, 10)) !== horizon * 7 * 86400000
+            || !vector(result.endpoint) || Math.abs(sum(result.endpoint) - 1) > 1e-5
+            || !result.first_departure || Object.keys(result.first_departure).length !== 4
+            || !FORECAST_STATES.every((key) => prob(result.first_departure[key])) || !prob(result.first_departure.no_departure)
+            || Math.abs(sum(result.first_departure) + result.first_departure.no_departure - 1) > 1e-5
+            || result.first_departure[row.current_state] !== 0 || !prob(result.any_risk_off_occupancy) || !prob(result.any_risk_off_entry)) {
+            errors.push(`${prefix}.${model.id}.${horizon}w: invalid path probabilities`); continue;
+          }
+          const hit = result.any_risk_off_occupancy, entry = result.any_risk_off_entry, departure = 1 - result.first_departure.no_departure;
+          if (hit + 1e-5 < previousHit || entry + 1e-5 < previousEntry || departure + 1e-5 < previousDeparture
+            || result.first_departure.no_departure > result.endpoint[row.current_state] + 1e-5
+            || (previousFirst && FORECAST_STATES.some((key) => result.first_departure[key] + 1e-5 < previousFirst[key]))
+            || (horizon === 1 && row.next_state && FORECAST_STATES.some((key) => Math.abs(row.next_state[key] - result.endpoint[key]) > 1e-5))
+            || entry > hit + 1e-5 || entry > departure + 1e-5
+            || (row.current_state !== "risk_off" && Math.abs(entry - hit) > 1e-5)
+            || (row.current_state === "risk_off" && horizon === 1 && entry > 1e-5)
+            || hit + 1e-5 < result.endpoint.risk_off || hit + 1e-5 < result.first_departure.risk_off
+            || (row.current_state !== "risk_off" && hit > departure + 1e-5)
+            || (horizon === 1 && (Math.abs(hit - result.endpoint.risk_off) > 1e-5
+              || FORECAST_STATES.some((key) => Math.abs(result.endpoint[key]
+                - (key === row.current_state ? result.first_departure.no_departure : result.first_departure[key])) > 1e-5)))) {
+            errors.push(`${prefix}.${model.id}.${horizon}w: inconsistent path events`);
+          }
+          previousHit = hit; previousEntry = entry; previousDeparture = departure;
+          previousFirst = result.first_departure;
+        }
+      }
+      if (model.latest && model.latest.origin_date !== block.data_as_of) errors.push(`${prefix}.${model.id}: latest cutoff mismatch`);
+    }
+    if (!ids.has(block.selected_model)) errors.push(`${prefix}: selected_model missing`);
+    return errors;
+  }
+  function researchForecastRow(payload = {}, date, requestedModel = null) {
+    const block = payload.research?.forecast_research;
+    if (!block || validateForecastResearch(payload).length) return null;
+    const model = block.models.find((item) => item.id === (requestedModel || block.selected_model));
+    if (!model) return null;
+    const row = [...(model.latest ? [model.latest] : []), ...model.history].find((item) => item.origin_date.slice(0, 10) === date);
+    return row ? { ...row, model: model.id, label: model.label || model.id } : null;
+  }
+  function multistateForecastForWeek(payload = {}, date, requestedModel = null) {
+    const row = researchForecastRow(payload, date, requestedModel);
+    return row && [1, 4, 13].every((horizon) => row.horizons?.[`${horizon}w`])
+      ? row : null;
+  }
   function modelQuality(model = {}, selectedModel = null) {
     const nameOf = (value) => typeof value === "string" ? value : value?.name ?? value?.model ?? value?.id ?? null;
     const selected = selectedModel ?? nameOf(model.champion);
@@ -56,7 +187,7 @@
       recall: metric("transition_recall"), precision: metric("transition_precision"),
       captured: metric("on_time_departure_count"), events: metric("transition_event_count"),
       falseAlarms: metric("false_alarms_per_year"), falseAlarmCount: metric("false_alarm_count"),
-      delay: metric("mean_detection_delay_forecast_weeks"), weeks: metric("n_predictions"),
+      delay: metric("mean_detection_delay_forecast_weeks"), detected: metric("detected_event_count"), weeks: metric("n_predictions"),
       fallbackCount: metric("fallback_count"),
       worseningEvents: metric("worsening_event_count"), worseningCaptured: metric("on_time_worsening_count"),
       recoveryEvents: metric("recovery_event_count"), recoveryCaptured: metric("on_time_recovery_count"),
@@ -612,5 +743,5 @@
 
     return { renderPerformanceLineChart, renderPerformanceDrawdownChart, renderPerformanceFallback, renderPerformanceBridge, renderPerformanceTurnover, renderPerformanceDetailTable, turnoverValues };
   }
-  return Object.freeze({ conditionalMetrics, portfolioAdjustment, forecastTiming, modelQuality, forecastImprovementModels, forecastComparisonModel, forecastEvaluation, researchForecastForWeek, validateForecastImprovement, FORECAST_RESEARCH_IDS, contextPosition, researchScope, sensitivityRanges, createPerformanceRenderers });
+  return Object.freeze({ conditionalMetrics, portfolioAdjustment, forecastTiming, selectedForecastTiming, forecastDirections, transitionOutlook, durationEstimate, validateForecastResearch, researchForecastRow, multistateForecastForWeek, modelQuality, forecastImprovementModels, forecastComparisonModel, forecastEvaluation, researchForecastForWeek, validateForecastImprovement, FORECAST_RESEARCH_IDS, contextPosition, researchScope, sensitivityRanges, createPerformanceRenderers });
 });

@@ -7664,7 +7664,7 @@ tr.is-holdout-best td,
   }
 }
 
-/* Decision-first four-view workspace. */
+/* Forecast-first workspace; tokens allow an outlook shared by two views. */
 .section-nav [data-dashboard-view],
 .section-nav-action {
   display: inline-flex;
@@ -7681,10 +7681,11 @@ tr.is-holdout-best td,
   font-weight: 760;
 }
 
-#dashboard[data-active-view="execution"] [data-dashboard-view]:not([data-dashboard-view="execution"]),
-#dashboard[data-active-view="performance"] [data-dashboard-view]:not([data-dashboard-view="performance"]),
-#dashboard[data-active-view="assets"] [data-dashboard-view]:not([data-dashboard-view="assets"]),
-#dashboard[data-active-view="model"] [data-dashboard-view]:not([data-dashboard-view="model"]) {
+#dashboard[data-active-view="execution"] [data-dashboard-view]:not([data-dashboard-view~="execution"]),
+#dashboard[data-active-view="performance"] [data-dashboard-view]:not([data-dashboard-view~="performance"]),
+#dashboard[data-active-view="assets"] [data-dashboard-view]:not([data-dashboard-view~="assets"]),
+#dashboard[data-active-view="model"] [data-dashboard-view]:not([data-dashboard-view~="model"]),
+#dashboard[data-active-view="transition"] [data-dashboard-view]:not([data-dashboard-view~="transition"]) {
   display: none !important;
 }
 

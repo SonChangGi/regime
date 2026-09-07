@@ -173,6 +173,22 @@ def test_selection_and_retrospective_diagnostics_are_separated(
     ).all()
 
 
+def test_calibration_version_and_past_block_boundaries_are_preserved(
+    benchmark: TransitionBenchmarkResult,
+) -> None:
+    rows = pd.concat([benchmark.predictions, benchmark.latest_candidate_forecasts()])
+    assert rows.calibration_version.eq("transition-calibration/2").all()
+    assert rows.calibration_selection_scope.eq("past_selection_blocks_only").all()
+    chosen_at = pd.to_datetime(rows.calibration_selection_as_of, utc=True)
+    origin = pd.to_datetime(rows.origin_date, utc=True)
+    assert (chosen_at <= origin).all()
+    for column in ("calibration_fit_last_target", "calibration_validation_last_target"):
+        target = pd.to_datetime(rows[column], utc=True)
+        assert (target.isna() | (target < chosen_at)).all()
+    diagnostic = rows.evaluation_split.ne("selection")
+    assert chosen_at.loc[diagnostic].eq(pd.to_datetime(benchmark.selection_end, utc=True)).all()
+
+
 def test_appending_future_rows_cannot_change_existing_oos_predictions() -> None:
     features, states = _inputs(285)
     common = {
@@ -207,6 +223,7 @@ def test_appending_future_rows_cannot_change_existing_oos_predictions() -> None:
         "calibration_fallback_reason",
         "threshold_method",
     ]
+    columns += [column for column in prefix.predictions if column.startswith("calibration_") and column not in columns]
     extended_common = extended.predictions.loc[
         extended.predictions["target_end"] <= prefix.predictions["target_end"].max()
     ]

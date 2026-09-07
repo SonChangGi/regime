@@ -36,6 +36,7 @@ from regime_lab.research.downside import run_downside_research
 from regime_lab.research.forecast_improvement import build_forecast_improvement
 from regime_lab.research.forecast_contract import validate_forecast_improvement
 from regime_lab.research.forecast_assets import build_forecast_asset_statistics
+from regime_lab.research.forecast_publication import build_forecast_publication_research
 
 
 def _verify_source_snapshot(directory: Path, cutoff: str) -> dict:
@@ -149,6 +150,7 @@ def compose_live_publication_research(
         "canonical_states": states,
         "oos_predictions": benchmark.predictions.copy(deep=True),
         "transition_predictions": benchmark.transition_benchmark.predictions.copy(deep=True),
+        "transition_candidates": benchmark.transition_benchmark.latest_candidate_forecasts().copy(deep=True),
         "model_conditioned_outcomes": benchmark.model_conditioned_asset_outcomes.copy(deep=True),
         "ablation_predictions": benchmark.feature_ablation.predictions.copy(deep=True),
     }
@@ -199,6 +201,15 @@ def compose_live_publication_research(
         outcome_resamples=payload["model"]["execution_parameters"]["conditional_outcome_bootstrap_resamples"])
     if any(item["metrics"]["holdout"]["n_predictions"] != expected for item in forecast_improvement["models"]):
         raise ValueError("publication forecast improvement lost matched holdout origins")
+    forecast_audit = run("국면 예측·보정·신규 정보", lambda: build_forecast_publication_research(
+        payload, canonical, states, predictions, frames["transition_predictions"],
+        frames["transition_candidates"], cache_directory.parent / "forecast-publication",
+        existing_sources=source_directory, progress=progress,
+    ))
+    if set(forecast_audit.get("blocks", {})) != {"forecast_research", "calibration_audit", "forecast_information"}:
+        raise ValueError("publication forecast audit requires all three blocks")
+    result["research"].update(forecast_audit["blocks"])
+    validate_research_extensions(forecast_audit["blocks"], data_as_of=cutoff)
     # The current issuance is appended only after atomic publication succeeds.
     operational = run("실제 발행 기록", lambda: read_operational_diagnostics(ledger_path))
     if allocation["performance"]["weeks"] != expected or decision["diagnostic_origins"] != expected:
@@ -229,6 +240,8 @@ def compose_live_publication_research(
         "forecast_model": model,
         "selection_end": selection_end,
         "matched_holdout_origins": expected,
+        "forecast_audit_present": True,
+        "forecast_audit": forecast_audit["provenance"],
         "input_frames": frame_identity,
         "additional_source_manifest_sha256": hashlib.sha256((source_directory / "manifest.json").read_bytes()).hexdigest(),
         "operational_scope": "issued_ledger_before_current_generation_publication",
@@ -243,8 +256,9 @@ def compose_live_publication_research(
             "downside": downside,
             "diagnostics": diagnostics,
             "additional_data": sources,
+            **forecast_audit["blocks"],
         }.items()},
     }
     result["research"]["extensions"] = extensions
-    validate_research_extensions(result["research"])
+    validate_research_extensions(result["research"], data_as_of=cutoff)
     return result

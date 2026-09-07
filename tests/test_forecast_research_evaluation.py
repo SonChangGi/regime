@@ -11,17 +11,19 @@ from regime_lab.analysis.forecast_research_evaluation import (
 
 @pytest.fixture
 def evidence():
-    dates = pd.date_range("2022-09-02", periods=31, freq="7D", tz="UTC")
-    states = pd.Series(["risk_on", "transition", "risk_off", "transition", "risk_on"] * 6 + ["risk_on"], index=dates)
+    dates = pd.date_range("2022-09-16", periods=32, freq="7D", tz="UTC")
+    states = pd.Series(["risk_on", "transition", "risk_off", "transition", "risk_on"] * 6 + ["risk_on", "risk_on"], index=dates)
     names = ["risk_on", "transition", "risk_off"]
     rows = []
     for index, date in enumerate(dates[:-1]):
+        if date < pd.Timestamp("2023-01-01", tz="UTC") <= dates[index + 1]:
+            continue  # The boundary-crossing week belongs to neither split.
         actual, current = states.iloc[index + 1], states.iloc[index]
         probability = np.full(3, .15)
         probability[names.index(actual)] = .7
         rows.append({"origin_date": date, "target_date": dates[index+1], "model": "causal_dynamic_ensemble",
                      "current_state": current, "actual": actual,
-                     "evaluation_split": "selection" if index < 15 else "holdout",
+                     "evaluation_split": "selection" if dates[index + 1].year < 2023 else "holdout",
                      **dict(zip([f"p_{name}" for name in names], probability))})
     baseline = pd.DataFrame(rows)
     candidate = baseline.copy()
@@ -87,3 +89,35 @@ def test_warmup_keeps_identical_week_coverage(evidence):
     row = summary.loc[summary.model.eq("new_model") & summary.period.eq("selection_2016_2022")].iloc[0]
     assert row.weeks == 15
     assert row.warmup_rows == 1
+
+
+@pytest.mark.parametrize("split", ["selection", "holdout"])
+def test_agreeing_but_false_split_strings_are_rejected(evidence, split):
+    baseline, candidate, states = evidence
+    baseline["evaluation_split"] = candidate["evaluation_split"] = split
+    with pytest.raises(ValueError, match="frozen origin/target cutoff"):
+        match_forecasts(baseline, candidate, states)
+
+
+@pytest.mark.parametrize("split", ["selection", "holdout"])
+def test_cross_boundary_row_is_not_admitted_to_either_split(evidence, split):
+    baseline, candidate, states = evidence
+    for frame in (baseline, candidate):
+        frame.loc[0, "origin_date"] = pd.Timestamp("2022-12-30", tz="UTC")
+        frame.loc[0, "target_date"] = pd.Timestamp("2023-01-06", tz="UTC")
+        frame.loc[0, "evaluation_split"] = split
+    with pytest.raises(ValueError, match="cross-boundary"):
+        match_forecasts(baseline, candidate, states)
+
+
+@pytest.mark.parametrize("entrypoint", ["scores", "summary", "comparison"])
+def test_direct_scoring_entrypoints_cannot_bypass_the_frozen_split(evidence, entrypoint):
+    scored = per_week_scores(match_forecasts(*evidence))
+    scored["evaluation_split"] = "selection"
+    with pytest.raises(ValueError, match="frozen origin/target cutoff"):
+        if entrypoint == "scores":
+            per_week_scores(scored)
+        elif entrypoint == "summary":
+            summarize_scores(scored)
+        else:
+            paired_comparisons(scored, ["new_model"], ["causal_dynamic_ensemble"], resamples=49)

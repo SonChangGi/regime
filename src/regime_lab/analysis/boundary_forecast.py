@@ -8,7 +8,7 @@ return distribution models this mechanism directly without changing labels.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Callable
 
 import numpy as np
@@ -33,6 +33,66 @@ MODELS = (
     "boundary_mechanistic_blend",
 )
 PROBABILITY_COLUMNS = tuple(f"p_{state}" for state in STATE_ORDER)
+ASYMMETRIC_MODEL = "boundary_asymmetric_ewma"
+
+
+@dataclass(frozen=True)
+class BoundaryConfig:
+    """Versioned units/recipe; v1 defaults reproduce the existing boundary model."""
+
+    version: str = "boundary-v1"
+    volatility_span_weeks: int = 13
+    volatility_floor: float = .003  # weekly log-return standard deviation
+    residual_window_weeks: int = 520
+    residual_clip: float = 8.
+    student_df: float = 5.
+    integration_points: int = 1001
+    contamination: float = .01
+    calibration_minimum_rows: int = 52
+    calibration_maximum_rows: int = 156
+    temperature_minimum: float = .5
+    temperature_maximum: float = 2.
+    temperature_penalty: float = .01
+    asymmetric_strength: float = .5
+
+    def __post_init__(self):
+        if self.version != "boundary-v1":
+            raise ValueError("unsupported boundary config version")
+        for key in ("volatility_span_weeks", "residual_window_weeks", "integration_points",
+                    "calibration_minimum_rows", "calibration_maximum_rows"):
+            value = getattr(self, key)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise ValueError(f"{key} must be a positive integer")
+        scalars = (self.volatility_floor, self.residual_clip, self.student_df,
+                   self.contamination, self.temperature_minimum, self.temperature_maximum,
+                   self.temperature_penalty, self.asymmetric_strength)
+        if not np.isfinite(scalars).all():
+            raise ValueError("boundary parameters must be finite")
+        if self.volatility_floor <= 0 or self.residual_clip <= 0 or self.student_df <= 2:
+            raise ValueError("invalid boundary distribution scale")
+        if not 0 <= self.contamination < 1 or not 0 <= self.asymmetric_strength < 1:
+            raise ValueError("invalid contamination/asymmetric strength")
+        if not 0 < self.temperature_minimum <= 1 <= self.temperature_maximum:
+            raise ValueError("temperature interval must contain identity")
+        if self.temperature_penalty < 0 or self.calibration_minimum_rows > self.calibration_maximum_rows:
+            raise ValueError("invalid calibration settings")
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+DEFAULT_BOUNDARY_CONFIG = BoundaryConfig()
+
+
+def asymmetric_volatility(returns: pd.Series, config: BoundaryConfig = DEFAULT_BOUNDARY_CONFIG) -> pd.Series:
+    """One fixed GJR-style EWMA: negative/positive squared-shock weights 1.5/.5.
+
+    Zero conditional drift, no optimization; symmetric innovations have unit
+    expected weight. The observed origin return updates next-week variance.
+    """
+    squared = returns.pow(2) * np.where(returns < 0, 1 + config.asymmetric_strength,
+                                      1 - config.asymmetric_strength)
+    return np.sqrt(squared.ewm(span=config.volatility_span_weeks, adjust=False).mean()).clip(lower=config.volatility_floor)
 
 
 def next_scores(
@@ -105,11 +165,12 @@ def next_states(scores: np.ndarray, current_state: str, labeler: CausalRegimeLab
     return output
 
 
-def state_distribution(scores: np.ndarray, current_state: str, labeler: CausalRegimeLabeler) -> np.ndarray:
+def state_distribution(scores: np.ndarray, current_state: str, labeler: CausalRegimeLabeler,
+                       config: BoundaryConfig = DEFAULT_BOUNDARY_CONFIG) -> np.ndarray:
     values = next_states(scores, current_state, labeler)
     # A fixed 1% uniform contamination protects finite-grid tail events.  This
     # value is specified before evaluation and is never optimized on holdout.
-    return .99 * np.asarray([(values == state).mean() for state in STATE_ORDER]) + .01 / 3
+    return (1 - config.contamination) * np.asarray([(values == state).mean() for state in STATE_ORDER]) + config.contamination / 3
 
 
 @dataclass(frozen=True)
@@ -118,9 +179,12 @@ class BoundaryInputs:
     mechanistic: dict[str, pd.DataFrame]
     labeler: CausalRegimeLabeler
     states: pd.Series
+    config: BoundaryConfig = DEFAULT_BOUNDARY_CONFIG
 
 
-def build_boundary_inputs(canonical: pd.DataFrame, states: pd.Series, *, fit_weeks: int = 520) -> BoundaryInputs:
+def build_boundary_inputs(canonical: pd.DataFrame, states: pd.Series, *, fit_weeks: int = 520,
+                          config: BoundaryConfig = DEFAULT_BOUNDARY_CONFIG,
+                          include_asymmetric: bool = False) -> BoundaryInputs:
     if not canonical.index.equals(states.index):
         raise ValueError("canonical and state indexes must match")
     if canonical.index.has_duplicates or not canonical.index.is_monotonic_increasing:
@@ -133,8 +197,10 @@ def build_boundary_inputs(canonical: pd.DataFrame, states: pd.Series, *, fit_wee
     scores = labeler.score_frame(canonical)
     price = canonical.spy_close.to_numpy(dtype=float)
     returns = np.log(canonical.spy_close).diff()
-    sigma = returns.ewm(span=13, adjust=False).std(bias=True).clip(lower=.003)
+    sigma = returns.ewm(span=config.volatility_span_weeks, adjust=False).std(bias=True).clip(lower=config.volatility_floor)
     residual = (returns / sigma.shift(1)).replace([np.inf, -np.inf], np.nan)
+    asym_sigma = asymmetric_volatility(returns, config) if include_asymmetric else None
+    asym_residual = returns / asym_sigma.shift(1) if asym_sigma is not None else None
     lower, upper = labeler.lower_threshold_, labeler.upper_threshold_
     assert lower is not None and upper is not None
     width = upper - lower
@@ -159,21 +225,28 @@ def build_boundary_inputs(canonical: pd.DataFrame, states: pd.Series, *, fit_wee
             rel = np.log(canonical[column]).diff(4) - np.log(canonical.spy_close).diff(4)
             feature[f"relative_{symbol}_4w"] = rel
     probabilities = {name: np.full((len(price), 3), np.nan) for name in MODELS[:2]}
-    quantiles = (np.arange(1001) + .5) / 1001
-    student_residuals = student_t.ppf(quantiles, df=5) * np.sqrt(3 / 5)
+    if include_asymmetric:
+        probabilities[ASYMMETRIC_MODEL] = np.full((len(price), 3), np.nan)
+    quantiles = (np.arange(config.integration_points) + .5) / config.integration_points
+    student_residuals = student_t.ppf(quantiles, df=config.student_df) * np.sqrt((config.student_df - 2) / config.student_df)
     for position in range(52, len(price)):
         current = str(states.iloc[position])
         history = price[max(0, position - 52):position + 1]
         scale = float(sigma.iloc[position])
         simulated_scores = next_scores(history, scale * student_residuals, labeler)
-        probabilities[MODELS[0]][position] = state_distribution(simulated_scores, current, labeler)
+        probabilities[MODELS[0]][position] = state_distribution(simulated_scores, current, labeler, config)
         # Every return used to fit the empirical distribution completed strictly
         # before the origin.  Current volatility is an observed input at origin.
-        historical = residual.iloc[max(2, position - 520):position].dropna().to_numpy()
-        historical = np.clip(historical, -8, 8)
+        historical = residual.iloc[max(2, position - config.residual_window_weeks):position].dropna().to_numpy()
+        historical = np.clip(historical, -config.residual_clip, config.residual_clip)
         probabilities[MODELS[1]][position] = state_distribution(
-            next_scores(history, scale * historical, labeler), current, labeler
+            next_scores(history, scale * historical, labeler), current, labeler, config
         )
+        if asym_sigma is not None and asym_residual is not None:
+            shocks = asym_residual.iloc[max(2, position - config.residual_window_weeks):position].dropna().to_numpy()
+            shocks = np.clip(shocks, -config.residual_clip, config.residual_clip)
+            probabilities[ASYMMETRIC_MODEL][position] = state_distribution(
+                next_scores(history, float(asym_sigma.iloc[position]) * shocks, labeler), current, labeler, config)
         hypothetical = next_scores(history, scale * np.asarray([-1., 0., 1.]), labeler)
         feature.loc[feature.index[position], "zero_return_next_score"] = hypothetical[1] / width
         feature.loc[feature.index[position], "down_return_next_score"] = hypothetical[0] / width
@@ -190,7 +263,7 @@ def build_boundary_inputs(canonical: pd.DataFrame, states: pd.Series, *, fit_wee
     mechanistic = {name: pd.DataFrame(value, index=canonical.index, columns=STATE_ORDER) for name, value in probabilities.items()}
     for state in STATE_ORDER:
         feature[f"mechanical_probability_{state}"] = mechanistic[MODELS[0]][state]
-    return BoundaryInputs(feature.replace([np.inf, -np.inf], np.nan), mechanistic, labeler, states)
+    return BoundaryInputs(feature.replace([np.inf, -np.inf], np.nan), mechanistic, labeler, states, config)
 
 
 def _align(estimator, matrix: np.ndarray) -> np.ndarray:
@@ -201,16 +274,17 @@ def _align(estimator, matrix: np.ndarray) -> np.ndarray:
     return output / output.sum()
 
 
-def prequential_temperature(probability: np.ndarray, history: list[tuple[int, np.ndarray, int]], origin_position: int) -> tuple[np.ndarray, float, int]:
+def prequential_temperature(probability: np.ndarray, history: list[tuple[int, np.ndarray, int]], origin_position: int,
+                            config: BoundaryConfig = DEFAULT_BOUNDARY_CONFIG) -> tuple[np.ndarray, float, int]:
     """Fit only completed earlier OOS predictions; target must precede origin."""
-    eligible = [(p, y) for target, p, y in history if target < origin_position][-156:]
-    if len(eligible) < 52:
+    eligible = [(p, y) for target, p, y in history if target < origin_position][-config.calibration_maximum_rows:]
+    if len(eligible) < config.calibration_minimum_rows:
         return probability, 1., len(eligible)
     p = np.asarray([row[0] for row in eligible]); y = np.asarray([row[1] for row in eligible])
     def loss(log_temperature):
         candidate = softmax(np.log(np.clip(p, 1e-8, 1)) / np.exp(log_temperature), axis=1)
-        return -np.log(candidate[np.arange(len(y)), y]).mean() + .01 * log_temperature ** 2
-    fitted = minimize_scalar(loss, bounds=(np.log(.5), np.log(2)), method="bounded")
+        return -np.log(candidate[np.arange(len(y)), y]).mean() + config.temperature_penalty * log_temperature ** 2
+    fitted = minimize_scalar(loss, bounds=(np.log(config.temperature_minimum), np.log(config.temperature_maximum)), method="bounded")
     temperature = float(np.exp(fitted.x))
     return softmax(np.log(np.clip(probability, 1e-8, 1)) / temperature), temperature, len(eligible)
 
@@ -220,7 +294,7 @@ def _raw_predictions_at_origin(inputs: BoundaryInputs, position: int, models: tu
     x_train = inputs.features.iloc[train_positions]
     x_test = inputs.features.iloc[[position]]
     y_train = inputs.states.iloc[train_positions + 1]
-    raw = {model: inputs.mechanistic[model].iloc[position].to_numpy() for model in MODELS[:2]}
+    raw = {model: values.iloc[position].to_numpy() for model, values in inputs.mechanistic.items()}
     if any(model in models for model in MODELS[2:]):
         logistic = make_pipeline(SimpleImputer(strategy="median", keep_empty_features=True), StandardScaler(), LogisticRegression(C=.1, max_iter=1000, tol=1e-6))
         logistic.fit(x_train, y_train)
@@ -241,7 +315,7 @@ def forecast_boundary_latest(inputs: BoundaryInputs, historical_oos: pd.DataFram
     probabilities. The input predictions and historical probabilities are not
     mutated by issuing this forecast.
     """
-    if model not in MODELS:
+    if model not in (*MODELS, ASYMMETRIC_MODEL):
         raise ValueError("unsupported boundary model")
     position = len(inputs.states) - 1
     if position < 521:
@@ -274,7 +348,7 @@ def forecast_boundary_latest(inputs: BoundaryInputs, historical_oos: pd.DataFram
             raise ValueError("historical raw probability is invalid")
         history.append((states.index.get_loc(row.target_date), raw, STATE_ORDER.index(row.actual)))
     raw, train_positions = _raw_predictions_at_origin(inputs, position, (model,), train_window)
-    p, temperature, calibration_rows = prequential_temperature(raw[model], history, position)
+    p, temperature, calibration_rows = prequential_temperature(raw[model], history, position, inputs.config)
     target_date = (origin.tz_convert("America/New_York") + pd.DateOffset(weeks=1)).tz_convert("UTC")
     return {"origin_date": origin.isoformat(), "target_date": target_date.isoformat(),
             "model": model, "evaluation_split": "unobserved", "current_state": str(states.iloc[position]),
@@ -285,7 +359,7 @@ def forecast_boundary_latest(inputs: BoundaryInputs, historical_oos: pd.DataFram
 
 
 def run_boundary_walk_forward(inputs: BoundaryInputs, *, origin_positions: list[int] | None = None, models: tuple[str, ...] = MODELS, train_window: int = 520, progress: Callable[[str], None] | None = None) -> pd.DataFrame:
-    unsupported = set(models).difference(MODELS)
+    unsupported = set(models).difference((*MODELS, ASYMMETRIC_MODEL))
     if unsupported:
         raise ValueError(f"unsupported models: {sorted(unsupported)}")
     states = inputs.states
@@ -302,7 +376,7 @@ def run_boundary_walk_forward(inputs: BoundaryInputs, *, origin_positions: list[
             raise ValueError("origin is outside frozen-label OOS evaluation range")
         raw, train_positions = _raw_predictions_at_origin(inputs, position, models, train_window)
         for model in models:
-            p, temperature, calibration_rows = prequential_temperature(raw[model], histories[model], position)
+            p, temperature, calibration_rows = prequential_temperature(raw[model], histories[model], position, inputs.config)
             actual_index = STATE_ORDER.index(str(states.iloc[position + 1]))
             histories[model].append((position + 1, raw[model].copy(), actual_index))
             rows.append({

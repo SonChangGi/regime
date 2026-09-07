@@ -1,0 +1,18 @@
+{
+  "schema_version": "regime-forecast-information-protocol/1",
+  "purpose": "Incremental next-week state information against frozen boundary forecast",
+  "baseline_model": "boundary_filtered_history",
+  "selection_end": "2023-01-01T00:00:00+00:00",
+  "diagnostic_label": "2023 onward has already been used for development; not untouched holdout",
+  "historical_evidence_track": "reconstructed_market_prior_day",
+  "calendar_historical_policy": "prospective_only_without_stored_versions",
+  "tff_historical_policy": "first_seen_only_no_nominal_release_backdating",
+  "cftc_contract_codes": ["13874A", "043602"],
+  "minimum_training_rows": 104,
+  "regularization_c": 0.1,
+  "mixture_weight": 0.25,
+  "control_columns": ["control_vix", "control_vix9d_ratio", "control_vvix"],
+  "extra_columns": ["vix3m_ratio", "vix3m_ratio_change_4w"],
+  "metrics": ["log_loss", "brier", "accuracy", "worsening", "recovery", "false_alarms"],
+  "promotion": "none; changes require separate prospective evidence"
+}

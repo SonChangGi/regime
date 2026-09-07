@@ -518,7 +518,9 @@ def _v5_report(payload: Path) -> dict:
     }
 
 
-def _package_v5(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+def _package_v5(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, forecast_downloads: bool = False
+) -> Path:
     monkeypatch.setattr(package_public_demo, "validate_dashboard_payload", lambda _: None)
     monkeypatch.setattr(
         verify_public_package,
@@ -526,6 +528,17 @@ def _package_v5(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         lambda *args, **kwargs: None,
     )
     payload = _minimal_v5_payload(tmp_path)
+    if forecast_downloads:
+        document = json.loads(payload.read_bytes())
+        for name in ("forecast_research", "calibration_audit", "forecast_information"):
+            document["research"][name] = {
+                "rows": [{"model": "research_model", "log_loss": 0.4}],
+                "artifacts": [{"label": "전체 결과 JSON", "url": f"./data/{name}.json"}],
+            }
+        document["meta"]["publication_review"]["reviewed_candidate_sha256"] = (
+            reviewed_candidate_sha256_v1(document)
+        )
+        payload.write_bytes(_json_bytes(document))
     comparison = tmp_path / package_public_demo.V5_COMPARISON_FILENAME
     comparison.write_text(json.dumps(_v5_report(payload), sort_keys=True), encoding="utf-8")
     output = tmp_path / "public-v5"
@@ -606,6 +619,38 @@ def test_verifier_refuses_research_sidecar_tamper_with_refreshed_manifest(
     with pytest.raises(
         verify_public_package.VerificationError,
         match="research sidecar differs|research sidecar hash mismatch",
+    ):
+        verify_public_package.verify_public_package(output)
+
+
+def test_forecast_downloads_match_reviewed_payload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output = _package_v5(tmp_path, monkeypatch, forecast_downloads=True)
+    result = verify_public_package.verify_public_package(output)
+    assert result["forecast_downloads_included"] == 3
+    payload = json.loads((output / package_public_demo.PAYLOAD_DESTINATION).read_bytes())
+    for name in ("forecast_research", "calibration_audit", "forecast_information"):
+        assert json.loads((output / f"data/{name}.json").read_bytes()) == payload["research"][name]
+
+
+@pytest.mark.parametrize("mutation", ["missing", "changed"])
+def test_forecast_download_cannot_diverge_after_manifest_refresh(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutation: str
+) -> None:
+    output = _package_v5(tmp_path, monkeypatch, forecast_downloads=True)
+    relative_path = "data/calibration_audit.json"
+    target = output / relative_path
+    if mutation == "missing":
+        target.unlink()
+    else:
+        value = json.loads(target.read_bytes())
+        value["rows"][0]["log_loss"] = 0.0
+        target.write_bytes(_json_bytes(value))
+        _refresh_manifest_record(output, relative_path)
+    with pytest.raises(
+        verify_public_package.VerificationError,
+        match="inventory mismatch|forecast downloads differ",
     ):
         verify_public_package.verify_public_package(output)
 

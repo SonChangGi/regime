@@ -14,6 +14,7 @@ import json
 from pathlib import Path
 import sys
 from typing import Any, Mapping, Sequence
+import warnings
 
 import numpy as np
 import pandas as pd
@@ -21,6 +22,7 @@ from sklearn.metrics import accuracy_score, average_precision_score
 from sklearn.metrics import balanced_accuracy_score, f1_score
 from sklearn.metrics import recall_score
 from sklearn.linear_model import LogisticRegression
+from sklearn.exceptions import ConvergenceWarning
 
 from regime_lab.artifact_inventory import (
     ArtifactInventoryError,
@@ -2891,17 +2893,202 @@ def transition_threshold(
     )
 
 
+def _transition_calibration_v2(
+    raw_value: float, history: pd.DataFrame, *, minimum_rows: int,
+    origin: object, selection_end: object, metadata: dict[str, Any],
+    cache: dict | None = None,
+) -> tuple[float, str, bool, str]:
+    """Independent replay of frozen v2, without importing its implementation."""
+    cutoff = pd.to_datetime(selection_end, utc=True, errors="raise")
+    forecast_origin = pd.to_datetime(origin, utc=True, errors="raise")
+    require(not pd.isna(cutoff) and not pd.isna(forecast_origin), "calibration v2 dates missing")
+    anchor, width = pd.Timestamp("2000-01-07", tz="UTC"), pd.Timedelta(182, unit="D")
+    as_of = cutoff if forecast_origin >= cutoff else anchor + ((forecast_origin - anchor) // width) * width
+    require_columns(history, {"origin_date", "target_end", "evaluation_split", "raw_p_change", "actual_change"}, "calibration v2 history")
+    frame = history.copy()
+    for column in ("origin_date", "target_end"):
+        frame[column] = pd.to_datetime(frame[column], utc=True, errors="raise")
+        require(frame[column].notna().all(), f"calibration v2 {column} missing")
+    require((frame.origin_date < frame.target_end).all(), "calibration v2 target ordering")
+    crossing = (frame.origin_date < cutoff) & (frame.target_end >= cutoff)
+    require(not crossing.any(), "calibration v2 cross-boundary row")
+    expected_split = np.where(frame.target_end < cutoff, "selection", "retrospective_diagnostic")
+    require(np.array_equal(frame.evaluation_split, expected_split), "calibration v2 split/cutoff mismatch")
+    frame = frame.loc[frame.evaluation_split.eq("selection") & frame.target_end.lt(as_of)].sort_values("origin_date")
+    require(not frame.origin_date.duplicated().any(), "calibration v2 duplicate origin")
+    probabilities = frame.raw_p_change.to_numpy(float)
+    require(np.isfinite(probabilities).all() and ((probabilities >= 0) & (probabilities <= 1)).all(), "calibration v2 history probabilities invalid")
+    require(frame.actual_change.isin([True, False, 0, 1]).all(), "calibration v2 unresolved outcomes")
+    minimum_fit, minimum_validation = max(52, minimum_rows), max(26, minimum_rows)
+    # Content-keyed, local cache: a changed probability/outcome can never reuse
+    # a fit computed for different evidence, even inside the same time block.
+    fingerprint = hashlib.sha256(pd.util.hash_pandas_object(
+        frame[["origin_date", "target_end", "raw_p_change", "actual_change"]], index=False,
+    ).values.tobytes()).hexdigest()
+    key = (as_of.isoformat(), cutoff.isoformat(), minimum_rows, fingerprint)
+    fitted = None if cache is None else cache.get(key)
+    if fitted is None:
+        evidence = {
+            "calibration_version": "transition-calibration/2",
+            "calibration_selection_scope": "past_selection_blocks_only",
+            "calibration_selection_end_exclusive": cutoff.isoformat(),
+            "calibration_selection_as_of": as_of.isoformat(),
+            "calibration_fit_last_target": None, "calibration_training_rows": 0,
+            "calibration_validation_last_target": None, "calibration_validation_rows": 0,
+            "calibration_validation_blocks": 0,
+            "calibration_identity_log_loss": None, "calibration_platt_log_loss": None,
+            "calibration_shrunk_log_loss": None, "calibration_shrink_weight": 0.0,
+        }
+        fitted = {"method": "identity", "weight": 0.0, "estimator": None,
+                  "fallback": True, "reason": "", "metadata": evidence}
+
+        def design(p):
+            p = np.clip(np.asarray(p, dtype=float), 1e-6, 1 - 1e-6)
+            return np.log(p / (1 - p)).reshape(-1, 1)
+
+        def fit(training):
+            y = training.actual_change.to_numpy(int)
+            if len(y) < minimum_fit or min(int(y.sum()), int((1 - y).sum())) < 3:
+                return None
+            estimator = LogisticRegression(C=.1, solver="lbfgs", max_iter=1000, random_state=17)
+            try:
+                with warnings.catch_warnings():
+                    warnings.simplefilter("error", ConvergenceWarning)
+                    estimator.fit(design(training.raw_p_change), y)
+            except (ValueError, RuntimeError, FloatingPointError, ConvergenceWarning):
+                return None
+            return estimator
+
+        if len(frame) < minimum_fit:
+            fitted["reason"] = f"insufficient_prequential_rows:{len(frame)}<{minimum_fit}"
+        else:
+            block_ids = (frame.origin_date - anchor) // width
+            completed_ids = sorted(block_ids.loc[anchor + (block_ids + 1) * width <= as_of].unique())[-3:]
+            targets, forecasts, validation_dates = [], [], []
+            for block_id in completed_ids:
+                block_start = anchor + int(block_id) * width
+                validation = frame.loc[block_ids.eq(block_id)]
+                training = frame.loc[frame.target_end.lt(block_start)]
+                estimator = fit(training)
+                if estimator is None or validation.empty:
+                    continue
+                require((training.target_end < validation.origin_date.min()).all(), "calibration v2 inner target overlap")
+                raw = validation.raw_p_change.to_numpy(float)
+                platt = estimator.predict_proba(design(raw))[:, 1]
+                forecasts.append(np.column_stack([raw, .75 * raw + .25 * platt, platt]))
+                targets.append(validation.actual_change.to_numpy(int))
+                validation_dates.append(validation.target_end.max())
+            if not targets:
+                fitted["reason"] = "insufficient_past_validation_blocks"
+            else:
+                y = np.concatenate(targets)
+                p = np.clip(np.vstack(forecasts), 1e-6, 1 - 1e-6)
+                evidence.update({"calibration_validation_rows": len(y),
+                                 "calibration_validation_blocks": len(targets),
+                                 "calibration_validation_last_target": max(validation_dates).isoformat()})
+                if len(y) < minimum_validation or min(int(y.sum()), int((1 - y).sum())) < 3:
+                    fitted["reason"] = "insufficient_validation_rows_or_event_classes"
+                else:
+                    losses = np.mean(-np.where(y[:, None] == 1, np.log(p), np.log1p(-p)), axis=0)
+                    for field, value in zip(("identity", "shrunk", "platt"), losses, strict=True):
+                        evidence[f"calibration_{field}_log_loss"] = float(value)
+                    winner = int(np.flatnonzero(losses <= losses.min() + 1e-12)[0])
+                    if winner == 0:
+                        fitted["fallback"] = False
+                    else:
+                        estimator = fit(frame)
+                        if estimator is None:
+                            fitted["reason"] = "selected_calibrator_fit_unavailable"
+                        else:
+                            weight = .25 if winner == 1 else 1.0
+                            fitted.update({"estimator": estimator, "weight": weight, "fallback": False,
+                                           "method": "prequential_shrunk_platt_logit" if winner == 1 else "prequential_platt_logit"})
+                            evidence.update({"calibration_training_rows": len(frame),
+                                             "calibration_fit_last_target": frame.target_end.max().isoformat(),
+                                             "calibration_shrink_weight": weight})
+        if cache is not None:
+            cache[key] = fitted
+    metadata.update(fitted["metadata"])
+    if fitted["estimator"] is None:
+        value = raw_value
+    else:
+        clipped = np.clip(raw_value, 1e-6, 1 - 1e-6)
+        calibrated = float(fitted["estimator"].predict_proba([[np.log(clipped / (1 - clipped))]])[0, 1])
+        value = (1 - fitted["weight"]) * raw_value + fitted["weight"] * calibrated
+    return float(value), fitted["method"], fitted["fallback"], fitted["reason"]
+
+
+def transition_calibration_version(frame: pd.DataFrame) -> str:
+    """A generation cannot silently downgrade missing v2 metadata to v1."""
+    if "calibration_version" not in frame:
+        require(not any(key.startswith("calibration_selection_") for key in frame),
+                "transition calibration version missing alongside v2 metadata")
+        return "transition-calibration/1"
+    versions = set(frame.calibration_version.fillna("").astype(str))
+    require(len(versions) == 1 and versions.issubset({"transition-calibration/1", "transition-calibration/2"}),
+            "transition calibration version unknown or mixed")
+    if versions == {"transition-calibration/1"}:
+        require(not any(key.startswith("calibration_selection_") for key in frame),
+                "legacy calibration version conflicts with v2 metadata")
+    return next(iter(versions))
+
+
+def audit_transition_calibration_row(
+    row: pd.Series, history: pd.DataFrame, *, selection_end: object,
+    minimum_rows: int, cache: dict | None = None,
+) -> None:
+    """Verify transform and all v2 evidence against independently replayed fits."""
+    version = transition_calibration_version(pd.DataFrame([row]))
+    metadata: dict[str, Any] = {}
+    expected = transition_calibration(
+        float(row["raw_p_change"]), history, minimum_rows=minimum_rows,
+        version=version, origin=row["origin_date"], selection_end=selection_end,
+        metadata=metadata, cache=cache,
+    )
+    require(np.isclose(float(row["p_change"]), expected[0], atol=1e-12, rtol=0),
+            "transition calibration probability mismatch")
+    require(row["calibration_method"] == expected[1], "transition calibration method mismatch")
+    require(bool(row["calibration_fallback"]) == expected[2], "transition calibration fallback mismatch")
+    reason = "" if pd.isna(row["calibration_fallback_reason"]) else row["calibration_fallback_reason"]
+    require(reason == expected[3], "transition calibration reason mismatch")
+    for field, value in metadata.items():
+        require(field in row, f"transition calibration metadata missing: {field}")
+        actual = row[field]
+        if value is None:
+            valid = pd.isna(actual)
+        elif field in {"calibration_selection_as_of", "calibration_selection_end_exclusive", "calibration_fit_last_target", "calibration_validation_last_target"}:
+            valid = pd.to_datetime(actual, utc=True, errors="coerce") == pd.Timestamp(value)
+        elif isinstance(value, (int, float)):
+            valid = isinstance(actual, (int, float, np.number)) and not isinstance(actual, (bool, np.bool_)) and np.isclose(float(actual), value, atol=1e-12, rtol=0)
+        else:
+            valid = actual == value
+        require(bool(valid), f"transition calibration metadata mismatch: {field}")
+
+
 def transition_calibration(
     raw_probability: float,
     history: pd.DataFrame,
     *,
     minimum_rows: int,
+    version: str | None = None,
+    origin: object = None,
+    selection_end: object = "2023-01-01",
+    metadata: dict[str, Any] | None = None,
+    cache: dict | None = None,
 ) -> tuple[float, str, bool, str]:
-    """Independently rebuild the causal Platt calibration contract."""
+    """Replay v1 Platt or v2 past-block selection, preserving archived versions."""
 
     raw_value = float(raw_probability)
     require(np.isfinite(raw_value) and 0.0 < raw_value < 1.0,
             "transition raw probability is invalid")
+    require(version in {None, "transition-calibration/1", "transition-calibration/2"},
+            "unsupported transition calibration version")
+    if version == "transition-calibration/2":
+        return _transition_calibration_v2(
+            raw_value, history, minimum_rows=minimum_rows, origin=origin,
+            selection_end=selection_end, metadata={} if metadata is None else metadata,
+            cache=cache,
+        )
     if len(history) < minimum_rows:
         return (
             raw_value,
@@ -3148,39 +3335,23 @@ def audit_transition_candidate_forecasts(
     require((forecasts["predicted_change"]
              == (forecasts["p_change"] >= forecasts["threshold"])).all(),
             "transition candidate predicted flag mismatches threshold")
+    require(transition_calibration_version(forecasts) == transition_calibration_version(evaluated_predictions),
+            "transition candidate/evaluated calibration versions differ")
+    calibration_cache: dict = {}
     for _, row in forecasts.iterrows():
         history = evaluated_predictions.loc[
             evaluated_predictions["horizon"].eq(int(row["horizon"]))
             & evaluated_predictions["model"].eq(str(row["model"]))
             & evaluated_predictions["evaluation_split"].eq("selection")
         ]
-        (
-            expected_probability,
-            expected_calibration_method,
-            expected_calibration_fallback,
-            expected_calibration_reason,
-        ) = transition_calibration(
-            float(row["raw_p_change"]),
-            history,
-            minimum_rows=minimum_inner_predictions,
+        audit_transition_calibration_row(
+            row, history, selection_end=payload["model"]["transition_selection_end"],
+            minimum_rows=minimum_inner_predictions, cache=calibration_cache,
         )
         expected_threshold, expected_method = transition_threshold(
             history, minimum_rows=minimum_inner_predictions
         )
         context = f"candidate {row['horizon']}w/{row['model']}"
-        require(np.isclose(float(row["p_change"]), expected_probability,
-                           atol=1e-12),
-                f"{context} calibration probability mismatch")
-        require(str(row["calibration_method"]) == expected_calibration_method,
-                f"{context} calibration method mismatch")
-        require(bool(row["calibration_fallback"])
-                == expected_calibration_fallback,
-                f"{context} calibration fallback mismatch")
-        actual_reason = "" if pd.isna(row["calibration_fallback_reason"]) else str(
-            row["calibration_fallback_reason"]
-        )
-        require(actual_reason == expected_calibration_reason,
-                f"{context} calibration reason mismatch")
         require(np.isclose(float(row["threshold"]), expected_threshold, atol=1e-12),
                 f"{context} threshold mismatch")
         require(str(row["threshold_method"]) == expected_method,
@@ -3553,6 +3724,9 @@ def audit_transition_outputs(
             atol=1e-12,
         ), "joint survival OOS raw probability identity mismatch")
 
+    require(transition_calibration_version(predictions) == transition_calibration_version(forecasts),
+            "transition OOS/prospective calibration versions differ")
+    calibration_cache: dict = {}
     for _, row in predictions.iterrows():
         history = predictions.loc[
             predictions["horizon"].eq(int(row["horizon"]))
@@ -3560,38 +3734,27 @@ def audit_transition_outputs(
             & predictions["evaluation_split"].eq("selection")
             & (predictions["target_end"] < pd.Timestamp(row["origin_date"]))
         ]
-        (
-            expected_probability,
-            expected_calibration_method,
-            expected_calibration_fallback,
-            expected_calibration_reason,
-        ) = transition_calibration(
-            float(row["raw_p_change"]),
-            history,
-            minimum_rows=minimum_inner_predictions,
+        audit_transition_calibration_row(
+            row, history, selection_end=cutoff,
+            minimum_rows=minimum_inner_predictions, cache=calibration_cache,
         )
-        calibration_context = (
-            f"{row['horizon']}w/{row['model']}/{row['origin_date']}"
-        )
-        require(np.isclose(float(row["p_change"]), expected_probability,
-                           atol=1e-12),
-                f"prequential calibration probability mismatch at {calibration_context}")
-        require(str(row["calibration_method"]) == expected_calibration_method,
-                f"prequential calibration method mismatch at {calibration_context}")
-        require(bool(row["calibration_fallback"])
-                == expected_calibration_fallback,
-                f"prequential calibration fallback mismatch at {calibration_context}")
-        actual_reason = "" if pd.isna(row["calibration_fallback_reason"]) else str(
-            row["calibration_fallback_reason"]
-        )
-        require(actual_reason == expected_calibration_reason,
-                f"prequential calibration reason mismatch at {calibration_context}")
         expected_threshold, expected_method = transition_threshold(
             history,
             minimum_rows=minimum_inner_predictions,
         )
         require(np.isclose(float(row["threshold"]), expected_threshold, atol=1e-12), f"prequential threshold mismatch at {row['horizon']}w/{row['model']}/{row['origin_date']}")
         require(str(row["threshold_method"]) == expected_method, f"prequential threshold method mismatch at {row['horizon']}w/{row['model']}/{row['origin_date']}")
+
+    for _, row in forecasts.iterrows():
+        history = predictions.loc[
+            predictions.horizon.eq(int(row["horizon"]))
+            & predictions.model.eq(str(row["model"]))
+            & predictions.evaluation_split.eq("selection")
+        ]
+        audit_transition_calibration_row(
+            row, history, selection_end=cutoff,
+            minimum_rows=minimum_inner_predictions, cache=calibration_cache,
+        )
 
     evaluated_keys = set(zip(predictions["horizon"].astype(int), predictions["origin_date"], strict=True))
     prospective_keys = set(zip(forecasts["horizon"].astype(int), forecasts["origin_date"], strict=True))
@@ -3880,7 +4043,9 @@ def _audit_v5_file_contracts(
             file_sha256(path) == str(raw["sha256"]),
             f"{row_context} SHA-256 mismatch",
         )
-        frame = pd.read_csv(path)
+        # Canonical v5 CSVs retain float64 precision with %.17g. The default
+        # parser can shift final bits and change an otherwise tied model rank.
+        frame = pd.read_csv(path, float_precision="round_trip")
         require(
             not frame.empty or int(raw["row_count"]) == 0,
             f"{row_context} CSV is empty",
@@ -4935,7 +5100,19 @@ def _audit_v5_execution_parameters(payload: Mapping[str, Any]) -> dict[str, Any]
             int(parameters[field]) == expected_minimum,
             f"{context} {field} mismatch",
         )
+    directional = payload.get("model", {}).get("directional_transition", {})
+    require(isinstance(directional, Mapping), f"{context} directional transition invalid")
+    coherence_version = directional.get("coherence_version")
+    require(
+        coherence_version is None
+        or coherence_version == "canonical-one-week-joint-first-destination/2",
+        f"{context} coherence version invalid",
+    )
+    # Legacy standard generations evaluated 60 origins per split. Coherent v2
+    # binds every published one-week forecast to its directional reconstruction.
     expected_maximum = {"quick": 3, "standard": 60, "full": None}[profile]
+    if profile == "standard" and coherence_version is not None:
+        expected_maximum = None
     for field in (
         "directional_maximum_selection_origins",
         "directional_maximum_diagnostic_origins",
@@ -5718,11 +5895,21 @@ def _audit_v5_weekly_directional(
     payload: Mapping[str, Any],
     frames: Mapping[str, pd.DataFrame],
     membership: pd.DataFrame,
-) -> dict[str, int]:
-    """Bind published weekly directions to the selected sidecar or PIT fallback."""
+) -> dict[str, int | str]:
+    """Independently bind raw directions; replay the declared v2 projection."""
+
+    from regime_lab.analysis.directional_coherence import (
+        COHERENCE_VERSION,
+        upgrade_directional_payload,
+    )
 
     require_columns(membership, {"date", "state"}, "v5 directional membership")
-    champions = payload["model"]["directional_transition"]["champions"]
+    directional = payload["model"]["directional_transition"]
+    version = directional.get("coherence_version")
+    require(version in (None, COHERENCE_VERSION), "v5 weekly directional coherence version invalid")
+    coherent = version == COHERENCE_VERSION
+    source_field = "directional_risk_raw" if coherent else "directional_risk"
+    champions = directional["champions"]
     lookup: dict[tuple[str, int], Mapping[str, object]] = {}
     for path in (
         "directional-oos-predictions.csv",
@@ -5754,9 +5941,10 @@ def _audit_v5_weekly_directional(
         origin = str(week["date"])
         current_state = str(week["current"]["state"])
         cutoff = week.get("data_as_of", origin)
+        require(source_field in week, f"v5 weekly[{week_index}] missing {source_field}")
         for horizon in V5_OUTCOME_HORIZONS:
-            context = f"v5 weekly[{week_index}].directional_risk.{horizon}w"
-            published = week["directional_risk"][f"{horizon}w"]
+            context = f"v5 weekly[{week_index}].{source_field}.{horizon}w"
+            published = week[source_field][f"{horizon}w"]
             source = lookup.get((origin, horizon))
             if source is None:
                 expected_model = "markov_first_passage"
@@ -5793,7 +5981,43 @@ def _audit_v5_weekly_directional(
                     ),
                     f"{context} {state} destination/source mismatch",
                 )
-    return {"matched_rows": matched, "fallback_rows": fallback}
+    summary: dict[str, int | str] = {"matched_rows": matched, "fallback_rows": fallback}
+    if coherent:
+        # validate_dashboard_payload already replays the stored coherence
+        # evidence. Bind the displayed rows too: evidence replay starts from
+        # raw rows and therefore cannot detect tampered projected rows alone.
+        # This is production-contract replay, not an independent projection.
+        reconstructed = upgrade_directional_payload(payload)
+        for index, (week, expected_week) in enumerate(
+            zip(payload["weekly"], reconstructed["weekly"], strict=True)
+        ):
+            for horizon in V5_OUTCOME_HORIZONS:
+                key = f"{horizon}w"
+                context = f"v5 weekly[{index}].directional_risk.{key} projection"
+                actual = week["directional_risk"][key]
+                expected = expected_week["directional_risk"][key]
+                require(set(actual) == set(expected), f"{context} fields mismatch")
+                for field, value in expected.items():
+                    if field == "first_destination":
+                        require(set(actual[field]) == set(value), f"{context} destination fields mismatch")
+                        for state, probability in value.items():
+                            require(
+                                np.isclose(float(actual[field][state]), probability, atol=5e-8, rtol=0),
+                                f"{context} {state} mismatch",
+                            )
+                    elif isinstance(value, (int, float)) and not isinstance(value, bool):
+                        require(
+                            np.isclose(float(actual[field]), value, atol=5e-8, rtol=0),
+                            f"{context} {field} mismatch",
+                        )
+                    else:
+                        require(actual[field] == value, f"{context} {field} mismatch")
+        summary.update({
+            "source_binding": "raw_directional_risk",
+            "projection_validation": "production_contract_replay",
+            "projection_rows": len(payload["weekly"]) * len(V5_OUTCOME_HORIZONS),
+        })
+    return summary
 
 
 def _v5_conditional_point_metrics(
@@ -7801,6 +8025,7 @@ def _recompute_v5_duration(
     states: Sequence[str],
     *,
     as_of: str,
+    support_version: str | None = None,
 ) -> dict[str, Any]:
     spells = _v5_duration_spells(states)
     current = spells[-1]
@@ -7820,10 +8045,26 @@ def _recompute_v5_duration(
         "minimum_completed_spells": 5,
         "restriction_weeks": 52,
     }
-    if completed < 5:
+    tail_insufficient = False
+    if support_version is not None:
+        require(support_version == "regime-duration-support/2", "v5 duration support version invalid")
+        completed_at_age = sum(bool(s["event_observed"]) and int(s["duration_weeks"]) >= elapsed for s in selected)
+        maximum = max(int(s["duration_weeks"]) for s in selected)
+        base["support"] = {
+            "schema_version": support_version,
+            "completed_at_current_age": completed_at_age,
+            "at_risk_at_current_age": sum(int(s["duration_weeks"]) >= elapsed for s in selected),
+            "minimum_completed_at_current_age": 3,
+            "maximum_observed_duration_weeks": maximum,
+            "supported_remaining_weeks": max(0, maximum - (elapsed - 1)),
+            "horizon_at_risk": {f"{h}w": sum(int(s["duration_weeks"]) >= elapsed - 1 + h for s in selected) for h in (4, 13)},
+            "tail_extrapolation": False,
+        }
+        tail_insufficient = completed_at_age < 3
+    if completed < 5 or tail_insufficient:
         return {
             **base,
-            "status": "insufficient_history",
+            "status": "insufficient_history" if completed < 5 else "insufficient_tail_support",
             "conditional_survival": {"4w": None, "13w": None},
             "departure_probability": {"4w": None, "13w": None},
             "median_remaining_weeks": None,
@@ -8092,7 +8333,16 @@ def _audit_v5_duration(
         last_position = eligible_positions[-1]
         as_of = local_dates.iloc[last_position].isoformat()
         require(as_of == str(week["date"]), f"{context} as-of evidence mismatch")
-        expected = _recompute_v5_duration(states[: last_position + 1], as_of=as_of)
+        support = duration.get("support")
+        if support is not None:
+            require(isinstance(support, Mapping), f"{context}.support must be an object")
+            require(support.get("schema_version") == "regime-duration-support/2", f"{context}.support version invalid")
+        expected = _recompute_v5_duration(
+            states[: last_position + 1], as_of=as_of,
+            support_version=support["schema_version"] if support is not None else None,
+        )
+        if support is not None:
+            require(dict(support) == expected["support"], f"{context}.support differs from completed spells")
         for field in (
             "as_of",
             "method",

@@ -28,7 +28,8 @@ function node(tag){
   };return n;
 }
 context.document={createElement:node};
-const container=node('div');api.dom['research-upgrades']=container;
+api.dom['research-upgrades']=node('div');
+const container=node('div');api.dom['forecast-alert-research']=container;
 const rows=[
  {target:'risk_worsening',annual_false_alarm_budget:4,score:'binary_xgboost',
   retrospective_diagnostic:{recall:.11}},

@@ -1566,9 +1566,10 @@ def test_label_copy_forecast_disclosure_and_model_section_stay_clear() -> None:
     script = JS_PATH.read_text(encoding="utf-8")
     for element_id in ("forecast-origin-at", "forecast-decision-at", "forecast-target-at", "forecast-remaining-horizon", "model-quality-brief", "execution-brief"):
         assert f'id="{element_id}"' in document
-    assert '<details class="semantic-hint">' in document
+    assert '<details id="interpretation-methods"' in document
+    assert '<details class="semantic-hint">' not in document
     assert 'id="research-methods"' in document
-    assert document.index('id="forecast-window-section"') > document.index('id="research-methods"')
+    assert document.index('id="forecast-window-section"') < document.index('id="overview"')
     assert 'classList.toggle("is-expired-forecast", policy.expiredLatest)' in script
     assert "대상 기간 종료" in script
     assert "window.matchMedia" in script
@@ -1589,7 +1590,7 @@ def test_results_first_layout_keeps_decision_flow_and_wide_history() -> None:
     assert "function scrollChartDateIntoView" in script
     assert "requestAnimationFrame(() => scrollChartDateIntoView(state.chartPinnedDate))" in script
     assert ".overview-section .decision-pipeline" in styles
-    assert "grid-template-columns: minmax(220px, 0.9fr)" in styles
+    assert "grid-template-columns: minmax(0, 1fr) minmax(0, 1fr)" in styles
     assert ".decision-transition" in styles
     assert "#history.analysis-grid" in styles
     assert ".factor-list {\n  margin-top: 16px;\n  grid-template-columns: repeat(4" in styles
@@ -2999,7 +3000,7 @@ def test_forecast_rerender_does_not_touch_observed_context_surfaces() -> None:
     horizon_body = script[horizon_start:next_function]
     assert "oneWeekDepartureProbability(week, selectedForecast)" in transition_body
     assert "renderTransitionHorizons(week)" in transition_body
-    assert "for (const horizon of [4, 13])" in horizon_body
+    assert "INSIGHTS.transitionOutlook(week)" in horizon_body
     assert "forecastForWeek" not in horizon_body
 
 
@@ -3602,7 +3603,7 @@ process.stdout.write(JSON.stringify(result));
 
 def test_decision_action_and_shadow_are_visible_before_conditional_results() -> None:
     document = HTML_PATH.read_text(encoding="utf-8")
-    ids = ["next-regime-card", "decision-action-card", "decision-shadow-block", "conditional-stats", "research-methods"]
+    ids = ["next-regime-card", "transition-outlook", "decision-shadow-block", "decision-action-card", "conditional-stats", "research-methods"]
     positions = [document.index(f'id="{value}"') for value in ids]
     assert positions == sorted(positions)
     for element_id in ("holdings-calculator", "conditional-weighting", "conditional-cell-detail"):
@@ -3705,7 +3706,7 @@ def test_operations_are_collapsed_below_results_without_warning_surfaces() -> No
     document = HTML_PATH.read_text(encoding="utf-8")
     methods = document.index('id="research-methods"')
     assert document.index('id="data-health"') > methods
-    assert document.index('id="forecast-window-section"') > methods
+    assert document.index('id="forecast-window-section"') < document.index('id="overview"')
     assert document.index('id="research-evidence"') > methods
     assert 'id="research-methods" class="research-methods card" open' not in document
     assert 'id="data-health" class="operations-section"' in document
@@ -3718,7 +3719,7 @@ def test_default_canvas_uses_compact_copy_and_one_operations_disclosure() -> Non
     assert document.count('class="eyebrow"') == 1
     assert 'class="source-links"' in document
     assert 'id="execution-brief"' in document
-    assert 'class="interpretation-notes"' in document
+    assert 'class="research-methods-body interpretation-notes"' in document
 
 
 def test_h10_source_keeps_rights_contract_and_official_link_without_rights_copy() -> None:
@@ -3793,10 +3794,11 @@ def test_decision_first_views_and_investment_charts_are_explicit() -> None:
     script = JS_PATH.read_text(encoding="utf-8") + (WEB / "insights.js").read_text(encoding="utf-8")
     styles = CSS_PATH.read_text(encoding="utf-8") + (WEB / "insights.css").read_text(encoding="utf-8")
     for view, label in (
-        ("execution", "결정"),
-        ("performance", "성과"),
+        ("execution", "국면"),
+        ("transition", "전환·경보"),
+        ("performance", "배분·성과"),
         ("assets", "자산"),
-        ("model", "모델"),
+        ("model", "모델 검증"),
     ):
         assert f'data-dashboard-view="{view}"' in document
         assert f">{label}<" in document
@@ -3821,7 +3823,7 @@ def test_decision_first_views_and_investment_charts_are_explicit() -> None:
     assert "text-wrap: balance" in styles
 
 
-def test_default_execution_view_has_regime_forecast_allocation_flow_in_order() -> None:
+def test_default_forecast_view_precedes_separate_allocation_view() -> None:
     document = HTML_PATH.read_text(encoding="utf-8")
     styles = CSS_PATH.read_text(encoding="utf-8") + (WEB / "insights.css").read_text(encoding="utf-8")
     stage_positions = [
@@ -3830,9 +3832,11 @@ def test_default_execution_view_has_regime_forecast_allocation_flow_in_order() -
         document.index('data-flow-stage="allocation"'),
     ]
     assert stage_positions == sorted(stage_positions)
-    for index, heading in enumerate(("국면 판단", "모델 예측", "자산배분"), start=1):
+    for index, heading in enumerate(("국면 판단", "모델 예측"), start=1):
         assert f'<span class="decision-stage-index" aria-hidden="true">{index}</span>' in document
         assert f"<strong>{heading}</strong>" in document
+    assert document.index('id="decision-shadow-block"') < document.index('id="decision-action-card"')
+    assert document.index('id="shared-date-controls"') < document.index('id="overview"')
     assert 'class="hero-grid decision-pipeline"' in document
     assert "order: -1" not in styles
     assert "order: -2" not in styles

@@ -10,6 +10,7 @@ import pandas as pd
 from sklearn.metrics import average_precision_score
 
 from regime_lab.schema import STATE_ORDER
+from regime_lab.analysis.causal_calibration import validate_frozen_splits
 from regime_lab.analysis.validation import (
     _holm_adjusted_pvalues, _moving_block_bootstrap_pvalues,
 )
@@ -39,6 +40,7 @@ def validate_forecasts(frame: pd.DataFrame, *, require_training_boundary: bool) 
         raise ValueError("unknown current or target state")
     if not result.evaluation_split.isin(["selection", "holdout"]).all():
         raise ValueError("unknown evaluation split")
+    validate_frozen_splits(result)
     probability = result[PROBABILITIES].to_numpy(float)
     if not np.isfinite(probability).all() or (probability < 0).any() or (probability > 1).any():
         raise ValueError("non-finite or out-of-range probabilities")
@@ -89,6 +91,7 @@ def match_forecasts(baseline: pd.DataFrame, candidates: pd.DataFrame,
 
 
 def per_week_scores(frame: pd.DataFrame) -> pd.DataFrame:
+    validate_frozen_splits(frame)
     result = frame.copy()
     p = result[PROBABILITIES].to_numpy(float)
     actual = np.array([STATE_ORDER.index(state) for state in result.actual])
@@ -114,6 +117,7 @@ def per_week_scores(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 def summarize_scores(scored: pd.DataFrame) -> pd.DataFrame:
+    validate_frozen_splits(scored)
     rows = []
     masks = {
         "selection_2016_2022": scored.evaluation_split.eq("selection"),
@@ -145,6 +149,7 @@ def summarize_scores(scored: pd.DataFrame) -> pd.DataFrame:
 def paired_comparisons(scored: pd.DataFrame, candidates: list[str], baselines: list[str],
                        *, resamples: int = 4999, seed: int = 20260907) -> pd.DataFrame:
     """Paired circular 13-week bootstrap; Holm covers all new candidates."""
+    validate_frozen_splits(scored)
     rows = []
     for split, group in scored.groupby("evaluation_split"):
         tables = {model: part.set_index("origin_date").sort_index() for model, part in group.groupby("model")}

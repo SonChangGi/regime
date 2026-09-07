@@ -1,7 +1,7 @@
-/* Three-step investment decision surface. */
+/* Current state followed by the official one-week forecast. */
 .overview-section .decision-pipeline {
   display: grid;
-  grid-template-columns: minmax(220px, 0.9fr) minmax(240px, 1fr) minmax(360px, 1.45fr);
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   align-items: stretch;
   gap: 14px;
 }
@@ -132,9 +132,6 @@
   font-size: 14px;
 }
 
-.decision-transition .transition-horizon-bars {
-  display: none !important;
-}
 
 .decision-stage-allocation .decision-action-heading {
   margin-bottom: 12px;
@@ -620,3 +617,75 @@ html[data-theme="dark"] {
 
 .research-shortcut { width: fit-content; min-height: 40px; padding: 5px 0; border: 0; background: transparent; color: var(--brand); font-size: 12px; font-weight: 650; cursor: pointer; }
 .allocation-research-panel { scroll-margin-top: 120px; }
+
+/* Global origin navigation stays reachable from every forecast view. */
+.shared-date-controls { display: flex; flex-wrap: wrap; gap: 12px; margin: 0; padding: 14px 16px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+.shared-date-controls .date-controls { display: flex; align-items: end; gap: 10px; flex-wrap: wrap; width: 100%; }
+.shared-date-controls .field-group { display: grid; gap: 5px; min-width: 145px; }
+.shared-date-controls .date-field { display: grid !important; }
+.shared-date-controls .latest-control { margin-left: auto; }
+.shared-date-controls .control-action-group { margin: 0; }
+.shared-date-controls label { color: var(--ink-soft); font-size: 11px; }
+.shared-date-controls input, .shared-date-controls select { min-height: 40px; max-width: 100%; }
+#forecast-window-section { padding: 0 4px; margin: -4px 0 0; border: 0; }
+#forecast-window-title { font-size: 12px; margin: 0 0 8px; color: var(--ink-soft); }
+#forecast-window-section .forecast-timing { display: grid; grid-template-columns: 1.1fr 1.4fr 1.1fr 1fr; gap: 12px; margin: 0; padding: 0; background: none; }
+#forecast-window-section .forecast-timing > div { padding: 0; border: 0; background: none; }
+#forecast-window-section .forecast-timing dt { font-size: 10px; color: var(--ink-soft); }
+#forecast-window-section .forecast-timing dd { margin: 3px 0 0; font-size: 12px; overflow-wrap: anywhere; }
+#latest-publication-info { margin: 8px 0 0; font-size: 10px; }
+.overview-section .decision-pipeline > .decision-stage::after { display: none; }
+.next-direction-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 14px; }
+.forecast-direction { padding: 9px 10px; display: grid; gap: 5px; border: 1px solid var(--line); border-radius: 7px; }
+.forecast-direction span { font-size: 11px; color: var(--ink-soft); }
+.forecast-direction strong { font-family: var(--mono); font-size: 15px; }
+.forecast-direction.worsening { border-bottom: 2px solid var(--risk-off-mark, var(--risk-off)); }
+.forecast-direction.recovery { border-bottom: 2px solid var(--risk-on-mark, var(--risk-on)); }
+.transition-outlook { padding: 20px; }
+.forecast-outlook-grid { display: grid; grid-template-columns: 1.3fr 1fr; gap: 24px; align-items: start; }
+#transition-horizon-bars:not([hidden]) { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; margin: 0; }
+#transition-horizon-bars .transition-horizon-row { display: block; padding: 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+#transition-horizon-bars .transition-horizon-heading { display: flex; justify-content: space-between; gap: 12px; font-size: 12px; }
+#transition-horizon-bars .transition-horizon-heading strong { font-size: 19px; font-family: var(--mono); color: var(--ink-strong); }
+#transition-horizon-bars .transition-horizon-meter { display: block; height: 5px; margin: 10px 0; overflow: hidden; background: var(--line); border-radius: 4px; }
+#transition-horizon-bars .transition-horizon-meter > span { display: block; height: 100%; background: var(--brand); }
+.horizon-comparison { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 6px; font-size: 11px; }
+.horizon-comparison > :last-child { color: var(--ink-soft); }
+.first-destination-list { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 13px 0 0; padding-top: 10px; border-top: 1px solid var(--line); }
+.first-destination-list dt { color: var(--ink-soft); font-size: 10px; }
+.first-destination-list dd { margin: 4px 0 0; font-family: var(--mono); font-size: 13px; }
+.horizon-model-note, .forecast-definition { color: var(--ink-soft); font-size: 11px; line-height: 1.6; margin: 12px 0 0; }
+.forecast-outlook-grid #duration-context-card { padding: 0; border: 0; box-shadow: none; background: transparent; }
+#duration-context-card .metric-list > div { padding: 9px 0; }
+#duration-estimate-note { font-size: 11px; line-height: 1.6; margin: 12px 0; }
+.duration-baseline small { display: block; grid-column: 1 / -1; color: var(--ink-soft); font-size: 10px; }
+.multistate-forecast { border-top: 1px solid var(--line); margin-top: 18px; padding-top: 14px; }
+.multistate-forecast h3 { font-size: 14px; }
+#forecast-alert-research { padding: 20px; }
+#decision-shadow-block > #decision-action-card { margin-bottom: 22px; width: 100%; }
+#decision-shadow-block > #decision-action-card::after { display: none; }
+@media (max-width: 760px) {
+  #forecast-window-section .forecast-timing { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .forecast-outlook-grid { grid-template-columns: minmax(0, 1fr); gap: 22px; }
+  .shared-date-controls .latest-control { margin-left: 0; }
+  .shared-date-controls .field-group { flex: 1 1 140px; min-width: 0; }
+  .shared-date-controls .control-action-group { flex: 0 0 auto; }
+  .transition-outlook { padding: 16px; }
+}
+@media (max-width: 540px) {
+  .overview-section .decision-pipeline { grid-template-columns: minmax(0, 1fr); }
+  .first-destination-list { gap: 6px; }
+  .next-direction-summary { margin-top: 12px; }
+}
+
+.forecast-research-model-field { display: grid; gap: 6px; min-width: 0; color: var(--ink-soft); font-size: 11px; }
+.forecast-research-model-field select { max-width: 100%; min-height: 40px; }
+.multistate-forecast .research-next-state { margin: 16px 0; padding: 12px; background: var(--surface-soft); border-radius: 8px; }
+.multistate-forecast h4 { margin: 20px 0 8px; font-size: 13px; }
+.multistate-forecast .research-scope-heading { flex-wrap: wrap; }
+@media(max-width: 540px) { .forecast-research-model-field { width: 100%; } }
+.shared-date-controls { scroll-margin-top: 128px; }
+@media (max-width: 760px) {
+  .section-nav { display: flex; flex-wrap: nowrap; gap: 4px; overflow-x: auto; }
+  .section-nav [data-dashboard-view] { flex: 0 0 auto; padding: 0 10px; white-space: nowrap; }
+}

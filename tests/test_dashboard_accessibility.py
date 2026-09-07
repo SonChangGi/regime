@@ -2,6 +2,7 @@
 
 import re
 import json
+from html.parser import HTMLParser
 from pathlib import Path
 
 
@@ -9,6 +10,41 @@ ROOT = Path(__file__).resolve().parents[1]
 HTML = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
 CSS = (ROOT / "web" / "styles.css").read_text(encoding="utf-8") + (ROOT / "web" / "insights.css").read_text(encoding="utf-8")
 JS = (ROOT / "web" / "app.js").read_text(encoding="utf-8") + (ROOT / "web" / "insights.js").read_text(encoding="utf-8")
+
+
+def test_methodology_is_one_closed_disclosure_after_results_with_named_controls_retained():
+    class Structure(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.stack = []
+            self.elements = {}
+
+        def handle_starttag(self, tag, attrs):
+            attrs = dict(attrs)
+            element_id = attrs.get("id")
+            if element_id:
+                self.elements[element_id] = (tag, attrs, [item[1] for item in self.stack])
+            if tag not in {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"}:
+                self.stack.append((tag, element_id))
+
+        def handle_endtag(self, tag):
+            for index in range(len(self.stack) - 1, -1, -1):
+                if self.stack[index][0] == tag:
+                    self.stack = self.stack[:index]
+                    break
+
+    structure = Structure()
+    structure.feed(HTML)
+    tag, attrs, parents = structure.elements["interpretation-methods"]
+    assert tag == "details" and "open" not in attrs and "dashboard" in parents
+    assert HTML.count("<summary>해석·계산 기준</summary>") == 1
+    assert HTML.index('id="interpretation-methods"') > HTML.index('id="data-health"')
+    for element_id in ("membership-definition", "duration-estimate-note", "forecast-method-notes"):
+        assert "interpretation-methods" in structure.elements[element_id][2]
+    for element_id in ("forecast-origin-at", "forecast-target-at", "latest-week", "transition-horizon-bars", "multistate-forecast", "duration-context"):
+        assert "interpretation-methods" not in structure.elements[element_id][2]
+    assert "종료시점 예측구간" not in HTML[:HTML.index('id="interpretation-methods"')]
+    assert "공식 모델은 별도 유지" not in JS
 
 
 def test_document_has_language_landmarks_and_skip_link() -> None:
@@ -97,7 +133,8 @@ def test_visuals_have_semantic_fallbacks_and_non_color_encoding() -> None:
     assert 'createElement("td", null, formatPercent(row.positive_rate))' in JS
     assert "선정 구간" in HTML and "2023년 이후 진단" in HTML
     assert 'setText(dom["transition-value-label"], "1주 이탈")' in JS
-    assert 'createElement("span", null, `${horizon}주 이탈`)' in JS
+    assert 'createElement("span", null, `${horizon}주 내 이탈 · ${formatDate(result.target, false)}까지`)' in JS
+    assert '`${horizon}주 국면 이탈 확률 ${formatPercent(value)}`' in JS
     assert 'class="diagnostic-label"' not in HTML
     assert "diagnostic-label" not in JS
     assert "stroke-dasharray" in CSS

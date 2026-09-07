@@ -1058,6 +1058,82 @@ def test_v5_weekly_directional_audit_rejects_published_tamper(field: str) -> Non
         audit_outputs._audit_v5_weekly_directional(payload, frames, membership)
 
 
+def _v5_coherent_weekly_binding_fixture():
+    from regime_lab.analysis.directional_coherence import upgrade_directional_payload
+
+    payload, frames, membership = _v5_weekly_directional_binding_fixture()
+    payload["weekly"][0]["next_week"] = {
+        "model": "canonical_fixture",
+        "probabilities": {"risk_on": 0.7, "transition": 0.25, "risk_off": 0.05},
+    }
+    return upgrade_directional_payload(payload), frames, membership
+
+
+def test_v5_coherent_weekly_binds_raw_sources_and_projected_rows():
+    payload, frames, membership = _v5_coherent_weekly_binding_fixture()
+    week = payload["weekly"][0]
+    assert week["directional_risk_raw"]["1w"]["model"] == "empirical_first_passage"
+    assert week["directional_risk"]["1w"]["model"] == "canonical_fixture"
+    assert week["directional_risk"]["4w"]["first_destination"]["transition"] == 0.25
+
+    summary = audit_outputs._audit_v5_weekly_directional(payload, frames, membership)
+
+    assert summary == {
+        "matched_rows": 3, "fallback_rows": 0,
+        "source_binding": "raw_directional_risk",
+        "projection_validation": "production_contract_replay", "projection_rows": 3,
+    }
+
+
+@pytest.mark.parametrize("field", ["model", "probability", "no_departure", "first_destination"])
+@pytest.mark.parametrize("horizon", ["1w", "4w", "13w"])
+def test_v5_coherent_weekly_rejects_projected_tamper_with_valid_evidence(field, horizon):
+    from regime_lab.contract_v5 import _validate_directional_coherence_evidence
+
+    payload, frames, membership = _v5_coherent_weekly_binding_fixture()
+    row = payload["weekly"][0]["directional_risk"][horizon]
+    if field == "model":
+        row[field] = "empirical_first_passage"
+        if horizon != "1w":
+            row[field] = "forged_model"
+    elif field == "first_destination":
+        row[field]["transition"] -= 0.01
+        row[field]["risk_off"] += 0.01
+    else:
+        row[field] += 0.01
+    # Replaying evidence alone ignores these displayed-row changes.
+    _validate_directional_coherence_evidence(payload)
+    with pytest.raises(audit_outputs.AuditFailure, match="projection.*mismatch"):
+        audit_outputs._audit_v5_weekly_directional(payload, frames, membership)
+
+
+def test_v5_coherent_weekly_rejects_raw_tamper_with_rebuilt_projection_and_evidence():
+    from regime_lab.analysis.directional_coherence import upgrade_directional_payload
+    from regime_lab.contract_v5 import _validate_directional_coherence_evidence
+
+    payload, frames, membership = _v5_coherent_weekly_binding_fixture()
+    row = payload["weekly"][0]["directional_risk_raw"]["4w"]
+    row["first_destination"].update(transition=0.15, risk_off=0.15)
+    payload = upgrade_directional_payload(payload)
+    _validate_directional_coherence_evidence(payload)
+    with pytest.raises(audit_outputs.AuditFailure, match="directional_risk_raw.*source mismatch"):
+        audit_outputs._audit_v5_weekly_directional(payload, frames, membership)
+
+
+def test_v5_coherent_weekly_requires_raw_rows():
+    payload, frames, membership = _v5_coherent_weekly_binding_fixture()
+    del payload["weekly"][0]["directional_risk_raw"]
+    with pytest.raises(audit_outputs.AuditFailure, match="missing directional_risk_raw"):
+        audit_outputs._audit_v5_weekly_directional(payload, frames, membership)
+
+
+def test_v5_weekly_directional_rejects_unknown_coherence_version():
+    payload, frames, membership = _v5_coherent_weekly_binding_fixture()
+    payload["model"]["directional_transition"]["coherence_version"] = "unknown"
+    with pytest.raises(audit_outputs.AuditFailure, match="coherence version invalid"):
+        audit_outputs._audit_v5_weekly_directional(payload, frames, membership)
+
+
 @pytest.mark.parametrize(
     ("field", "replacement"),
     [
@@ -1600,6 +1676,27 @@ def test_v5_duration_audit_rejects_tampered_point_estimate() -> None:
         audit_outputs._audit_v5_duration(payload, membership, execution)
 
 
+@pytest.mark.parametrize("elapsed,expected_status", [(3, "ok"), (6, "insufficient_tail_support")])
+def test_v5_duration_support_v2_is_recomputed_from_completed_spells(elapsed, expected_status):
+    from regime_lab.analysis.duration import duration_context
+
+    states = []
+    for length in (2, 3, 4, 5, 6):
+        states.extend(["risk_on"] * length + ["transition"])
+    states.extend(["risk_on"] * elapsed)
+    dates = pd.date_range("2023-01-06T21:00:00Z", periods=len(states), freq="7D")
+    membership = pd.DataFrame({"date": dates, "state": states})
+    value = duration_context(pd.Series(states, index=dates), bootstrap_resamples=7)
+    payload = {"weekly": [{"date": dates[-1].date().isoformat(),
+        "data_as_of": dates[-1].isoformat(), "current": {"state": "risk_on"},
+        "duration_context": value}]}
+    assert value["status"] == expected_status
+    audit_outputs._audit_v5_duration(payload, membership, _v5_execution_parameters())
+    value["support"]["completed_at_current_age"] += 1
+    with pytest.raises(audit_outputs.AuditFailure, match="support differs"):
+        audit_outputs._audit_v5_duration(payload, membership, _v5_execution_parameters())
+
+
 def test_v5_duration_audit_links_latest_resamples_to_execution_parameters() -> None:
     payload, membership, execution = _v5_duration_audit_fixture()
     duration = payload["weekly"][0]["duration_context"]
@@ -1927,6 +2024,40 @@ def test_v5_execution_parameters_reject_rehashed_override_tamper() -> None:
         audit_outputs._audit_v5_execution_parameters(payload)
 
 
+@pytest.mark.parametrize("profile", ["quick", "standard", "full"])
+@pytest.mark.parametrize("coherent", [False, True])
+def test_v5_execution_parameters_accept_versioned_origin_budgets(profile, coherent):
+    parameters = _v5_execution_parameters(profile=profile)
+    model = {"profile": profile, "execution_parameters": parameters}
+    if coherent:
+        model["directional_transition"] = {"coherence_version": "canonical-one-week-joint-first-destination/2"}
+        if profile == "standard":
+            for field in ("directional_maximum_selection_origins", "directional_maximum_diagnostic_origins"):
+                parameters[field] = None
+    parameters["sha256"] = audit_outputs.canonical_json_sha256({k: v for k, v in parameters.items() if k != "sha256"})
+    assert audit_outputs._audit_v5_execution_parameters({"model": model}) == parameters
+
+
+@pytest.mark.parametrize("field", ["directional_maximum_selection_origins", "directional_maximum_diagnostic_origins"])
+def test_v5_coherent_standard_rejects_rehashed_legacy_origin_limit(field):
+    parameters = _v5_execution_parameters(profile="standard")
+    parameters["directional_maximum_selection_origins"] = None
+    parameters["directional_maximum_diagnostic_origins"] = None
+    parameters[field] = 60
+    parameters["sha256"] = audit_outputs.canonical_json_sha256({k: v for k, v in parameters.items() if k != "sha256"})
+    payload = {"model": {"profile": "standard", "execution_parameters": parameters,
+                         "directional_transition": {"coherence_version": "canonical-one-week-joint-first-destination/2"}}}
+    with pytest.raises(audit_outputs.AuditFailure, match=field):
+        audit_outputs._audit_v5_execution_parameters(payload)
+
+
+def test_v5_execution_parameters_reject_unknown_coherence_version():
+    payload = {"model": {"profile": "standard", "execution_parameters": _v5_execution_parameters(profile="standard"),
+                         "directional_transition": {"coherence_version": "canonical-one-week-joint-first-destination/99"}}}
+    with pytest.raises(audit_outputs.AuditFailure, match="coherence version invalid"):
+        audit_outputs._audit_v5_execution_parameters(payload)
+
+
 def test_v5_execution_parameters_reject_sha_tamper() -> None:
     parameters = _v5_execution_parameters()
     parameters["sha256"] = "0" * 64
@@ -1934,6 +2065,62 @@ def test_v5_execution_parameters_reject_sha_tamper() -> None:
 
     with pytest.raises(audit_outputs.AuditFailure, match="SHA-256"):
         audit_outputs._audit_v5_execution_parameters(payload)
+
+
+@pytest.mark.parametrize("better_markov", [False, True])
+def test_v5_file_contract_preserves_float_precision_and_independent_selection(tmp_path, better_markov):
+    from regime_lab.analysis.directional import _select_horizon
+    from regime_lab.v5_artifacts import canonical_v5_artifact_csv_bytes
+
+    # Different joint departure masses encode exactly the same conditional
+    # direction (0.6, 0.4). Default CSV decoding perturbs only the latter model
+    # to 0.6000000000000003 and incorrectly breaks this baseline tie.
+    models = [
+        ("empirical_first_passage", 0.10344827586206896, 0.06896551724137931),
+        ("markov_first_passage", 0.1038961038961039, 0.06926406926406926),
+    ]
+    rows = []
+    for position, origin in enumerate(pd.date_range("2022-01-07", periods=39, freq="7D", tz="UTC")):
+        for model, correct, incorrect in models:
+            if better_markov and model == "markov_first_passage":
+                correct, incorrect = 0.15, 0.02
+            rows.append({
+                "horizon_weeks": 1, "evaluation_split": "selection",
+                "origin_date": origin, "target_end": origin + timedelta(weeks=1),
+                "model": model, "current_state": "transition", "actual_change": True,
+                "actual_outcome": "risk_on" if position % 2 == 0 else "risk_off",
+                "p_no_departure": 1 - correct - incorrect, "p_transition": 0.0,
+                "p_risk_on": correct if position % 2 == 0 else incorrect,
+                "p_risk_off": incorrect if position % 2 == 0 else correct,
+                "fallback": False,
+            })
+    from regime_lab.v5_artifacts import DIRECTIONAL_OOS_COLUMNS
+    original = pd.DataFrame(rows)
+    original["fallback_reason"] = ""
+    original = original.loc[:, DIRECTIONAL_OOS_COLUMNS]
+    path = tmp_path / "directional-oos-predictions.csv"
+    path.write_bytes(canonical_v5_artifact_csv_bytes("directional_oos_predictions", original))
+    contract = {"directional_oos_predictions": {
+        "path": path.name, "row_count": len(original),
+        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+    }}
+    decoded = audit_outputs._audit_v5_file_contracts(contract, tmp_path, context="precision fixture")[path.name]
+    decoded["origin_date"] = pd.to_datetime(decoded["origin_date"], utc=True)
+    keys = ["origin_date", "model"]
+    columns = ["p_no_departure", *PROBABILITY_COLUMNS]
+    np.testing.assert_array_equal(
+        decoded.sort_values(keys)[columns].to_numpy(),
+        original.sort_values(keys)[columns].to_numpy(),
+    )
+    expected = "markov_first_passage" if better_markov else "empirical_first_passage"
+    for frame in (original, decoded):
+        assert _select_horizon(
+            frame, horizon=1, minimum_selection_events=8,
+            minimum_destination_classes=2, minimum_event_blocks=3,
+        )[0] == expected
+        assert audit_outputs._v5_select_directional_horizon(
+            frame, audit_outputs._v5_directional_metrics(frame), horizon=1,
+        )[0] == expected
 
 
 def test_v5_file_contract_recomputes_hash_and_rows(tmp_path: Path) -> None:

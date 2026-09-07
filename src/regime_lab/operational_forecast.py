@@ -33,6 +33,7 @@ from regime_lab.analysis.validation import (
     _transition_numeric_frame,
     _transition_targets,
     forecast_next_regime,
+    transition_calibration_version,
 )
 from regime_lab.integrity import canonical_json_sha256_v1
 
@@ -65,9 +66,24 @@ def _completed_expert_history(
     states: pd.Series,
     origin: pd.Timestamp,
 ) -> tuple[pd.DataFrame, bool]:
+    required = {"model", "origin_date", "target_date", "current_state", "actual", "p_risk_on", "p_transition", "p_risk_off"}
+    if not required <= set(history):
+        raise OperationalPreparationError("expert history lacks state/probability contract")
     frame = history.loc[history.model.isin(EXPERTS)].copy()
     for field in ("origin_date", "target_date"):
         frame[field] = pd.to_datetime(frame[field], utc=True)
+    from regime_lab.payload import normalized_probabilities
+    positions = {pd.Timestamp(at).tz_convert("UTC"): i for i, at in enumerate(states.index)}
+    for row in frame.to_dict("records"):
+        position = positions.get(row["origin_date"])
+        if position is None or position + 1 >= len(states) or row["target_date"] != states.index[position + 1]:
+            raise OperationalPreparationError("expert history origin/target differs from official weekly index")
+        if row["current_state"] != str(states.iloc[position]) or row["actual"] != str(states.iloc[position + 1]):
+            raise OperationalPreparationError("expert history current/actual differs from official states")
+        try:
+            normalized_probabilities({s: row[f"p_{s}"] for s in STATE_ORDER})
+        except (TypeError, ValueError) as exc:
+            raise OperationalPreparationError("expert history probabilities are invalid") from exc
     if (frame.target_date > origin).any():
         raise OperationalPreparationError("expert history contains a future target")
     if frame.duplicated(["model", "origin_date"]).any():
@@ -117,12 +133,29 @@ def _completed_expert_history(
         frame = pd.concat([frame, pd.DataFrame(additions)], ignore_index=True)
         appended = True
     expected_last = states.index[-2]
+    budget = locked_payload["model"].get("candidate_manifest", {}).get("profile_budget", {})
+    first = int(budget.get("minimum_train_weeks", 520)) + 1
+    cutoff = pd.Timestamp(locked_payload["model"]["selection_end"], tz="UTC")
+    eligible_positions = list(range(first, len(states) - 1))
+    selection_positions = [i for i in eligible_positions if states.index[i + 1] < cutoff]
+    diagnostic_positions = [i for i in eligible_positions if states.index[i] >= cutoff]
+    maximum = budget.get("max_origins")
+    if maximum is not None:
+        diagnostic_positions = diagnostic_positions[-int(maximum):]
+    expected_origins = {states.index[i] for i in selection_positions + diagnostic_positions}
     for expert in EXPERTS:
         eligible = frame.loc[frame.model.eq(expert) & frame.target_date.lt(origin)]
         if eligible.empty or eligible.target_date.max() != expected_last:
             raise OperationalPreparationError(
                 "completed expert score history has a weekly gap"
             )
+        actual_origins = set(frame.loc[frame.model.eq(expert), "origin_date"])
+        if not expected_origins <= actual_origins:
+            raise OperationalPreparationError("completed expert score history has an internal weekly gap")
+        for split_positions in (selection_positions, [i for i in eligible_positions if states.index[i] >= cutoff]):
+            present = [i for i in split_positions if states.index[i] in actual_origins]
+            if present and any(states.index[i] not in actual_origins for i in range(min(present), max(present) + 1)):
+                raise OperationalPreparationError("completed expert score history has an internal weekly gap")
     return frame, appended
 
 
@@ -223,6 +256,10 @@ def prepare_operational_forecast(
         raise OperationalPreparationError(
             "prepared input hashes differ from the supplied bundle identity"
         )
+    try:
+        calibration_version = transition_calibration_version(transition_predictions)
+    except ValueError as exc:
+        raise OperationalPreparationError(str(exc)) from exc
     target = origin + timedelta(days=7)
     entry = _scheduled_nyse_entry_at(target.date().isoformat()).tz_convert("UTC")
     reasons = []
@@ -235,6 +272,7 @@ def prepare_operational_forecast(
         "target_at": target.isoformat(),
         "champion": champion,
         "candidate_manifest_sha256": model["candidate_manifest_sha256"],
+        "calibration_version": calibration_version,
         "inputs": inputs,
         "role": "research_replay" if research_replay else "operational_preparation",
     }
@@ -309,7 +347,8 @@ def prepare_operational_forecast(
         )
     hazard, calibration_method, calibration_fallback, calibration_reason = (
         _calibrate_transition_probability(
-            raw, calibration, minimum_rows=12, random_state=17
+            raw, calibration, minimum_rows=12, random_state=17,
+            version=calibration_version, selection_end=selection_end, origin=origin,
         )
     )
     fallbacks = {
@@ -365,6 +404,7 @@ def prepare_operational_forecast(
                 "probabilities": probabilities,
             },
             "calibration": {
+                "version": calibration_version,
                 "method": calibration_method,
                 "raw_probability": raw,
                 "probability": hazard,

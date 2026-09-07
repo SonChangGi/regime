@@ -80,7 +80,7 @@ vm.runInContext(program,context);const exported=context.module.exports,api=expor
 context.document={createElement:node};let current=new URL('http://localhost/?unrelated=keep#performance');
 context.window={get location(){return current},history:{replaceState(_a,_b,value){current=new URL(value,current)}},setTimeout:()=>0};
 context.navigator={clipboard:{async writeText(value){copied=value}}};
-for(const key of ['research-upgrades','decision-shadow-block','decision-shadow-nav','decision-shadow-grid','decision-shadow-caption','screen-reader-status','copy-view-link'])api.dom[key]=node('div');
+for(const key of ['research-upgrades','forecast-alert-research','decision-shadow-block','decision-shadow-nav','decision-shadow-grid','decision-shadow-caption','screen-reader-status','copy-view-link'])api.dom[key]=node('div');
 const strategies={probability_shadow:{weeks:2},static_60_40:{weeks:2},spy_buy_and_hold:{weeks:2},vol_target_60_40:{weeks:2}};
 const payload={meta:{data_as_of:'2026-09-04'},model:{champion:'xgboost',forecast_comparison:{models:['xgboost']}},weekly:[{date:'2026-09-04'}],research:{
  decision_research_v2:{alert_budgets:[{target:'risk_worsening',annual_false_alarm_budget:4,score:'binary_xgboost',retrospective_diagnostic:{recall:.11}},
@@ -88,12 +88,12 @@ const payload={meta:{data_as_of:'2026-09-04'},model:{champion:'xgboost',forecast
  prospective_decision_shadow:{schema_version:'regime-prospective-decision-shadow/1',historical_reconstructed_shadow:{strategies,status:'completed',minimum_evaluation_weeks:1,
  evaluation_start_week:'2023-01-06',evaluation_end_week:'2026-09-04',series:[{date:'2026-08-28'},{date:'2026-09-04'}]}}}};
 api.state.raw=payload;api.state.weekly=payload.weekly;api.state.selectedIndex=0;api.state.comparisonModel='xgboost';api.state.sidecarAvailability.research='ready';
-function controls(){return descendants(api.dom['research-upgrades'],child=>child.tag==='select')}
+function controls(){return descendants(api.dom['forecast-alert-research'],child=>child.tag==='select')}
 function choose(index,value){const control=controls()[index];control.value=value;control.listeners.change()}
 function toggle(label){const control=api.dom['decision-shadow-grid'].querySelectorAll('.performance-switch').find(child=>child.textContent===label);control.listeners.click()}
 function snapshot(){return {alert:api.state.decisionResearchTarget,budget:api.state.decisionResearchBudget,
  strategies:api.state.performanceVisible,visible:[...chartKeys],query:Object.fromEntries(current.searchParams),
- selectedControls:controls().map(child=>child.value),text:api.dom['research-upgrades'].textContent}}
+ selectedControls:controls().map(child=>child.value),text:api.dom['forecast-alert-research'].textContent}}
 """
 
 

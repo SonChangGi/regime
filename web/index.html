@@ -6,15 +6,15 @@
     <meta name="color-scheme" content="light dark">
     <meta
       name="description"
-      content="선택한 시점까지 공개된 정보로 미국 시장 위험 상태를 판단하고 다음 주 확률과 실행 목표를 보여주는 대시보드"
+      content="선택한 시점까지 공개된 정보로 미국 시장 위험 상태를 판단하고 다음 주 국면과 4·13주 전환위험을 보여주는 대시보드"
     >
     <title>US Market Regime Lab | Quant Research</title>
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23111727'/%3E%3Cpath d='M14 43 26 31l9 8 15-20' fill='none' stroke='%2334d399' stroke-width='7' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
-    <link rel="stylesheet" href="./styles.css?v=a5691ee73b3cb9c1cf0833e0a2e109045085cb305f9b685a4313914f6508f8a3">
-    <link rel="stylesheet" href="./insights.css?v=5767f3386e93291facf39817bb120246a3d601198b63eb4e89b67492b5c3b205">
-    <script src="./insights.js?v=b100598800092b5ebf944bc360a8552b9cdd64424baa4ddf4263bf33e5b46c51" defer></script>
+    <link rel="stylesheet" href="./styles.css?v=a87c49339958f048b36531ca361bad3c766380a327cff3aeed8b07d6a2420ce6">
+    <link rel="stylesheet" href="./insights.css?v=0d6f7a5cbea294ea6a7aab20c8df9af63d7e41a83fa20ff565f8584cb65ba2fd">
+    <script src="./insights.js?v=26cae281a30ad077f0fd83e67dd8904c0bb08b09319e3e3448d17c8193b5076d" defer></script>
     <script src="./operating-contract.generated.js?v=5078635e5a1fb2b9300e56f045b51c4e85ee047a21a3f64a15cd4e69261c9a20" defer></script>
-    <script src="./app.js?v=b7511dd3277943628decca293c9e787106dae388c3f8a3bd2d0b51b77c5b6cff" defer></script>
+    <script src="./app.js?v=760b4d9bedfe451c1a4586ce592fdb5db5c2a3141bc641e50aa868e08d13a311" defer></script>
   </head>
   <body id="top">
     <a class="skip-link" href="#main-content">본문으로 건너뛰기</a>
@@ -64,10 +64,11 @@
     </header>
 
     <nav class="section-nav" aria-label="페이지 섹션 바로가기" id="dashboard-view-nav">
-      <a href="#overview" data-dashboard-view="execution" aria-current="page">결정</a>
-      <a href="#history" data-dashboard-view="model">모델</a>
+      <a href="#overview" data-dashboard-view="execution" aria-current="page">국면</a>
+      <a href="#transition-outlook" data-dashboard-view="transition">전환·경보</a>
+      <a href="#history" data-dashboard-view="model">모델 검증</a>
       <a id="conditional-stats-nav" class="v5-only" href="#conditional-stats" data-dashboard-view="assets" hidden>자산</a>
-      <a id="decision-shadow-nav" class="v5-only" href="#decision-shadow-block" data-dashboard-view="performance" hidden>성과</a>
+      <a id="decision-shadow-nav" class="v5-only" href="#decision-shadow-block" data-dashboard-view="performance" hidden>배분·성과</a>
       <button id="copy-view-link" class="section-nav-action" type="button" aria-label="현재 화면 링크 복사">링크 복사</button>
     </nav>
 
@@ -98,22 +99,14 @@
       </section>
 
       <div id="dashboard" class="dashboard-shell" data-active-view="execution" hidden>
-        <section id="overview" class="dashboard-section overview-section" data-dashboard-view="execution" aria-labelledby="dashboard-title">
-          <div class="section-heading overview-heading">
-            <div>
-              <h2 id="dashboard-title" class="sr-only">시장 위험 상태 요약</h2>
-              <p id="dashboard-subtitle" class="sr-only">선택 주의 정보 컷오프를 사용합니다.</p>
-            </div>
-          </div>
-
-          <div class="control-bar">
+          <div id="shared-date-controls" class="control-bar shared-date-controls">
             <form id="date-form" class="date-controls" aria-label="분석 기준일 선택">
-              <div class="field-group date-field compact-hidden-control">
+              <div class="field-group date-field">
                 <label for="analysis-date">기준일</label>
                 <input id="analysis-date" name="analysis-date" type="date" aria-describedby="snap-note" required>
               </div>
               <div class="field-group compact-field">
-                <label for="week-select">관측 주</label>
+                <label for="week-select">예측 기준 주</label>
                 <select id="week-select" name="week-select" aria-describedby="snap-note"></select>
               </div>
               <div class="control-action-group step-control">
@@ -131,8 +124,19 @@
             </form>
           </div>
 
-          <p id="execution-brief" class="execution-brief" aria-live="polite"></p>
-          <div id="hero-results" class="hero-grid decision-pipeline" aria-label="국면 판단, 모델 예측, 자산배분 순서">
+            <section id="forecast-window-section" class="forecast-window-section v5-only" aria-labelledby="forecast-window-title" hidden>
+              <h2 id="forecast-window-title">선택한 예측 시점</h2>
+              <dl class="forecast-timing"><div><dt>기준</dt><dd id="forecast-origin-at">—</dd></div><div><dt>선택 예측 발행</dt><dd id="forecast-decision-at">—</dd></div><div><dt>대상</dt><dd id="forecast-target-at">—</dd></div><div><dt>선택 예측 상태</dt><dd id="forecast-remaining-horizon">—</dd></div></dl><p id="latest-publication-info" class="section-caption"></p>
+            </section>
+        <section id="overview" class="dashboard-section overview-section" data-dashboard-view="execution" aria-labelledby="dashboard-title">
+          <div class="section-heading overview-heading">
+            <div>
+              <h2 id="dashboard-title" class="sr-only">시장 위험 상태 요약</h2>
+              <p id="dashboard-subtitle" class="sr-only">선택 주의 정보 컷오프를 사용합니다.</p>
+            </div>
+          </div>
+
+          <div id="hero-results" class="hero-grid decision-pipeline" aria-label="현재 국면과 다음 주 공식 예측">
           <article id="current-regime-card" class="regime-card card decision-stage decision-stage-regime" data-flow-stage="regime">
             <div class="decision-stage-heading">
               <span class="decision-stage-index" aria-hidden="true">1</span>
@@ -147,7 +151,6 @@
               </div>
             </div>
             <div id="current-probabilities" class="probability-list" aria-label="현재 국면별 값"></div>
-            <details class="semantic-hint"><summary>소속도란?</summary><p>이번 주가 각 위험 상태의 기준에 가까운 정도입니다. 다음 주 확률은 오른쪽 모델 예측에서 확인합니다.</p></details>
             <p id="current-entropy" class="card-footnote" hidden>불확실성 —</p>
             <div id="transition-card" class="transition-card decision-transition" aria-labelledby="transition-title">
               <div class="transition-value-row">
@@ -166,7 +169,6 @@
               >
                 <span></span>
               </div>
-              <div id="transition-horizon-bars" class="transition-horizon-bars" hidden></div>
             </div>
           </article>
 
@@ -185,12 +187,42 @@
               </div>
             </div>
             <div id="next-probabilities" class="probability-list" aria-label="다음 주 국면별 예측 확률"></div>
+            <div id="next-direction-summary" class="next-direction-summary" aria-label="다음 주 유지·악화·회복 확률"></div>
             <p id="next-entropy" class="card-footnote" hidden>예측 불확실성 —</p>
           </article>
 
+
+          </div>
+
+
+
+        </section>
+
+        <section id="transition-outlook" class="dashboard-section transition-outlook card" data-dashboard-view="execution transition" aria-labelledby="transition-outlook-title">
+          <div class="card-heading"><div><h2 id="transition-outlook-title">4·13주 국면 이탈</h2></div></div>
+          <div class="forecast-outlook-grid">
+            <div><div id="transition-horizon-bars" class="transition-horizon-bars" aria-live="polite" hidden></div>
+            </div>
+          <article id="duration-context-card" class="card v5-only" aria-labelledby="duration-context-title" hidden>
+            <div class="card-heading">
+              <div>
+                <h2 id="duration-context-title">현재 국면 지속</h2>
+                <p id="duration-context-caption" class="section-caption">현재 상태의 과거 지속 패턴</p>
+              </div>
+            </div>
+            <dl id="duration-context" class="metric-list"></dl>
+            <div id="duration-baselines" class="duration-baselines" aria-label="Kaplan–Meier 이탈 기준률"></div>
+          </article>
+          </div>
+          <div id="multistate-forecast" class="multistate-forecast" aria-live="polite"></div>
+        </section>
+        <section id="forecast-alert-research" class="dashboard-section card" data-dashboard-view="transition" aria-label="경보 정책 검증" hidden></section>
+
+        <section id="decision-shadow-block" class="dashboard-section decision-shadow-section card v5-only" data-dashboard-view="performance" aria-labelledby="decision-shadow-title" hidden>
+          <p id="execution-brief" class="execution-brief" aria-live="polite"></p>
           <article id="decision-action-card" hidden class="decision-action-card card v5-only decision-stage decision-stage-allocation" data-flow-stage="allocation" aria-labelledby="decision-action-title">
             <div class="decision-stage-heading">
-              <span class="decision-stage-index" aria-hidden="true">3</span>
+              <span class="decision-stage-index" aria-hidden="true">↗</span>
               <strong>자산배분</strong>
               <span class="horizon-label">전략 원장</span>
             </div>
@@ -202,13 +234,6 @@
             </div>
             <div id="decision-shadow-current-summary" class="decision-action-summary" aria-live="polite"></div>
           </article>
-          </div>
-
-
-
-        </section>
-
-        <section id="decision-shadow-block" class="dashboard-section decision-shadow-section card v5-only" data-dashboard-view="performance" aria-labelledby="decision-shadow-title" hidden>
           <div class="decision-shadow-section-heading">
             <div>
               <h2 id="decision-shadow-title">예측 전략 성과</h2>
@@ -461,7 +486,7 @@
           <div class="card-heading">
             <div>
               <h2 id="timeline-title">위험 상태 타임라인</h2>
-              <p class="section-caption sr-only">1칸 = 1주</p>
+              <p class="section-caption">전체 관측 이력 · 1칸 = 1주 · 선택해 날짜 이동</p>
             </div>
             <div class="timeline-key" aria-label="타임라인 기호 범례">
               <span><b data-state-symbol="risk_on" aria-hidden="true">↗</b> <span data-state-label="risk_on">Risk-on</span></span>
@@ -499,16 +524,7 @@
             <dl id="market-context" class="metric-list"></dl>
           </article>
 
-          <article id="duration-context-card" class="card v5-only" aria-labelledby="duration-context-title" hidden>
-            <div class="card-heading">
-              <div>
-                <h2 id="duration-context-title">현재 국면 지속</h2>
-                <p id="duration-context-caption" class="section-caption sr-only">현재 상태의 과거 지속 패턴</p>
-              </div>
-            </div>
-            <dl id="duration-context" class="metric-list"></dl>
-            <div id="duration-baselines" class="duration-baselines" aria-label="Kaplan–Meier 이탈 기준률"></div>
-          </article>
+
 
           <article id="fx-context-card" class="card v5-only" aria-labelledby="fx-context-title" hidden>
             <div class="card-heading">
@@ -651,7 +667,7 @@
         </section>
 
         <details id="research-methods" class="research-methods card">
-          <summary>해석 · 연구 · 운영 상세</summary>
+          <summary>검증·운영 상세</summary>
           <div class="research-methods-body">
             <section class="model-evaluation-details" aria-labelledby="model-details-title">
               <h2 id="model-details-title">선택 모델 평가 상세</h2>
@@ -666,30 +682,6 @@
                 <div><dt>보정 오차</dt><dd id="model-forecast-calibration">—</dd></div>
               </dl>
             </section>
-          <div id="contract-overview-grid" class="contract-overview-grid v5-only" hidden>
-            <details id="label-definition-card" class="definition-card card compact-definition-details">
-              <summary>
-                <span id="label-definition-title">국면 기준 보기</span>
-                <span id="label-spec-identity" class="contract-chip">불러오는 중</span>
-              </summary>
-              <div class="definition-details-body">
-                <dl class="definition-facts">
-                  <div>
-                    <dt>무엇을 보나요?</dt>
-                    <dd>미국 대형주 시장을 대표하는 SPY의 방향, 가격 흔들림, 최근 고점에서 밀린 폭을 함께 봅니다.</dd>
-                  </div>
-                  <div>
-                    <dt>어떻게 나누나요?</dt>
-                    <dd>안정적인 상승은 위험선호, 방향이 섞이면 전환, 하락과 불안이 커지면 위험회피로 나눕니다.</dd>
-                  </div>
-                  <div>
-                    <dt>화면 숫자는?</dt>
-                    <dd id="membership-definition">현재 막대는 이번 주가 각 국면에 얼마나 가까운지, 다음 주 막대는 다음 주가 각 국면일 모델 확률입니다.</dd>
-                  </div>
-                </dl>
-              </div>
-            </details>
-          </div>
             <section id="research-upgrades" hidden></section>
             <section id="research-evidence" class="research-evidence-section v5-only" hidden>
               <h2 id="research-evidence-title">국면 · USD 연구</h2>
@@ -712,11 +704,37 @@
               <nav class="source-links" aria-label="데이터 제공처"><a href="https://fred.stlouisfed.org/">FRED</a><a href="https://www.alphavantage.co/">Alpha Vantage</a><a href="https://www.federalreserve.gov/releases/h10/">Federal Reserve H.10</a></nav>
               <dl class="footer-meta operations-meta"><div><dt>모델 버전</dt><dd id="footer-model-version">—</dd></div><div><dt>스키마</dt><dd id="footer-schema-version">—</dd></div><div><dt>생성 시각</dt><dd id="footer-generated-at">—</dd></div></dl>
             </section>
-            <section id="forecast-window-section" class="forecast-window-section v5-only" aria-labelledby="forecast-window-title" hidden>
-              <h2 id="forecast-window-title">예측 시점</h2>
-              <dl class="forecast-timing"><div><dt>기준</dt><dd id="forecast-origin-at">—</dd></div><div><dt>발행</dt><dd id="forecast-decision-at">—</dd></div><div><dt>대상</dt><dd id="forecast-target-at">—</dd></div><div><dt>남은 기간</dt><dd id="forecast-remaining-horizon">—</dd></div></dl>
+
+
+          </div>
+        </details>
+
+        <details id="interpretation-methods" class="research-methods card">
+          <summary>해석·계산 기준</summary>
+          <div class="research-methods-body interpretation-notes">
+            <section id="contract-overview-grid" class="v5-only" hidden>
+              <div id="label-definition-card">
+                <h3 id="label-definition-title">국면·소속도 <span id="label-spec-identity" class="contract-chip"></span></h3>
+                <p>국면은 SPY의 추세·변동성·낙폭으로 구분한 시장 위험 상태입니다.</p>
+                <p id="membership-definition">소속도는 국면 기준에 가까운 정도, 예측확률은 다음 주 국면별 가능성입니다.</p>
+              </div>
             </section>
-            <section class="interpretation-notes"><h2>계산 기준</h2><p>과거 재구성 성과와 실제 발행 후 성과는 별도로 집계합니다. 국면 구간 평균은 각 연속 구간에 같은 비중을, 주별 평균은 각 주에 같은 비중을 줍니다. 4·13주 성과의 시작 주는 겹칠 수 있습니다. 실선·파선과 수치로 전략을 구별할 수 있으며, 자산 셀을 선택하면 구간·표본·95% 구간을 확인할 수 있습니다.</p><p>소속도는 기준점까지의 거리이며 확률이 아닙니다. 추세는 양수일수록 강세, 시장 안정 점수는 양수일수록 불안이 낮으며, 2축 차트는 이를 반전해 위쪽을 스트레스 증가로 표시합니다. 다른 맥락 점수는 표시된 부호 설명을 따릅니다. 전략 원장의 모의 잔고와 직접 입력한 보유 비중은 서로 독립적입니다.</p></section>
+            <section><h3>경로·지속기간</h3>
+              <p>최초 이탈은 현재 국면을 처음 떠나는 사건입니다. 위험회피 진입은 중간 국면을 거치는 경로도 포함하며, 현재 위험회피라면 이탈 후 재진입을 셉니다. 기간 중 관측은 다음 주부터 한 번 이상, 기간 말은 마지막 주의 상태입니다.</p>
+              <p id="duration-estimate-note">KM은 과거 지속패턴의 기준률입니다. 잔여기간의 95% 구간은 추정치의 불확실성이며 종료시점 예측구간은 아닙니다.</p>
+            </section>
+            <section><h3>모델 평가·보정</h3>
+              <p>Log loss·Brier는 낮을수록 좋고, 오차 차이는 후보−기준선입니다. 보정표의 기존 발행은 저장된 확률, 새 보정은 재계산값입니다. 연구 모델 선택은 공식 예측에 영향을 주지 않습니다.</p>
+              <p>2023년 이후는 개발 중 검토한 과거 진단 구간입니다. 경보 임계값은 선정 구간에서 고정하며, 전환 건수는 독립적인 위기 횟수가 아닙니다. 탐지 지연은 포착된 전환만 집계합니다.</p>
+              <div id="forecast-method-notes"></div>
+            </section>
+            <section><h3>발행 원장</h3>
+              <p>확률 점수는 대상 시각 전 저장·발행이 확인된 예측만 평가하며, 같은 대상 주는 최초 확인 예측 한 건을 사용합니다. 라벨 확정은 자산 실행 평가와 독립적입니다.</p>
+            </section>
+            <section><h3>자산·시장 점수</h3>
+              <p>국면 구간 평균은 연속 구간에, 주별 평균은 각 주에 같은 비중을 줍니다. 4·13주 성과는 보유기간이 겹칠 수 있습니다. 전략 원장의 모의 잔고와 입력 보유 비중은 독립적입니다.</p>
+              <p>추세 점수는 양수일수록 강세, 안정 점수는 양수일수록 불안이 낮습니다. 2축 차트는 안정 점수를 반전해 위쪽이 스트레스 증가를 뜻합니다.</p>
+            </section>
           </div>
         </details>
 

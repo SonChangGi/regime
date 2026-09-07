@@ -30,7 +30,7 @@
     "v5": {
       "regime_results": {
         "path": "regime-results.json",
-        "sha256": "06c9193a3ee3016ecee3ae9f629130cf237f3af7aee3be4dde87090f2e5478ce"
+        "sha256": "35cdb2198b0f6e3a45e5f1b0dc9bdd936815c5dbc8fe34d814c25028557cabb3"
       },
       "oos_predictions": {
         "path": "oos-predictions.csv",

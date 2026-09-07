@@ -25,7 +25,7 @@ def _bundle():
         index=dates,
     )
     rows = []
-    for k in range(570, 599):
+    for k in range(521, 599):
         for model in ("markov", "xgboost", "xgb_hazard_destination"):
             rows.append(
                 {
@@ -217,3 +217,63 @@ def test_real_preparation_cannot_backdate_decision_clock():
             **kwargs,
             decision_at=features.index[-1].to_pydatetime(),
         )
+
+
+@pytest.mark.parametrize("version", [None, "transition-calibration/1", "transition-calibration/2"])
+def test_locked_calibration_version_reaches_real_transform(monkeypatch, version):
+    import regime_lab.operational_forecast as module
+    from regime_lab.analysis.validation import _calibrate_transition_probability
+    features, states, oos, transition, kwargs = _bundle()
+    _stub_models(monkeypatch)
+    # Keep model fits cheap, but exercise the actual calibrator and its caller.
+    monkeypatch.setattr(module, "_calibrate_transition_probability", _calibrate_transition_probability)
+    if version is not None:
+        transition["calibration_version"] = version
+    kwargs["expected_input_hashes"]["transition_predictions"] = frame_sha256(transition)
+    result = prepare_operational_forecast(features, states, oos, transition, **kwargs,
+        research_replay=True, decision_at=(features.index[-1] + timedelta(minutes=1)).to_pydatetime())
+    expected = version or "transition-calibration/1"
+    assert result["key"]["calibration_version"] == result["calibration"]["version"] == expected
+    if expected.endswith("/1"):
+        assert result["calibration"]["method"] == "prequential_platt_logit"
+        assert result["calibration"]["probability"] == pytest.approx(.5, abs=.001)
+    else:
+        assert result["calibration"]["method"] == "identity"
+        assert result["calibration"]["probability"] == .2
+        assert result["calibration"]["fallback"]
+
+
+@pytest.mark.parametrize("damage", ["mixed", "missing_version", "unknown"])
+def test_ambiguous_calibration_generation_is_rejected_before_fitting(monkeypatch, damage):
+    features, states, oos, transition, kwargs = _bundle()
+    counts = _stub_models(monkeypatch)
+    if damage == "missing_version":
+        transition["calibration_selection_as_of"] = "2023-01-01"
+    else:
+        transition["calibration_version"] = "transition-calibration/2"
+        transition.loc[0, "calibration_version"] = "transition-calibration/1" if damage == "mixed" else "unknown"
+    kwargs["expected_input_hashes"]["transition_predictions"] = frame_sha256(transition)
+    with pytest.raises(OperationalPreparationError, match="calibration version"):
+        prepare_operational_forecast(features, states, oos, transition, **kwargs,
+            research_replay=True, decision_at=(features.index[-1] + timedelta(minutes=1)).to_pydatetime())
+    assert counts == {"base": 0, "hazard": 0}
+
+
+@pytest.mark.parametrize('damage', ['actual', 'current', 'internal_gap'])
+def test_expert_agreement_cannot_override_official_history(monkeypatch, damage):
+    features, states, oos, transition, kwargs = _bundle()
+    _stub_models(monkeypatch)
+    changed = oos.copy()
+    selected = changed.origin_date.eq(features.index[580])
+    if damage == 'internal_gap':
+        changed = changed.loc[~selected].copy()
+        pattern = 'internal weekly gap'
+    else:
+        field = 'actual' if damage == 'actual' else 'current_state'
+        truth = str(changed.loc[selected, field].iloc[0])
+        changed.loc[selected, field] = next(s for s in ['risk_on','transition','risk_off'] if s != truth)
+        pattern = 'differs from official states'
+    kwargs['expected_input_hashes']['oos_predictions'] = frame_sha256(changed)
+    with pytest.raises(OperationalPreparationError, match=pattern):
+        prepare_operational_forecast(features, states, changed, transition, **kwargs,
+            research_replay=True, decision_at=(features.index[-1] + timedelta(minutes=1)).to_pydatetime())

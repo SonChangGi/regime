@@ -24,6 +24,7 @@ from sklearn.preprocessing import StandardScaler
 from regime_lab.operating_contract import load_operating_contract
 
 from .labels import STATE_ORDER
+from .causal_calibration import TransitionCalibrator, validate_frozen_splits
 from .models import (
     DIRECT_NEXT_STATE_MODEL_NAMES,
     MODEL_NAMES,
@@ -1702,53 +1703,64 @@ def _fit_transition_candidate(
     return probability, fallback, fallback_reason, one_week_hazard
 
 
+def transition_calibration_version(history: pd.DataFrame) -> str:
+    """Keep archived, unversioned generations on their original v1 recipe."""
+    has_v2_metadata = any(key.startswith("calibration_selection_") for key in history)
+    if "calibration_version" not in history:
+        if has_v2_metadata:
+            raise ValueError("transition calibration version missing alongside v2 metadata")
+        return "transition-calibration/1"
+    versions = set(history.calibration_version.fillna("").astype(str))
+    if len(versions) != 1 or not versions <= {"transition-calibration/1", "transition-calibration/2"}:
+        raise ValueError("transition calibration version unknown or mixed")
+    version = next(iter(versions))
+    if version == "transition-calibration/1" and has_v2_metadata:
+        raise ValueError("legacy calibration version conflicts with v2 metadata")
+    return version
+
+
 def _calibrate_transition_probability(
     raw_probability: float,
     history: pd.DataFrame,
     *,
     minimum_rows: int,
     random_state: int,
+    version: str | None = None,
+    selection_end: str | pd.Timestamp = "2023-01-01",
+    origin: str | pd.Timestamp | None = None,
 ) -> tuple[float, str, bool, str]:
+    """Apply the frozen generation's recipe; new benchmarks use v2 explicitly."""
+    recorded_version = transition_calibration_version(history)
+    if version is not None and version != recorded_version:
+        raise ValueError("requested calibration version differs from frozen history")
+    if recorded_version == "transition-calibration/2":
+        return TransitionCalibrator(
+            history, selection_end=selection_end, minimum_rows=minimum_rows,
+            random_state=random_state,
+        ).fit(origin).apply(raw_probability)
+    if not np.isfinite(raw_probability) or not 0 <= raw_probability <= 1:
+        raise ValueError("transition probability must be finite and within [0, 1]")
+    cutoff = pd.to_datetime(selection_end, utc=True)
+    as_of = cutoff if origin is None else min(cutoff, pd.to_datetime(origin, utc=True))
+    if not history.empty:
+        validate_frozen_splits(history, target_column="target_end", selection_end=cutoff,
+                               diagnostic_label="retrospective_diagnostic")
+        history = history.loc[history.evaluation_split.eq("selection")
+                              & pd.to_datetime(history.target_end, utc=True).lt(as_of)]
     if len(history) < minimum_rows:
-        return (
-            raw_probability,
-            "identity",
-            True,
-            f"insufficient_prequential_rows:{len(history)}<{minimum_rows}",
-        )
-    target = history["actual_change"].astype(int)
+        return raw_probability, "identity", True, f"insufficient_prequential_rows:{len(history)}<{minimum_rows}"
+    target = history.actual_change.astype(int)
     if target.nunique() < 2 or int(target.sum()) < 3 or int((1 - target).sum()) < 3:
         return raw_probability, "identity", True, "insufficient_event_classes"
-    raw = np.clip(
-        history["raw_p_change"].to_numpy(dtype=float),
-        _TRANSITION_EPSILON,
-        1.0 - _TRANSITION_EPSILON,
-    )
-    design = np.log(raw / (1.0 - raw)).reshape(-1, 1)
-    estimator = LogisticRegression(
-        C=0.10,
-        solver="lbfgs",
-        max_iter=1_000,
-        random_state=random_state,
-    )
+    raw = np.clip(history.raw_p_change.to_numpy(float), _TRANSITION_EPSILON, 1 - _TRANSITION_EPSILON)
+    estimator = LogisticRegression(C=0.10, solver="lbfgs", max_iter=1000, random_state=random_state)
     try:
-        estimator.fit(design, target)
-        clipped = float(
-            np.clip(raw_probability, _TRANSITION_EPSILON, 1.0 - _TRANSITION_EPSILON)
-        )
-        value = float(
-            estimator.predict_proba(
-                np.asarray([[np.log(clipped / (1.0 - clipped))]], dtype=float)
-            )[0, 1]
-        )
+        estimator.fit(np.log(raw / (1 - raw)).reshape(-1, 1), target)
+        clipped = float(np.clip(raw_probability, _TRANSITION_EPSILON, 1 - _TRANSITION_EPSILON))
+        value = float(estimator.predict_proba([[np.log(clipped / (1 - clipped))]])[0, 1])
     except (ValueError, RuntimeError, FloatingPointError) as exc:
         return raw_probability, "identity", True, f"{type(exc).__name__}: {exc}"
-    return (
-        float(np.clip(value, _TRANSITION_EPSILON, 1.0 - _TRANSITION_EPSILON)),
-        "prequential_platt_logit",
-        False,
-        "",
-    )
+    return float(np.clip(value, _TRANSITION_EPSILON, 1 - _TRANSITION_EPSILON)), "prequential_platt_logit", False, ""
 
 
 def _transition_threshold(
@@ -1953,7 +1965,7 @@ def run_transition_benchmark(
     A horizon event means at least one departure from the origin state during
     ``t+1 .. t+h``.  Every training label satisfies ``target_end < origin``;
     consequently the recorded purge/gap is exactly ``h``.  Model family,
-    Platt-logit calibration, and thresholds are learned prequentially from
+    identity/Platt/shrunk calibration, and thresholds are learned from
     earlier selection OOS rows only.  Outcomes on/after ``selection_end`` are
     named ``retrospective_diagnostic`` and never enter those choices.
     """
@@ -2109,22 +2121,19 @@ def run_transition_benchmark(
     predictions = pd.DataFrame(raw_rows).sort_values(
         ["horizon", "origin_date", "model"], ignore_index=True
     )
+    calibrators = {
+        (int(horizon), str(model)): TransitionCalibrator(
+            group, selection_end=cutoff, minimum_rows=minimum_inner_predictions,
+            random_state=random_state,
+        )
+        for (horizon, model), group in predictions.groupby(["horizon", "model"])
+    }
     calibrated_rows: list[dict[str, object]] = []
     for row in predictions.to_dict(orient="records"):
         origin = pd.Timestamp(row["origin_date"])
-        history = predictions.loc[
-            predictions["horizon"].eq(int(row["horizon"]))
-            & predictions["model"].eq(str(row["model"]))
-            & predictions["evaluation_split"].eq("selection")
-            & (predictions["target_end"] < origin)
-        ]
+        calibration = calibrators[(int(row["horizon"]), str(row["model"]))].fit(origin)
         probability, calibration_method, calibration_fallback, calibration_reason = (
-            _calibrate_transition_probability(
-                float(row["raw_p_change"]),
-                history,
-                minimum_rows=minimum_inner_predictions,
-                random_state=random_state,
-            )
+            calibration.apply(float(row["raw_p_change"]))
         )
         threshold_history = pd.DataFrame(calibrated_rows)
         if not threshold_history.empty:
@@ -2144,6 +2153,7 @@ def run_transition_benchmark(
                 "calibration_method": calibration_method,
                 "calibration_fallback": calibration_fallback,
                 "calibration_fallback_reason": calibration_reason,
+                **calibration.metadata,
                 "threshold": threshold,
                 "threshold_method": threshold_method,
                 "predicted_change": bool(probability >= threshold),
@@ -2271,17 +2281,13 @@ def run_transition_benchmark(
                     profile=cfg,
                     random_state=random_state,
                 )
+                calibration = calibrators[(int(horizon), candidate_name)].fit(forecast_origin)
                 (
                     probability,
                     calibration_method,
                     calibration_fallback,
                     calibration_reason,
-                ) = _calibrate_transition_probability(
-                    raw_probability,
-                    raw_history,
-                    minimum_rows=minimum_inner_predictions,
-                    random_state=random_state,
-                )
+                ) = calibration.apply(raw_probability)
                 result_row = {
                     "origin_date": forecast_origin,
                     "target_start": prospective_target_date(forecast_position + 1),
@@ -2311,6 +2317,7 @@ def run_transition_benchmark(
                     "calibration_method": calibration_method,
                     "calibration_fallback": calibration_fallback,
                     "calibration_fallback_reason": calibration_reason,
+                    **calibration.metadata,
                     "threshold_method": threshold_method,
                     "selection_scope": "selection_oos_only",
                     "selection_locked": True,
