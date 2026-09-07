@@ -58,7 +58,129 @@
       falseAlarms: metric("false_alarms_per_year"), falseAlarmCount: metric("false_alarm_count"),
       delay: metric("mean_detection_delay_forecast_weeks"), weeks: metric("n_predictions"),
       fallbackCount: metric("fallback_count"),
+      worseningEvents: metric("worsening_event_count"), worseningCaptured: metric("on_time_worsening_count"),
+      recoveryEvents: metric("recovery_event_count"), recoveryCaptured: metric("on_time_recovery_count"),
+      researchCandidate: row.research_candidate === true,
     });
+  }
+  const FORECAST_RESEARCH_IDS = Object.freeze(["boundary_filtered_history", "boundary_student_t"]);
+  const FORECAST_STATES = Object.freeze(["risk_on", "transition", "risk_off"]);
+  function forecastImprovementModels(payload = {}) {
+    const block = payload?.research?.forecast_improvement;
+    return block?.schema_version === "regime-forecast-improvement/1" && Array.isArray(block.models)
+      ? block.models.filter((model) => FORECAST_RESEARCH_IDS.includes(model?.id)) : [];
+  }
+  function forecastComparisonModel(payload = {}) {
+    const official = payload.model || {};
+    const research = forecastImprovementModels(payload).map((model) => ({
+      ...(model.metrics?.holdout || {}), name: model.id, evaluation_split: "holdout",
+      selection_log_loss: model.metrics?.selection?.log_loss ?? null,
+      selection_calibration_error: model.metrics?.selection?.calibration_error ?? null,
+      research_candidate: true,
+    }));
+    return { ...official, leaderboard: [...(official.leaderboard || []), ...research] };
+  }
+  function researchForecastForWeek(payload, modelName, date) {
+    const model = forecastImprovementModels(payload).find((row) => row.id === modelName);
+    if (!model) return null;
+    const row = [model.latest, ...(model.history || [])].find((row) => row?.origin_date?.slice(0, 10) === date);
+    if (!row?.probabilities) return null;
+    const probabilities = { ...row.probabilities };
+    const predicted = FORECAST_STATES.reduce((best, state) => probabilities[state] > probabilities[best] ? state : best, FORECAST_STATES[0]);
+    return { model: model.id, date: row.target_date.slice(0, 10), state: predicted,
+      probabilities, confidence: probabilities[predicted], fallback: false,
+      entropy: -FORECAST_STATES.reduce((sum, state) => sum + (probabilities[state] > 0 ? probabilities[state] * Math.log(probabilities[state]) : 0), 0) / Math.log(3),
+      research_candidate: true, actual: row.actual, evidence_track: "reconstructed_market" };
+  }
+  function validateForecastImprovement(payload = {}) {
+    const block = payload?.research?.forecast_improvement;
+    if (block === undefined) return [];
+    const errors = [], fail = (message) => errors.push(`forecast_improvement ${message}`);
+    const object = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+    const timestamp = (value) => typeof value === "string" && Number.isFinite(Date.parse(value));
+    const zonedTimestamp = (value) => timestamp(value) && /(?:Z|[+-]\d{2}:\d{2})$/i.test(value);
+    const sha = (value) => typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
+    const simplex = (value) => object(value) && Object.keys(value).length === 3
+      && FORECAST_STATES.every((state) => number(value[state]) !== null && value[state] >= 0 && value[state] <= 1)
+      && Math.abs(FORECAST_STATES.reduce((sum, state) => sum + value[state], 0) - 1) < 1e-8;
+    if (!object(block) || block.schema_version !== "regime-forecast-improvement/1"
+      || block.evidence_track !== "reconstructed_market"
+      || block.selected_model !== "boundary_filtered_history" || !zonedTimestamp(block.data_as_of)) {
+      fail("메타데이터가 올바르지 않습니다."); return errors;
+    }
+    if (payload.meta?.data_as_of && Date.parse(block.data_as_of) !== Date.parse(payload.meta.data_as_of)) fail("기준 시각이 다릅니다.");
+    if (block.selection?.frozen_model !== block.selected_model || !timestamp(block.selection?.selection_end)
+      || Date.parse(block.selection.selection_end) > Date.parse("2023-01-01")) fail("선정기간이 올바르지 않습니다.");
+    const models = block.models;
+    if (!Array.isArray(models) || models.length !== 2 || new Set(models.map((model) => model?.id)).size !== 2
+      || models.some((model) => !FORECAST_RESEARCH_IDS.includes(model?.id))) { fail("모델 목록이 올바르지 않습니다."); return errors; }
+    let expectedOrigins = null;
+    for (const model of models) {
+      if (typeof model.label !== "string" || !model.label || !object(model.metrics)) { fail("모델 정보가 없습니다."); continue; }
+      for (const split of ["selection", "holdout"]) {
+        const metrics = model.metrics[split];
+        if (!object(metrics) || !Number.isInteger(metrics.n_predictions) || metrics.n_predictions <= 0
+          || ["log_loss", "brier", "transition_recall", "false_alarms_per_year"].some((key) => number(metrics[key]) === null || metrics[key] < 0)
+          || metrics.transition_recall > 1
+          || ["on_time_departure_count", "transition_event_count", "false_alarm_count"].some((key) => !Number.isInteger(metrics[key]) || metrics[key] < 0)
+          || metrics.on_time_departure_count > metrics.transition_event_count) fail(`${model.id} 지표가 올바르지 않습니다.`);
+      }
+      if (!Array.isArray(model.history) || ["selection", "holdout"].some((split) => model.history.filter((row) => row?.evaluation_split === split).length !== model.metrics[split]?.n_predictions)
+        || model.history.length !== model.metrics.selection?.n_predictions + model.metrics.holdout?.n_predictions) { fail(`${model.id} 평가 표본이 다릅니다.`); continue; }
+      const origins = model.history.map((row) => row?.origin_date);
+      if (new Set(origins).size !== origins.length || origins.some((date, index) => index > 0 && Date.parse(date) <= Date.parse(origins[index - 1]))) fail(`${model.id} 이력이 중복되거나 정렬되지 않았습니다.`);
+      const identities = model.history.map((row) => [Date.parse(row?.origin_date), Date.parse(row?.target_date), row?.current_state, row?.actual, row?.evaluation_split]);
+      if (expectedOrigins && JSON.stringify(expectedOrigins) !== JSON.stringify(identities)) fail("모델별 비교 시점이나 관측이 다릅니다.");
+      expectedOrigins = identities;
+      const scored = { selection: [], holdout: [] };
+      for (const [row, latest] of [...model.history.map((row) => [row, false]), [model.latest, true]]) {
+        const horizonHours = object(row) ? (Date.parse(row.target_date) - Date.parse(row.origin_date)) / 3600000 : NaN;
+        if (!object(row) || !zonedTimestamp(row.origin_date) || !zonedTimestamp(row.target_date)
+          || !Number.isFinite(horizonHours) || horizonHours < 167 || horizonHours > 169
+          || !FORECAST_STATES.includes(row.current_state) || !simplex(row.probabilities) || !simplex(row.raw_probabilities)) { fail(`${model.id} 예측이 올바르지 않습니다.`); continue; }
+        if (latest ? row.actual !== null || row.evaluation_split !== "unobserved" || Date.parse(row.origin_date) !== Date.parse(block.data_as_of)
+          : !FORECAST_STATES.includes(row.actual) || row.evaluation_split !== (Date.parse(row.origin_date) < Date.parse("2023-01-01") ? "selection" : "holdout")
+            || (row.evaluation_split === "selection" && Date.parse(row.target_date) >= Date.parse(block.selection.selection_end))
+            || Date.parse(row.target_date) > Date.parse(model.latest?.origin_date)) fail(`${model.id} 예측 목표가 관측과 다릅니다.`);
+        const predicted = FORECAST_STATES.reduce((best, state) => row.probabilities[state] > row.probabilities[best] ? state : best, FORECAST_STATES[0]);
+        if (row.predicted !== predicted) fail(`${model.id} 최빈 국면이 다릅니다.`);
+        const calibration = row.calibration;
+        if (!object(calibration) || number(calibration.temperature) === null || calibration.temperature <= 0
+          || !Number.isInteger(calibration.rows) || calibration.rows < 0 || calibration.rows > 156
+          || !zonedTimestamp(calibration.last_train_target) || Date.parse(calibration.last_train_target) >= Date.parse(row.origin_date)) fail(`${model.id} 교정 시점이 올바르지 않습니다.`);
+        const observed = payload.weekly?.find((week) => week.date === row.origin_date.slice(0, 10));
+        const target = payload.weekly?.find((week) => week.date === row.target_date.slice(0, 10));
+        if (observed?.current?.state && observed.current.state !== row.current_state) fail(`${model.id} 현재 국면이 다릅니다.`);
+        if (!latest && target?.current?.state && target.current.state !== row.actual) fail(`${model.id} 실제 국면이 다릅니다.`);
+        if (!latest && FORECAST_STATES.includes(row.actual) && Object.hasOwn(scored, row.evaluation_split)) {
+          const actualIndex = FORECAST_STATES.indexOf(row.actual), currentIndex = FORECAST_STATES.indexOf(row.current_state), predictedIndex = FORECAST_STATES.indexOf(predicted);
+          const clipped = FORECAST_STATES.map((state) => Math.max(1e-9, row.probabilities[state]));
+          const total = clipped.reduce((sum, value) => sum + value, 0), p = clipped.map((value) => value / total);
+          const event = actualIndex !== currentIndex, alert = predictedIndex !== currentIndex;
+          scored[row.evaluation_split].push({ loss: -Math.log(p[actualIndex]), brier: p.reduce((sum, value, index) => sum + (value - (index === actualIndex ? 1 : 0)) ** 2, 0),
+            event, hit: event && alert, falseAlarm: !event && alert,
+            worsening: actualIndex > currentIndex, worseningHit: actualIndex > currentIndex && predictedIndex > currentIndex,
+            recovery: actualIndex < currentIndex, recoveryHit: actualIndex < currentIndex && predictedIndex < currentIndex });
+        }
+      }
+      const last = model.history.at(-1);
+      if (Date.parse(last?.target_date) !== Date.parse(block.data_as_of) || last?.actual !== model.latest?.current_state) fail(`${model.id} 최신 관측 연결이 다릅니다.`);
+      for (const split of ["selection", "holdout"]) {
+        const rows = scored[split], count = rows.length, sum = (key) => rows.reduce((total, row) => total + Number(row[key]), 0);
+        const events = sum("event"), hits = sum("hit"), falseAlarms = sum("falseAlarm");
+        const expected = { n_predictions: count, log_loss: sum("loss") / count, brier: sum("brier") / count,
+          transition_event_count: events, on_time_departure_count: hits, false_alarm_count: falseAlarms,
+          transition_recall: events ? hits / events : 0, false_alarms_per_year: falseAlarms / count * 52.1775,
+          worsening_event_count: sum("worsening"), on_time_worsening_count: sum("worseningHit"),
+          recovery_event_count: sum("recovery"), on_time_recovery_count: sum("recoveryHit") };
+        const metric = model.metrics[split];
+        for (const [key, value] of Object.entries(expected)) {
+          if (!Number.isFinite(value) || number(metric?.[key]) === null || Math.abs(metric[key] - value) > 1e-8) fail(`${model.id} ${split}.${key}가 예측 이력과 다릅니다.`);
+        }
+      }
+    }
+    if (!object(block.provenance) || ["input_sha256", "code_sha256", "baseline_oos_sha256", "cache_key"].some((key) => !sha(block.provenance[key]))) fail("재현 근거가 올바르지 않습니다.");
+    return errors;
   }
   function contextPosition(scores = {}) {
     const read = (key) => number(typeof scores[key] === "object" ? scores[key]?.value ?? scores[key]?.score : scores[key]);
@@ -366,5 +488,5 @@
 
     return { renderPerformanceLineChart, renderPerformanceDrawdownChart, renderPerformanceFallback, renderPerformanceBridge, renderPerformanceTurnover, renderPerformanceDetailTable, turnoverValues };
   }
-  return Object.freeze({ conditionalMetrics, portfolioAdjustment, forecastTiming, modelQuality, contextPosition, researchScope, sensitivityRanges, createPerformanceRenderers });
+  return Object.freeze({ conditionalMetrics, portfolioAdjustment, forecastTiming, modelQuality, forecastImprovementModels, forecastComparisonModel, researchForecastForWeek, validateForecastImprovement, FORECAST_RESEARCH_IDS, contextPosition, researchScope, sensitivityRanges, createPerformanceRenderers });
 });

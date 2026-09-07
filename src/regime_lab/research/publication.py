@@ -33,6 +33,9 @@ from regime_lab.research.additional_sources import (
 from regime_lab.research.contract import validate_research_extensions
 from regime_lab.research.diagnostics import ablation_diagnostics
 from regime_lab.research.downside import run_downside_research
+from regime_lab.research.forecast_improvement import build_forecast_improvement
+from regime_lab.research.forecast_contract import validate_forecast_improvement
+from regime_lab.research.forecast_assets import build_forecast_asset_statistics
 
 
 def _verify_source_snapshot(directory: Path, cutoff: str) -> dict:
@@ -132,8 +135,18 @@ def compose_live_publication_research(
     canonical = dataset.canonical.loc[dataset.canonical.spy_close.notna()].copy()
     if canonical.empty or canonical.index[-1] != pd.Timestamp(cutoff):
         raise ValueError("publication research canonical cutoff differs from generation")
+    label_history = benchmark.state_label_history
+    if not isinstance(label_history, pd.DataFrame) or not {"date", "state"} <= set(label_history):
+        raise ValueError("publication forecast research requires authoritative states")
+    state_index = pd.DatetimeIndex(pd.to_datetime(label_history["date"], utc=True))
+    if state_index.has_duplicates:
+        raise ValueError("publication forecast research state dates are duplicated")
+    states = pd.Series(label_history["state"].to_numpy(), index=state_index).reindex(canonical.index)
+    if states.isna().any():
+        raise ValueError("publication forecast research state history is incomplete")
     frames = {
         "canonical": canonical,
+        "canonical_states": states,
         "oos_predictions": benchmark.predictions.copy(deep=True),
         "transition_predictions": benchmark.transition_benchmark.predictions.copy(deep=True),
         "model_conditioned_outcomes": benchmark.model_conditioned_asset_outcomes.copy(deep=True),
@@ -174,6 +187,18 @@ def compose_live_publication_research(
         canonical, additional=additional, selection_end=selection_end,
     )).summary
     diagnostics = run("특성별 기여", lambda: ablation_diagnostics(frames["ablation_predictions"]))
+    forecast_improvement = run("경계 전환 예측", lambda: build_forecast_improvement(
+        canonical, states, predictions, cache_directory.parent / "forecast-improvement",
+    ))
+    forecast_improvement["asset_statistics"] = run("경계 모델별 자산 성과", lambda: build_forecast_asset_statistics(
+        canonical, forecast_improvement,
+        bootstrap_resamples=payload["model"]["execution_parameters"]["conditional_outcome_bootstrap_resamples"],
+        cache_directory=cache_directory.parent / "forecast-assets",
+    ))
+    validate_forecast_improvement(forecast_improvement, data_as_of=cutoff,
+        outcome_resamples=payload["model"]["execution_parameters"]["conditional_outcome_bootstrap_resamples"])
+    if any(item["metrics"]["holdout"]["n_predictions"] != expected for item in forecast_improvement["models"]):
+        raise ValueError("publication forecast improvement lost matched holdout origins")
     # The current issuance is appended only after atomic publication succeeds.
     operational = run("실제 발행 기록", lambda: read_operational_diagnostics(ledger_path))
     if allocation["performance"]["weeks"] != expected or decision["diagnostic_origins"] != expected:
@@ -185,6 +210,7 @@ def compose_live_publication_research(
         raise ValueError("publication research changed official generation decisions")
     result["research"]["decision_research_v2"] = decision
     result["research"]["operational_diagnostics"] = operational
+    result["research"]["forecast_improvement"] = forecast_improvement
     shadow["allocation_research_v2"] = allocation
     extensions = {
         "schema_version": "regime-research-extensions/1",
@@ -213,6 +239,7 @@ def compose_live_publication_research(
             "allocation_research_v2": allocation,
             "decision_research_v2": decision,
             "operational_diagnostics": operational,
+            "forecast_improvement": forecast_improvement,
             "downside": downside,
             "diagnostics": diagnostics,
             "additional_data": sources,

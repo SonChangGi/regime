@@ -3292,6 +3292,26 @@ def _validate_model_conditioned_stats(
             "model-conditioned statistics require their complete artifact pair"
         )
 
+    validate_model_conditioned_statistics_values(
+        raw, expected_models=expected_models, expected_resamples=expected_resamples,
+    )
+    expected_rows = len(expected_models) * len(OUTCOME_ASSETS) * len(STATE_ORDER) * len(HORIZONS)
+    statistics_count = _integer(
+        artifacts["model_conditioned_asset_statistics"]["row_count"],
+        "payload.model.research_artifacts.model_conditioned_asset_statistics.row_count",
+        minimum=1,
+    )
+    if statistics_count != expected_rows:
+        raise V5ContractError(
+            "model-conditioned asset statistics artifact row count is inconsistent"
+        )
+
+
+def validate_model_conditioned_statistics_values(
+    raw: Any, *, expected_models: tuple[str, ...], expected_resamples: int,
+) -> None:
+    """Share the same economic and statistical contract with research models."""
+
     context = "payload.research.model_conditioned_asset_stats"
     stats = _mapping(raw, context)
     expected_stats_fields = {
@@ -3440,17 +3460,6 @@ def _validate_model_conditioned_stats(
             {"conditional_asset_stats": canonical},
             expected_resamples=expected_resamples,
         )
-
-    statistics_count = _integer(
-        artifacts["model_conditioned_asset_statistics"]["row_count"],
-        "payload.model.research_artifacts.model_conditioned_asset_statistics.row_count",
-        minimum=1,
-    )
-    if statistics_count != expected_rows:
-        raise V5ContractError(
-            "model-conditioned asset statistics artifact row count is inconsistent"
-        )
-
 
 def _validate_decision_shadow_current_signal(
     value: Any,
@@ -5115,6 +5124,9 @@ def validate_v5_payload(payload: Mapping[str, Any]) -> None:
     from regime_lab.research.contract import validate_research_extensions
     try:
         validate_research_extensions(payload["research"])
+        if "forecast_improvement" in payload["research"]:
+            from regime_lab.research.forecast_contract import validate_forecast_improvement
+            validate_forecast_improvement(payload["research"]["forecast_improvement"], data_as_of=payload["meta"]["data_as_of"], outcome_resamples=expected_outcome_resamples)
     except (KeyError, TypeError, ValueError) as exc:
         raise V5ContractError(f"research extension contract: {exc}") from exc
     _validate_conditional_stats(

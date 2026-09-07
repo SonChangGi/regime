@@ -3,7 +3,7 @@
   "generation_id": "20260906T200946.236868Z",
   "payload": {
     "path": "publication/live/regime-results.json",
-    "payload_contract_sha256": "cd0a3e86f104bddc9df6146702d42132c57c0b21ff81e1bf67e07f0a73329c4b"
+    "payload_contract_sha256": "8d34f50392275c8fcbd5d2369268c33b08ef61dcaad8fcb1a92a3da7273fb91f"
   },
   "comparison_sidecar": {
     "path": "publication/live/v5-vs-v4-comparison.json",
@@ -14,8 +14,8 @@
     "selection_family_contract_sha256": "22a60d1545c3df8d927f3128cde922624120c8e10f77cb108868e147bf2e427c"
   },
   "artifact_inventory": {
-    "sha256": "e1e57441a4ac8cf6c51b942ab2bd7ff1d125c3c96eb03860537e148b40d94821",
-    "file_count": 50
+    "sha256": "d4fc6f49c23dfba221c20b2ce108a6b0d19cd965a99a3444bcf26f25e7622a9a",
+    "file_count": 59
   },
   "input_snapshot": {
     "data_as_of": "2026-09-04T20:00:00+00:00",

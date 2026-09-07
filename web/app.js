@@ -909,7 +909,7 @@
     const selection = isObject(payload) && isObject(payload.selection) ? payload.selection : {};
     const candidates = Array.isArray(selection.candidate_set)
       ? selection.candidate_set.filter((name) => typeof name === "string" && name)
-      : forecastComparisonModels(payload);
+      : forecastComparisonModels(payload).filter((name) => !INSIGHTS.FORECAST_RESEARCH_IDS.includes(name));
     return Object.freeze({
       source: "payload",
       candidateCount: candidates.length,
@@ -3556,6 +3556,18 @@
   }
 
   function validateV5ResearchContract(research, model, errors, payload = null) {
+    errors.push(...INSIGHTS.validateForecastImprovement({ ...(payload || {}), research }));
+    const improvement = isObject(research) ? research.forecast_improvement : null;
+    if (isObject(improvement) && Object.hasOwn(improvement, "asset_statistics")) {
+      // Reuse the full existing asset contract (execution, support, bootstrap,
+      // benchmark and episode arithmetic) for the additive research roster.
+      // Removing only this optional block makes the nested validation finite.
+      const assetResearch = { ...research, forecast_improvement: undefined, model_conditioned_asset_stats: improvement.asset_statistics };
+      const assetModel = { ...model, forecast_comparison: { ...(model.forecast_comparison || {}), models: [...INSIGHTS.FORECAST_RESEARCH_IDS] } };
+      const assetErrors = [];
+      validateV5ResearchContract(assetResearch, assetModel, assetErrors, payload);
+      errors.push(...assetErrors.map((message) => message.replaceAll("research.model_conditioned_asset_stats", "research.forecast_improvement.asset_statistics")));
+    }
     validateDecisionShadowContract(research, errors, payload);
     const stats = isObject(research) ? research.conditional_asset_stats : null;
     if (!isObject(stats)) {
@@ -4555,9 +4567,10 @@
     const comparison = model && isObject(model.forecast_comparison)
       ? model.forecast_comparison
       : null;
-    return comparison && Array.isArray(comparison.models)
+    const official = comparison && Array.isArray(comparison.models)
       ? comparison.models.filter((name) => typeof name === "string" && name)
       : [];
+    return [...official, ...INSIGHTS.forecastImprovementModels(payload).map((model) => model.id)];
   }
 
   function operatingChampionName(payload = state.raw) {
@@ -4574,6 +4587,9 @@
     const name = typeof requestedModel === "string" && requestedModel
       ? requestedModel
       : championName;
+    if (INSIGHTS.FORECAST_RESEARCH_IDS.includes(name)) {
+      return INSIGHTS.researchForecastForWeek(payload, name, week.date);
+    }
     const forecasts = Array.isArray(week.model_forecasts) ? week.model_forecasts : [];
     const selected = forecasts.find(
       (row) => isObject(row) && row.model === name,
@@ -4590,6 +4606,7 @@
       const stay = getProbability(selected, currentState);
       if (stay !== null) return Math.max(0, Math.min(1, 1 - stay));
     }
+    if (INSIGHTS.FORECAST_RESEARCH_IDS.includes(state.comparisonModel)) return null;
     const risk = isObject(week.transition_risk) && isObject(week.transition_risk["1w"])
       ? week.transition_risk["1w"].probability
       : week.transition_probability;
@@ -4945,13 +4962,13 @@
       .split(",")
       .filter((asset) => OUTCOME_ASSETS.includes(asset));
     const operatingModel = operatingChampionName(payload);
-    const model = models.includes(requestedModel)
+    const model = models.includes(requestedModel) || (researchPending && INSIGHTS.FORECAST_RESEARCH_IDS.includes(requestedModel))
       ? requestedModel
       : models.includes(operatingModel)
         ? operatingModel
         : models[0] || operatingModel;
     const requestedBasis = params.get("basis");
-    const forecastBasisComplete = researchPending || modelConditionedAssetRowsComplete(payload, model);
+    const forecastBasisComplete = researchPending || INSIGHTS.FORECAST_RESEARCH_IDS.includes(model) || modelConditionedAssetRowsComplete(payload, model);
     const basis = requestedBasis === "forecast"
       ? forecastBasisComplete ? "forecast" : "observed"
       : requestedBasis === null && forecastBasisComplete
@@ -5088,7 +5105,7 @@
       dom["conditional-basis-select"].addEventListener("change", () => {
         const requested = dom["conditional-basis-select"].value;
         state.outcomeBasis = requested === "forecast"
-          && modelConditionedAssetRowsComplete(state.raw, state.comparisonModel)
+          && (INSIGHTS.FORECAST_RESEARCH_IDS.includes(state.comparisonModel) || modelConditionedAssetRowsComplete(state.raw, state.comparisonModel))
           ? "forecast"
           : "observed";
         renderConditionalStats();
@@ -6925,7 +6942,9 @@
     for (const [label, value, detail] of [
       ["확률 오차", formatNumber(quality.logLoss, 3), `Log loss · ${formatNumber(quality.weeks, 0)}주`],
       ["국면 변화 포착", quality.events === 0 ? "평가 전환 없음" : captured,
-        quality.events === 0 ? "최빈국면 기준" : `최빈국면 기준 · ${formatPercent(quality.recall, 1)}`],
+        quality.researchCandidate && quality.worseningEvents !== null && quality.recoveryEvents !== null
+          ? `악화 ${formatNumber(quality.worseningCaptured, 0)}/${formatNumber(quality.worseningEvents, 0)} · 회복 ${formatNumber(quality.recoveryCaptured, 0)}/${formatNumber(quality.recoveryEvents, 0)}`
+          : quality.events === 0 ? "최빈국면 기준" : `최빈국면 기준 · ${formatPercent(quality.recall, 1)}`],
       ["오경보", quality.falseAlarms === null ? "—" : `${formatNumber(quality.falseAlarms, 2)}회/년`,
         quality.falseAlarmCount === null ? "자료 없음" : `잘못 예고한 국면 변화 ${formatNumber(quality.falseAlarmCount, 0)}회`],
     ]) {
@@ -7364,10 +7383,7 @@
   }
 
   function modelConditionedAssetRows(payload, requestedModel) {
-    const research = isObject(payload) && isObject(payload.research) ? payload.research : null;
-    const stats = research && isObject(research.model_conditioned_asset_stats)
-      ? research.model_conditioned_asset_stats
-      : null;
+    const stats = conditionalStatsContract(payload, "forecast", requestedModel);
     if (!stats || !Array.isArray(stats.rows) || typeof requestedModel !== "string" || !requestedModel) return [];
     return stats.rows.filter(
       (row) => isObject(row) && row.conditioning_model === requestedModel,
@@ -7449,7 +7465,7 @@
     const matchedTargetWeek = conditionalUsesTargetWeekSemantics(contract);
     if (
       state.outcomeBasis === "forecast"
-      && modelConditionedAssetRowsComplete(state.raw, state.comparisonModel)
+      && (INSIGHTS.FORECAST_RESEARCH_IDS.includes(state.comparisonModel) || modelConditionedAssetRowsComplete(state.raw, state.comparisonModel))
     ) {
       return matchedTargetWeek
         ? `${modelForecastLabel(state.comparisonModel)} 예측 국면`
@@ -7466,7 +7482,8 @@
       if (!pending) state.outcomeBasis = "observed";
       return;
     }
-    const supported = modelConditionedAssetRowsComplete(state.raw, state.comparisonModel);
+    const researchCandidate = INSIGHTS.FORECAST_RESEARCH_IDS.includes(state.comparisonModel);
+    const supported = researchCandidate || modelConditionedAssetRowsComplete(state.raw, state.comparisonModel);
     const forecastOption = [...select.options].find((option) => option.value === "forecast");
     const observedOption = [...select.options].find((option) => option.value === "observed");
     const forecastContract = conditionalStatsContract(state.raw, "forecast");
@@ -7552,9 +7569,12 @@
       : "—";
   }
 
-  function conditionalStatsContract(payload, basis = "observed") {
+  function conditionalStatsContract(payload, basis = "observed", requestedModel = state.comparisonModel) {
     const research = isObject(payload) && isObject(payload.research) ? payload.research : null;
     if (!research) return null;
+    if (basis === "forecast" && INSIGHTS.FORECAST_RESEARCH_IDS.includes(requestedModel)) {
+      return isObject(research.forecast_improvement?.asset_statistics) ? research.forecast_improvement.asset_statistics : null;
+    }
     return basis === "forecast" && isObject(research.model_conditioned_asset_stats)
       ? research.model_conditioned_asset_stats
       : isObject(research.conditional_asset_stats)
@@ -7588,7 +7608,7 @@
 
   function conditionalBenchmarkForAsset(payload, basis, model, asset, horizon, rows = null, weighting = "episode") {
     const suppliedRows = Array.isArray(rows) ? rows : conditionalStatsRowsForBasis(payload, basis, model);
-    const stats = conditionalStatsContract(payload, basis);
+    const stats = conditionalStatsContract(payload, basis, model);
     const targetWeekSemantics = conditionalUsesTargetWeekSemantics(stats) && weighting === "episode";
     const publishedBenchmarkKeys = targetWeekSemantics
       ? ["episode_equal_unconditional_benchmark_mean_return"]
@@ -7691,6 +7711,13 @@
     );
     setText(dom["conditional-stats-caption"], `${basisLabel} · 다음 주 시가 진입 · ${horizonLabel} 보유`);
     setText(dom["conditional-comparison-caption"], "평균 수익률");
+    if (state.outcomeBasis === "forecast" && INSIGHTS.FORECAST_RESEARCH_IDS.includes(state.comparisonModel)
+      && !comparisonRows.length) {
+      setText(dom["conditional-stats-caption"], `${modelForecastLabel(state.comparisonModel)} · 자산 성과 미집계`);
+      setText(dom["conditional-comparison-caption"], "미집계");
+      dom["conditional-stat-grid"].append(createElement("p", "empty-inline", "이 연구 모델의 예측 국면별 자산 성과는 아직 집계되지 않았습니다."));
+      return;
+    }
 
     const table = createElement("table", "conditional-matrix");
     table.append(createElement("caption", "sr-only", `${basisLabel} ${horizonLabel} 자산 성과 행렬`));
@@ -7819,7 +7846,7 @@
       const decisionMetrics = conditionalDecisionMetrics(row, targetWeekSemantics);
       const supported = row.status === "ok";
       const statusLabel = !supported
-        ? "표본 부족"
+        ? state.outcomeBasis === "forecast" && INSIGHTS.FORECAST_RESEARCH_IDS.includes(state.comparisonModel) ? "미집계" : "표본 부족"
         : finiteNumber(decisionMetrics.mean) === null
           ? "값 없음"
           : "";
@@ -7991,6 +8018,20 @@
     }
     const hasSectorRanking = renderSectorRanking();
     dom["conditional-stats-nav"].hidden = false;
+    if (state.outcomeBasis === "forecast" && INSIGHTS.FORECAST_RESEARCH_IDS.includes(state.comparisonModel)
+      && state.researchAvailable && !modelConditionedAssetRowsComplete(state.raw, state.comparisonModel)) {
+      syncConditionalBasisControl();
+      const controls = section.querySelector(".conditional-stat-controls");
+      if (controls) controls.hidden = false;
+      dom["conditional-unavailable"].hidden = false;
+      dom["conditional-results"].hidden = true;
+      dom["conditional-support-summary"].hidden = true;
+      setText(dom["conditional-stats-title"], "예측 국면별 자산 성과");
+      setText(dom["conditional-stats-caption"], `${modelForecastLabel(state.comparisonModel)} · 미집계`);
+      setText(dom["conditional-unavailable"], "이 연구 모델의 자산 성과는 아직 집계되지 않았습니다.");
+      section.hidden = false;
+      return;
+    }
     const hasResearchRows = state.researchAvailable && conditionalStatsRows().length > 0;
     dom["conditional-unavailable"].hidden = hasResearchRows;
     dom["conditional-results"].hidden = !hasResearchRows;
@@ -8247,6 +8288,7 @@
     const container = dom["model-loss-chart"];
     container.replaceChildren();
     const operatingModel = isObject(state.raw) ? operatingChampionName() : championName;
+    const hasResearchComparison = INSIGHTS.forecastImprovementModels(state.raw).length > 0;
     const eligible = modelLossComparisonRows(rows, state.comparisonModel, operatingModel);
 
     if (!eligible.length) {
@@ -8280,7 +8322,7 @@
         chartRow.classList.add("is-selected-comparison");
         chartRow.setAttribute("aria-current", "true");
       }
-      const roles = [isSelected ? "비교 선택" : null, isOperating ? "운영" : isChampion ? "선정" : null].filter(Boolean).join(" · ");
+      const roles = [isSelected ? "비교 선택" : null, item.row.research_candidate ? "연구" : isOperating ? "운영" : isChampion ? "선정" : null].filter(Boolean).join(" · ");
 
       const label = createElement("span", "model-loss-label");
       label.title = item.name;
@@ -8290,10 +8332,10 @@
           "span",
           null,
           roles
-            ? `${roles} · #${formatNumber(item.rank, 0)}`
+            ? `${roles}${item.rank === null ? "" : ` · ${hasResearchComparison ? "기존 " : ""}#${formatNumber(item.rank, 0)}`}`
             : isHoldoutBest
-              ? "2023년 이후 #1"
-              : `2023년 이후 #${formatNumber(item.rank, 0)}`,
+              ? hasResearchComparison ? "기존 모델 #1" : "2023년 이후 #1"
+              : `${hasResearchComparison ? "기존 모델" : "2023년 이후"} #${formatNumber(item.rank, 0)}`,
         ),
       );
 
@@ -8322,7 +8364,7 @@
       );
       chartRow.setAttribute(
         "aria-label",
-        `${item.name}, 선정 구간 Log loss ${formatNumber(item.selection, 4)}, 2023년 이후 진단 Log loss ${formatNumber(item.holdout, 4)}${isSelected ? ", 비교 선택" : ""}${isOperating ? ", 운영 모델" : isChampion ? ", 선정 모델" : ""}${isHoldoutBest ? ", 2023년 이후 진단 1위" : ""}`,
+        `${item.name}, 선정 구간 Log loss ${formatNumber(item.selection, 4)}, 2023년 이후 진단 Log loss ${formatNumber(item.holdout, 4)}${isSelected ? ", 비교 선택" : ""}${isOperating ? ", 운영 모델" : isChampion ? ", 선정 모델" : ""}${isHoldoutBest ? `, ${hasResearchComparison ? "기존 모델 중 " : ""}2023년 이후 진단 1위` : ""}`,
       );
       chartRow.append(label, track, exact);
       container.append(chartRow);
@@ -8369,6 +8411,8 @@
       filtered_hsmm: "Filtered HSMM",
       dynamic_factor_tvtp: "Dynamic-factor TVTP",
       bayesian_online_changepoint: "BOCPD",
+      boundary_filtered_history: "경계 전환 · 과거 충격",
+      boundary_student_t: "경계 전환 · Student-t",
     }[name] || textValue(name, "모델");
   }
 
@@ -8395,7 +8439,8 @@
   }
 
   function renderModelForecast() {
-    const model = state.raw && isObject(state.raw.model) ? state.raw.model : {};
+    const model = INSIGHTS.forecastComparisonModel(state.raw || {});
+    const hasResearchComparison = INSIGHTS.forecastImprovementModels(state.raw).length > 0;
     const models = forecastComparisonModels(state.raw);
     const week = selectedWeek() || state.weekly[state.weekly.length - 1] || null;
     const forecasts = week && Array.isArray(week.model_forecasts)
@@ -8403,7 +8448,7 @@
       : [];
     const supported = isV5Payload()
       && models.length > 0
-      && forecasts.length === models.length
+      && forecasts.length === (state.raw?.model?.forecast_comparison?.models?.length || 0)
       && Boolean(week);
     dom["model-forecast-field"].hidden = !supported;
     dom["model-forecast-explorer"].hidden = !supported;
@@ -8414,7 +8459,8 @@
 
     const championName = modelName(model.champion);
     const operatingName = operatingChampionName();
-    if (!models.includes(state.comparisonModel)) {
+    if (!models.includes(state.comparisonModel)
+      && !(state.sidecarAvailability.research === "pending" && INSIGHTS.FORECAST_RESEARCH_IDS.includes(state.comparisonModel))) {
       state.comparisonModel = models.includes(operatingName)
         ? operatingName
         : models.includes(championName)
@@ -8436,13 +8482,13 @@
       for (const name of models) {
         const row = leaderboard.find((candidate) => modelName(candidate) === name);
         const rank = finiteNumber(firstValue(row, ["rank", "position"]));
-        const role = name === operatingName
+        const role = row?.research_candidate ? "연구" : name === operatingName
           ? "현재"
           : name === championName
             ? "선정"
             : rank === null
               ? "비교"
-              : `비교 · 2023년 이후 #${formatNumber(rank, 0)}`;
+              : `비교 · ${hasResearchComparison ? "기존 모델" : "2023년 이후"} #${formatNumber(rank, 0)}`;
         const option = createElement("option", null, `${modelForecastLabel(name)} · ${role}`);
         option.value = name;
         select.append(option);
@@ -8460,7 +8506,7 @@
     const leaderboardRow = leaderboard.find((row) => modelName(row) === state.comparisonModel) || {};
     const isChampion = state.comparisonModel === operatingName;
     dom["model-forecast-explorer"].classList.toggle("is-operating-model", isChampion);
-    const selectedRole = isChampion
+    const selectedRole = leaderboardRow.research_candidate ? "연구 모델" : isChampion
       ? "현재 모델"
       : state.comparisonModel === championName
         ? "선정 모델"
@@ -8480,8 +8526,8 @@
     const officialState = officialForecast && officialForecast.state;
     const officialModelLabel = modelForecastLabel(operatingName);
     const agreement = forecast.state === officialState
-      ? "공식 예측과 일치"
-      : `${officialModelLabel} ${stateMeta(officialState).ko}`;
+      ? "공식 모델과 예상 국면 같음"
+      : `${officialModelLabel}와 예상 국면 다름 · ${stateMeta(officialState).ko}`;
     dom["model-forecast-caption"].hidden = isChampion;
     setText(
       dom["model-forecast-caption"],
@@ -8494,7 +8540,7 @@
     renderModelForecastProbabilities(forecast);
 
     const rank = finiteNumber(firstValue(leaderboardRow, ["rank", "position"]));
-    setText(dom["model-forecast-rank"], rank === null ? "—" : `${formatNumber(rank, 0)} / ${formatNumber(leaderboard.length, 0)}`);
+    setText(dom["model-forecast-rank"], rank === null ? "—" : `${hasResearchComparison ? "기존 " : ""}${formatNumber(rank, 0)} / ${formatNumber(hasResearchComparison ? state.raw.model.leaderboard.length : leaderboard.length, 0)}`);
     const selectionLogLoss = metricValue(leaderboardRow, ["selection_log_loss"]);
     const diagnosticLogLoss = metricValue(leaderboardRow, ["log_loss", "multiclass_log_loss"]);
     setText(
@@ -8574,6 +8620,7 @@
 
   function renderModel() {
     const model = state.raw.model || {};
+    const hasResearchComparison = INSIGHTS.forecastImprovementModels(state.raw).length > 0;
     const champion = model.champion;
     const championName = modelName(champion);
     const holdoutDiagnostic = isObject(model.holdout_diagnostic) ? model.holdout_diagnostic : null;
@@ -8588,7 +8635,7 @@
     renderTransitionModels();
 
     dom["leaderboard-body"].replaceChildren();
-    const rows = Array.isArray(model.leaderboard) ? model.leaderboard : [];
+    const rows = INSIGHTS.forecastComparisonModel(state.raw || {}).leaderboard;
     renderModelLossChart(rows, championName, holdoutBestName);
     renderModelForecast();
     if (!rows.length) {
@@ -8609,13 +8656,14 @@
       const isHoldoutBest = Boolean(holdoutBestName) && name === holdoutBestName;
       if (isChampion) row.classList.add("is-champion");
       if (isHoldoutBest) row.classList.add("is-holdout-best");
-      const rank = firstValue(rowData, ["rank", "position"]) || index + 1;
-      row.append(createElement("td", null, rank));
+      const rank = rowData.research_candidate ? "연구" : firstValue(rowData, ["rank", "position"]) || index + 1;
+      row.append(createElement("td", null, hasResearchComparison && !rowData.research_candidate ? `기존 ${rank}` : rank));
       const nameCell = createElement("td", null, modelForecastLabel(name));
       nameCell.classList.add("model-name-cell");
       if (modelForecastLabel(name) !== name) nameCell.append(createElement("small", "model-code", name));
       if (isChampion) nameCell.append(createElement("span", "champion-label", "선정"));
-      if (isHoldoutBest) nameCell.append(createElement("span", "holdout-label", "2023년 이후 1위"));
+      if (rowData.research_candidate) nameCell.append(createElement("span", "research-model-label", "연구"));
+      if (isHoldoutBest) nameCell.append(createElement("span", "holdout-label", hasResearchComparison ? "기존 모델 중 1위" : "2023년 이후 1위"));
       row.append(nameCell);
       row.append(
         createElement("td", null, formatNumber(metricValue(rowData, ["log_loss", "multiclass_log_loss"]), 4)),
@@ -9162,6 +9210,7 @@
       }
       renderAnalysisCoverage();
       renderModel();
+      if (INSIGHTS.FORECAST_RESEARCH_IDS.includes(state.comparisonModel)) renderForecastSurfaces();
       renderConditionalStats();
       renderDecisionShadow();
       state.hydratingView = false;

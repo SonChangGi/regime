@@ -5,7 +5,7 @@
 실제 투자 주문은 하지 않으며, 예측 시점에 맞춘 연구용 자산배분 성과를 함께 검증합니다. 현재 발행 결과는 [자동 생성 스냅샷 요약](docs/current-snapshot.md)에서 확인합니다. 로컬 수집·학습과 원자료를 제외한
 개인·비상업 파생 결과 공개는 확인된 프로젝트 승인 범위에서 실행합니다.
 
-개선 작업의 실행·검증 방법은 [종합 개선 안내](docs/comprehensive-improvements.md)에 정리했습니다.
+개선 작업의 실행·검증 방법은 [종합 개선 안내](docs/comprehensive-improvements.md)에 정리했습니다. 새 경계 전환 모델의 성능과 사용법은 [국면 예측 개선](docs/forecast-performance-improvement.md)에서 확인합니다.
 
 ## 무엇을 보여주나
 

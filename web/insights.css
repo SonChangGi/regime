@@ -561,6 +561,7 @@ html[data-theme="dark"] {
 #leaderboard-table tr.is-selected-comparison > td { background: var(--surface-soft); }
 #leaderboard-table tr.is-selected-comparison > td:first-child { box-shadow: inset 3px 0 0 var(--brand); }
 .comparison-selection-label { display: inline-block; margin: 3px 0 0 6px; color: var(--brand); font-size: 10px; font-weight: 750; white-space: nowrap; }
+.research-model-label { display: inline-block; margin: 3px 0 0 6px; padding: 1px 5px; border: 1px solid var(--line); border-radius: 4px; color: var(--ink-soft); font-size: 10px; font-weight: 650; white-space: nowrap; }
 @media (max-width: 700px) {
   .model-loss-row.is-selected-comparison .model-loss-label > span { white-space: normal; line-height: 1.45; }
 }

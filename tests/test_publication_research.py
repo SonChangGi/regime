@@ -3,6 +3,7 @@ from contextlib import nullcontext
 from copy import deepcopy
 from datetime import datetime, timezone
 import json
+import math
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -24,17 +25,21 @@ def no_network(monkeypatch):
 
 @pytest.fixture
 def generation():
-    dates = pd.date_range("2026-08-21T20:00:00Z", periods=3, freq="W-FRI")
-    canonical = pd.DataFrame({"spy_close": [100., 102., 103.], "spy_adjusted_open": [100., 102., 103.]}, index=dates)
-    predictions = pd.DataFrame({"model": ["selected"] * 3, "evaluation_split": ["selection", "holdout", "holdout"], "origin_date": dates})
+    dates = pd.date_range("2026-08-14T20:00:00Z", periods=4, freq="W-FRI")
+    canonical = pd.DataFrame({f"{asset}_{basis}": [100., 101., 102., 103.]
+                              for asset in ("spy", "qqq", "iwm", "tlt", "hyg", "uup")
+                              for basis in ("close", "adjusted_open")}, index=dates)
+    predictions = pd.DataFrame({"model": ["selected"] * 3, "evaluation_split": ["selection", "holdout", "holdout"], "origin_date": dates[:-1]})
     dataset = SimpleNamespace(canonical=canonical, features=canonical.copy(), input_vintages=(), availability_basis="reconstructed_market")
     benchmark = SimpleNamespace(champion="selected", predictions=predictions,
+        state_label_history=pd.DataFrame({"date": dates, "state": ["risk_on"] * 4}),
         transition_benchmark=SimpleNamespace(predictions=pd.DataFrame({"value": [1]})),
         model_conditioned_asset_outcomes=pd.DataFrame({"value": [2]}),
         feature_ablation=SimpleNamespace(predictions=pd.DataFrame({"value": [3]})))
     payload = {
         "meta": {"mode": "live", "status": "ok", "generation_id": "test-generation", "data_as_of": CUTOFF},
-        "model": {"profile": "standard", "champion": "selected", "selection_end": "2023-07-01", "candidate_manifest_sha256": "a" * 64},
+        "model": {"profile": "standard", "champion": "selected", "selection_end": "2023-07-01", "candidate_manifest_sha256": "a" * 64,
+                  "execution_parameters": {"conditional_outcome_bootstrap_resamples": 1999}},
         "selection": {"operating_champion": "selected"},
         "label": {"spec_sha256": "b" * 64},
         "forecast": {"origin_at": CUTOFF, "decision_at": "2026-09-05T12:00:00+00:00", "target_at": "2026-09-11T20:00:00+00:00"},
@@ -70,6 +75,31 @@ def fake_studies(monkeypatch, tmp_path, *, downside_cutoff=CUTOFF, matched=2):
     monkeypatch.setattr(publication, "run_downside_research", downside)
     monkeypatch.setattr(publication, "ablation_diagnostics", lambda frame: {"ablation": []})
     monkeypatch.setattr(publication, "read_operational_diagnostics", lambda path: {"schema_version": "regime-operational-diagnostics/1", "as_of": "2026-09-05T12:01:00+00:00", "timing": {"issued_entry_count": 4}})
+    def forecast(canonical, states, predictions, cache_directory):
+        seen["forecast"] = {"states": states.copy(), "cache_directory": cache_directory}
+        probabilities = {"risk_on": .7, "transition": .2, "risk_off": .1}
+        history = [{"origin_date": origin.isoformat(), "target_date": target.isoformat(),
+                    "current_state": "risk_on", "actual": "risk_on", "predicted": "risk_on",
+                    "calibration": {"temperature": 1., "rows": 0, "last_train_target": "2026-08-07T20:00:00Z"},
+                    "evaluation_split": "selection" if index == 0 else "holdout",
+                    "probabilities": probabilities, "raw_probabilities": probabilities}
+                   for index, (origin, target) in enumerate(zip(canonical.index[:-1], canonical.index[1:]))]
+        latest = {"origin_date": CUTOFF, "target_date": "2026-09-11T20:00:00+00:00", "actual": None,
+                  "current_state": "risk_on", "probabilities": probabilities, "raw_probabilities": probabilities, "predicted": "risk_on",
+                  "calibration": {"temperature": 1., "rows": 0, "last_train_target": "2026-08-28T20:00:00Z"}}
+        metrics = {split: {"n_predictions": count, "log_loss": -math.log(.7), "brier": .14,
+                           "transition_event_count": 0, "on_time_departure_count": 0,
+                           "false_alarm_count": 0, "false_alarms_per_year": 0,
+                           "transition_recall": 0, "transition_precision": 0,
+                           "worsening_event_count": 0, "on_time_worsening_count": 0,
+                           "recovery_event_count": 0, "on_time_recovery_count": 0}
+                   for split, count in [("selection", 1), ("holdout", 2)]}
+        return {"schema_version": "regime-forecast-improvement/1", "selected_model": "boundary_filtered_history",
+                "evidence_track": "reconstructed_market", "data_as_of": CUTOFF,
+                "provenance": {key: "a"*64 for key in ["input_sha256", "code_sha256", "baseline_oos_sha256", "cache_key"]},
+                "models": [{"id": model, "history": history, "latest": latest, "metrics": metrics}
+                           for model in ["boundary_filtered_history", "boundary_student_t"]]}
+    monkeypatch.setattr(publication, "build_forecast_improvement", forecast)
     return seen
 
 
@@ -105,8 +135,12 @@ def test_composition_uses_generation_inputs_and_preserves_official_decisions(mon
     assert receipt["source_payload_sha256"] == canonical_json_sha256_v1(before)
     assert receipt["operational_scope"] == "issued_ledger_before_current_generation_publication"
     assert receipt["outputs"]["decision_research_v2"] == canonical_json_sha256_v1(research["decision_research_v2"])
-    assert receipt["input_frames"]["canonical"]["rows"] == 3
-    assert len(messages) == 7
+    assert receipt["input_frames"]["canonical"]["rows"] == 4
+    assert receipt["input_frames"]["canonical_states"]["rows"] == 4
+    assert receipt["outputs"]["forecast_improvement"] == canonical_json_sha256_v1(research["forecast_improvement"])
+    assert research["forecast_improvement"]["models"][0]["latest"]["actual"] is None
+    assert seen["forecast"]["states"].eq("risk_on").all()
+    assert len(messages) == 9
 
 
 @pytest.mark.parametrize("profile,mode,contract", [("quick", "live", "v5"), ("standard", "demo", "v5"), ("full", "replay", "v5"), ("standard", "live", "v4")])
@@ -118,11 +152,13 @@ def test_nonproduction_paths_do_not_read_inputs_cache_or_ledger(tmp_path, profil
     assert not (tmp_path / "cache").exists()
 
 
-@pytest.mark.parametrize("failure", ["wrong_cutoff", "lost_origins", "study_failure"])
+@pytest.mark.parametrize("failure", ["wrong_cutoff", "lost_origins", "study_failure", "forecast_failure"])
 def test_failed_or_stale_studies_leave_the_source_payload_untouched(monkeypatch, tmp_path, generation, failure):
     fake_studies(monkeypatch, tmp_path, downside_cutoff="2026-08-28T20:00:00+00:00" if failure == "wrong_cutoff" else CUTOFF, matched=1 if failure == "lost_origins" else 2)
     if failure == "study_failure":
         monkeypatch.setattr(publication, "run_downside_research", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("study failed")))
+    if failure == "forecast_failure":
+        monkeypatch.setattr(publication, "build_forecast_improvement", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("forecast incomplete")))
     before = deepcopy(generation[0])
     with pytest.raises((ValueError, RuntimeError)):
         compose(generation, tmp_path)

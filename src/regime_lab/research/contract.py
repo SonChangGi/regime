@@ -7,6 +7,9 @@ import json
 def validate_research_extensions(research: dict) -> None:
     # JSON itself must remain finite; it is consumed without a Python runtime.
     json.dumps(research, allow_nan=False)
+    if "forecast_improvement" in research:
+        from regime_lab.research.forecast_contract import validate_forecast_improvement
+        validate_forecast_improvement(research["forecast_improvement"])
     extensions = research.get("extensions")
     if extensions is not None:
         if extensions.get("schema_version") != "regime-research-extensions/1":
