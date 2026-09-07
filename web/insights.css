@@ -447,18 +447,29 @@ html[data-theme="dark"] {
 .semantic-hint { margin: 6px 0; color: var(--ink-soft); font-size: 11px; }
 .semantic-hint summary { cursor: pointer; width: fit-content; min-height: 28px; display: flex; align-items: center; text-decoration: underline; text-underline-offset: 3px; }
 .semantic-hint p { margin: 4px 0 8px; line-height: 1.65; }
-.model-quality-brief { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 4px 0 20px; }
-.model-quality-brief > div { min-width: 0; padding: 12px 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-soft); }
+.model-quality-brief { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 0 0 14px; }
+.model-quality-brief > div { display: grid; grid-template-rows: auto auto 1fr; gap: 7px; min-width: 0; padding: 16px 18px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-soft); }
 .model-quality-brief span, .model-quality-brief small { display: block; color: var(--ink-soft); font-size: 11px; }
-.model-quality-brief strong { display: block; margin: 4px 0; color: var(--ink-strong); font: 700 22px var(--mono); }
-.model-heading-controls { flex-wrap: wrap; justify-content: flex-end; }
-.model-forecast-field { flex: 1 1 290px; min-width: 260px; }
-.model-evaluation-field { flex: 0 0 auto; }
-.model-evaluation-field select { min-height: 44px; min-width: 88px; }
-.champion-summary { flex: 1 1 180px; }
-.champion-summary small { margin-top: 4px; color: var(--ink-soft); font-size: 10px; }
-#model-evaluation-note { margin: 0 0 12px; }
-.model-input-comparison { display: flex; flex-wrap: wrap; gap: 8px 20px; margin: -6px 0 20px; color: var(--ink-soft); font-size: 11px; }
+.model-quality-brief strong { display: block; margin: 0; color: var(--ink-strong); font: 700 28px/1.25 var(--mono); overflow-wrap: anywhere; }
+.model-quality-brief small { line-height: 1.5; }
+.model-section > .card-heading { display: grid; grid-template-columns: minmax(0, 1fr) minmax(380px, 1.1fr); align-items: center; gap: 24px; margin-bottom: 22px; }
+.model-title-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.model-title-row h2 { margin: 0; }
+.model-title-row .champion-summary { display: inline-flex; flex: none; align-items: center; min-width: 0; min-height: 26px; padding: 4px 9px; border-radius: 6px; }
+.model-title-row .champion-summary span { font-family: inherit; font-size: 10px; font-weight: 700; line-height: 1.4; letter-spacing: 0; }
+.model-heading-controls { display: grid; grid-template-columns: minmax(0, 1fr) 136px; align-items: end; gap: 12px; width: 100%; }
+.model-heading-controls .field-group { display: grid; grid-template-columns: minmax(0, 1fr); gap: 7px; min-width: 0; width: auto; margin: 0; padding: 0; border: 0; background: none; box-shadow: none; }
+.model-heading-controls label { line-height: 16px; }
+.model-heading-controls select { box-sizing: border-box; width: 100%; min-width: 0; height: 44px; min-height: 44px; margin: 0; padding: 0 11px; font-size: 13px; border-radius: 7px; }
+.model-comparison-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 20px; margin-bottom: 18px; color: var(--ink-soft); font-size: 12px; font-variant-numeric: tabular-nums; }
+.model-comparison-summary .model-agreement { padding-left: 20px; border-left: 1px solid var(--line); }
+.model-section .model-forecast-body { grid-template-columns: minmax(0, 1fr); }
+.model-section .model-forecast-explorer.is-operating-model .model-forecast-state { display: flex; }
+.model-section .model-forecast-explorer.is-operating-model #model-forecast-probabilities { display: grid; }
+.model-evaluation-details .model-forecast-metrics { margin-top: 16px; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.model-evaluation-details #model-detail-caption { color: var(--ink-strong); }
+.model-evaluation-details #model-evaluation-note { margin-bottom: 12px; }
+.model-input-comparison { display: flex; flex-wrap: wrap; gap: 8px 20px; margin: 0 0 16px; color: var(--ink-soft); font-size: 12px; }
 .model-input-comparison > span { font-variant-numeric: tabular-nums; }
 .model-input-comparison small { flex-basis: 100%; font-size: 11px; }
 .context-plane { position: relative; height: 205px; margin: 10px 20px 24px; border: 1px solid var(--line); background: var(--surface-soft); }
@@ -521,11 +532,16 @@ html[data-theme="dark"] {
 .research-methods-body .forecast-timing { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
 .research-methods-body .forecast-timing dt { color: var(--ink-soft); font-size: 11px; }
 .research-methods-body .forecast-timing dd { margin: 4px 0; font-size: 12px; }
+@media (max-width: 1000px) {
+  .model-section > .card-heading { grid-template-columns: minmax(0, 1fr); gap: 18px; }
+}
+@media (max-width: 600px) {
+  .model-heading-controls { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .model-comparison-summary { gap: 6px 12px; font-size: 11px; }
+  .model-comparison-summary .model-agreement { padding-left: 0; border-left: 0; }
+  .model-evaluation-details .model-forecast-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
 @media (max-width: 700px) {
-  .model-heading-controls { display: grid; grid-template-columns: minmax(0, 1fr) auto; width: 100%; }
-  .model-forecast-field { grid-column: 1 / -1; min-width: 0; width: 100%; }
-  .model-evaluation-field { grid-column: 2; grid-row: 2; }
-  .champion-summary { grid-column: 1; grid-row: 2; min-width: 0; }
   .model-input-comparison { gap: 6px 12px; }
   .execution-brief { margin-bottom: 12px; padding: 10px; }
   .execution-brief > span { display: grid; gap: 3px; }

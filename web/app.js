@@ -4794,10 +4794,10 @@
       "sector-ranking", "sector-ranking-title", "sector-ranking-caption", "sector-ranking-selection", "sector-ranking-grid",
       "champion-summary", "model-evidence-summary", "model-caption", "model-loss-caption",
       "model-health-strip",
-      "model-loss-chart", "model-loss-axis", "leaderboard-body", "model-evaluation-field", "model-evaluation-window", "model-input-comparison", "model-evaluation-note", "model-loss-period-label",
+      "model-loss-chart", "model-loss-axis", "leaderboard-body", "model-evaluation-field", "model-evaluation-window", "model-input-comparison", "model-comparison-summary", "model-detail-caption", "model-evaluation-note", "model-loss-period-label",
       "model-forecast-field", "model-forecast-select", "model-forecast-explorer",
       "model-forecast-role", "model-forecast-title", "model-forecast-caption",
-      "model-forecast-symbol", "model-forecast-state", "model-forecast-confidence",
+      "model-forecast-symbol", "model-forecast-state", "model-forecast-confidence", "model-forecast-metrics",
       "model-forecast-probabilities", "model-forecast-rank", "model-forecast-log-loss",
       "model-forecast-brier", "model-forecast-calibration",
       "transition-model-section", "transition-model-caption", "transition-horizon-select",
@@ -6986,13 +6986,13 @@
     container.dataset.model = quality.model || "";
     container.setAttribute("aria-label", `${modelForecastLabel(quality.model)} 선택 기간 진단`);
     for (const [label, value, detail] of [
-      ["확률 오차", formatNumber(quality.logLoss, 4), `Log loss · 완료 ${formatNumber(quality.weeks, 0)}주`],
+      ["확률 오차", formatNumber(quality.logLoss, 4), "Log loss"],
       ["국면 변화 포착", quality.events === 0 ? "평가 전환 없음" : captured,
         quality.worseningEvents !== null && quality.recoveryEvents !== null
           ? `악화 ${formatNumber(quality.worseningCaptured, 0)}/${formatNumber(quality.worseningEvents, 0)} · 회복 ${formatNumber(quality.recoveryCaptured, 0)}/${formatNumber(quality.recoveryEvents, 0)}`
           : quality.events === 0 ? "최빈국면 기준" : `최빈국면 기준 · ${formatPercent(quality.recall, 1)}`],
       ["오경보", quality.falseAlarms === null ? "—" : `${formatNumber(quality.falseAlarms, 2)}회/년`,
-        quality.falseAlarmCount === null ? "자료 없음" : `잘못 예고한 국면 변화 ${formatNumber(quality.falseAlarmCount, 0)}회`],
+        quality.falseAlarmCount === null ? "자료 없음" : `총 ${formatNumber(quality.falseAlarmCount, 0)}회`],
     ]) {
       const item = createElement("div");
       if (label === "국면 변화 포착") {
@@ -8373,7 +8373,7 @@
     const axisMax = Math.max(1.1, Math.ceil(Math.max(...values) * 10) / 10);
     setText(
       dom["model-loss-caption"],
-      `오차 비교 ${eligible.length}개 · 선택·운영 모델 포함`,
+      "Log loss · 낮을수록 정확",
     );
     dom["model-loss-axis"].replaceChildren(
       createElement("span", null, "0"),
@@ -8404,10 +8404,10 @@
           "span",
           null,
           roles
-            ? `${roles}${item.rank === null ? "" : ` · ${scoped ? "선택 기간 " : hasResearchComparison ? "기존 " : ""}#${formatNumber(item.rank, 0)}`}`
+            ? `${roles}${item.rank === null ? "" : ` · ${!scoped && hasResearchComparison ? "기존 " : ""}#${formatNumber(item.rank, 0)}`}`
             : isHoldoutBest
               ? hasResearchComparison ? "기존 모델 #1" : "2023년 이후 #1"
-              : `${scoped ? "선택 기간" : hasResearchComparison ? "기존 모델" : "2023년 이후"} #${formatNumber(item.rank, 0)}`,
+              : `${scoped ? "" : hasResearchComparison ? "기존 모델 " : "2023년 이후 "}#${formatNumber(item.rank, 0)}`,
         ),
       );
 
@@ -8525,19 +8525,20 @@
     const selected = state.comparisonModel || quality.model;
     const operating = operatingChampionName();
     dom["champion-summary"].replaceChildren(
-      createElement("span", null, "선택 모델"),
-      createElement("strong", null, modelForecastLabel(selected)),
-      createElement("small", null, selected === operating ? "운영 모델" : `운영 기준 · ${modelForecastLabel(operating)}`),
+      createElement("span", null, selected === operating ? "운영 모델" : quality.researchCandidate ? "연구 모델" : "비교 중"),
+      createElement("strong", "sr-only", `선택 모델 ${modelForecastLabel(selected)}`),
     );
     dom["champion-summary"].dataset.model = selected;
     dom["champion-summary"].setAttribute("aria-label", `선택 모델 ${modelForecastLabel(selected)}`);
     const scope = model.evaluationScope;
     const note = dom["model-evaluation-note"];
     const difference = dom["model-input-comparison"];
+    const summary = dom["model-comparison-summary"];
     const comparison = model.comparisons?.[selected];
+    setText(dom["model-detail-caption"], `${modelForecastLabel(selected)} · 운영 기준 ${modelForecastLabel(operating)}`);
     if (scope) {
       const period = scope.completedStart && scope.completedEnd
-        ? `${formatDate(scope.completedStart)}–${formatDate(scope.completedEnd)}` : "완료된 예측 없음";
+        ? `${scope.completedStart.replaceAll("-", ".")}–${scope.completedEnd.replaceAll("-", ".")}` : "완료된 예측 없음";
       setText(dom["model-caption"], `${period} · 평가 ${scope.completedCount}주`);
       setText(note, `관측 ${scope.originCount}주 · 결과 대기 ${scope.pendingCount}주${scope.excludedCount ? ` · 공통 표본 제외 ${scope.excludedCount}주` : ""}`);
       note.hidden = false;
@@ -8548,8 +8549,16 @@
     }
     difference.replaceChildren();
     difference.hidden = selected === operating || !comparison || !comparison.comparedWeeks;
+    summary.replaceChildren();
+    summary.hidden = difference.hidden;
     if (!difference.hidden) {
       const delta = comparison.logLossDifference;
+      summary.append(
+        createElement("span", null, `운영 대비 Log loss ${delta > 0 ? "+" : ""}${formatNumber(delta, 5)}`),
+        createElement("span", "model-agreement", comparison.samePredictions === comparison.comparedWeeks
+          ? "국면 판정 동일"
+          : `국면 차이 ${comparison.comparedWeeks - comparison.samePredictions}/${comparison.comparedWeeks}주`),
+      );
       difference.append(
         createElement("span", null, `운영 대비 Log loss ${delta > 0 ? "+" : ""}${formatNumber(delta, 5)}`),
         createElement("span", null, `예측 국면 일치 ${comparison.samePredictions}/${comparison.comparedWeeks}주`),
@@ -8575,9 +8584,13 @@
     dom["model-forecast-field"].hidden = !supported;
     dom["model-evaluation-field"].hidden = !supported;
     dom["model-forecast-explorer"].hidden = !supported;
+    dom["model-forecast-metrics"].hidden = true;
+    for (const id of ["model-forecast-rank", "model-forecast-log-loss", "model-forecast-brier", "model-forecast-calibration"]) setText(dom[id], "—");
     if (!supported) {
       dom["model-evaluation-note"].hidden = true;
       dom["model-input-comparison"].hidden = true;
+      dom["model-comparison-summary"].hidden = true;
+      setText(dom["model-detail-caption"], "");
       setText(dom["model-loss-period-label"], "2023년 이후");
       renderModelHealthStrip(INSIGHTS.modelQuality(model, modelName(model.champion)));
       return;
@@ -8628,6 +8641,7 @@
       dom["model-forecast-explorer"].hidden = true;
       return;
     }
+    dom["model-forecast-metrics"].hidden = false;
     const leaderboardRow = leaderboard.find((row) => modelName(row) === state.comparisonModel) || {};
     const isChampion = state.comparisonModel === operatingName;
     dom["model-forecast-explorer"].classList.toggle("is-operating-model", isChampion);
@@ -8642,21 +8656,13 @@
     setText(role, forecast.fallback === true ? `${selectedRole} · 보조값` : selectedRole);
     setText(
       dom["model-forecast-title"],
-      isChampion
-        ? `${modelForecastLabel(state.comparisonModel)} 선정·추적 진단`
-        : `${modelForecastLabel(state.comparisonModel)} 주간 예측`,
+      "다음 주 예측",
     );
 
-    const officialForecast = forecastForWeek(week, operatingName);
-    const officialState = officialForecast && officialForecast.state;
-    const officialModelLabel = modelForecastLabel(operatingName);
-    const agreement = forecast.state === officialState
-      ? "공식 모델과 예상 국면 같음"
-      : `${officialModelLabel}와 예상 국면 다름 · ${stateMeta(officialState).ko}`;
-    dom["model-forecast-caption"].hidden = isChampion;
+    dom["model-forecast-caption"].hidden = false;
     setText(
       dom["model-forecast-caption"],
-      isChampion ? "" : `${formatDate(week.date)} → ${formatDate(forecast.date)} · ${agreement}`,
+      `${formatDate(week.date)} → ${formatDate(forecast.date)}`,
     );
     const meta = stateMeta(forecast.state);
     setText(dom["model-forecast-symbol"], meta.symbol);

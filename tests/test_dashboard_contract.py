@@ -1623,8 +1623,10 @@ def test_full_model_and_conditional_tables_are_collapsed_by_default() -> None:
     assert "<summary>전체 모델 보기</summary>" in document
     assert "<summary>전체 이탈 모델 표</summary>" in document
     assert "상세 성과 표" in document
-    assert "<summary>선택 모델 상세 지표</summary>" in document
-    assert "<summary>진단 지표</summary>" in document
+    assert '<details id="research-methods" class="research-methods card">' in document
+    collapsed_methods = document.split('<details id="research-methods"', 1)[1]
+    for detail_id in ("model-health-strip", "model-input-comparison", "model-evaluation-note", "model-forecast-rank"):
+        assert f'id="{detail_id}"' in collapsed_methods
     assert 'class="compact-table-details" open' not in document
 
 

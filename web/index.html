@@ -11,10 +11,10 @@
     <title>US Market Regime Lab | Quant Research</title>
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23111727'/%3E%3Cpath d='M14 43 26 31l9 8 15-20' fill='none' stroke='%2334d399' stroke-width='7' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
     <link rel="stylesheet" href="./styles.css?v=a5691ee73b3cb9c1cf0833e0a2e109045085cb305f9b685a4313914f6508f8a3">
-    <link rel="stylesheet" href="./insights.css?v=1b186aa1f8d974c75cfa919581b1d84cda1b392c580de25135151942ee57f3e3">
+    <link rel="stylesheet" href="./insights.css?v=5767f3386e93291facf39817bb120246a3d601198b63eb4e89b67492b5c3b205">
     <script src="./insights.js?v=b100598800092b5ebf944bc360a8552b9cdd64424baa4ddf4263bf33e5b46c51" defer></script>
     <script src="./operating-contract.generated.js?v=5078635e5a1fb2b9300e56f045b51c4e85ee047a21a3f64a15cd4e69261c9a20" defer></script>
-    <script src="./app.js?v=be2b7e09719a96d6da1734e90cef215761dde9aa06d28f759e58dea2aa263fb6" defer></script>
+    <script src="./app.js?v=b7511dd3277943628decca293c9e787106dae388c3f8a3bd2d0b51b77c5b6cff" defer></script>
   </head>
   <body id="top">
     <a class="skip-link" href="#main-content">본문으로 건너뛰기</a>
@@ -526,11 +526,14 @@
         <section id="models" class="dashboard-section model-section card" data-dashboard-view="model" aria-labelledby="model-title">
           <div class="card-heading">
             <div>
-              <h2 id="model-title">모델 비교</h2>
+              <div class="model-title-row">
+                <h2 id="model-title">모델 비교</h2>
+                <div id="champion-summary" class="champion-summary" aria-label="선택 모델"></div>
+              </div>
               <p id="model-caption" class="section-caption">선택한 관측 주까지 완료된 예측 평가</p>
             </div>
             <div class="model-heading-controls">
-              <div id="model-forecast-field" class="field-group model-forecast-field forecast-layer-field v5-only" hidden>
+              <div id="model-forecast-field" class="field-group model-forecast-field v5-only" hidden>
                 <label for="model-forecast-select">비교 모델</label>
                 <select
                   id="model-forecast-select"
@@ -548,21 +551,15 @@
                   <option value="all">전체</option>
                 </select>
               </div>
-              <div id="champion-summary" class="champion-summary" aria-label="선택 모델"></div>
             </div>
           </div>
-          <p id="model-evaluation-note" class="section-caption"></p>
           <div id="model-quality-brief" class="model-quality-brief" aria-live="polite"></div>
-          <div id="model-input-comparison" class="model-input-comparison" aria-live="polite" hidden></div>
+          <div id="model-comparison-summary" class="model-comparison-summary" aria-live="polite" hidden></div>
           <div id="model-evidence-summary" class="model-evidence-summary" aria-label="모델 선정 근거" aria-live="polite"></div>
-          <details class="compact-table-details model-health-details">
-            <summary>선택 모델 상세 지표</summary>
-            <div id="model-health-strip" class="model-health-strip" aria-label="선택 모델 상세 지표"></div>
-          </details>
           <article id="model-forecast-explorer" class="model-forecast-explorer v5-only" aria-labelledby="model-forecast-title" hidden>
             <div class="model-forecast-heading">
               <div>
-                <span id="model-forecast-role" class="model-forecast-role">공식 모델</span>
+                <span id="model-forecast-role" class="sr-only">공식 모델</span>
                 <h3 id="model-forecast-title">주간 예측 비교</h3>
                 <p id="model-forecast-caption" class="section-caption">선택한 관측 주의 1주 예측</p>
               </div>
@@ -576,15 +573,6 @@
             </div>
             <div class="model-forecast-body">
               <div id="model-forecast-probabilities" class="probability-list" aria-label="선택 모델의 다음 주 국면별 예측 확률"></div>
-              <details class="compact-table-details model-forecast-diagnostics">
-                <summary>진단 지표</summary>
-                <dl class="model-forecast-metrics" aria-label="선택 모델과 평가 기간의 진단 지표">
-                  <div><dt>선택 기간 순위</dt><dd id="model-forecast-rank">—</dd></div>
-                  <div><dt>예측 오차 · 선정→선택 기간</dt><dd id="model-forecast-log-loss">—</dd></div>
-                  <div><dt>Brier</dt><dd id="model-forecast-brier">—</dd></div>
-                  <div><dt>보정 오차</dt><dd id="model-forecast-calibration">—</dd></div>
-                </dl>
-              </details>
             </div>
           </article>
           <figure class="model-loss-figure" aria-labelledby="model-loss-title model-loss-caption">
@@ -665,6 +653,19 @@
         <details id="research-methods" class="research-methods card">
           <summary>해석 · 연구 · 운영 상세</summary>
           <div class="research-methods-body">
+            <section class="model-evaluation-details" aria-labelledby="model-details-title">
+              <h2 id="model-details-title">선택 모델 평가 상세</h2>
+              <p id="model-detail-caption" class="section-caption"></p>
+              <p id="model-evaluation-note" class="section-caption"></p>
+              <div id="model-input-comparison" class="model-input-comparison" aria-live="polite" hidden></div>
+              <div id="model-health-strip" class="model-health-strip" aria-label="선택 모델 상세 지표"></div>
+              <dl id="model-forecast-metrics" class="model-forecast-metrics" aria-label="선택 모델과 평가 기간의 진단 지표" hidden>
+                <div><dt>선택 기간 순위</dt><dd id="model-forecast-rank">—</dd></div>
+                <div><dt>예측 오차 · 선정→선택 기간</dt><dd id="model-forecast-log-loss">—</dd></div>
+                <div><dt>Brier</dt><dd id="model-forecast-brier">—</dd></div>
+                <div><dt>보정 오차</dt><dd id="model-forecast-calibration">—</dd></div>
+              </dl>
+            </section>
           <div id="contract-overview-grid" class="contract-overview-grid v5-only" hidden>
             <details id="label-definition-card" class="definition-card card compact-definition-details">
               <summary>

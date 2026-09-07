@@ -63,6 +63,8 @@ function snapshot(){return {
  summary:api.dom['champion-summary'].textContent,comparison:api.dom['model-input-comparison'].textContent,
  comparisonHidden:api.dom['model-input-comparison'].hidden,caption:api.dom['model-caption'].textContent,
  note:api.dom['model-evaluation-note'].textContent,rank:api.dom['model-forecast-rank'].textContent,
+ metricValues:['model-forecast-rank','model-forecast-log-loss','model-forecast-brier','model-forecast-calibration'].map(id=>api.dom[id].textContent),
+ metricsHidden:api.dom['model-forecast-metrics'].hidden,
  table:api.dom['leaderboard-body'].textContent,chart:api.dom['model-loss-chart'].textContent,
  selectedRows:api.dom['leaderboard-body'].children.filter(row=>row.attrs['aria-current']==='true').map(row=>row.dataset.model),
  windows:['history-window','model-evaluation-window'].map(id=>api.dom[id].value),
@@ -136,7 +138,8 @@ await chooseDate(full.weekly[0].date);console.log(JSON.stringify({historical,sta
     assert result["start"]["scope"]["completedCount"] == 0
     assert result["start"]["rank"] == "—"
     assert "완료된 예측 없음" in result["start"]["caption"]
-    assert "완료 0주" in result["start"]["quality"]
+    assert "평가 0주" in result["start"]["caption"]
+    assert "확률 오차 —" in result["start"]["quality"]
     assert result["start"]["comparisonHidden"]
 
 
@@ -177,12 +180,14 @@ response.resolve();await pending;console.log(JSON.stringify({during,ready:snapsh
 
 def test_legacy_without_per_model_history_keeps_published_metrics_and_hides_forecast_selector():
     result = run_js("""
+api.selectWeek(full.weekly.length-1,false);chooseModel('causal_multiscale_ensemble');const previous=snapshot();
 const legacy=structuredClone(full);legacy.meta.result_version='weekly-regime-result-v4';delete legacy.research;
 for(const week of legacy.weekly)delete week.model_forecasts;
 api.state.raw=legacy;api.state.weekly=legacy.weekly;api.state.sidecarAvailability.research='not_applicable';
+api.state.comparisonModel='causal_dynamic_ensemble';
 api.selectWeek(legacy.weekly.length-1,false);
 const comparison=api.forecastComparisonForView();
-console.log(JSON.stringify({view:snapshot(),scopeAbsent:comparison.evaluationScope===undefined,
+console.log(JSON.stringify({previous,view:snapshot(),scopeAbsent:comparison.evaluationScope===undefined,
  originalMetrics:JSON.stringify(comparison.leaderboard)===JSON.stringify(legacy.model.leaderboard),
  selectorHidden:api.dom['model-forecast-field'].hidden,forecastHidden:api.dom['model-forecast-explorer'].hidden,
  evaluationHidden:api.dom['model-evaluation-field'].hidden,
@@ -191,5 +196,34 @@ console.log(JSON.stringify({view:snapshot(),scopeAbsent:comparison.evaluationSco
     assert result["scopeAbsent"] and result["originalMetrics"]
     assert result["selectorHidden"] and result["forecastHidden"]
     assert result["evaluationHidden"] and result["scopeHidden"]
-    assert "완료 191주" in result["view"]["quality"]
+    assert not result["previous"]["metricsHidden"]
+    assert all(value != "—" for value in result["previous"]["metricValues"])
+    assert result["view"]["metricsHidden"]
+    assert result["view"]["metricValues"] == ["—"] * 4
+    assert "191주" in result["view"]["caption"]
+    assert "Log loss" in result["view"]["quality"]
     assert "3/40회" in result["view"]["quality"]
+
+
+def test_pending_research_model_clears_previous_metrics_then_shows_its_own_after_loading():
+    result = run_js("""
+api.selectWeek(full.weekly.length-1,false);chooseModel('causal_multiscale_ensemble');const previous=snapshot();
+const core=structuredClone(full);delete core.research;
+api.state.raw=core;api.state.sidecarAvailability.research='pending';
+api.state.comparisonModel='boundary_filtered_history';api.renderModel();const pending=snapshot();
+const pendingCaption=api.dom['model-detail-caption'].textContent;
+api.state.raw=full;api.state.sidecarAvailability.research='ready';api.renderModel();
+console.log(JSON.stringify({previous,pending,pendingCaption,loaded:snapshot()}));
+""")
+    assert not result["previous"]["metricsHidden"]
+    assert all(value != "—" for value in result["previous"]["metricValues"])
+    assert "경계 전환 · 과거 충격" in result["pendingCaption"]
+    assert result["pending"]["model"] == "boundary_filtered_history"
+    assert result["pending"]["metricsHidden"]
+    assert result["pending"]["metricValues"] == ["—"] * 4
+    assert result["loaded"]["model"] == "boundary_filtered_history"
+    assert not result["loaded"]["metricsHidden"]
+    assert all(value != "—" for value in result["loaded"]["metricValues"])
+    assert result["loaded"]["metricValues"] != result["previous"]["metricValues"]
+    assert result["loaded"]["rank"] == "1 / 13"
+    assert "0.4953" in result["loaded"]["metricValues"][1]
