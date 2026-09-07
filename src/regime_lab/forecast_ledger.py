@@ -8,6 +8,7 @@ evidence.
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
@@ -2125,7 +2126,263 @@ def build_research_replay_input_document(
     }
 
 
+def read_operational_diagnostics(
+    path: str | Path, *, as_of: datetime | None = None
+) -> dict[str, Any]:
+    """Open an existing ledger with SQLite mode=ro; never initialise its schema."""
+    uri = Path(path).expanduser().resolve().as_uri() + "?mode=ro"
+    with sqlite3.connect(uri, uri=True) as connection:
+        connection.row_factory = sqlite3.Row
+        entries = [
+            ForecastLedger._row_to_entry(row)
+            for row in connection.execute(
+                "SELECT * FROM forecast_ledger ORDER BY target_at, decision_at"
+            )
+        ]
+        evaluations = [
+            ForecastLedger._row_to_evaluation(row)
+            for row in connection.execute(
+                "SELECT * FROM forecast_evaluation_ledger ORDER BY target_at, decision_at"
+            )
+        ]
+    return build_operational_diagnostics(entries, evaluations, as_of=as_of)
+
+
+def build_operational_diagnostics(
+    entries: Sequence[ForecastLedgerEntry],
+    evaluations: Sequence[ForecastEvaluationEntry],
+    *,
+    as_of: datetime | None = None,
+) -> dict[str, Any]:
+    """Read-only scores, deadlines and segmented benchmarks of frozen entries.
+
+    This supplements the version-2 public summary without changing its schema,
+    issued forecasts, terminal evaluations, or the meaning of their hashes.
+    Benchmark paths are explicitly supplemental reconstructions from each
+    completed evaluation's immutable return legs, with the same late policy.
+    """
+    from regime_lab.analysis.decision_shadow import _run_self_financing_strategy
+
+    clock = ensure_utc(as_of or _utc_now(), field_name="as_of")
+    by_key = {entry.key.as_sql_tuple(): entry for entry in entries}
+    if len(by_key) != len(entries):
+        raise ValueError("operational diagnostics received duplicate forecast keys")
+    states = ("risk_on", "transition", "risk_off")
+    timing_rows = []
+    for entry in entries:
+        shadow = _investment_shadow_contract(entry)
+        signal = shadow.get("current_signal") if shadow else None
+        if isinstance(signal, Mapping) and signal.get("scheduled_entry_at"):
+            scheduled = ensure_utc(
+                datetime.fromisoformat(str(signal["scheduled_entry_at"])),
+                field_name="scheduled_entry_at",
+            )
+            timing_rows.append(
+                {
+                    "target_week": str(signal.get("target_week")),
+                    "decision_at": entry.decision_at.isoformat(),
+                    "scheduled_entry_at": scheduled.isoformat(),
+                    "lead_seconds": (scheduled - entry.decision_at).total_seconds(),
+                    "on_time": entry.decision_at < scheduled,
+                }
+            )
+    completed = sorted(
+        (item for item in evaluations if item.status == "completed"),
+        key=lambda item: item.forecast_key.target_at,
+    )
+    probability_rows, segment_groups = [], []
+    last_date = last_identity = None
+    for evaluation in completed:
+        entry = by_key.get(evaluation.forecast_key.as_sql_tuple())
+        if entry is None:
+            raise ValueError("operational evaluation has no frozen forecast")
+        document = evaluation.evaluation
+        actual = str(document.get("actual_next_state"))
+        if actual not in states:
+            continue
+        forecast = document.get("forecast", {})
+        raw = forecast.get("probabilities")
+        if not isinstance(raw, Mapping) or set(raw) != set(states):
+            continue
+        p = np.array([float(raw[s]) for s in states])
+        p /= p.sum()
+        if not np.isfinite(p).all() or (p < 0).any():
+            raise ValueError(
+                "operational probability diagnostic has invalid probabilities"
+            )
+        truth = np.array([float(s == actual) for s in states])
+        row = {
+            "target_week": str(document["target_week"]),
+            "model": str(forecast.get("model")),
+            "log_loss": float(-np.log(max(p[states.index(actual)], 1e-9))),
+            "brier": float(((p - truth) ** 2).sum()),
+            "benchmarks": {},
+        }
+        for baseline in entry.forecast.get("model_forecasts", []):
+            if baseline.get("model") not in {"markov", "persistence"}:
+                continue
+            probabilities = baseline.get("probabilities", {})
+            if set(probabilities) != set(states):
+                continue
+            q = np.array([float(probabilities[s]) for s in states])
+            q /= q.sum()
+            row["benchmarks"][str(baseline["model"])] = {
+                "log_loss": float(-np.log(max(q[states.index(actual)], 1e-9))),
+                "brier": float(((q - truth) ** 2).sum()),
+            }
+        probability_rows.append(row)
+        target = date.fromisoformat(str(document["target_week"]))
+        identity = (
+            entry.label_spec_sha256,
+            entry.model_manifest_sha256,
+            str(document.get("spec", {}).get("sha256")),
+        )
+        prior_source = str(document.get("portfolio", {}).get("prior_source", ""))
+        if (
+            last_date is None
+            or target - last_date != timedelta(days=7)
+            or identity != last_identity
+            or "cash" in prior_source
+        ):
+            segment_groups.append([])
+        segment_groups[-1].append(evaluation)
+        last_date, last_identity = target, identity
+    segments = []
+    for number, group in enumerate(segment_groups, 1):
+        docs = [e.evaluation for e in group]
+        index = pd.DatetimeIndex([d["target_week"] for d in docs])
+        gaps = pd.DataFrame(
+            [d["portfolio"]["gap_relatives"] for d in docs], index=index
+        )
+        intraday = pd.DataFrame(
+            [
+                {
+                    a: 1 + float(v)
+                    for a, v in d["returns"]["open_to_close_asset_returns"].items()
+                }
+                for d in docs
+            ],
+            index=index,
+        )
+        costs = {float(d["execution"]["one_way_turnover_bps"]) for d in docs}
+        if len(costs) != 1:
+            raise ValueError(
+                "operational benchmark segment has inconsistent execution costs"
+            )
+        benchmarks = {}
+        for name, weights in (
+            ("weekly_60_40", {"SPY": 0.6, "TLT": 0.4}),
+            ("spy_buy_and_hold", {"SPY": 1.0, "TLT": 0.0}),
+        ):
+            targets = pd.DataFrame(weights, index=index)
+            for i, d in enumerate(docs):
+                if d.get("current_signal", {}).get("action") == "no_trade":
+                    targets.iloc[i] = np.nan
+            path = _run_self_financing_strategy(
+                targets,
+                gaps,
+                intraday,
+                index,
+                cost_rate=next(iter(costs)) / 10000,
+                initial_allocation_costed_from_cash=True,
+                late_signal_policy="no_trade",
+            )
+            benchmarks[name] = {
+                "net_cumulative_return": float(np.prod(1 + path["net_returns"]) - 1),
+                "weeks": len(group),
+            }
+        net = float(np.prod([1 + float(d["returns"]["net_return"]) for d in docs]) - 1)
+        segments.append(
+            {
+                "segment": number,
+                "first_target_week": str(docs[0]["target_week"]),
+                "last_target_week": str(docs[-1]["target_week"]),
+                "weeks": len(group),
+                "net_cumulative_return": net,
+                "benchmarks": benchmarks,
+                "difference_vs_weekly_60_40": net
+                - benchmarks["weekly_60_40"]["net_cumulative_return"],
+            }
+        )
+    baseline_scores = {}
+    for baseline in ("markov", "persistence"):
+        rows = [r for r in probability_rows if baseline in r["benchmarks"]]
+        baseline_scores[baseline] = {
+            "matched_n": len(rows),
+            "log_loss_improvement": (
+                float(
+                    np.mean(
+                        [
+                            r["benchmarks"][baseline]["log_loss"] - r["log_loss"]
+                            for r in rows
+                        ]
+                    )
+                )
+                if rows
+                else None
+            ),
+            "brier_improvement": (
+                float(
+                    np.mean(
+                        [r["benchmarks"][baseline]["brier"] - r["brier"] for r in rows]
+                    )
+                )
+                if rows
+                else None
+            ),
+            "status": "available" if rows else "not_frozen_in_completed_entries",
+        }
+    target_counts = Counter(r["target_week"] for r in timing_rows)
+    return {
+        "schema_version": "regime-operational-diagnostics/1",
+        "evidence_track": "operational_oos",
+        "as_of": clock.isoformat(),
+        "issued_entries_unchanged": True,
+        "source_forecast_hashes": [e.forecast_sha256 for e in entries],
+        "source_evaluation_hashes": [e.evaluation_sha256 for e in evaluations],
+        "timing": {
+            "issued_entry_count": len(entries),
+            "deadline_observed_entries": len(timing_rows),
+            "on_time_entries": sum(r["on_time"] for r in timing_rows),
+            "on_time_rate": (
+                float(np.mean([r["on_time"] for r in timing_rows]))
+                if timing_rows
+                else None
+            ),
+            "median_lead_seconds": (
+                float(np.median([r["lead_seconds"] for r in timing_rows]))
+                if timing_rows
+                else None
+            ),
+            "duplicate_target_weeks": sum(n > 1 for n in target_counts.values()),
+            "rows": timing_rows,
+        },
+        "probability_scores": {
+            "completed_weeks": len(probability_rows),
+            "log_loss": (
+                float(np.mean([r["log_loss"] for r in probability_rows]))
+                if probability_rows
+                else None
+            ),
+            "brier": (
+                float(np.mean([r["brier"] for r in probability_rows]))
+                if probability_rows
+                else None
+            ),
+            "benchmarks": baseline_scores,
+        },
+        "continuous_segments": segments,
+        "longest_continuous_completed_weeks": max(
+            (s["weeks"] for s in segments), default=0
+        ),
+        "benchmark_basis": "supplemental_reconstruction_from_frozen_completed_return_legs_same_timing_cost_price_only_zero_cash_return_contract",
+        "cross_segment_cumulative_return": None,
+    }
+
+
 __all__ = [
+    "read_operational_diagnostics",
+    "build_operational_diagnostics",
     "ConflictingEvaluationError",
     "ConflictingForecastError",
     "DuplicateEvaluationError",

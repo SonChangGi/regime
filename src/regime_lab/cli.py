@@ -92,6 +92,7 @@ from regime_lab.publication_contract import (
     validate_v5_comparison_sidecar,
 )
 from regime_lab.pipeline import build_dashboard_result
+from regime_lab.research.publication import compose_live_publication_research
 from regime_lab.schema import validate_dashboard_payload
 from regime_lab.server import serve_dashboard
 from regime_lab.smoke import main as smoke_main
@@ -1764,6 +1765,21 @@ def command_build(args: argparse.Namespace) -> int:
                 with ForecastLedger(forecast_ledger_path) as ledger:
                     ledger.append(entry)
 
+            payload = compose_live_publication_research(
+                payload,
+                dataset=dataset,
+                benchmark=benchmark,
+                contract_version=contract_version,
+                profile_name=args.profile,
+                ledger_path=forecast_ledger_path,
+                cache_directory=artifacts.parent / "research-cache" / "additional-sources",
+                progress=_flush_progress,
+            )
+            if v5_preflight is not None:
+                require_v5_analysis_source_unchanged(
+                    str(v5_preflight["source_fingerprint_sha256"]),
+                    config=config,
+                )
             payload = _publish_active_generation(
                 payload,
                 benchmark,

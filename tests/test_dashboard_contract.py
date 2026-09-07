@@ -1336,7 +1336,7 @@ def test_required_result_surfaces_exist() -> None:
         "label-definition-card",
         "label-spec-identity",
         "forecast-window-section",
-        "forecast-window-card",
+        "research-methods",
         "forecast-origin-at",
         "forecast-decision-at",
         "forecast-target-at",
@@ -1429,7 +1429,7 @@ def test_date_controls_support_arbitrary_date_and_exact_week_selection() -> None
     assert any(item.get("id") == "analysis-date" and item.get("type") == "date" for item in parser.inputs)
     assert any(item.get("id") == "week-select" for item in parser.selects)
 
-    script = JS_PATH.read_text(encoding="utf-8")
+    script = JS_PATH.read_text(encoding="utf-8") + (WEB / "insights.js").read_text(encoding="utf-8")
     assert 'const DATA_URL = "./data/regime-results.json"' in script
     assert "function snapToPriorDate" in script
     assert "dates[middle] <= targetDate" in script
@@ -1439,7 +1439,7 @@ def test_date_controls_support_arbitrary_date_and_exact_week_selection() -> None
 
 def test_date_controls_share_one_control_row_and_one_helper_row() -> None:
     document = HTML_PATH.read_text(encoding="utf-8")
-    styles = CSS_PATH.read_text(encoding="utf-8")
+    styles = CSS_PATH.read_text(encoding="utf-8") + (WEB / "insights.css").read_text(encoding="utf-8")
     form_start = document.index('id="date-form"')
     form_end = document.index("</form>", form_start)
     form = document[form_start:form_end]
@@ -1456,7 +1456,7 @@ def test_date_controls_share_one_control_row_and_one_helper_row() -> None:
 
 def test_shared_navigation_and_theme_contract_are_explicit() -> None:
     document = HTML_PATH.read_text(encoding="utf-8")
-    script = JS_PATH.read_text(encoding="utf-8")
+    script = JS_PATH.read_text(encoding="utf-8") + (WEB / "insights.js").read_text(encoding="utf-8")
     assert 'class="site-nav"' in document
     assert (
         'href="https://sonchanggi.github.io/regime/" '
@@ -1480,7 +1480,7 @@ def test_shared_navigation_and_theme_contract_are_explicit() -> None:
 
 def test_chart_exploration_is_single_focus_and_state_isolated() -> None:
     document = HTML_PATH.read_text(encoding="utf-8")
-    script = JS_PATH.read_text(encoding="utf-8")
+    script = JS_PATH.read_text(encoding="utf-8") + (WEB / "insights.js").read_text(encoding="utf-8")
     assert 'id="probability-chart-wrap"' in document
     assert 'tabindex="0"' in document
     assert 'id="chart-selection-readout"' in document
@@ -1492,7 +1492,7 @@ def test_chart_exploration_is_single_focus_and_state_isolated() -> None:
 
 def test_model_results_remain_visible_without_generalization_warning_surface() -> None:
     document = HTML_PATH.read_text(encoding="utf-8")
-    script = JS_PATH.read_text(encoding="utf-8")
+    script = JS_PATH.read_text(encoding="utf-8") + (WEB / "insights.js").read_text(encoding="utf-8")
     assert 'id="model-diagnostic"' not in document
     assert "holdout_diagnostic" in script
     assert "선정 구간" in script
@@ -1504,17 +1504,17 @@ def test_model_results_remain_visible_without_generalization_warning_surface() -
 
 def test_model_forecast_selector_controls_the_one_week_forecast_layer() -> None:
     document = HTML_PATH.read_text(encoding="utf-8")
-    script = JS_PATH.read_text(encoding="utf-8")
-    styles = CSS_PATH.read_text(encoding="utf-8")
+    script = JS_PATH.read_text(encoding="utf-8") + (WEB / "insights.js").read_text(encoding="utf-8")
+    styles = CSS_PATH.read_text(encoding="utf-8") + (WEB / "insights.css").read_text(encoding="utf-8")
     assert '<label for="model-forecast-select">비교 모델</label>' in document
     assert 'id="model-forecast-select"' in document
     assert (
-        'aria-controls="history model-forecast-explorer conditional-stats"'
+        'aria-controls="history model-quality-brief model-health-strip model-forecast-explorer model-loss-chart leaderboard-body conditional-stats"'
     ) in document
     assert 'aria-describedby="model-forecast-scope"' in document
     assert (
         'id="model-forecast-scope" class="sr-only">'
-        "모델 비교와 예측 국면별 자산 성과에 적용"
+        "선택 모델의 요약·상세 지표, 예측 차트, 비교표와 예측 국면별 자산 성과에 적용"
     ) in document
     assert "관측 소속도와 1주 예측확률" in document
     assert 'id="chart-readout-actual"' in document
@@ -1546,7 +1546,7 @@ def test_model_forecast_selector_controls_the_one_week_forecast_layer() -> None:
 
 def test_current_membership_and_forecast_probability_are_separate_surfaces() -> None:
     document = HTML_PATH.read_text(encoding="utf-8")
-    script = JS_PATH.read_text(encoding="utf-8")
+    script = JS_PATH.read_text(encoding="utf-8") + (WEB / "insights.js").read_text(encoding="utf-8")
     assert 'id="probability-shifts"' not in document
     assert 'id="model-loss-chart"' in document
     assert 'id="model-loss-axis"' in document
@@ -1564,60 +1564,20 @@ def test_current_membership_and_forecast_probability_are_separate_surfaces() -> 
 def test_label_copy_forecast_disclosure_and_model_section_stay_clear() -> None:
     document = HTML_PATH.read_text(encoding="utf-8")
     script = JS_PATH.read_text(encoding="utf-8")
-    styles = CSS_PATH.read_text(encoding="utf-8")
-    assert 'id="label-definition-card"' in document
-    assert "미국 대형주 시장을 대표하는 SPY" in document
-    assert "안정적인 상승은 위험선호" in document
-    assert "쉽게 보는 기준" not in document
-    assert "다음 주 예측을 돕는 보조 신호" not in document
-    assert "52주 극단값은 시장 맥락" not in document
-    assert 'id="header-result-identity"' not in document
-    assert 'id="forecast-contract-status"' not in document
-    assert 'id="forecast-expired-notice"' not in document
-    assert "<th scope=\"col\">이용 범위</th>" not in document
-    assert "posterior가 아닙니다" not in document
-    assert "연구 challenger" not in document
-    for element_id in (
-        "forecast-origin-at",
-        "forecast-decision-at",
-        "forecast-target-at",
-        "forecast-remaining-horizon",
-    ):
+    for element_id in ("forecast-origin-at", "forecast-decision-at", "forecast-target-at", "forecast-remaining-horizon", "model-quality-brief", "execution-brief"):
         assert f'id="{element_id}"' in document
-    assert "function renderContractOverview()" in script
-    assert "function forecastAvailability(" in script
+    assert '<details class="semantic-hint">' in document
+    assert 'id="research-methods"' in document
+    assert document.index('id="forecast-window-section"') > document.index('id="research-methods"')
     assert 'classList.toggle("is-expired-forecast", policy.expiredLatest)' in script
-    assert 'dom["next-regime-card"].hidden = suppressed' not in script
-    assert 'dom["transition-card"].hidden = suppressed' not in script
-    assert 'id="forecast-window-section"' in document
-    assert '<details id="forecast-window-card"' in document
-    forecast_details = document.split('<details id="forecast-window-card"', 1)[1].split(">", 1)[0]
-    assert " open" not in forecast_details
-    assert document.index('id="research-evidence"') < document.index('id="data-health"')
-    assert document.index('id="data-health"') < document.index('id="forecast-window-section"')
-    assert 'id="model-role-grid"' not in document
-    assert "V4 동결 기준선" not in document
-    assert "현재 payload · 공개 운영" not in script
-    assert "function renderModelRoles" not in script
-    assert (
-        document.index('id="overview"')
-        < document.index('id="decision-shadow-block"')
-        < document.index('id="conditional-stats"')
-        < document.index('id="history"')
-        < document.index('id="evidence"')
-        < document.index('id="models"')
-    )
-    assert ".contract-overview-grid" in styles
-    assert ".forecast-window-section" in styles
-    assert ".forecast-window-body .forecast-timing" in styles
-    assert "@media (max-width: 1024px)" in styles
-    assert "@media (max-width: 760px)" in styles
+    assert "대상 기간 종료" in script
+    assert "window.matchMedia" in script
 
 
 def test_results_first_layout_keeps_decision_flow_and_wide_history() -> None:
     document = HTML_PATH.read_text(encoding="utf-8")
-    script = JS_PATH.read_text(encoding="utf-8")
-    styles = CSS_PATH.read_text(encoding="utf-8")
+    script = JS_PATH.read_text(encoding="utf-8") + (WEB / "insights.js").read_text(encoding="utf-8")
+    styles = CSS_PATH.read_text(encoding="utf-8") + (WEB / "insights.css").read_text(encoding="utf-8")
     assert 'class="probability-shift-card card"' not in document
     assert 'id="duration-context-card" class="card v5-only"' in document
     assert 'id="fx-context-card" class="card v5-only"' in document
@@ -1638,8 +1598,8 @@ def test_results_first_layout_keeps_decision_flow_and_wide_history() -> None:
 
 def test_v5_only_sections_fail_closed_for_v4_payloads() -> None:
     document = HTML_PATH.read_text(encoding="utf-8")
-    script = JS_PATH.read_text(encoding="utf-8")
-    styles = CSS_PATH.read_text(encoding="utf-8")
+    script = JS_PATH.read_text(encoding="utf-8") + (WEB / "insights.js").read_text(encoding="utf-8")
+    styles = CSS_PATH.read_text(encoding="utf-8") + (WEB / "insights.css").read_text(encoding="utf-8")
     for section_id in (
         "conditional-stats-nav",
         "duration-context-card",
@@ -1663,20 +1623,20 @@ def test_full_model_and_conditional_tables_are_collapsed_by_default() -> None:
     assert "<summary>전체 모델 보기</summary>" in document
     assert "<summary>전체 이탈 모델 표</summary>" in document
     assert "상세 성과 표" in document
-    assert "<summary>현재 모델 진단</summary>" in document
+    assert "<summary>선택 모델 상세 지표</summary>" in document
     assert "<summary>진단 지표</summary>" in document
     assert 'class="compact-table-details" open' not in document
 
 
 def test_browser_contract_rejects_probability_keys_beyond_three_states() -> None:
-    script = JS_PATH.read_text(encoding="utf-8")
+    script = JS_PATH.read_text(encoding="utf-8") + (WEB / "insights.js").read_text(encoding="utf-8")
     assert "probabilityKeys.length !== STATE_ORDER.length" in script
     assert "확률 키는 표준 세 상태와 정확히 일치" in script
 
 
 def test_v3_transition_contract_is_additive_and_fail_closed() -> None:
     document = HTML_PATH.read_text(encoding="utf-8")
-    script = JS_PATH.read_text(encoding="utf-8")
+    script = JS_PATH.read_text(encoding="utf-8") + (WEB / "insights.js").read_text(encoding="utf-8")
     assert 'const V3_RESULT_VERSION = "weekly-regime-result-v3"' in script
     assert "TRANSITION_HORIZONS" in script
     assert 'const expectedKeys = ["1w", "4w", "13w"]' in script
@@ -1690,7 +1650,7 @@ def test_v3_transition_contract_is_additive_and_fail_closed() -> None:
 
 
 def test_v4_structural_contract_is_additive_and_fail_closed() -> None:
-    script = JS_PATH.read_text(encoding="utf-8")
+    script = JS_PATH.read_text(encoding="utf-8") + (WEB / "insights.js").read_text(encoding="utf-8")
     assert 'const V4_RESULT_VERSION = "weekly-regime-result-v4"' in script
     assert 'const V4_MODEL_VERSION = "weekly-nondl-structural-v4"' in script
     assert 'const V4_FEATURE_SET_VERSION = "weekly-pit-structural-v4"' in script
@@ -1709,7 +1669,7 @@ def test_v4_structural_contract_is_additive_and_fail_closed() -> None:
 
 
 def test_declared_result_versions_and_no_event_average_precision_fail_closed() -> None:
-    script = JS_PATH.read_text(encoding="utf-8")
+    script = JS_PATH.read_text(encoding="utf-8") + (WEB / "insights.js").read_text(encoding="utf-8")
     assert "![V3_RESULT_VERSION, V4_RESULT_VERSION, V5_RESULT_VERSION].includes(declaredResultVersion)" in script
     assert "지원하지 않는 meta.result_version입니다" in script
     assert "row.average_precision === null && eventCount === 0" in script
@@ -1722,7 +1682,7 @@ def test_declared_result_versions_and_no_event_average_precision_fail_closed() -
 
 
 def test_v3_transition_metric_ranges_counts_and_selection_cutoff_are_explicit() -> None:
-    script = JS_PATH.read_text(encoding="utf-8")
+    script = JS_PATH.read_text(encoding="utf-8") + (WEB / "insights.js").read_text(encoding="utf-8")
     assert "isIsoDate(payload.model.transition_selection_end)" in script
     assert "model.transition_selection_end는 YYYY-MM-DD 형식의 실제 날짜" in script
     assert "binary_log_loss가 0 이상의 유한한 숫자" in script
@@ -2124,6 +2084,48 @@ def test_v5_hard_state_does_not_have_to_be_membership_argmax() -> None:
     current["memberships"] = {"risk_on": 0.50, "transition": 0.40, "risk_off": 0.10}
     current["primary_membership"] = 0.40
     assert _browser_validation_errors(payload) == []
+
+
+def test_v5_browser_accepts_uncapped_standard_and_requires_it_for_coherence() -> None:
+    payload = _valid_v5_browser_payload()
+    execution = payload["model"]["execution_parameters"]
+    cap_fields = ["directional_maximum_selection_origins", "directional_maximum_diagnostic_origins"]
+    for field in cap_fields:
+        execution[field] = None
+    assert _browser_validation_errors(payload) == []
+    directional = payload["model"]["directional_transition"]
+    directional["coherence_version"] = "canonical-one-week-joint-first-destination/2"
+    assert _browser_validation_errors(payload) == []
+    for field in cap_fields:
+        execution[field] = 60
+        assert any("전체 표본" in error for error in _browser_validation_errors(payload))
+        execution[field] = None
+    execution[cap_fields[0]] = 61
+    assert any("최대 표본" in error for error in _browser_validation_errors(payload))
+    execution[cap_fields[0]] = None
+    directional["coherence_version"] = "unknown"
+    assert any("coherence_version" in error for error in _browser_validation_errors(payload))
+
+
+def test_v5_browser_accepts_insufficient_tail_support_and_rejects_unbacked_estimates() -> None:
+    payload = _valid_v5_browser_payload()
+    duration = payload["weekly"][0]["duration_context"]
+    duration.update(status="insufficient_tail_support", median_remaining_weeks=None,
+                    restricted_mean_remaining_weeks=None, ci95=None)
+    duration["conditional_survival"] = {"4w": None, "13w": None}
+    duration["departure_probability"] = {"4w": None, "13w": None}
+    duration["support"] = {"schema_version": "regime-duration-support/2",
+                           "tail_extrapolation": False, "completed_at_current_age": 2,
+                           "minimum_completed_at_current_age": 3}
+    assert _browser_validation_errors(payload) == []
+    duration["median_remaining_weeks"] = 7
+    assert any("표본 부족 잔여기간" in error for error in _browser_validation_errors(payload))
+    duration["median_remaining_weeks"] = None
+    duration["status"] = "ok"
+    assert any("현재 지속 연령" in error for error in _browser_validation_errors(payload))
+    duration["status"] = "insufficient_tail_support"
+    duration["support"]["tail_extrapolation"] = True
+    assert any("support 계약" in error for error in _browser_validation_errors(payload))
 
 
 def test_v5_rejects_cross_version_current_fields_and_directional_mass_errors() -> None:
@@ -2710,7 +2712,7 @@ process.stdout.write(JSON.stringify([
 
 
 def test_decision_shadow_schedules_entry_open_boundary_rerender() -> None:
-    script = JS_PATH.read_text(encoding="utf-8")
+    script = JS_PATH.read_text(encoding="utf-8") + (WEB / "insights.js").read_text(encoding="utf-8")
     assert "decisionShadowEntryTimer: null" in script
     assert "function clearDecisionShadowEntryTimer()" in script
     assert "function scheduleDecisionShadowEntryRerender(timingPolicy)" in script
@@ -2966,7 +2968,7 @@ process.stdout.write(JSON.stringify({
 
 
 def test_forecast_rerender_does_not_touch_observed_context_surfaces() -> None:
-    script = JS_PATH.read_text(encoding="utf-8")
+    script = JS_PATH.read_text(encoding="utf-8") + (WEB / "insights.js").read_text(encoding="utf-8")
     start = script.index("  function renderForecastSurfaces()")
     end = script.index("\n  function renderSelectedWeek()", start)
     body = script[start:end]
@@ -3077,8 +3079,8 @@ def test_browser_validator_executes_python_v4_semantic_rejections() -> None:
 
 def test_v3_transition_models_have_horizon_specific_diagnostic_surface() -> None:
     document = HTML_PATH.read_text(encoding="utf-8")
-    script = JS_PATH.read_text(encoding="utf-8")
-    styles = CSS_PATH.read_text(encoding="utf-8")
+    script = JS_PATH.read_text(encoding="utf-8") + (WEB / "insights.js").read_text(encoding="utf-8")
+    styles = CSS_PATH.read_text(encoding="utf-8") + (WEB / "insights.css").read_text(encoding="utf-8")
     assert 'id="transition-model-section"' in document
     assert 'for="transition-horizon-select"' in document
     for value in ("1", "4", "13"):
@@ -3095,7 +3097,7 @@ def test_v3_transition_models_have_horizon_specific_diagnostic_surface() -> None
 
 
 def test_browser_contract_requires_explicit_consistent_lifecycle() -> None:
-    script = JS_PATH.read_text(encoding="utf-8")
+    script = JS_PATH.read_text(encoding="utf-8") + (WEB / "insights.js").read_text(encoding="utf-8")
     assert 'const expectedSelectionStatus = isV5 ? "selected_by_gate" : "provisional_predeployment"' in script
     assert "function validateV5Lifecycle(" in script
     assert 'publication.status === V5_PUBLICATION_STATUS && deployment.status === "operating"' in script
@@ -3284,8 +3286,8 @@ const staleHashSource = {json.dumps(stale_hash_source)};
 
 def test_v5_decision_evidence_is_collapsed_at_the_bottom_and_semantically_distinct() -> None:
     document = HTML_PATH.read_text(encoding="utf-8")
-    script = JS_PATH.read_text(encoding="utf-8")
-    styles = CSS_PATH.read_text(encoding="utf-8")
+    script = JS_PATH.read_text(encoding="utf-8") + (WEB / "insights.js").read_text(encoding="utf-8")
+    styles = CSS_PATH.read_text(encoding="utf-8") + (WEB / "insights.css").read_text(encoding="utf-8")
     assert 'id="model-evidence-summary"' in document
     assert '"champion-summary", "model-evidence-summary"' in script
     research_position = document.index('id="research-evidence"')
@@ -3314,7 +3316,7 @@ def test_v5_decision_evidence_is_collapsed_at_the_bottom_and_semantically_distin
 
 def test_conditional_performance_reuses_card_spacing_and_has_reachable_wide_table() -> None:
     document = HTML_PATH.read_text(encoding="utf-8")
-    styles = CSS_PATH.read_text(encoding="utf-8")
+    styles = CSS_PATH.read_text(encoding="utf-8") + (WEB / "insights.css").read_text(encoding="utf-8")
     assert 'id="conditional-stat-scroll" class="table-scroll conditional-table-scroll"' in document
     assert 'class="table-scroll-guide"' in document
     assert "@media (max-width: 1240px) {\n  .table-scroll-guide {\n    display: block;" in styles
@@ -3327,8 +3329,8 @@ def test_conditional_performance_reuses_card_spacing_and_has_reachable_wide_tabl
 
 def test_conditional_performance_leads_with_asset_class_mean_comparison() -> None:
     document = HTML_PATH.read_text(encoding="utf-8")
-    script = JS_PATH.read_text(encoding="utf-8")
-    styles = CSS_PATH.read_text(encoding="utf-8")
+    script = JS_PATH.read_text(encoding="utf-8") + (WEB / "insights.js").read_text(encoding="utf-8")
+    styles = CSS_PATH.read_text(encoding="utf-8") + (WEB / "insights.css").read_text(encoding="utf-8")
     section_start = document.index('id="conditional-stats"')
     details_start = document.index('class="compact-table-details"', section_start)
     assert document.index('id="conditional-horizon-select"', section_start) < details_start
@@ -3449,6 +3451,7 @@ process.stdout.write(JSON.stringify({{
         "model": "xgboost",
         "window": 104,
         "basis": "forecast",
+        "weighting": "episode",
         "horizon": 4,
         "asset": "TLT",
     }
@@ -3472,8 +3475,8 @@ process.stdout.write(JSON.stringify({{
 
 def test_mobile_history_defaults_to_overview_and_expands_only_on_request() -> None:
     document = HTML_PATH.read_text(encoding="utf-8")
-    script = JS_PATH.read_text(encoding="utf-8")
-    styles = CSS_PATH.read_text(encoding="utf-8")
+    script = JS_PATH.read_text(encoding="utf-8") + (WEB / "insights.js").read_text(encoding="utf-8")
+    styles = CSS_PATH.read_text(encoding="utf-8") + (WEB / "insights.css").read_text(encoding="utf-8")
     assert '<option value="26" selected>26주</option>' in document
     assert '<option value="52">52주</option>' in document
     assert '<option value="104">104주</option>' in document
@@ -3597,53 +3600,12 @@ process.stdout.write(JSON.stringify(result));
 
 def test_decision_action_and_shadow_are_visible_before_conditional_results() -> None:
     document = HTML_PATH.read_text(encoding="utf-8")
-    script = JS_PATH.read_text(encoding="utf-8")
-    styles = CSS_PATH.read_text(encoding="utf-8")
-    next_card_position = document.index('id="next-regime-card"')
-    action_position = document.index('id="decision-action-card"')
-    current_summary_position = document.index('id="decision-shadow-current-summary"')
-    research_position = document.index('id="research-evidence"')
-    decision_position = document.index('id="decision-shadow-block"')
-    conditional_position = document.index('id="conditional-stats"')
-    assert next_card_position < action_position < current_summary_position
-    assert current_summary_position < decision_position < conditional_position
-    assert decision_position < research_position
-    assert 'id="research-evidence-details" class="research-notice-details' in document
-    assert 'id="research-evidence-details" class="research-notice-details operations-details research-evidence-details" open' not in document
-    assert 'id="header-analysis-coverage"' in document
-    assert 'id="conditional-support-summary"' in document
-    assert "진입 없음" in document
-    assert '`성과 ${formatNumber(observedOutcomeRows, 0)} · ${formatNumber(forecastOutcomeRows, 0)}`' in script
-    assert '`SPY 대비 연수익 ${spyReturnGap === null ? "—" : `${formatSignedPercent(spyReturnGap)}p`}`' in script
-    assert '"후보는 최초 배분 후 유지"' in script
-    assert ".hero-grid > .decision-action-card" in styles
-    assert 'data-flow-stage="regime"' in document
-    assert 'data-flow-stage="forecast"' in document
-    assert 'data-flow-stage="allocation"' in document
-    assert ".decision-shadow-economic-summary" in styles
-    assert ".conditional-support-summary" in styles
-    assert 'probability_shadow: "위험 국면 전략"' in script
-    assert 'spy_buy_and_hold: "SPY"' in script
-    assert 'static_60_40: "60/40"' in script
-    assert 'vol_target_60_40: "변동 60/40"' in script
-    assert "공식 예측·선정 미반영" not in script
-    assert '["연간 매수+매도", "annualized_turnover"' in script
-    assert '매수와 매도 비중을 모두 합산한 연환산 full-L1 값' in script
-    assert "--site-nav-height: 57px" in styles
-    assert "#conditional-stat-table col:nth-child(10)" in styles
-    assert "evaluation_start_week" in script
-    assert "evaluation_end_week" in script
-    assert 'createElement("strong", null, "주간 리밸런싱")' in script
-    assert 'createElement("table", "decision-shadow-table")' in script
-    assert "grid.append(reconstructed);" in script
-    for removed_copy in (
-        "투자판단용 아님",
-        "공식 예측·선정 미반영",
-        "연율·CER·Sharpe 참고 보류",
-        "재구성 OOS와 운영 예측 원장을 분리해 표시합니다.",
-    ):
-        assert removed_copy not in document
-        assert removed_copy not in script
+    ids = ["next-regime-card", "decision-action-card", "decision-shadow-block", "conditional-stats", "research-methods"]
+    positions = [document.index(f'id="{value}"') for value in ids]
+    assert positions == sorted(positions)
+    for element_id in ("holdings-calculator", "conditional-weighting", "conditional-cell-detail"):
+        assert element_id in parsed_html().ids
+    assert 'id="research-methods" class="research-methods card" open' not in document
 
 
 def test_investment_summary_helpers_report_coverage_support_and_economic_result() -> None:
@@ -3739,37 +3701,27 @@ process.stdout.write(JSON.stringify({{coverage, unsupported, supported, economic
 
 def test_operations_are_collapsed_below_results_without_warning_surfaces() -> None:
     document = HTML_PATH.read_text(encoding="utf-8")
-    script = JS_PATH.read_text(encoding="utf-8")
-    overview_end = document.index("</section>", document.index('id="overview"'))
-    operations_position = document.index('id="data-health"')
-    assert operations_position > overview_end
-    assert '<details class="research-notice-details operations-details">' in document
-    assert 'id="research-notice-summary"' in document
-    assert '<details class="research-notice-details operations-details" open' not in document
-    for warning_surface in ("data-alerts", "model-diagnostic", "method-notices", "publication-gate"):
-        assert warning_surface not in document
-    assert "renderAlerts" not in script
-    assert "renderMethodNotices" not in script
+    methods = document.index('id="research-methods"')
+    assert document.index('id="data-health"') > methods
+    assert document.index('id="forecast-window-section"') > methods
+    assert document.index('id="research-evidence"') > methods
+    assert 'id="research-methods" class="research-methods card" open' not in document
+    assert 'id="data-health" class="operations-section"' in document
+    assert 'class="operations-section meta-only-section"' not in document
 
 
 def test_default_canvas_uses_compact_copy_and_one_operations_disclosure() -> None:
     document = HTML_PATH.read_text(encoding="utf-8")
-    script = JS_PATH.read_text(encoding="utf-8")
+    assert document.count('id="research-methods"') == 1
     assert document.count('class="eyebrow"') == 1
-    assert 'class="table-scroll-hint"' not in document
-    assert 'class="method-note"' not in document
-    assert document.count('class="research-notice-details operations-details"') == 1
     assert 'class="source-links"' in document
-    assert "공개 배포 전 권리 확인 필요:" not in script
-    assert "사후 진단 일반화" not in document
-    assert "This product uses the FRED® API" not in document
-    assert "개인·비상업 파생 결과" not in document
-    assert "투자 조언 아님" not in document
+    assert 'id="execution-brief"' in document
+    assert 'class="interpretation-notes"' in document
 
 
 def test_h10_source_keeps_rights_contract_and_official_link_without_rights_copy() -> None:
     document = HTML_PATH.read_text(encoding="utf-8")
-    script = JS_PATH.read_text(encoding="utf-8")
+    script = JS_PATH.read_text(encoding="utf-8") + (WEB / "insights.js").read_text(encoding="utf-8")
     assert (
         '<a href="https://www.federalreserve.gov/releases/h10/">'
         "Federal Reserve H.10</a>"
@@ -3780,7 +3732,7 @@ def test_h10_source_keeps_rights_contract_and_official_link_without_rights_copy(
 
 
 def test_dashboard_uses_only_real_payload_values() -> None:
-    script = JS_PATH.read_text(encoding="utf-8")
+    script = JS_PATH.read_text(encoding="utf-8") + (WEB / "insights.js").read_text(encoding="utf-8")
     assert "fetch(DATA_URL" in script
     assert "validatePayload(payload)" in script
     assert "DataContractError" in script
@@ -3792,7 +3744,7 @@ def test_dashboard_uses_only_real_payload_values() -> None:
 
 
 def test_history_window_never_claims_more_weeks_than_are_available() -> None:
-    script = JS_PATH.read_text(encoding="utf-8")
+    script = JS_PATH.read_text(encoding="utf-8") + (WEB / "insights.js").read_text(encoding="utf-8")
     assert _browser_history_window_cases() == ["all", 52, "all", 104, "all", "all"]
     assert "function syncHistoryWindowControl()" in script
     assert "preferredHistoryWindow: 52" in script
@@ -3803,7 +3755,7 @@ def test_history_window_never_claims_more_weeks_than_are_available() -> None:
 
 
 def test_three_state_and_health_contracts_are_explicit() -> None:
-    script = JS_PATH.read_text(encoding="utf-8")
+    script = JS_PATH.read_text(encoding="utf-8") + (WEB / "insights.js").read_text(encoding="utf-8")
     for state_code in ("risk_on", "transition", "risk_off"):
         assert state_code in script
     for health_code in (
@@ -3820,7 +3772,7 @@ def test_three_state_and_health_contracts_are_explicit() -> None:
 
 
 def test_signed_market_percentages_do_not_use_probability_validation() -> None:
-    script = JS_PATH.read_text(encoding="utf-8")
+    script = JS_PATH.read_text(encoding="utf-8") + (WEB / "insights.js").read_text(encoding="utf-8")
     assert "function formatSignedPercent" in script
     assert 'if (format === "percent") return formatSignedPercent(number)' in script
     assert 'if (format === "probability") return formatPercent(number)' in script
@@ -3828,7 +3780,7 @@ def test_signed_market_percentages_do_not_use_probability_validation() -> None:
 
 
 def test_styles_have_no_remote_assets_or_gradients() -> None:
-    styles = CSS_PATH.read_text(encoding="utf-8").lower()
+    styles = CSS_PATH.read_text(encoding="utf-8") + (WEB / "insights.css").read_text(encoding="utf-8").lower()
     assert "url(" not in styles
     assert "gradient" not in styles
     assert "@import" not in styles
@@ -3836,8 +3788,8 @@ def test_styles_have_no_remote_assets_or_gradients() -> None:
 
 def test_decision_first_views_and_investment_charts_are_explicit() -> None:
     document = HTML_PATH.read_text(encoding="utf-8")
-    script = JS_PATH.read_text(encoding="utf-8")
-    styles = CSS_PATH.read_text(encoding="utf-8")
+    script = JS_PATH.read_text(encoding="utf-8") + (WEB / "insights.js").read_text(encoding="utf-8")
+    styles = CSS_PATH.read_text(encoding="utf-8") + (WEB / "insights.css").read_text(encoding="utf-8")
     for view, label in (
         ("execution", "결정"),
         ("performance", "성과"),
@@ -3869,7 +3821,7 @@ def test_decision_first_views_and_investment_charts_are_explicit() -> None:
 
 def test_default_execution_view_has_regime_forecast_allocation_flow_in_order() -> None:
     document = HTML_PATH.read_text(encoding="utf-8")
-    styles = CSS_PATH.read_text(encoding="utf-8")
+    styles = CSS_PATH.read_text(encoding="utf-8") + (WEB / "insights.css").read_text(encoding="utf-8")
     stage_positions = [
         document.index('data-flow-stage="regime"'),
         document.index('data-flow-stage="forecast"'),
@@ -3887,8 +3839,8 @@ def test_default_execution_view_has_regime_forecast_allocation_flow_in_order() -
 
 def test_flow_keeps_official_allocation_separate_from_comparison_model() -> None:
     document = HTML_PATH.read_text(encoding="utf-8")
-    script = JS_PATH.read_text(encoding="utf-8")
-    assert '<span class="horizon-label">공식 모델</span>' in document
+    script = JS_PATH.read_text(encoding="utf-8") + (WEB / "insights.js").read_text(encoding="utf-8")
+    assert '<span class="horizon-label">전략 원장</span>' in document
     assert '<label for="model-forecast-select">비교 모델</label>' in document
     assert "const decisionModel = operatingChampionName();" in script
     assert "forecastForWeek(week, decisionModel)" in script
@@ -4017,6 +3969,6 @@ console.log(JSON.stringify({{
 
 
 def test_v4_uses_the_same_transition_dashboard_surfaces_as_v3() -> None:
-    script = JS_PATH.read_text(encoding="utf-8")
+    script = JS_PATH.read_text(encoding="utf-8") + (WEB / "insights.js").read_text(encoding="utf-8")
     assert "[V3_RESULT_VERSION, V4_RESULT_VERSION].includes(resultVersion)" in script
     assert "if (!hasTransitionContract || !allRows.length)" in script

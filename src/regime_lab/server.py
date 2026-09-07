@@ -8,7 +8,7 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from regime_lab.dashboard_split import build_dashboard_split
+from regime_lab.dashboard_split import build_dashboard_split, build_history_chunks
 from regime_lab.publication_contract import PublicContractError
 
 
@@ -16,6 +16,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
     payload_bytes: bytes | None = None
     core_bytes: bytes | None = None
     research_bytes: bytes | None = None
+    history_bytes: dict[str, bytes] = {}
     comparison_bytes: bytes | None = None
     selection_family_bytes: bytes | None = None
     json_overrides_enabled = False
@@ -27,6 +28,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 
     def _override_json_bytes(self) -> bytes | None:
         request_path = urlsplit(self.path).path
+        if request_path in self.history_bytes:
+            return self.history_bytes[request_path]
         if request_path == "/data/regime-core.json":
             return self.core_bytes
         if request_path == "/data/regime-research.json":
@@ -41,7 +44,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 
     def _serve_override_json(self, *, include_body: bool) -> bool:
         request_path = urlsplit(self.path).path
-        if request_path not in {
+        if request_path not in self.history_bytes and request_path not in {
             "/data/regime-core.json",
             "/data/regime-research.json",
             "/data/regime-results.json",
@@ -160,6 +163,10 @@ def serve_dashboard(
         label="dashboard payload",
     )
     selected_core, selected_research = _dashboard_split_bytes(selected_payload)
+    selected_history = {}
+    if selected_core is not None and selected_payload is not None:
+        history, _ = build_history_chunks(json.loads(selected_payload), payload_raw=selected_payload)
+        selected_history = {"/" + path: raw for path, raw in history.items()}
     selected_comparison = _frozen_json_bytes(
         comparison,
         comparison_bytes,
@@ -177,6 +184,7 @@ def serve_dashboard(
             "payload_bytes": selected_payload,
             "core_bytes": selected_core,
             "research_bytes": selected_research,
+            "history_bytes": selected_history,
             "comparison_bytes": selected_comparison,
             "selection_family_bytes": selected_selection_family,
             "json_overrides_enabled": any(

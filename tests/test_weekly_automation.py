@@ -15,7 +15,7 @@ import pytest
 
 from regime_lab import automation
 from regime_lab import cli
-from regime_lab.dashboard_split import build_dashboard_split
+from regime_lab.dashboard_split import build_dashboard_split, build_history_chunks
 from regime_lab.web_contract import render_browser_contract_javascript
 
 
@@ -821,6 +821,8 @@ def test_public_readback_requires_exact_payload_manifest_and_consumer(
         "styles.css": b"body { color: black; }\n",
         "operating-contract.generated.js": operating_contract,
         "app.js": b"console.log('regime');\n",
+        "insights.js": b"",
+        "insights.css": b"",
     }
     manifest = json.dumps(
         {
@@ -930,11 +932,15 @@ def test_public_readback_expects_packaged_content_hash_index(tmp_path: Path) -> 
         b'<link rel="stylesheet" href="./styles.css?v=manual">'
         b'<script src="./operating-contract.generated.js?v=manual"></script>'
         b'<script src="./app.js?v=manual"></script>'
+        b'<script src="./insights.js?v=manual"></script>'
+        b'<link rel="stylesheet" href="./insights.css?v=manual">'
     )
     (web / "index.html").write_bytes(source_index)
     (web / "styles.css").write_bytes(styles)
     (web / "operating-contract.generated.js").write_bytes(operating_contract)
     (web / "app.js").write_bytes(app)
+    (web / "insights.js").write_bytes(b"")
+    (web / "insights.css").write_bytes(b"")
     packaged_index = (
         '<title>US Market Regime Lab</title>'
         '<link rel="stylesheet" '
@@ -942,12 +948,16 @@ def test_public_readback_expects_packaged_content_hash_index(tmp_path: Path) -> 
         '<script src="./operating-contract.generated.js?v='
         f'{hashlib.sha256(operating_contract).hexdigest()}"></script>'
         f'<script src="./app.js?v={hashlib.sha256(app).hexdigest()}"></script>'
+        f'<script src="./insights.js?v={hashlib.sha256(b"").hexdigest()}"></script>'
+        f'<link rel="stylesheet" href="./insights.css?v={hashlib.sha256(b"").hexdigest()}">'
     ).encode()
     public_assets = {
         "index.html": packaged_index,
         "styles.css": styles,
         "operating-contract.generated.js": operating_contract,
         "app.js": app,
+        "insights.js": b"",
+        "insights.css": b"",
     }
     payload_sha256 = hashlib.sha256(LIVE_PAYLOAD).hexdigest()
     manifest = json.dumps(
@@ -998,14 +1008,18 @@ def test_v5_public_readback_requires_hash_bound_core_and_research_split(
     generation = (live_root / "generation-manifest.json").read_bytes()
     selection = (live_root / "selection-family-audit.json").read_bytes()
     core, research = build_dashboard_split(json.loads(payload), payload_raw=payload)
+    history, _ = build_history_chunks(json.loads(payload), payload_raw=payload)
     operating_contract = render_browser_contract_javascript()
     assets = {
         "index.html": b"<title>US Market Regime Lab</title><script src='./app.js'></script>",
         "styles.css": b"body {}\n",
         "operating-contract.generated.js": operating_contract,
         "app.js": b"console.log('regime');\n",
+        "insights.js": b"",
+        "insights.css": b"",
     }
     published = {
+        **history,
         automation.PUBLIC_PAYLOAD_PATH: payload,
         automation.PUBLIC_CORE_PAYLOAD_PATH: core,
         automation.PUBLIC_RESEARCH_SIDECAR_PATH: research,
@@ -1082,6 +1096,8 @@ def test_expected_static_assets_reject_one_sided_application_shell(
         render_browser_contract_javascript()
     )
     (web / "app.js").write_bytes(b"console.log('regime');\n")
+    (web / "insights.js").write_bytes(b"")
+    (web / "insights.css").write_bytes(b"")
 
     with pytest.raises(
         automation.AutomationError,

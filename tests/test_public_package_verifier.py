@@ -4,6 +4,7 @@ import hashlib
 import importlib.util
 import json
 from pathlib import Path
+import re
 
 import pytest
 
@@ -52,12 +53,16 @@ def _web_root(tmp_path: Path) -> Path:
     web.mkdir()
     (web / "index.html").write_text(
         '<link rel="stylesheet" href="./styles.css?v=manual">\n'
+        '<link rel="stylesheet" href="./insights.css?v=manual">\n'
         '<main>demo</main>'
+        '<script src="./insights.js?v=manual"></script>\n'
         '<script src="./operating-contract.generated.js?v=manual"></script>\n'
         '<script src="./app.js?v=manual"></script>\n',
         encoding="utf-8",
     )
     (web / "styles.css").write_text("main { color: black; }\n", encoding="utf-8")
+    (web / "insights.css").write_text(".insight { display: block; }\n", encoding="utf-8")
+    (web / "insights.js").write_text("window.insights = {};\n", encoding="utf-8")
     (web / "operating-contract.generated.js").write_bytes(
         render_browser_contract_javascript()
     )
@@ -579,6 +584,8 @@ def test_verifier_accepts_exact_v5_live_package_with_comparison(
     assert result["ok"] is True
     assert result["comparison_included"] is True
     assert result["core_research_split_included"] is True
+    assert result["history_chunks_included"] == 1
+    assert "data/regime-history-000.json" in result["files"]
     assert package_public_demo.V5_COMPARISON_DESTINATION in result["files"]
 
 
@@ -618,6 +625,63 @@ def test_verifier_refuses_core_generation_tamper_with_refreshed_manifest(
         verify_public_package.VerificationError,
         match="generation_id mismatch",
     ):
+        verify_public_package.verify_public_package(output)
+
+
+def test_verifier_refuses_missing_history_chunk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = _package_v5(tmp_path, monkeypatch)
+    (output / "data/regime-history-000.json").unlink()
+    with pytest.raises(verify_public_package.VerificationError, match="inventory mismatch"):
+        verify_public_package.verify_public_package(output)
+
+
+@pytest.mark.parametrize("mutation", ["generation", "weekly", "row_count"])
+def test_verifier_checks_history_against_source_after_manifest_refresh(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutation: str,
+) -> None:
+    output = _package_v5(tmp_path, monkeypatch)
+    relative_path = "data/regime-history-000.json"
+    if mutation == "row_count":
+        relative_path = package_public_demo.CORE_PAYLOAD_DESTINATION
+    path = output / relative_path
+    document = json.loads(path.read_text())
+    if mutation == "generation":
+        document["generation_id"] = "foreign-generation"
+    elif mutation == "weekly":
+        document["weekly"][0]["date"] = "altered-history"
+    else:
+        document["history_sidecars"][0]["row_count"] -= 1
+    path.write_bytes(_json_bytes(document))
+    _refresh_manifest_record(output, relative_path)
+    with pytest.raises(verify_public_package.VerificationError, match="history"):
+        verify_public_package.verify_public_package(output)
+
+
+@pytest.mark.parametrize("asset", ["insights.js", "insights.css"])
+def test_verifier_checks_insight_cache_key_after_manifest_refresh(
+    tmp_path: Path, asset: str,
+) -> None:
+    output = _package(tmp_path)
+    path = output / asset
+    path.write_bytes(path.read_bytes() + b"\n/* changed */\n")
+    _refresh_manifest_record(output, asset)
+    with pytest.raises(verify_public_package.VerificationError, match="cache key"):
+        verify_public_package.verify_public_package(output)
+
+
+@pytest.mark.parametrize("asset", ["insights.js", "insights.css"])
+def test_verifier_rejects_missing_insight_reference_after_manifest_refresh(
+    tmp_path: Path, asset: str,
+) -> None:
+    output = _package(tmp_path)
+    path = output / "index.html"
+    document = path.read_text()
+    document = re.sub(r"<[^>]*" + re.escape(asset) + r"[^>]*>(?:</script>)?", "", document)
+    path.write_text(document)
+    _refresh_manifest_record(output, "index.html")
+    with pytest.raises(verify_public_package.VerificationError, match="exactly one reference"):
         verify_public_package.verify_public_package(output)
 
 

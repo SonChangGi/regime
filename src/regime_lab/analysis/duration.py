@@ -400,6 +400,9 @@ def conditional_duration_summary(
     selected = _validate_spells(spells, state=state)
     completed = int(selected["event_observed"].sum())
     censored = int((~selected["event_observed"]).sum())
+    completed_at_age = int((selected["event_observed"] & selected["duration_weeks"].ge(elapsed)).sum())
+    maximum_observed = int(selected["duration_weeks"].max())
+    minimum_tail_spells = 3
     base: dict[str, Any] = {
         "method": "state_specific_kaplan_meier",
         "state": state,
@@ -408,6 +411,16 @@ def conditional_duration_summary(
         "completed_spells": completed,
         "censored_spells": censored,
         "minimum_completed_spells": minimum_completed,
+        "support": {
+            "schema_version": "regime-duration-support/2",
+            "completed_at_current_age": completed_at_age,
+            "at_risk_at_current_age": int(selected["duration_weeks"].ge(elapsed).sum()),
+            "minimum_completed_at_current_age": minimum_tail_spells,
+            "maximum_observed_duration_weeks": maximum_observed,
+            "supported_remaining_weeks": max(0, maximum_observed - (elapsed - 1)),
+            "horizon_at_risk": {f"{h}w": int(selected["duration_weeks"].ge(elapsed - 1 + h).sum()) for h in resolved_horizons},
+            "tail_extrapolation": False,
+        },
         "bootstrap": {
             "unit": "episode",
             "resamples": resamples,
@@ -416,10 +429,10 @@ def conditional_duration_summary(
             "interval": 0.95,
         },
     }
-    if completed < minimum_completed:
+    if completed < minimum_completed or completed_at_age < minimum_tail_spells:
         return {
             **base,
-            "status": "insufficient_history",
+            "status": "insufficient_history" if completed < minimum_completed else "insufficient_tail_support",
             "conditional_survival": {f"{h}w": None for h in resolved_horizons},
             "departure_probability": {f"{h}w": None for h in resolved_horizons},
             "median_remaining_weeks": None,

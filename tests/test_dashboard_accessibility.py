@@ -7,8 +7,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 HTML = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
-CSS = (ROOT / "web" / "styles.css").read_text(encoding="utf-8")
-JS = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+CSS = (ROOT / "web" / "styles.css").read_text(encoding="utf-8") + (ROOT / "web" / "insights.css").read_text(encoding="utf-8")
+JS = (ROOT / "web" / "app.js").read_text(encoding="utf-8") + (ROOT / "web" / "insights.js").read_text(encoding="utf-8")
 
 
 def test_document_has_language_landmarks_and_skip_link() -> None:
@@ -34,11 +34,11 @@ def test_interactive_controls_have_accessible_names() -> None:
     assert '<label for="model-forecast-select">비교 모델</label>' in HTML
     assert 'id="model-forecast-select"' in HTML
     assert (
-        'aria-controls="history model-forecast-explorer conditional-stats"'
+        'aria-controls="history model-quality-brief model-health-strip model-forecast-explorer model-loss-chart leaderboard-body conditional-stats"'
     ) in HTML
     assert 'aria-describedby="model-forecast-scope"' in HTML
     assert 'id="model-forecast-scope" class="sr-only"' in HTML
-    assert "모델 비교와 예측 국면별 자산 성과에 적용" in HTML
+    assert "선택 모델의 요약·상세 지표, 예측 차트, 비교표와 예측 국면별 자산 성과에 적용" in HTML
     assert 'id="history-series-select"' not in HTML
     assert 'id="chart-readout-actual"' in HTML
     assert 'id="chart-readout-entropy"' in HTML
@@ -227,7 +227,7 @@ def test_collapsed_detail_cards_omit_general_warning_surfaces() -> None:
     assert 'id="forecast-contract-status"' not in HTML
     assert 'id="forecast-expired-notice"' not in HTML
     assert 'id="research-evidence-details"' in HTML
-    assert 'class="research-notice-details operations-details"' in HTML
+    assert 'id="research-methods" class="research-methods card"' in HTML
     assert 'id="fx-ablation-status"' in HTML
     assert 'id="model-evidence-summary"' in HTML
     assert '"전향적 shadow"' in JS
@@ -235,8 +235,8 @@ def test_collapsed_detail_cards_omit_general_warning_surfaces() -> None:
     assert "실제 OOS ${formatNumber(evaluationOrigins, 0)}개" in JS
     assert '"검토 필요"' not in JS
     assert "개인·비상업 파생 결과" not in HTML
-    assert '<details class="research-notice-details operations-details">' in HTML
-    assert "데이터 · 출처 · 운영" in HTML
+    assert '<details id="research-methods"' in HTML
+    assert "데이터 · 운영" in HTML
     assert "This product uses the FRED® API" not in HTML
     assert "진단 주의" not in JS
     assert "투자 조언 아님" not in HTML

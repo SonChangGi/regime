@@ -99,6 +99,7 @@ def rewrite_index_asset_versions(
     styles_raw: bytes,
     app_raw: bytes,
     operating_contract_raw: bytes | None = None,
+    extra_assets: dict[str, bytes] | None = None,
 ) -> bytes:
     """Bind dashboard asset query values to the exact packaged bytes."""
 
@@ -116,6 +117,7 @@ def rewrite_index_asset_versions(
             ("src", "operating-contract.generated.js", operating_contract_raw),
             ("src", "app.js", app_raw),
         )
+    assets += tuple(("href" if name.endswith(".css") else "src", name, raw) for name, raw in (extra_assets or {}).items())
     counts: list[int] = []
     for attribute, filename, raw in assets:
         pattern = _asset_reference_pattern(attribute=attribute, filename=filename)
@@ -141,6 +143,7 @@ def rewrite_index_asset_versions(
             styles_raw=styles_raw,
             app_raw=app_raw,
             operating_contract_raw=operating_contract_raw,
+            extra_assets=extra_assets,
         )
     return rewritten
 
@@ -151,6 +154,7 @@ def validate_index_asset_versions(
     styles_raw: bytes,
     app_raw: bytes,
     operating_contract_raw: bytes | None = None,
+    extra_assets: dict[str, bytes] | None = None,
 ) -> None:
     """Reject a packaged shell whose cache keys are manual or stale."""
 
@@ -168,16 +172,23 @@ def validate_index_asset_versions(
             ("src", "operating-contract.generated.js", operating_contract_raw),
             ("src", "app.js", app_raw),
         )
+    assets += tuple(("href" if name.endswith(".css") else "src", name, raw) for name, raw in (extra_assets or {}).items())
+    counts: list[int] = []
     for attribute, filename, raw in assets:
         expected = _sha256(raw)
         pattern = _asset_reference_pattern(attribute=attribute, filename=filename)
         matches = list(pattern.finditer(document))
+        counts.append(len(matches))
         if not matches:
             continue
         if len(matches) != 1 or f"?v={expected}" not in matches[0].group(0):
             raise PublicContractError(
                 f"index.html {filename} cache key must equal its content SHA-256"
             )
+    if counts not in ([0] * len(assets), [1] * len(assets)):
+        raise PublicContractError(
+            "index.html must contain exactly one reference for every packaged application asset"
+        )
 
 
 def _canonical_payload_sha256(payload: dict[str, Any]) -> str:

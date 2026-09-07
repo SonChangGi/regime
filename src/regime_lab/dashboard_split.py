@@ -12,7 +12,10 @@ from regime_lab.publication_contract import PublicContractError
 
 CORE_PAYLOAD_DESTINATION = "data/regime-core.json"
 RESEARCH_SIDECAR_DESTINATION = "data/regime-research.json"
-CORE_PAYLOAD_SCHEMA_VERSION = "regime-dashboard-core/1"
+CORE_PAYLOAD_SCHEMA_VERSION = "regime-dashboard-core/2"
+HISTORY_SCHEMA_VERSION = "regime-dashboard-history/1"
+CORE_WEEK_COUNT = 26
+HISTORY_CHUNK_WEEKS = 104
 RESEARCH_SIDECAR_SCHEMA_VERSION = "regime-dashboard-research/1"
 MAX_CORE_PAYLOAD_BYTES = 3_500_000
 MAX_CORE_TO_SOURCE_RATIO = 0.85
@@ -28,7 +31,7 @@ def _canonical_public_json(value: dict[str, Any]) -> bytes:
             value,
             ensure_ascii=False,
             allow_nan=False,
-            indent=2,
+            separators=(",", ":"),
             sort_keys=True,
         )
         + "\n"
@@ -60,11 +63,16 @@ def build_dashboard_split(
         "research": research,
     }
     research_raw = _canonical_public_json(research_document)
+    projected = {key: value for key, value in payload.items() if key != "research"}
+    history_files, bindings = build_history_chunks(payload, payload_raw=payload_raw)
+    if isinstance(projected.get("weekly"), list):
+        projected["weekly"] = projected["weekly"][-CORE_WEEK_COUNT:]
     core_document = {
         "schema_version": CORE_PAYLOAD_SCHEMA_VERSION,
         "generation_id": generation_id,
         "source_payload_sha256": source_payload_sha256,
-        "payload": {key: value for key, value in payload.items() if key != "research"},
+        "payload": projected,
+        "history_sidecars": bindings,
         "research_sidecar": {
             "path": Path(RESEARCH_SIDECAR_DESTINATION).name,
             "sha256": _sha256(research_raw),
@@ -107,6 +115,7 @@ def validate_dashboard_split(
         "source_payload_sha256",
         "payload",
         "research_sidecar",
+        "history_sidecars",
     }
     expected_research_keys = {
         "schema_version",
@@ -137,6 +146,13 @@ def validate_dashboard_split(
     expected_core_payload = {
         key: value for key, value in payload.items() if key != "research"
     }
+    if isinstance(expected_core_payload.get("weekly"), list):
+        expected_core_payload["weekly"] = expected_core_payload["weekly"][
+            -CORE_WEEK_COUNT:
+        ]
+    _, expected_bindings = build_history_chunks(payload, payload_raw=payload_raw)
+    if core_document.get("history_sidecars") != expected_bindings:
+        raise PublicContractError("dashboard history bindings differ from source")
     if core_document.get("payload") != expected_core_payload:
         raise PublicContractError(
             "dashboard core payload differs from source projection"
@@ -164,3 +180,47 @@ __all__ = [
     "build_dashboard_split",
     "validate_dashboard_split",
 ]
+
+
+def build_history_chunks(
+    payload: dict[str, Any], *, payload_raw: bytes
+) -> tuple[dict[str, bytes], list[dict[str, Any]]]:
+    """Bound history growth while preserving exact source rows and ordering."""
+    weekly = payload.get("weekly", [])
+    if not isinstance(weekly, list):
+        raise PublicContractError("dashboard weekly must be an array")
+    historical = weekly[:-CORE_WEEK_COUNT]
+    files: dict[str, bytes] = {}
+    bindings = []
+    for offset in range(0, len(historical), HISTORY_CHUNK_WEEKS):
+        rows = historical[offset : offset + HISTORY_CHUNK_WEEKS]
+        name = f"regime-history-{offset // HISTORY_CHUNK_WEEKS:03d}.json"
+        raw = _canonical_public_json(
+            {
+                "schema_version": HISTORY_SCHEMA_VERSION,
+                "generation_id": payload.get("meta", {}).get("generation_id"),
+                "source_payload_sha256": _sha256(payload_raw),
+                "weekly": rows,
+            }
+        )
+        files[f"data/{name}"] = raw
+        bindings.append(
+            {
+                "path": name,
+                "sha256": _sha256(raw),
+                "row_count": len(rows),
+                "start": rows[0].get("date"),
+                "end": rows[-1].get("date"),
+            }
+        )
+    return files, bindings
+
+
+def validate_history_chunks(
+    files: dict[str, bytes], *, payload: dict[str, Any], payload_raw: bytes
+) -> None:
+    expected, _ = build_history_chunks(payload, payload_raw=payload_raw)
+    if files != expected:
+        raise PublicContractError(
+            "dashboard history contents or file inventory mismatch"
+        )

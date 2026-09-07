@@ -58,6 +58,8 @@ from regime_lab.dashboard_split import (
     RESEARCH_SIDECAR_DESTINATION,
     RESEARCH_SIDECAR_SCHEMA_VERSION,
     build_dashboard_split,
+    build_history_chunks,
+    validate_history_chunks,
     validate_dashboard_split,
 )
 from regime_lab.web_contract import (
@@ -70,6 +72,8 @@ GENERATED_BROWSER_CONTRACT = "operating-contract.generated.js"
 STATIC_ALLOWLIST = (
     "index.html",
     "styles.css",
+    "insights.css",
+    "insights.js",
     GENERATED_BROWSER_CONTRACT,
     "app.js",
 )
@@ -325,6 +329,7 @@ def package_public_dashboard(
         styles_raw=files["styles.css"],
         app_raw=files["app.js"],
         operating_contract_raw=generated_contract_raw,
+        extra_assets={name: files[name] for name in ("insights.js", "insights.css")},
     )
 
     payload_raw = _read_regular_file(payload_path, label="dashboard payload")
@@ -508,6 +513,8 @@ def package_public_dashboard(
         )
         files[CORE_PAYLOAD_DESTINATION] = core_raw
         files[RESEARCH_SIDECAR_DESTINATION] = research_raw
+        history_files, _ = build_history_chunks(payload, payload_raw=payload_raw)
+        files.update(history_files)
 
     is_live_derived = publication_mode == PUBLICATION_MODE_LIVE_DERIVED
     source_ids = sorted(
@@ -582,6 +589,10 @@ def package_public_dashboard(
                 payload_raw=staged_payload_raw,
                 research_raw=staged_research_raw,
             )
+            validate_history_chunks(
+                {path: _read_regular_file(staging / path, label="staged history") for path in history_files},
+                payload=staged_payload, payload_raw=staged_payload_raw,
+            )
             staged_comparison_raw = _read_regular_file(
                 staging / V5_COMPARISON_DESTINATION,
                 label="staged V5/V4 comparison sidecar",
@@ -636,6 +647,7 @@ def package_public_dashboard(
                 staging / "app.js",
                 label="staged app.js",
             ),
+            extra_assets={name: _read_regular_file(staging / name, label="staged insight asset") for name in ("insights.js", "insights.css")},
             operating_contract_raw=_read_regular_file(
                 staging / GENERATED_BROWSER_CONTRACT,
                 label="staged generated browser contract",

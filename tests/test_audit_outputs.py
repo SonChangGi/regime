@@ -1311,6 +1311,106 @@ def test_current_live_decision_shadow_spec_remains_auditable() -> None:
     assert summary["spec_id"] == "spy-tlt-probability-shadow-v2"
 
 
+@pytest.mark.parametrize(
+    ("path", "replacement", "message"),
+    [
+        (
+            ("prospective_decision_shadow", "allocation_research_v2", "schema_version"),
+            "unknown/1",
+            "allocation research identity",
+        ),
+        (
+            ("prospective_decision_shadow", "allocation_research_v2", "role"),
+            "operating",
+            "allocation research identity",
+        ),
+        (
+            (
+                "prospective_decision_shadow",
+                "allocation_research_v2",
+                "affects_official_forecast",
+            ),
+            True,
+            "may not affect issued decisions",
+        ),
+        (
+            (
+                "prospective_decision_shadow",
+                "allocation_research_v2",
+                "affects_champion_selection",
+            ),
+            True,
+            "may not affect issued decisions",
+        ),
+        (
+            (
+                "prospective_decision_shadow",
+                "allocation_research_v2",
+                "affects_issued_ledger",
+            ),
+            True,
+            "may not affect issued decisions",
+        ),
+        (
+            ("decision_research_v2", "schema_version"),
+            "unknown/1",
+            "decision_research_v2 schema",
+        ),
+        (
+            ("operational_diagnostics", "schema_version"),
+            "unknown/1",
+            "operational_diagnostics schema",
+        ),
+        (("extensions", "schema_version"), "unknown/1", "research extensions schema"),
+        (("extensions", "unsupported_extension"), {}, "unknown research extension"),
+        (
+            ("extensions", "downside", "latest", 0, "loss_probability"),
+            1.01,
+            "downside prediction invalid",
+        ),
+        (
+            ("decision_research_v2", "diagnostic_origins"),
+            float("nan"),
+            "research extensions contract",
+        ),
+        (
+            ("prospective_decision_shadow", "unknown_shadow_block"),
+            {},
+            "decision shadow fields/role",
+        ),
+        (
+            ("prospective_decision_shadow", "spec", "sha256"),
+            "0" * 64,
+            "spec SHA-256 mismatch",
+        ),
+    ],
+)
+def test_live_decision_audit_checks_optional_research_and_preserves_existing_guards(
+    path: tuple,
+    replacement: object,
+    message: str,
+) -> None:
+    payload = json.loads((ROOT / "publication/live/regime-results.json").read_text())
+    research = payload["research"]
+    # Exercise the real reviewed generation that exposed the missing consumer.
+    assert "allocation_research_v2" in research["prospective_decision_shadow"]
+    target = research
+    for key in path[:-1]:
+        target = target[key]
+    target[path[-1]] = replacement
+    with pytest.raises(audit_outputs.AuditFailure, match=message):
+        audit_outputs._audit_v5_decision_shadow(payload)
+
+
+def test_decision_shadow_audit_remains_compatible_without_optional_research() -> None:
+    payload = json.loads((ROOT / "publication/live/regime-results.json").read_text())
+    research = payload["research"]
+    for name in ("extensions", "decision_research_v2", "operational_diagnostics"):
+        research.pop(name)
+    research["prospective_decision_shadow"].pop("allocation_research_v2")
+    assert audit_outputs._audit_v5_decision_shadow(payload)["status"] == "verified"
+
+
 def test_v5_research_replay_input_separates_research_and_operational_hashes(
     tmp_path: Path,
 ) -> None:

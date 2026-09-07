@@ -62,7 +62,7 @@ def _inputs(rows: int = 700):
 
 
 def _transition_risk(origin: pd.Timestamp, current_state: str):
-    probabilities = {1: 0.2, 4: 0.45, 13: 0.75}
+    probabilities = {1: 0.4 if current_state == "transition" else 0.8, 4: 0.45, 13: 0.75}
     return {
         f"{horizon}w": {
             "probability": probability,
@@ -180,7 +180,7 @@ def _v4_payload(index: pd.DatetimeIndex, states: pd.Series):
                     "method": "causal_rule_filtered_evidence",
                 },
                 "next_week": next_week,
-                "transition_probability": 0.2,
+                "transition_probability": 0.4 if current_state == "transition" else 0.8,
                 "transition_risk": _transition_risk(origin, current_state),
                 "scores": {
                     "trend": 0.4,

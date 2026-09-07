@@ -51,6 +51,7 @@ from regime_lab.publication_contract import (
     PublicContractError,
     validate_v5_comparison_sidecar,
 )
+from regime_lab.research.contract import validate_research_extensions
 from regime_lab.schema import ContractError, validate_dashboard_payload
 from regime_lab.selection_family_audit import (
     build_selection_family_audit_from_artifacts,
@@ -6942,6 +6943,13 @@ def _audit_v5_decision_shadow(payload: Mapping[str, Any]) -> dict[str, Any]:
 
     research = payload.get("research")
     require(isinstance(research, Mapping), "v5 decision shadow research is invalid")
+    # Match the optional publication contract, including sibling decision and
+    # operational diagnostics. This checks finite JSON, versioned identities,
+    # the explicit extension fields and allocation's no-promotion boundaries.
+    try:
+        validate_research_extensions(dict(research))
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise AuditFailure(f"v5 research extensions contract failed: {exc}") from exc
     raw = research.get("prospective_decision_shadow")
     if raw is None:
         return {"status": "legacy_absent"}
@@ -6968,6 +6976,8 @@ def _audit_v5_decision_shadow(payload: Mapping[str, Any]) -> dict[str, Any]:
         expected_shadow_fields.add("current_signal")
         if "allocation_candidate" in raw:
             expected_shadow_fields.add("allocation_candidate")
+    if "allocation_research_v2" in raw:
+        expected_shadow_fields.add("allocation_research_v2")
     require(
         set(raw) == expected_shadow_fields
         and raw.get("role")

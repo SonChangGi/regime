@@ -6,6 +6,10 @@ from dataclasses import dataclass
 from datetime import timedelta
 from typing import Iterable, Mapping, Sequence
 import warnings
+import hashlib
+import json
+from pathlib import Path
+from importlib.metadata import version as package_version
 
 import numpy as np
 import pandas as pd
@@ -14,6 +18,7 @@ from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
+from regime_lab.io import write_json_atomic
 
 
 STATE_ORDER = ("risk_on", "transition", "risk_off")
@@ -583,6 +588,7 @@ def run_directional_transition_benchmark(
     minimum_destination_classes: int = MINIMUM_DESTINATION_CLASSES,
     minimum_event_blocks: int = MINIMUM_EVENT_BLOCKS,
     random_state: int = 17,
+    cache_directory: str | Path | None = None,
 ) -> DirectionalBenchmarkResult:
     """Evaluate destination/no-departure outcomes with strict horizon purging."""
 
@@ -620,6 +626,31 @@ def run_directional_transition_benchmark(
     elif states.index.tz is not None and cutoff.tzinfo is not None:
         cutoff = cutoff.tz_convert(states.index.tz)
     design = _design_frame(features, states)
+    # A cumulative prefix hash permits reuse when later weeks are appended,
+    # while changes to any known input, model code, or dependency invalidate it.
+    cache_root = Path(cache_directory) if cache_directory is not None else None
+    prefixes: list[str] = []
+    digest = hashlib.sha256(Path(__file__).read_bytes())
+    digest.update(json.dumps({"columns":list(design.columns),"sklearn":package_version("scikit-learn"),"random_state":random_state},sort_keys=True).encode())
+    for row_hash in pd.util.hash_pandas_object(design, index=True).to_numpy():
+        digest.update(row_hash.tobytes())
+        prefixes.append(digest.hexdigest())
+
+    def fit_at(name: str, horizon: int, targets: pd.DataFrame, position: int, train_stop: int):
+        key = hashlib.sha256(f"{prefixes[position]}|{name}|{horizon}|{train_stop}".encode()).hexdigest()
+        path = cache_root / f"{key}.json" if cache_root is not None else None
+        if path is not None and path.exists():
+            try:
+                cached = json.loads(path.read_text())
+                vector = {k:float(cached["probabilities"][k]) for k in OUTCOME_ORDER}
+                if cached.get("key") == key and all(np.isfinite(v) and 0 <= v <= 1 for v in vector.values()) and abs(sum(vector.values())-1) < 1e-8 and vector[str(states.iloc[position])] == 0:
+                    return vector, False, ""
+            except (OSError, ValueError, KeyError, TypeError):
+                pass
+        fitted = _fit_candidate(name, design, states, targets, current_state=str(states.iloc[position]), horizon=horizon, train_stop=train_stop, test_position=position, random_state=random_state)
+        if path is not None and not fitted[1]:
+            write_json_atomic(path, {"key":key,"probabilities":fitted[0]})
+        return fitted
     rows: list[dict[str, object]] = []
     split_rows: list[dict[str, object]] = []
     target_cache = {horizon: first_departure_targets(states, horizon) for horizon in horizons}
@@ -664,17 +695,7 @@ def run_directional_transition_benchmark(
                 }
             )
             for name in models:
-                probability, fallback, reason = _fit_candidate(
-                    name,
-                    design,
-                    states,
-                    targets,
-                    current_state=str(states.iloc[position]),
-                    horizon=horizon,
-                    train_stop=train_stop,
-                    test_position=position,
-                    random_state=random_state,
-                )
+                probability, fallback, reason = fit_at(name, horizon, targets, position, train_stop)
                 rows.append(
                     {
                         "horizon_weeks": horizon,
@@ -723,17 +744,7 @@ def run_directional_transition_benchmark(
         name = champions[horizon]
         for position in range(len(states) - horizon, len(states)):
             train_stop = position - horizon
-            probability, fallback, reason = _fit_candidate(
-                name,
-                design,
-                states,
-                targets,
-                current_state=str(states.iloc[position]),
-                horizon=horizon,
-                train_stop=train_stop,
-                test_position=position,
-                random_state=random_state,
-            )
+            probability, fallback, reason = fit_at(name, horizon, targets, position, train_stop)
             beyond = position + horizon - (len(states) - 1)
             target_end = (
                 pd.Timestamp(states.index[position + horizon])

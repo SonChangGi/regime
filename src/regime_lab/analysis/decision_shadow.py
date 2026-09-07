@@ -180,6 +180,12 @@ def _current_signal_contract(
     }
 
 
+def build_decision_research_v2(*args: Any, **kwargs: Any) -> dict[str, Any]:
+    """Read-only event utility and economic confusion matrix research API."""
+    from .decision_research import build_decision_research_v2 as build
+    return build(*args, **kwargs)
+
+
 def default_decision_shadow_spec_path() -> Path:
     return (
         Path(__file__).resolve().parents[3]

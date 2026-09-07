@@ -24,6 +24,8 @@ from regime_lab.analysis.directional import (
     run_directional_transition_benchmark,
 )
 from regime_lab.analysis.duration import duration_context
+from regime_lab.analysis.directional_coherence import upgrade_directional_payload
+from regime_lab.analysis.label_sensitivity import run_label_sensitivity
 from regime_lab.analysis.decision_shadow import build_decision_shadow
 from regime_lab.analysis.fx import FXFeatureResult, fx_context_at, unavailable_fx_context
 from regime_lab.analysis.fx_ablation import (
@@ -522,8 +524,8 @@ def _execution_parameters(
         maximum_diagnostic_origins: int | None = 3
     elif profile_name == "standard":
         minimum_predictions = 12
-        maximum_selection_origins = 60
-        maximum_diagnostic_origins = 60
+        maximum_selection_origins = None
+        maximum_diagnostic_origins = None
     elif profile_name == "full":
         minimum_predictions = 12
         maximum_selection_origins = None
@@ -564,6 +566,7 @@ def run_v5_directional_benchmark(
     *,
     profile_name: str,
     selection_end: str | pd.Timestamp,
+    cache_directory: str | Path | None = None,
 ) -> DirectionalBenchmarkResult:
     if profile_name == "quick":
         minimum = 3
@@ -571,8 +574,8 @@ def run_v5_directional_benchmark(
         diagnostic_max = 3
     elif profile_name == "standard":
         minimum = 12
-        selection_max = 60
-        diagnostic_max = 60
+        selection_max = None
+        diagnostic_max = None
     elif profile_name == "full":
         minimum = 12
         selection_max = None
@@ -590,6 +593,7 @@ def run_v5_directional_benchmark(
         selection_max_origins=selection_max,
         maximum_diagnostic_origins=diagnostic_max,
         random_state=17,
+        cache_directory=cache_directory,
     )
 
 
@@ -1104,6 +1108,7 @@ def build_v5_payload(
     duration_bootstrap_resamples: int = 1_999,
     outcome_bootstrap_resamples: int = 1_999,
     fx_ablation_evidence_sink: Callable[[pd.DataFrame], Any] | None = None,
+    label_sensitivity_summary: Mapping[str, Any] | None = None,
 ) -> tuple[dict[str, Any], Any]:
     """Compose the semantic v5 contract without changing v4 model selection."""
 
@@ -1405,33 +1410,13 @@ def build_v5_payload(
     label_grid, label_grid_sha256 = _config_document(
         "label-sensitivity-grid.json"
     )
-    research["label_sensitivity"] = {
-        "schema_version": "regime-label-sensitivity-summary/1",
-        "status": "preregistered_pending_execution",
-        "evidence_track": "reconstructed_oos",
-        "evaluation_split": "selection_only",
-        "control": {
-            "spec_id": label_spec.spec_id,
-            "spec_version": label_spec.version,
-            "spec_sha256": label_spec.spec_sha256,
-            "remains_operating_control": True,
-        },
-        "grid": {
-            "path": "config/label-sensitivity-grid.json",
-            "sha256": label_grid_sha256,
-            "dimensions": dict(label_grid["grid"]),
-        },
-        "execution_summary": {
-            "evaluated_spec_count": 0,
-            "state_occupancy": None,
-            "episode_count": None,
-            "weekly_flip_rate": None,
-            "transition_jaccard": None,
-            "forward_return_separation": None,
-            "model_rank_robustness": None,
-        },
-        "automatic_promotion_eligible": False,
-    }
+    research["label_sensitivity"] = dict(label_sensitivity_summary) if label_sensitivity_summary is not None else run_label_sensitivity(
+        canonical,
+        states=states,
+        fit_weeks=label_fit_weeks,
+        selection_end=original_model.get("selection_end", "2023-01-01"),
+        evaluate_model_ranks=str(original_model["profile"]) != "quick",
+    ).summary
     if label_fit_weeks < 1 or label_fit_weeks > len(canonical):
         raise ValueError("label_fit_weeks is outside the canonical history")
     resolved_fit_start = pd.Timestamp(
@@ -1487,7 +1472,7 @@ def build_v5_payload(
         )
     if fx_result is not None and fx_ablation_evidence_sink is not None:
         fx_ablation_evidence_sink(fx_ablation_oos.copy())
-    return result_payload, conditional_result
+    return upgrade_directional_payload(result_payload, states), conditional_result
 
 
 __all__ = [

@@ -63,7 +63,7 @@ from regime_lab.selection_family_audit import (
     validate_selection_family_payload_binding,
 )
 from regime_lab.data import DailyRequestBudget, SQLiteSnapshotStore
-from regime_lab.dashboard_split import build_dashboard_split
+from regime_lab.dashboard_split import build_dashboard_split, build_history_chunks
 from regime_lab.run_registry import (
     RunRegistryError,
     append_run_event,
@@ -98,6 +98,8 @@ PUBLIC_STATIC_ASSET_PATHS = (
     "styles.css",
     "operating-contract.generated.js",
     "app.js",
+    "insights.js",
+    "insights.css",
 )
 AUTOMATION_LABEL = "com.sonchanggi.regime.weekly-release"
 AUTOMATION_TRAILER = "Regime-Automation: weekly-release-v1"
@@ -2888,6 +2890,7 @@ def _expected_static_assets(settings: AutomationSettings) -> dict[str, bytes]:
             styles_raw=assets["styles.css"],
             app_raw=assets["app.js"],
             operating_contract_raw=operating_contract_raw,
+            extra_assets={name: assets[name] for name in ("insights.js", "insights.css")},
         )
     except (BrowserContractError, PublicContractError) as exc:
         raise AutomationError(f"expected dashboard assets are invalid: {exc}") from exc
@@ -2954,7 +2957,9 @@ def verify_public_readback(
             raise AutomationError(
                 f"expected publication core/research split is invalid: {exc}"
             ) from exc
+        history_files, _ = build_history_chunks(expected, payload_raw=expected_payload)
         expected_split = {
+            **history_files,
             PUBLIC_CORE_PAYLOAD_PATH: expected_core,
             PUBLIC_RESEARCH_SIDECAR_PATH: expected_research,
         }

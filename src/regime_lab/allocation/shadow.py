@@ -32,6 +32,12 @@ ALLOCATION_RESULT_SCHEMA_VERSION = "regime-allocation-shadow-candidate/1"
 PORTFOLIO_INTENT_SCHEMA_VERSION = "regime-portfolio-intent/1"
 
 
+def build_allocation_shadow_v2(*args: Any, **kwargs: Any) -> dict[str, Any]:
+    """Preview research API; preserve all issued v1 allocation semantics."""
+    from .research_v2 import build_allocation_shadow_v2 as build
+    return build(*args, **kwargs)
+
+
 def default_allocation_shadow_spec_path() -> Path:
     return Path(__file__).resolve().parents[3] / "config" / "allocation-shadow-v1.json"
 

@@ -51,6 +51,16 @@ def _spells(
     return pd.DataFrame(rows, columns=SPELL_COLUMNS)
 
 
+def test_record_length_current_spell_does_not_extrapolate_certain_survival():
+    spells = _spells([2, 3, 4, 5, 6, 10], [True] * 5 + [False])
+    result = conditional_duration_summary(spells, state="risk_on", elapsed_weeks=10, bootstrap_resamples=0)
+    assert result["status"] == "insufficient_tail_support"
+    assert result["support"]["completed_at_current_age"] == 0
+    assert result["support"]["at_risk_at_current_age"] == 1
+    assert result["conditional_survival"] == {"4w": None, "13w": None}
+    assert result["restricted_mean_remaining_weeks"] is None
+
+
 def test_causal_spell_table_right_censors_only_the_current_history_end() -> None:
     states = _states(
         ["risk_on"] * 3 + ["transition"] * 2 + ["risk_off"] * 4

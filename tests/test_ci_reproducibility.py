@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+import tomllib
+
+from packaging.requirements import Requirement
+from packaging.utils import canonicalize_name
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -37,6 +41,28 @@ def test_ci_lock_hashes_every_exact_requirement_and_build_tool() -> None:
         assert any("--hash=sha256:" in line for line in lines[start + 1 : end])
 
 
+def test_ci_lock_covers_project_and_enabled_optional_dependencies() -> None:
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
+    locked = {
+        canonicalize_name(name): version
+        for name, version in re.findall(
+            r"^([a-z0-9_.-]+)==([^ \\]+)",
+            (ROOT / "requirements-ci.lock").read_text(),
+            flags=re.MULTILINE,
+        )
+    }
+    required = [
+        *project["dependencies"],
+        *project["optional-dependencies"]["test"],
+        *project["optional-dependencies"]["hmm"],
+    ]
+    for spec in required:
+        requirement = Requirement(spec)
+        name = canonicalize_name(requirement.name)
+        assert name in locked, f"CI --no-deps install omits {name}"
+        assert locked[name] in requirement.specifier, spec
+
+
 def test_workflows_pin_runner_runtimes_actions_and_hash_install() -> None:
     reviewed_actions = {
         **REVIEWED_NODE24_ACTIONS,
@@ -51,6 +77,7 @@ def test_workflows_pin_runner_runtimes_actions_and_hash_install() -> None:
         assert "pip install --upgrade" not in workflow
         assert "pip install --require-hashes -r requirements-ci.lock" in workflow
         assert "pip install --no-build-isolation --no-deps -e ." in workflow
+        assert "python -m pip check" in workflow
         uses = re.findall(r"^\s*uses:\s*([^\s#]+)", workflow, flags=re.MULTILINE)
         assert uses
         assert all(re.fullmatch(r"[^@]+@[0-9a-f]{40}", item) for item in uses)

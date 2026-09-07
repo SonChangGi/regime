@@ -30,6 +30,8 @@ from scripts.package_public_demo import (  # noqa: E402
     V5_COMPARISON_DESTINATION,
     V5_RESULT_VERSION,
     PackagingError,
+    build_history_chunks,
+    validate_history_chunks,
     validate_public_payload,
     validate_dashboard_split,
     validate_v5_comparison_sidecar,
@@ -119,8 +121,16 @@ def verify_public_package(directory: str | Path) -> dict[str, Any]:
     payload = _load_json(payload_path, label="dashboard payload")
     result_version = payload.get("meta", {}).get("result_version")
     expected_files = set(BASE_EXPECTED_FILES)
+    expected_history_files: dict[str, bytes] = {}
     generation_document: dict[str, Any] | None = None
     if result_version == V5_RESULT_VERSION:
+        try:
+            expected_history_files, _ = build_history_chunks(
+                payload, payload_raw=payload_raw
+            )
+        except (TypeError, ValueError) as exc:
+            raise VerificationError(str(exc)) from exc
+        expected_files.update(expected_history_files)
         expected_files.add(CORE_PAYLOAD_DESTINATION)
         expected_files.add(RESEARCH_SIDECAR_DESTINATION)
         expected_files.add(V5_COMPARISON_DESTINATION)
@@ -210,6 +220,10 @@ def verify_public_package(directory: str | Path) -> dict[str, Any]:
                 package_root / GENERATED_BROWSER_CONTRACT
             ).read_bytes(),
             app_raw=(package_root / "app.js").read_bytes(),
+            extra_assets={
+                name: (package_root / name).read_bytes()
+                for name in ("insights.js", "insights.css")
+            },
         )
     except (BrowserContractError, PackagingError) as exc:
         raise VerificationError(str(exc)) from exc
@@ -236,6 +250,14 @@ def verify_public_package(directory: str | Path) -> dict[str, Any]:
                 payload=payload,
                 payload_raw=payload_raw,
                 research_raw=research_raw,
+            )
+            validate_history_chunks(
+                {
+                    name: (package_root / name).read_bytes()
+                    for name in expected_history_files
+                },
+                payload=payload,
+                payload_raw=payload_raw,
             )
             comparison = _load_json(
                 package_root / V5_COMPARISON_DESTINATION,
@@ -320,6 +342,7 @@ def verify_public_package(directory: str | Path) -> dict[str, Any]:
         "payload_data_as_of": manifest.get("payload_data_as_of"),
         "comparison_included": result_version == V5_RESULT_VERSION,
         "core_research_split_included": result_version == V5_RESULT_VERSION,
+        "history_chunks_included": len(expected_history_files),
         "selection_family_included": (
             SELECTION_FAMILY_DESTINATION in expected_files
         ),

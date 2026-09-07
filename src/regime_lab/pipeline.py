@@ -1404,6 +1404,7 @@ def build_dashboard_result(
             states,
             profile_name=profile_name,
             selection_end=benchmark_selection_end,
+            cache_directory=(Path(checkpoint_directory) / "directional" if checkpoint_directory is not None else None),
         )
         bootstrap_resamples = 199 if profile_name == "quick" else 1_999
         if progress is not None:

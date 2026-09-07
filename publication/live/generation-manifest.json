@@ -3,7 +3,7 @@
   "generation_id": "20260906T200946.236868Z",
   "payload": {
     "path": "publication/live/regime-results.json",
-    "payload_contract_sha256": "e841f9dba5050978a58cf733f11fda84fe60bf804f622b5f0985980c33f478fc"
+    "payload_contract_sha256": "cd0a3e86f104bddc9df6146702d42132c57c0b21ff81e1bf67e07f0a73329c4b"
   },
   "comparison_sidecar": {
     "path": "publication/live/v5-vs-v4-comparison.json",
@@ -14,8 +14,8 @@
     "selection_family_contract_sha256": "22a60d1545c3df8d927f3128cde922624120c8e10f77cb108868e147bf2e427c"
   },
   "artifact_inventory": {
-    "sha256": "905eeb80702827bc535fc64637d917f14303cf75442e75ff13553b8b30918aa0",
-    "file_count": 40
+    "sha256": "e1e57441a4ac8cf6c51b942ab2bd7ff1d125c3c96eb03860537e148b40d94821",
+    "file_count": 50
   },
   "input_snapshot": {
     "data_as_of": "2026-09-04T20:00:00+00:00",
@@ -29,7 +29,7 @@
     "spec_sha256": "bec1600aea104985405d0d5c2b3706088b885ef7aa788c57c9575aa884c5f3a7"
   },
   "execution_spec": {
-    "sha256": "28d9695f0d0a04d660803165e89012af0d15225d26291f7f5944f0d6e088f011"
+    "sha256": "e9cedfc437062e13bf6575bec84dc9d789e095f17ceac6d209f15de0f338b1bf"
   },
   "runtime_fingerprint": {
     "schema_version": "regime-runtime-fingerprint/1",
@@ -41,7 +41,7 @@
     },
     "lockfile": {
       "path": "requirements-ci.lock",
-      "sha256": "75a33ab34babddd7018e4557cd27d8f968966af2951f2a66243384da3d57ffac"
+      "sha256": "7622a14a863c6a0a538ffaf2467957908af3a8d4c7bd54bbb2001c3d98e51e14"
     },
     "packages": {
       "numpy": "2.5.2",
@@ -53,6 +53,6 @@
       "joblib": "1.5.3",
       "threadpoolctl": "3.6.0"
     },
-    "sha256": "2f95cfb20ddfac479d6ae9c0e148743d68c16230f791acd8c96cc7c3f8d3b67d"
+    "sha256": "4de5d70358d79ca0b31a6cb60586fca803135cc0bd4de1e8ae8041210f509ebf"
   }
 }

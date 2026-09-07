@@ -1112,6 +1112,7 @@ def _validate_directional_risk(
     current_state: str,
     departure: Mapping[int, float],
     origin: date,
+    canonical_probabilities: Mapping[str, float] | None = None,
 ) -> None:
     directional = _mapping(value, context)
     if set(directional) != {"1w", "4w", "13w"}:
@@ -1166,11 +1167,19 @@ def _validate_directional_risk(
             raise V5ContractError(f"{row_context}.model must be non-empty")
         if row["method"] != "first_departure_state_within_h_or_no_departure":
             raise V5ContractError(f"{row_context}.method is invalid")
+    if canonical_probabilities is not None:
+        for state in STATE_ORDER:
+            values = [float(directional[f"{h}w"]["first_destination"][state]) for h in HORIZONS]
+            expected_one_week = 0.0 if state == current_state else float(canonical_probabilities[state])
+            if not math.isclose(values[0], expected_one_week, abs_tol=1e-8, rel_tol=0):
+                raise V5ContractError(f"{context} one-week first destination must equal the canonical next-week probability")
+            if any(right < left - 1e-8 for left, right in zip(values, values[1:])):
+                raise V5ContractError(f"{context} destination cumulative probabilities must be monotone")
 
 
 def _validate_duration(value: Any, context: str, current_state: str) -> None:
     duration = _mapping(value, context)
-    if duration.get("status") not in {"ok", "insufficient_history", "unavailable"}:
+    if duration.get("status") not in {"ok", "insufficient_history", "unavailable", "insufficient_tail_support"}:
         raise V5ContractError(f"{context}.status is invalid")
     if duration.get("method") != "state_specific_kaplan_meier":
         raise V5ContractError(f"{context}.method is invalid")
@@ -1226,6 +1235,17 @@ def _validate_duration(value: Any, context: str, current_state: str) -> None:
     ci95 = duration.get("ci95")
     if ci95 is not None and not isinstance(ci95, Mapping):
         raise V5ContractError(f"{context}.ci95 must be an object or null")
+    support = duration.get("support")
+    if support is not None:
+        support = _mapping(support, f"{context}.support")
+        if support.get("schema_version") != "regime-duration-support/2" or support.get("tail_extrapolation") is not False:
+            raise V5ContractError(f"{context}.support identity is invalid")
+        completed_at_age = _integer(support.get("completed_at_current_age"), f"{context}.support.completed_at_current_age")
+        minimum_tail = _integer(support.get("minimum_completed_at_current_age"), f"{context}.support.minimum_completed_at_current_age", minimum=1)
+        if duration.get("status") == "ok" and completed_at_age < minimum_tail:
+            raise V5ContractError(f"{context} has insufficient tail support for status ok")
+        if duration.get("status") == "insufficient_tail_support" and any(duration.get(field) is not None for field in ("median_remaining_weeks", "restricted_mean_remaining_weeks", "ci95")):
+            raise V5ContractError(f"{context} unsupported tail estimates must be null")
 
 
 def _validate_fx_context(value: Any, context: str) -> None:
@@ -2164,7 +2184,7 @@ def _validate_execution_parameters(value: Any) -> str:
     ):
         raw = parameters[field]
         resolved = None if raw is None else _integer(raw, f"{context}.{field}", minimum=1)
-        if resolved != expected_maximum:
+        if resolved != expected_maximum and not (profile == "standard" and resolved is None):
             raise V5ContractError(f"{context}.{field} is inconsistent")
     preregistered = _integer(
         parameters["preregistered_bootstrap_resamples"],
@@ -2251,6 +2271,12 @@ def _validate_model(model: Any, *, mode: str) -> int:
         _require(model, "directional_transition", "payload.model"),
         "payload.model.directional_transition",
     )
+    coherence_version = directional.get("coherence_version")
+    if coherence_version is not None:
+        if coherence_version != "canonical-one-week-joint-first-destination/2":
+            raise V5ContractError("payload.model.directional_transition.coherence_version is invalid")
+        if execution_profile == "standard" and any(model["execution_parameters"][field] is not None for field in ("directional_maximum_selection_origins", "directional_maximum_diagnostic_origins")):
+            raise V5ContractError("coherent standard directional evaluation must use all available origins")
     if directional.get("target") != "first_departure_state_within_h_or_no_departure":
         raise V5ContractError("payload.model.directional_transition.target is invalid")
     if directional.get("deployed_direction_role") != "first_destination_given_departure":
@@ -4070,6 +4096,8 @@ def _validate_decision_shadow(
         expected_shadow_fields.add("current_signal")
         if "allocation_candidate" in shadow:
             expected_shadow_fields.add("allocation_candidate")
+    if "allocation_research_v2" in shadow:
+        expected_shadow_fields.add("allocation_research_v2")
     if set(shadow) != expected_shadow_fields:
         raise V5ContractError(f"{context} fields are invalid")
     if shadow.get("role") != "research_only_no_forecast_or_champion_effect":
@@ -4635,10 +4663,13 @@ def _validate_label_sensitivity(research: Mapping[str, Any], label: Mapping[str,
     context = "payload.research.label_sensitivity"
     summary = _mapping(raw, context)
     if (
-        summary.get("schema_version") != "regime-label-sensitivity-summary/1"
+        summary.get("schema_version") not in {"regime-label-sensitivity-summary/1", "regime-label-sensitivity-summary/2"}
         or summary.get("status") not in {
             "preregistered_pending_execution",
             "completed",
+            "evaluated",
+            "label_metrics_evaluated",
+            "insufficient_history",
         }
         or summary.get("evidence_track") != "reconstructed_oos"
         or summary.get("evaluation_split") != "selection_only"
@@ -4678,6 +4709,46 @@ def _validate_label_sensitivity(research: Mapping[str, Any], label: Mapping[str,
         or any(execution[field] is not None for field in required if field != "evaluated_spec_count")
     ):
         raise V5ContractError(f"{context} pending execution summary is inconsistent")
+    if summary.get("schema_version") == "regime-label-sensitivity-summary/2" and summary.get("status") in {"evaluated", "label_metrics_evaluated"}:
+        dimensions = _mapping(grid.get("dimensions"), f"{context}.grid.dimensions")
+        expected_specs = math.prod(len(values) for values in dimensions.values())
+        if evaluated != expected_specs or evaluated == 0:
+            raise V5ContractError(f"{context} must evaluate the complete registered grid")
+        for field in required - {"evaluated_spec_count", "model_rank_robustness"}:
+            if not isinstance(execution[field], list) or len(execution[field]) != evaluated + 1:
+                raise V5ContractError(f"{context}.{field} must include every variant and the operating control")
+        ranks = _mapping(execution["model_rank_robustness"], f"{context}.model_rank_robustness")
+        if summary.get("status") == "evaluated" and (ranks.get("status") != "evaluated" or not ranks.get("rows")):
+            raise V5ContractError(f"{context} evaluated model robustness requires scored rows")
+
+
+def _validate_directional_coherence_evidence(payload: Mapping[str, Any]) -> None:
+    from regime_lab.analysis.directional_coherence import COHERENCE_VERSION, upgrade_directional_payload
+
+    directional = payload["model"]["directional_transition"]
+    if directional.get("coherence_version") != COHERENCE_VERSION:
+        return
+    context = "payload.model.directional_transition.coherence_evidence"
+    recorded = _mapping(_require(directional, "coherence_evidence", context), context)
+    for index, row in enumerate(payload["weekly"]):
+        if "directional_risk_raw" not in row:
+            raise V5ContractError(f"payload.weekly[{index}] coherent evidence requires raw direction rows")
+    try:
+        expected = upgrade_directional_payload(payload)["model"]["directional_transition"]["coherence_evidence"]
+    except (ValueError, KeyError, TypeError) as exc:
+        raise V5ContractError(f"{context} cannot be reconstructed: {exc}") from exc
+
+    def same(left: Any, right: Any) -> bool:
+        if isinstance(right, Mapping):
+            return isinstance(left, Mapping) and set(left) == set(right) and all(same(left[k], v) for k, v in right.items())
+        if isinstance(right, list):
+            return isinstance(left, list) and len(left) == len(right) and all(same(a, b) for a, b in zip(left, right))
+        if isinstance(right, (int, float)) and not isinstance(right, bool):
+            return isinstance(left, (int, float)) and not isinstance(left, bool) and math.isclose(float(left), float(right), abs_tol=1e-8, rel_tol=1e-8)
+        return left == right
+
+    if not same(recorded, expected):
+        raise V5ContractError(f"{context} must reproduce the final weekly probabilities and mature targets")
 
 
 def validate_v5_payload(payload: Mapping[str, Any]) -> None:
@@ -4852,6 +4923,7 @@ def validate_v5_payload(payload: Mapping[str, Any]) -> None:
             current_state=current_state,
             departure=departure,
             origin=origin,
+            canonical_probabilities=row["next_week"]["probabilities"] if model["directional_transition"].get("coherence_version") == "canonical-one-week-joint-first-destination/2" else None,
         )
         _validate_duration(_require(row, "duration_context", context), f"{context}.duration_context", current_state)
         _validate_fx_context(_require(row, "fx_context", context), f"{context}.fx_context")
@@ -5040,6 +5112,11 @@ def validate_v5_payload(payload: Mapping[str, Any]) -> None:
             "conditional_outcome_bootstrap_resamples"
         ]
     )
+    from regime_lab.research.contract import validate_research_extensions
+    try:
+        validate_research_extensions(payload["research"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise V5ContractError(f"research extension contract: {exc}") from exc
     _validate_conditional_stats(
         _require(payload, "research", "payload"),
         expected_resamples=expected_outcome_resamples,
@@ -5055,6 +5132,7 @@ def validate_v5_payload(payload: Mapping[str, Any]) -> None:
         _mapping(_require(payload, "research", "payload"), "payload.research"),
         _mapping(_require(payload, "label", "payload"), "payload.label"),
     )
+    _validate_directional_coherence_evidence(payload)
     _validate_model_conditioned_stats(
         _require(payload, "research", "payload"),
         expected_models=forecast_comparison_models,
