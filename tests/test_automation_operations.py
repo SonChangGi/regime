@@ -479,6 +479,24 @@ def test_keychain_parent_preflight_preserves_blocked_root_cause(
     assert not (settings.state_directory / "database-backups").exists()
 
 
+@pytest.mark.parametrize("stage", ["preflight", "deployment_recovery", "publish_snapshot"])
+def test_runtime_binding_drift_waits_for_reconciliation(tmp_path: Path, stage: str) -> None:
+    settings = _settings(tmp_path)
+    now = datetime.now(UTC)
+    automation._write_local_authorization(
+        settings,
+        alfred_rights_confirmed=True,
+        personal_noncommercial_publication_acknowledged=True,
+        now=now,
+    )
+    (settings.root / "requirements-ci.lock").write_text("changed-runtime\n")
+    with pytest.raises(automation.AutomationError, match="locked model runtime") as caught:
+        automation._validate_local_authorization_document(settings, now=now)
+    assert automation._failure_policy(
+        caught.value, stage=stage, attempt_started_at=now, settings=settings
+    ) == (f"{stage}_blocked", "blocked", None)
+
+
 def test_recovery_fingerprint_tracks_keychain_lock_and_metadata_without_reading(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

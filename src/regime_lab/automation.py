@@ -64,6 +64,7 @@ from regime_lab.selection_family_audit import (
 )
 from regime_lab.data import DailyRequestBudget, SQLiteSnapshotStore
 from regime_lab.dashboard_split import build_dashboard_split, build_history_chunks
+from regime_lab.forecast_exports import build_forecast_exports
 from regime_lab.run_registry import (
     RunRegistryError,
     append_run_event,
@@ -1280,6 +1281,7 @@ def _failure_policy(
     message = str(exc).lower()
     blocked_markers = (
         "authorization",
+        "locked model runtime",
         "working tree",
         "requires branch",
         "remote does not match",
@@ -2953,6 +2955,7 @@ def verify_public_readback(
                 expected,
                 payload_raw=expected_payload,
             )
+            forecast_exports = build_forecast_exports(expected)
         except (PublicContractError, TypeError, ValueError) as exc:
             raise AutomationError(
                 f"expected publication core/research split is invalid: {exc}"
@@ -2960,6 +2963,7 @@ def verify_public_readback(
         history_files, _ = build_history_chunks(expected, payload_raw=expected_payload)
         expected_split = {
             **history_files,
+            **forecast_exports,
             PUBLIC_CORE_PAYLOAD_PATH: expected_core,
             PUBLIC_RESEARCH_SIDECAR_PATH: expected_research,
         }

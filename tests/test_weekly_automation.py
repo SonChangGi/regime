@@ -16,6 +16,7 @@ import pytest
 from regime_lab import automation
 from regime_lab import cli
 from regime_lab.dashboard_split import build_dashboard_split, build_history_chunks
+from regime_lab.forecast_exports import build_forecast_exports
 from regime_lab.web_contract import render_browser_contract_javascript
 
 
@@ -1020,6 +1021,7 @@ def test_v5_public_readback_requires_hash_bound_core_and_research_split(
     }
     published = {
         **history,
+        **build_forecast_exports(json.loads(payload)),
         automation.PUBLIC_PAYLOAD_PATH: payload,
         automation.PUBLIC_CORE_PAYLOAD_PATH: core,
         automation.PUBLIC_RESEARCH_SIDECAR_PATH: research,
