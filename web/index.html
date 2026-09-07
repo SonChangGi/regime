@@ -14,7 +14,7 @@
     <link rel="stylesheet" href="./insights.css?v=1b186aa1f8d974c75cfa919581b1d84cda1b392c580de25135151942ee57f3e3">
     <script src="./insights.js?v=b100598800092b5ebf944bc360a8552b9cdd64424baa4ddf4263bf33e5b46c51" defer></script>
     <script src="./operating-contract.generated.js?v=5078635e5a1fb2b9300e56f045b51c4e85ee047a21a3f64a15cd4e69261c9a20" defer></script>
-    <script src="./app.js?v=7e8fcefa7b7fa25371894365d301f2eacda31c3e369d368933b6dfb1fe059f6a" defer></script>
+    <script src="./app.js?v=be2b7e09719a96d6da1734e90cef215761dde9aa06d28f759e58dea2aa263fb6" defer></script>
   </head>
   <body id="top">
     <a class="skip-link" href="#main-content">본문으로 건너뛰기</a>
@@ -539,7 +539,7 @@
                 ></select>
                 <span id="model-forecast-scope" class="sr-only">선택 모델의 요약·상세 지표, 예측 차트, 비교표와 예측 국면별 자산 성과에 적용</span>
               </div>
-              <div class="field-group model-evaluation-field">
+              <div id="model-evaluation-field" class="field-group model-evaluation-field" hidden>
                 <label for="model-evaluation-window">평가 기간</label>
                 <select id="model-evaluation-window" aria-controls="model-quality-brief model-health-strip history model-loss-chart leaderboard-body" aria-describedby="model-evaluation-note">
                   <option value="26">26주</option>

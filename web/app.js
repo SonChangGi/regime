@@ -4794,7 +4794,7 @@
       "sector-ranking", "sector-ranking-title", "sector-ranking-caption", "sector-ranking-selection", "sector-ranking-grid",
       "champion-summary", "model-evidence-summary", "model-caption", "model-loss-caption",
       "model-health-strip",
-      "model-loss-chart", "model-loss-axis", "leaderboard-body", "model-evaluation-window", "model-input-comparison", "model-evaluation-note", "model-loss-period-label",
+      "model-loss-chart", "model-loss-axis", "leaderboard-body", "model-evaluation-field", "model-evaluation-window", "model-input-comparison", "model-evaluation-note", "model-loss-period-label",
       "model-forecast-field", "model-forecast-select", "model-forecast-explorer",
       "model-forecast-role", "model-forecast-title", "model-forecast-caption",
       "model-forecast-symbol", "model-forecast-state", "model-forecast-confidence",
@@ -8573,8 +8573,12 @@
       && forecasts.length === (state.raw?.model?.forecast_comparison?.models?.length || 0)
       && Boolean(week);
     dom["model-forecast-field"].hidden = !supported;
+    dom["model-evaluation-field"].hidden = !supported;
     dom["model-forecast-explorer"].hidden = !supported;
     if (!supported) {
+      dom["model-evaluation-note"].hidden = true;
+      dom["model-input-comparison"].hidden = true;
+      setText(dom["model-loss-period-label"], "2023년 이후");
       renderModelHealthStrip(INSIGHTS.modelQuality(model, modelName(model.champion)));
       return;
     }

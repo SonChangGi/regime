@@ -184,9 +184,12 @@ api.selectWeek(legacy.weekly.length-1,false);
 const comparison=api.forecastComparisonForView();
 console.log(JSON.stringify({view:snapshot(),scopeAbsent:comparison.evaluationScope===undefined,
  originalMetrics:JSON.stringify(comparison.leaderboard)===JSON.stringify(legacy.model.leaderboard),
- selectorHidden:api.dom['model-forecast-field'].hidden,forecastHidden:api.dom['model-forecast-explorer'].hidden}));
+ selectorHidden:api.dom['model-forecast-field'].hidden,forecastHidden:api.dom['model-forecast-explorer'].hidden,
+ evaluationHidden:api.dom['model-evaluation-field'].hidden,
+ scopeHidden:api.dom['model-evaluation-note'].hidden&&api.dom['model-input-comparison'].hidden}));
 """)
     assert result["scopeAbsent"] and result["originalMetrics"]
     assert result["selectorHidden"] and result["forecastHidden"]
+    assert result["evaluationHidden"] and result["scopeHidden"]
     assert "완료 191주" in result["view"]["quality"]
     assert "3/40회" in result["view"]["quality"]
