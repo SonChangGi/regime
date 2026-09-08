@@ -823,7 +823,9 @@ def test_public_readback_requires_exact_payload_manifest_and_consumer(
         "operating-contract.generated.js": operating_contract,
         "app.js": b"console.log('regime');\n",
         "insights.js": b"",
+        "forecast-enhancements.js": b"",
         "insights.css": b"",
+        "forecast-enhancements.css": b"",
     }
     manifest = json.dumps(
         {
@@ -934,14 +936,18 @@ def test_public_readback_expects_packaged_content_hash_index(tmp_path: Path) -> 
         b'<script src="./operating-contract.generated.js?v=manual"></script>'
         b'<script src="./app.js?v=manual"></script>'
         b'<script src="./insights.js?v=manual"></script>'
+        b'<script src="./forecast-enhancements.js?v=manual"></script>'
         b'<link rel="stylesheet" href="./insights.css?v=manual">'
+        b'<link rel="stylesheet" href="./forecast-enhancements.css?v=manual">'
     )
     (web / "index.html").write_bytes(source_index)
     (web / "styles.css").write_bytes(styles)
     (web / "operating-contract.generated.js").write_bytes(operating_contract)
     (web / "app.js").write_bytes(app)
     (web / "insights.js").write_bytes(b"")
+    (web / "forecast-enhancements.js").write_bytes(b"")
     (web / "insights.css").write_bytes(b"")
+    (web / "forecast-enhancements.css").write_bytes(b"")
     packaged_index = (
         '<title>US Market Regime Lab</title>'
         '<link rel="stylesheet" '
@@ -950,7 +956,9 @@ def test_public_readback_expects_packaged_content_hash_index(tmp_path: Path) -> 
         f'{hashlib.sha256(operating_contract).hexdigest()}"></script>'
         f'<script src="./app.js?v={hashlib.sha256(app).hexdigest()}"></script>'
         f'<script src="./insights.js?v={hashlib.sha256(b"").hexdigest()}"></script>'
+        f'<script src="./forecast-enhancements.js?v={hashlib.sha256(b"").hexdigest()}"></script>'
         f'<link rel="stylesheet" href="./insights.css?v={hashlib.sha256(b"").hexdigest()}">'
+        f'<link rel="stylesheet" href="./forecast-enhancements.css?v={hashlib.sha256(b"").hexdigest()}">'
     ).encode()
     public_assets = {
         "index.html": packaged_index,
@@ -958,7 +966,9 @@ def test_public_readback_expects_packaged_content_hash_index(tmp_path: Path) -> 
         "operating-contract.generated.js": operating_contract,
         "app.js": app,
         "insights.js": b"",
+        "forecast-enhancements.js": b"",
         "insights.css": b"",
+        "forecast-enhancements.css": b"",
     }
     payload_sha256 = hashlib.sha256(LIVE_PAYLOAD).hexdigest()
     manifest = json.dumps(
@@ -1017,7 +1027,9 @@ def test_v5_public_readback_requires_hash_bound_core_and_research_split(
         "operating-contract.generated.js": operating_contract,
         "app.js": b"console.log('regime');\n",
         "insights.js": b"",
+        "forecast-enhancements.js": b"",
         "insights.css": b"",
+        "forecast-enhancements.css": b"",
     }
     published = {
         **history,
@@ -1099,7 +1111,9 @@ def test_expected_static_assets_reject_one_sided_application_shell(
     )
     (web / "app.js").write_bytes(b"console.log('regime');\n")
     (web / "insights.js").write_bytes(b"")
+    (web / "forecast-enhancements.js").write_bytes(b"")
     (web / "insights.css").write_bytes(b"")
+    (web / "forecast-enhancements.css").write_bytes(b"")
 
     with pytest.raises(
         automation.AutomationError,
@@ -1440,6 +1454,11 @@ elif args == ["show", "origin/main:{automation.PUBLICATION_GENERATION_MANIFEST_P
     sys.stdout.buffer.write(Path({str(generation_manifest)!r}).read_bytes())
 elif args == ["show", "origin/main:{automation.PUBLICATION_SELECTION_FAMILY_PATH}"]:
     sys.stdout.buffer.write(Path({str(selection_family)!r}).read_bytes())
+elif args == ["ls-tree", "-z", "{'a' * 40}", "--", "{automation.PUBLICATION_ENHANCEMENT_PATH}"]:
+    if Path({str(ROOT / automation.PUBLICATION_ENHANCEMENT_PATH)!r}).exists():
+        sys.stdout.write("100644 blob {'b' * 40}\\t{automation.PUBLICATION_ENHANCEMENT_PATH}\\0")
+elif args == ["show", "{'a' * 40}:{automation.PUBLICATION_ENHANCEMENT_PATH}"]:
+    sys.stdout.buffer.write(Path({str(ROOT / automation.PUBLICATION_ENHANCEMENT_PATH)!r}).read_bytes())
 else:
     raise SystemExit(f"unexpected fake git command: {{args!r}}")
 """,
@@ -1801,11 +1820,14 @@ def test_same_cutoff_legacy_v5_generation_is_rebuilt_and_published(
     assert result["commit_sha"] == "c" * 40
 
 
+@pytest.mark.parametrize("record_candidates", [False, True])
 def test_push_failure_retry_reuses_cached_candidate_without_provider_or_build(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    record_candidates: bool,
 ) -> None:
-    settings = _settings(tmp_path)
+    settings = replace(_settings(tmp_path), forecast_candidates_weekly=record_candidates,
+                       forecast_enhancements_research=record_candidates)
     automation._write_local_authorization(
         settings,
         alfred_rights_confirmed=True,
@@ -1818,6 +1840,8 @@ def test_push_failure_retry_reuses_cached_candidate_without_provider_or_build(
         data_as_of=datetime.fromisoformat("2026-07-31T20:00:00+00:00"),
     )
     calls = {"quota": 0, "build": 0, "publish": 0}
+    recordings = []
+    monkeypatch.setattr(automation, "_record_weekly_forecast_candidates", lambda current: recordings.append(current.candidate_path))
     monkeypatch.setattr(automation, "_ensure_ac_power", lambda _settings: None)
     monkeypatch.setattr(automation, "_git_preflight", lambda _settings: older)
     monkeypatch.setattr(
@@ -1874,6 +1898,7 @@ def test_push_failure_retry_reuses_cached_candidate_without_provider_or_build(
 
     assert result["status"] == "succeeded"
     assert calls == {"quota": 1, "build": 1, "publish": 2}
+    assert recordings == ([settings.candidate_path] * 2 if record_candidates else [])
 
 
 def _git(args: list[str], cwd: Path) -> str:
@@ -1941,9 +1966,12 @@ def test_publication_uses_isolated_checkout_and_commits_only_snapshot(
     assert published == candidate
 
 
+@pytest.mark.parametrize("optional_sidecar", ["absent", "implicit", "explicit"])
 def test_pages_recovery_uses_an_empty_commit_when_snapshot_is_unchanged(
-    tmp_path: Path,
+    tmp_path: Path, optional_sidecar: str,
 ) -> None:
+    payload, enhancement = _optional_forecast_source()
+    candidate = LIVE_PAYLOAD if optional_sidecar == "absent" else payload
     bare = tmp_path / "remote.git"
     subprocess.run(["git", "init", "--bare", str(bare)], check=True, capture_output=True)
     seed = tmp_path / "seed"
@@ -1951,7 +1979,9 @@ def test_pages_recovery_uses_an_empty_commit_when_snapshot_is_unchanged(
     _git(["checkout", "-b", "main"], seed)
     target = seed / automation.PUBLICATION_PATH
     target.parent.mkdir(parents=True)
-    target.write_bytes(LIVE_PAYLOAD)
+    target.write_bytes(candidate)
+    if optional_sidecar != "absent":
+        (seed / automation.PUBLICATION_ENHANCEMENT_PATH).write_bytes(enhancement)
     _git(["add", "."], seed)
     _git(
         [
@@ -1975,10 +2005,11 @@ def test_pages_recovery_uses_an_empty_commit_when_snapshot_is_unchanged(
 
     commit_sha = automation._publish_candidate(
         settings,
-        candidate=LIVE_PAYLOAD,
+        candidate=candidate,
         target=LIVE_TARGET,
         expected_head_sha=before,
         force_pages_rebuild=True,
+        forecast_enhancements=enhancement if optional_sidecar == "explicit" else None,
     )
 
     assert commit_sha != before
@@ -1990,7 +2021,59 @@ def test_pages_recovery_uses_an_empty_commit_when_snapshot_is_unchanged(
         ["git", "--git-dir", str(bare), "show", f"{commit_sha}:{automation.PUBLICATION_PATH}"],
         check=True,
         capture_output=True,
-    ).stdout == LIVE_PAYLOAD
+    ).stdout == candidate
+    if optional_sidecar != "absent":
+        assert subprocess.run(
+            ["git", "--git-dir", str(bare), "show", f"{commit_sha}:{automation.PUBLICATION_ENHANCEMENT_PATH}"],
+            check=True, capture_output=True,
+        ).stdout == enhancement
+
+
+def _optional_forecast_source():
+    from regime_lab.forecast_enhancement_publication import bind_document, encode
+    payload = {"meta": {"generation_id": "same-generation", "data_as_of": "2026-09-04T20:00:00+00:00",
+                        "publication_status": "unpublished"}, "research": {},
+               "model": {"selection_status": "selected_by_gate", "lifecycle": {
+                   "selection": {"status": "selected_by_gate"}, "deployment": {"status": "candidate"},
+                   "publication": {"status": "unpublished"}}}}
+    row = {"model": "test", "horizon_weeks": 1, "origin_date": payload["meta"]["data_as_of"],
+           "target_date": "2026-09-11T20:00:00+00:00", "current_state": "risk_on",
+           "probabilities": {"risk_on": .8, "transition": .15, "risk_off": .05}}
+    document = {"schema_version": "regime-forecast-enhancements/1", "automatic_promotion": False,
+                "source_generation_id": "same-generation", "data_as_of": payload["meta"]["data_as_of"],
+                "history": [row], "latest": [dict(row)], "model_metrics": [], "calibration": {"audit": []},
+                "alerts": {"history": []}, "economics": {"incremental": {"history": []}}, "provenance": {}}
+    return encode(payload), encode(bind_document(document, payload))
+
+
+@pytest.mark.parametrize("case", ["optional", "absent", "required_absent", "invalid", "symlink", "git_failure"])
+def test_remote_optional_forecast_preserves_valid_bytes_and_distinguishes_failures(tmp_path, monkeypatch, case):
+    from regime_lab.publication_contract import PublicContractError
+    payload_raw, enhancement = _optional_forecast_source()
+    payload = json.loads(payload_raw)
+    if case == "required_absent":
+        payload["research"][automation.ENHANCEMENT_DECLARATION] = {"status": "required"}
+    calls = []
+    def run(args, **kwargs):
+        calls.append(args)
+        if args[1] == "ls-tree":
+            assert args == ["git", "ls-tree", "-z", "a" * 40, "--", automation.PUBLICATION_ENHANCEMENT_PATH]
+            if case in ("absent", "required_absent"):
+                return b""
+            mode = "120000" if case == "symlink" else "100644"
+            return f"{mode} blob {'b' * 40}\t{automation.PUBLICATION_ENHANCEMENT_PATH}\0".encode()
+        assert args == ["git", "show", f"{'a' * 40}:{automation.PUBLICATION_ENHANCEMENT_PATH}"]
+        if case == "git_failure":
+            raise automation.AutomationError("Git read failed")
+        return b"{}" if case == "invalid" else enhancement
+    monkeypatch.setattr(automation, "_run", run)
+    if case in ("optional", "absent"):
+        result = automation._remote_forecast_enhancements(_settings(tmp_path), head_sha="a" * 40, payload=payload)
+        assert result == (enhancement if case == "optional" else None)
+    else:
+        with pytest.raises((automation.AutomationError, PublicContractError)):
+            automation._remote_forecast_enhancements(_settings(tmp_path), head_sha="a" * 40, payload=payload)
+    assert len(calls) == (1 if case in ("absent", "required_absent", "symlink") else 2)
 
 
 def test_publication_refuses_remote_head_race_before_writing(
@@ -2143,6 +2226,9 @@ def test_v5_promotion_rebuild_receives_private_artifact_directory(
     )
     artifacts_position = promotion.index("--v5-artifacts")
     assert promotion[artifacts_position + 1] == str(settings.artifacts)
+    promoted_output = Path(promotion[promotion.index("--output") + 1])
+    assert promoted_output.parent.name.startswith(".candidate-staging-")
+    assert promoted_output != settings.reviewed_payload_path
 
 
 def test_launch_agent_bootstrap_happens_after_weekly_lock_release(
@@ -2395,3 +2481,116 @@ def test_pages_workflow_remains_provider_free_and_unscheduled() -> None:
         "actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0"
         in workflow
     )
+
+
+def _candidate_files(directory: Path) -> dict[str, bytes]:
+    return {p.name: p.read_bytes() for p in directory.iterdir() if p.is_file()}
+
+
+def test_candidate_generations_repeat_and_remove_only_the_new_generation_sidecar(tmp_path, monkeypatch):
+    settings = _settings(tmp_path)
+    active = settings.candidate_path.parent
+    generated = []
+    include_sidecar = [True, True, False]
+    def generation(staged_settings, **kwargs):
+        stage = staged_settings.candidate_path.parent
+        assert stage != active and not list(stage.iterdir())
+        if generated:
+            assert _candidate_files(active) == generated[-1]
+        number = len(generated) + 1
+        files = {"regime-results.json": f"generation {number}".encode(),
+                 "generation-manifest.json": f"validated {number}".encode(),
+                 "metadata.json": f"cached {number}".encode()}
+        if include_sidecar[number-1]:
+            files["forecast-enhancements.json"] = f"bound comparison {number}".encode()
+        for name, raw in files.items(): (stage/name).write_bytes(raw)
+        generated.append(files)
+        return files["regime-results.json"]
+    monkeypatch.setattr(automation, "_build_candidate_generation", generation)
+    for _ in range(3):
+        assert automation._build_candidate(settings, target=LIVE_TARGET, context=CANDIDATE_CONTEXT) == generated[-1]["regime-results.json"]
+        assert _candidate_files(active) == generated[-1]
+    assert not (active/"forecast-enhancements.json").exists()
+    previous = [_candidate_files(p) for p in settings.state_directory.glob("candidate-previous-*")]
+    assert generated[0] in previous and generated[1] in previous
+    assert not list(settings.state_directory.glob(".candidate-staging-*"))
+
+
+@pytest.mark.parametrize("failure", ["promotion", "package", "receipt"])
+def test_incomplete_candidate_generation_retains_last_good(tmp_path, monkeypatch, failure):
+    settings = replace(_settings(tmp_path), contract="v5" if failure == "promotion" else "v4")
+    active = settings.candidate_path.parent
+    active.mkdir(parents=True)
+    (active/"regime-results.json").write_bytes(b"last good")
+    (active/"forecast-enhancements.json").write_bytes(b"last good sidecar")
+    before = _candidate_files(active)
+    settings.payload.parent.mkdir(parents=True)
+    settings.payload.write_bytes(LIVE_PAYLOAD)
+    def run(command, **kwargs):
+        if failure == "promotion" and "scripts/promote_v5_publication.py" in command:
+            raise automation.AutomationError("promotion failed")
+        return b""
+    def package(*args):
+        if failure == "package": raise automation.AutomationError("package failed")
+    def cache(staged_settings, *args, **kwargs):
+        staged_settings.candidate_path.write_bytes(b"incomplete receipt")
+        raise automation.AutomationError("receipt failed")
+    monkeypatch.setattr(automation, "_run", run)
+    monkeypatch.setattr(automation, "_candidate_context", lambda _: CANDIDATE_CONTEXT)
+    monkeypatch.setattr(automation, "_sqlite_quick_check", lambda _: None)
+    monkeypatch.setattr(automation, "_verify_candidate_package", package)
+    monkeypatch.setattr(automation, "_cache_candidate", cache)
+    with pytest.raises(automation.AutomationError, match=failure):
+        automation._build_candidate(settings, target=LIVE_TARGET, context=CANDIDATE_CONTEXT)
+    assert _candidate_files(active) == before
+    assert not list(settings.state_directory.glob(".candidate-staging-*"))
+
+
+@pytest.mark.parametrize("has_previous", [False, True])
+def test_candidate_directory_cutover_error_restores_previous_bundle(tmp_path, monkeypatch, has_previous):
+    settings = _settings(tmp_path)
+    active = settings.candidate_path.parent
+    if has_previous:
+        active.mkdir(parents=True)
+        (active/"regime-results.json").write_bytes(b"last good")
+    def generation(staged_settings, **kwargs):
+        staged_settings.candidate_path.write_bytes(b"validated new")
+        return b"validated new"
+    monkeypatch.setattr(automation, "_build_candidate_generation", generation)
+    rename = Path.rename
+    def fail_install(path, target):
+        if path.name.startswith(".candidate-staging-"):
+            raise OSError("injected cutover failure")
+        return rename(path, target)
+    monkeypatch.setattr(Path, "rename", fail_install)
+    with pytest.raises(OSError, match="cutover"):
+        automation._build_candidate(settings, target=LIVE_TARGET, context=CANDIDATE_CONTEXT)
+    if has_previous:
+        assert settings.candidate_path.read_bytes() == b"last good"
+    else:
+        assert not active.exists()
+    assert not (settings.state_directory/"candidate-cutover.json").exists()
+    monkeypatch.setattr(Path, "rename", rename)
+    assert automation._build_candidate(settings, target=LIVE_TARGET, context=CANDIDATE_CONTEXT) == b"validated new"
+
+
+@pytest.mark.parametrize("new_installed", [False, True])
+def test_interrupted_candidate_directory_cutover_restores_before_cache_read(tmp_path, monkeypatch, new_installed):
+    settings = _settings(tmp_path)
+    parent = settings.state_directory
+    previous, staged = parent/"candidate-previous-interrupted", parent/".candidate-staging-interrupted"
+    previous.mkdir(parents=True); staged.mkdir()
+    (previous/"regime-results.json").write_bytes(b"last good")
+    (staged/"regime-results.json").write_bytes(b"validated successor")
+    (parent/"candidate-cutover.json").write_text(json.dumps({"schema_version": "regime-candidate-cutover/1", "staged": staged.name, "previous": previous.name}))
+    if new_installed:
+        staged.rename(settings.candidate_path.parent)
+    # Missing metadata prevents reuse, but recovery must restore the complete
+    # previous directory before deciding whether this week's cache is eligible.
+    assert automation._load_cached_candidate(settings, target=LIVE_TARGET, context=CANDIDATE_CONTEXT) is None
+    assert settings.candidate_path.read_bytes() == (b"validated successor" if new_installed else b"last good")
+    if new_installed:
+        assert (previous/"regime-results.json").read_bytes() == b"last good"
+    else:
+        assert (staged/"regime-results.json").read_bytes() == b"validated successor"
+    assert not (parent/"candidate-cutover.json").exists()

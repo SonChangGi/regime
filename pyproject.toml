@@ -21,6 +21,7 @@ dependencies = [
 
 [project.optional-dependencies]
 hmm = ["hmmlearn>=0.3.3,<0.4"]
+research-volatility = ["arch>=8,<9"]
 test = ["pytest>=8.3,<9"]
 
 [project.scripts]

@@ -74,7 +74,7 @@ def test_interactive_controls_have_accessible_names() -> None:
     ) in HTML
     assert 'aria-describedby="model-forecast-scope"' in HTML
     assert 'id="model-forecast-scope" class="sr-only"' in HTML
-    assert "선택 모델의 요약·상세 지표, 예측 차트, 비교표와 예측 국면별 자산 성과에 적용" in HTML
+    assert "선택 모델·예측 기간을 요약, 평가, 예측 이력에 공통 적용" in HTML
     assert 'id="history-series-select"' not in HTML
     assert 'id="chart-readout-actual"' in HTML
     assert 'id="chart-readout-entropy"' in HTML
@@ -109,10 +109,10 @@ def test_visuals_have_semantic_fallbacks_and_non_color_encoding() -> None:
     assert 'data-state-symbol="risk_off"' in HTML
     assert "function stateMeta(" in JS
     assert "현재 t" not in HTML and "예측 t+1" not in HTML
-    assert 'membership ? "관측 소속도와 1주 예측확률" : "관측 확률과 1주 예측확률"' in JS
+    assert '`${membership ? "관측 소속도" : "관측 확률"}와 ${state.modelForecastHorizon}주 예측확률`' in JS
     assert "function actualNextWeekForWeek(" in JS
     assert "function forecastEntropyForWeek(" in JS
-    assert 'tableCaption: `${model} ${membership ? "관측 소속도" : "관측 확률"}·1주 예측확률·실제 다음 주 결과·정규화 예측 엔트로피`' in JS
+    assert 'tableCaption: `${model} ${membership ? "관측 소속도" : "관측 확률"}·${state.modelForecastHorizon}주 예측확률·실제 ${state.modelForecastHorizon}주 후 결과·정규화 예측 엔트로피`' in JS
     assert 'setText(dom["history-observed-group-label"], `${historyMeta.observedMeasure} · t`)' in JS
     assert 'setText(dom["chart-readout-observed-label"], `${historyMeta.observedMeasure} · t`)' in JS
     assert 'isCurrent && isV5Payload() ? "소속도"' in JS

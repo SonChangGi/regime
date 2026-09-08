@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from copy import deepcopy
 from contextlib import nullcontext
 from datetime import date, datetime, timezone
 import hashlib
@@ -867,6 +868,7 @@ def _publish_active_generation(
     input_snapshot_sha256: str | None = None,
     research_replay_input: Mapping[str, Any] | None = None,
     finalization: Callable[[dict[str, Any]], None] | None = None,
+    forecast_enhancements_factory: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Publish one payload/artifact generation with rollback-safe cutover.
 
@@ -891,6 +893,8 @@ def _publish_active_generation(
         )
 
     validate_dashboard_payload(payload)
+    if forecast_enhancements_factory is not None and payload.get("meta", {}).get("result_version") != "weekly-regime-result-v5":
+        raise ValueError("forecast comparison generation requires the V5 contract")
     generation_id = str(payload.get("meta", {}).get("generation_id", ""))
     if not generation_id:
         raise ValueError("payload meta.generation_id must be non-empty")
@@ -1023,6 +1027,26 @@ def _publish_active_generation(
                     payload_selection[
                         "statistical_equivalence_status"
                     ] = "completed_selection_mcs"
+            if forecast_enhancements_factory is not None:
+                from regime_lab.forecast_enhancement_publication import FILENAME, STATES_FILENAME, STATES_MANIFEST_FILENAME, DECLARATION, bind_document, declaration, encode
+                from regime_lab.operational_forecast import frame_sha256
+                enhanced = bind_document(forecast_enhancements_factory(deepcopy(payload)), payload)
+                state_snapshot = _prospective_actual_states(benchmark)
+                state_schema = enhanced["provenance"]["state_frame_schema"]
+                state_snapshot.name = state_schema["series_name"]
+                state_snapshot.index.name = state_schema["index_name"]
+                state_hash = frame_sha256(state_snapshot)
+                if state_hash != enhanced["provenance"]["input_frames"]["states"]:
+                    raise ValueError("forecast comparison factory state snapshot differs from this generation")
+                state_snapshot.to_pickle(staged_artifacts / STATES_FILENAME)
+                write_json_atomic(staged_artifacts / STATES_MANIFEST_FILENAME, {
+                    "schema_version": "regime-forecast-enhancement-inputs/1", "data_as_of": payload["meta"]["data_as_of"],
+                    "source_generation_id": generation_id, "frames": {"states": state_hash},
+                })
+                (staged_artifacts / FILENAME).write_bytes(encode(enhanced))
+                payload.setdefault("research", {})[DECLARATION] = declaration(enhanced)
+                write_artifact_inventory(staged_artifacts)
+                verify_artifact_inventory(staged_artifacts)
             generation_manifest = build_generation_manifest(
                 payload=payload,
                 payload_path=output,
@@ -1704,6 +1728,8 @@ def command_build(args: argparse.Namespace) -> int:
                 payload.setdefault("research", {})["operational_diagnostics"] = build_operational_diagnostics(
                     ledger.list_probability_forecasts(), ledger.list_evaluations(),
                     probability_evaluations=ledger.list_probability_evaluations(),
+                    probability_maturity=maturity.probability_maturity,
+                    probability_revision_conflicts=ledger.list_probability_revisions(),
                     as_of=datetime.fromisoformat(str(decision_value)),
                 )
                 ledger_summary = ledger.public_summary(
@@ -1791,6 +1817,14 @@ def command_build(args: argparse.Namespace) -> int:
                     str(v5_preflight["source_fingerprint_sha256"]),
                     config=config,
                 )
+            enhancement_factory = None
+            if getattr(args, "forecast_enhancements_research", False):
+                from regime_lab.research.forecast_enhancement_generation import build_forecast_enhancement_candidate
+                enhancement_factory = lambda current_payload: build_forecast_enhancement_candidate(
+                    current_payload, dataset=dataset, benchmark=benchmark,
+                    cache_directory=artifacts.parent / "research-cache" / "forecast-enhancements", progress=_flush_progress,
+                    operating_built_current=True, operating_config=config,
+                )
             payload = _publish_active_generation(
                 payload,
                 benchmark,
@@ -1801,6 +1835,7 @@ def command_build(args: argparse.Namespace) -> int:
                 finalization=(
                     append_forecast_ledger if contract_version == "v5" else None
                 ),
+                forecast_enhancements_factory=enhancement_factory,
             )
             append_run_event(
                 run_registry,
@@ -2000,6 +2035,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="artifact target (v4: artifacts/latest; v5: build/v5-live)",
     )
     build.add_argument("--profile", choices=("standard", "full"), default="standard")
+    build.add_argument("--forecast-enhancements-research", action="store_true",
+                       help="Opt in to generation-bound 1/4/13-week comparison research using this build's frozen inputs; requires research-volatility dependencies")
     build.add_argument(
         "--contract",
         choices=("v4", "v5"),

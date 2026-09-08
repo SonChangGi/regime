@@ -167,13 +167,32 @@ def test_empty_window_returns_missing_metrics_without_stale_headline(example):
 
 
 def test_selection_metrics_and_original_rank_stay_fixed_while_view_rank_is_computed(example):
+    example["model"]["leaderboard"][0]["selection_calibration_error"] = .031
     result = run_evaluation(example)["results"][0]
     for row in result["leaderboard"][:2]:
         source = next(item for item in example["model"]["leaderboard"] if item["name"] == row["name"])
         assert row["rank"] == source["rank"]
         assert row["selection_log_loss"] == source["selection_log_loss"]
+        assert row["selection_calibration_error"] == source.get("selection_calibration_error")
     assert sorted(row["scope_rank"] for row in result["leaderboard"]) == [1, 2, 3, 4]
     assert min(result["leaderboard"], key=lambda row: row["log_loss"])["scope_rank"] == 1
+
+
+def test_scope_chart_hides_selection_metrics_without_deleting_api_metadata(example):
+    result=run_evaluation(example)["results"][0]
+    program="""
+const api=require('./web/app.js'),fs=require('fs');
+const rows=JSON.parse(fs.readFileSync(0,'utf8'));
+const before=JSON.stringify(rows);
+const scoped=api.modelLossComparisonRows(rows,'model_a','model_b');
+const fixed=api.modelLossComparisonRows(rows.map(({scope_rank,...row})=>row),'model_a','model_b');
+console.log(JSON.stringify({scoped,fixed,unchanged:JSON.stringify(rows)===before}));
+"""
+    value=json.loads(subprocess.run(["node","-e",program],cwd=ROOT,text=True,input=json.dumps(result["leaderboard"]),capture_output=True,check=True).stdout)
+    assert value["unchanged"]
+    assert all(row["selection"] is None for row in value["scoped"])
+    assert all(row["selection"] is not None for row in value["fixed"])
+    assert all(row["row"]["selection_log_loss"] is not None for row in value["scoped"])
 
 
 def test_comparisons_distinguish_probability_difference_from_identical_decisions(example):

@@ -54,6 +54,9 @@ from regime_lab.integrity import (  # noqa: E402
 from regime_lab.selection_family_audit import (  # noqa: E402
     validate_selection_family_payload_binding,
 )
+from regime_lab.forecast_enhancement_publication import (  # noqa: E402
+    DESTINATION as ENHANCEMENT_DESTINATION, validate_packaged_sidecar,
+)
 
 
 BASE_EXPECTED_FILES = frozenset(
@@ -123,8 +126,12 @@ def verify_public_package(directory: str | Path) -> dict[str, Any]:
             f"dashboard payload could not be read: {payload_path}"
         ) from exc
     payload = _load_json(payload_path, label="dashboard payload")
+    manifest = _load_json(package_root / MANIFEST_DESTINATION, label="publication manifest")
     result_version = payload.get("meta", {}).get("result_version")
     expected_files = set(BASE_EXPECTED_FILES)
+    enhancement_metadata = manifest.get("forecast_enhancements")
+    if isinstance(enhancement_metadata, dict) and enhancement_metadata.get("status") == "included":
+        expected_files.add(ENHANCEMENT_DESTINATION)
     expected_history_files: dict[str, bytes] = {}
     expected_forecast_files: dict[str, bytes] = {}
     generation_document: dict[str, Any] | None = None
@@ -171,7 +178,7 @@ def verify_public_package(directory: str | Path) -> dict[str, Any]:
         package_root / MANIFEST_DESTINATION,
         label="publication manifest",
     )
-    if set(manifest) != EXPECTED_MANIFEST_KEYS:
+    if set(manifest) not in (EXPECTED_MANIFEST_KEYS, EXPECTED_MANIFEST_KEYS | {"forecast_enhancements"}):
         raise VerificationError("publication manifest keys are not exact")
     manifest_raw = (package_root / MANIFEST_DESTINATION).read_bytes()
     if any(pattern.search(manifest_raw) for pattern in SECRET_PATTERNS):
@@ -217,6 +224,11 @@ def verify_public_package(directory: str | Path) -> dict[str, Any]:
             raise VerificationError(f"credential-like material found: {relative_path}")
 
     try:
+        validate_packaged_sidecar(
+            {ENHANCEMENT_DESTINATION: (package_root / ENHANCEMENT_DESTINATION).read_bytes()}
+            if ENHANCEMENT_DESTINATION in expected_files else {},
+            enhancement_metadata, payload,
+        )
         validate_generated_browser_contract(
             package_root / GENERATED_BROWSER_CONTRACT
         )
@@ -229,7 +241,7 @@ def verify_public_package(directory: str | Path) -> dict[str, Any]:
             app_raw=(package_root / "app.js").read_bytes(),
             extra_assets={
                 name: (package_root / name).read_bytes()
-                for name in ("insights.js", "insights.css")
+                for name in ("insights.js", "insights.css", "forecast-enhancements.js", "forecast-enhancements.css")
             },
         )
     except (BrowserContractError, PackagingError) as exc:

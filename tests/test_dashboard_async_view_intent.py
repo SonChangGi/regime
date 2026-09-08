@@ -24,7 +24,7 @@ program=program.replace('const dashboardApi = Object.freeze({', `const dashboard
       populateDateControls=()=>{};showDashboard=()=>{};restoreFragmentAfterRender=()=>{};
       renderStaticSections=()=>syncConditionalBasisControl();renderConditionalStats=()=>syncConditionalBasisControl();
       renderSelectedWeek=()=>{};renderAnalysisCoverage=()=>{};renderModel=()=>{};renderDecisionShadow=()=>{};
-      renderTransitionHorizons=()=>{};
+      renderTransitionHorizons=()=>{};renderForecastEvidenceBrief=()=>{};
       syncHistoryWindowControl=()=>{};setSnapNote=()=>{};ensureHistory=async()=>false;
     }
   },`);

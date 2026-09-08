@@ -277,3 +277,61 @@ def test_expert_agreement_cannot_override_official_history(monkeypatch, damage):
     with pytest.raises(OperationalPreparationError, match=pattern):
         prepare_operational_forecast(features, states, changed, transition, **kwargs,
             research_replay=True, decision_at=(features.index[-1] + timedelta(minutes=1)).to_pydatetime())
+
+
+def test_independent_manifest_rejects_self_rehashed_changed_features(monkeypatch):
+    features, states, oos, transition, kwargs = _bundle()
+    counts = _stub_models(monkeypatch)
+    manifest = {'frames': dict(kwargs['expected_input_hashes']), 'data_as_of':states.index[-1].isoformat(),
+        'candidate_manifest_sha256':kwargs['locked_payload']['model']['candidate_manifest_sha256'],
+        'feature_manifest_sha256':kwargs['locked_payload']['model']['feature_manifest_sha256']}
+    features = features.copy()
+    features.iloc[-1, 0] += .1
+    kwargs['expected_input_hashes']['features'] = frame_sha256(features)
+    with pytest.raises(OperationalPreparationError, match='independent input manifest'):
+        prepare_operational_forecast(features, states, oos, transition, **kwargs,
+            input_manifest=manifest, research_replay=True, decision_at=states.index[-1].to_pydatetime())
+    assert counts == {'base':0,'hazard':0}
+
+
+def test_recipe_lock_binds_current_runtime_source_and_estimator_parameters():
+    from regime_lab.analysis.models import model_manifest
+    from regime_lab.operational_forecast import preparation_recipe_lock, validate_preparation_recipe
+    *_, kwargs = _bundle()
+    payload = kwargs['locked_payload']
+    manifest = model_manifest('quick', random_state=23, names=['markov','xgboost','causal_dynamic_ensemble'])
+    payload['model']['candidate_manifest'] = manifest
+    payload['model']['candidate_manifest_sha256'] = canonical_json_sha256_v1(manifest)
+    lock = preparation_recipe_lock(payload)
+    validate_preparation_recipe(lock, payload)
+    assert lock['random_state'] == 23
+    tampered = deepcopy(lock)
+    tampered['runtime_versions']['numpy'] = '0.0'
+    tampered['sha256'] = canonical_json_sha256_v1({k:v for k,v in tampered.items() if k != 'sha256'})
+    with pytest.raises(OperationalPreparationError, match='recipe lock'):
+        validate_preparation_recipe(tampered, payload)
+    manifest['models'][1]['estimator']['parameters']['n_estimators'] = 999
+    payload['model']['candidate_manifest_sha256'] = canonical_json_sha256_v1(manifest)
+    with pytest.raises(OperationalPreparationError, match='estimator recipe'):
+        preparation_recipe_lock(payload)
+
+
+def test_locked_random_seed_reaches_latest_estimators(monkeypatch):
+    import regime_lab.operational_forecast as module
+    features, states, oos, transition, kwargs = _bundle()
+    _stub_models(monkeypatch)
+    manifest = kwargs['locked_payload']['model']['candidate_manifest']
+    manifest['random_state'] = 23
+    kwargs['locked_payload']['model']['candidate_manifest_sha256'] = canonical_json_sha256_v1(manifest)
+    observed = []
+    def base(*args, **options):
+        observed.append(options['random_state'])
+        return pd.Series([.2,.7,.1], index=['risk_on','transition','risk_off'])
+    def hazard(*args, **options):
+        observed.append(options['random_state'])
+        return .2, False, '', None
+    monkeypatch.setattr(module, 'forecast_next_regime', base)
+    monkeypatch.setattr(module, '_fit_transition_candidate', hazard)
+    prepare_operational_forecast(features, states, oos, transition, **kwargs, research_replay=True,
+        decision_at=states.index[-1].to_pydatetime())
+    assert observed == [23,23,23]

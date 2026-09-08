@@ -67,6 +67,10 @@ from regime_lab.web_contract import (
     validate_generated_browser_contract,
 )
 from regime_lab.forecast_exports import build_forecast_exports, validate_forecast_exports
+from regime_lab.forecast_enhancement_publication import (
+    DESTINATION as ENHANCEMENT_DESTINATION, POLICY_MODES, package_sidecar,
+    validate_packaged_sidecar,
+)
 
 
 GENERATED_BROWSER_CONTRACT = "operating-contract.generated.js"
@@ -75,6 +79,8 @@ STATIC_ALLOWLIST = (
     "styles.css",
     "insights.css",
     "insights.js",
+    "forecast-enhancements.css",
+    "forecast-enhancements.js",
     GENERATED_BROWSER_CONTRACT,
     "app.js",
 )
@@ -297,6 +303,8 @@ def package_public_dashboard(
     generation_manifest_path: str | Path | None = None,
     selection_family_path: str | Path | None = None,
     staged_generation_contract_directory: str | Path | None = None,
+    forecast_enhancements_path: str | Path | None = None,
+    forecast_enhancements_mode: str = "auto",
 ) -> dict[str, Any]:
     """Build a new static directory from an explicit, minimal allowlist."""
 
@@ -330,7 +338,7 @@ def package_public_dashboard(
         styles_raw=files["styles.css"],
         app_raw=files["app.js"],
         operating_contract_raw=generated_contract_raw,
-        extra_assets={name: files[name] for name in ("insights.js", "insights.css")},
+        extra_assets={name: files[name] for name in ("insights.js", "insights.css", "forecast-enhancements.js", "forecast-enhancements.css")},
     )
 
     payload_raw = _read_regular_file(payload_path, label="dashboard payload")
@@ -519,6 +527,12 @@ def package_public_dashboard(
         forecast_files = build_forecast_exports(payload)
         files.update(forecast_files)
 
+    enhancement_files, enhancement_metadata = package_sidecar(
+        payload, payload_raw=payload_raw, payload_path=payload_path,
+        path=Path(forecast_enhancements_path) if forecast_enhancements_path is not None else None,
+        mode=forecast_enhancements_mode,
+    )
+    files.update(enhancement_files)
     is_live_derived = publication_mode == PUBLICATION_MODE_LIVE_DERIVED
     source_ids = sorted(
         source["id"]
@@ -542,6 +556,7 @@ def package_public_dashboard(
         "contains_raw_observations": False,
         "source_ids": source_ids,
         "payload_data_as_of": payload["meta"].get("data_as_of"),
+        "forecast_enhancements": enhancement_metadata,
         "files": {
             path: {"bytes": len(value), "sha256": _sha256(value)}
             for path, value in sorted(files.items())
@@ -635,6 +650,10 @@ def package_public_dashboard(
         )
         if staged_manifest != manifest:
             raise PackagingError("staged publication manifest differs from memory")
+        validate_packaged_sidecar(
+            {name: _read_regular_file(staging / name, label="staged forecast enhancements") for name in enhancement_files},
+            staged_manifest["forecast_enhancements"], staged_payload,
+        )
         for relative_path, expected in manifest["files"].items():
             staged_raw = _read_regular_file(
                 staging / relative_path,
@@ -654,7 +673,7 @@ def package_public_dashboard(
                 staging / "app.js",
                 label="staged app.js",
             ),
-            extra_assets={name: _read_regular_file(staging / name, label="staged insight asset") for name in ("insights.js", "insights.css")},
+            extra_assets={name: _read_regular_file(staging / name, label="staged insight asset") for name in ("insights.js", "insights.css", "forecast-enhancements.js", "forecast-enhancements.css")},
             operating_contract_raw=_read_regular_file(
                 staging / GENERATED_BROWSER_CONTRACT,
                 label="staged generated browser contract",
@@ -698,6 +717,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--web-root", type=Path, default=Path("web"))
     parser.add_argument("--payload", type=Path, required=True)
+    parser.add_argument("--forecast-enhancements", type=Path,
+                        help="Generation-bound forecast comparison; auto otherwise checks the payload sibling")
+    parser.add_argument("--forecast-enhancements-mode", choices=POLICY_MODES, default="auto",
+                        help="auto records absence; required fails on absence; omit explicitly excludes optional comparisons")
     parser.add_argument(
         "--output", type=Path, default=Path("dist/public-dashboard")
     )
@@ -757,6 +780,8 @@ def main(argv: list[str] | None = None) -> int:
             staged_generation_contract_directory=(
                 args.staged_generation_contract_directory
             ),
+            forecast_enhancements_path=args.forecast_enhancements,
+            forecast_enhancements_mode=args.forecast_enhancements_mode,
         )
     except (PackagingError, UnsafeMutablePath, OSError) as exc:
         print(f"public dashboard package refused: {exc}", file=sys.stderr)

@@ -16,6 +16,8 @@
   "build": {
     "contract": "v5",
     "profile": "standard",
+    "forecast_enhancements_research": true,
+    "forecast_candidates_weekly": true,
     "database": "data/regime.sqlite3",
     "payload": "build/weekly-automation/generation-v5/regime-results.json",
     "artifacts": "build/weekly-automation/generation-v5/artifacts",

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, timezone
 import fcntl
 import hashlib
@@ -65,6 +65,11 @@ from regime_lab.selection_family_audit import (
 from regime_lab.data import DailyRequestBudget, SQLiteSnapshotStore
 from regime_lab.dashboard_split import build_dashboard_split, build_history_chunks
 from regime_lab.forecast_exports import build_forecast_exports
+from regime_lab.forecast_enhancement_publication import (
+    DECLARATION as ENHANCEMENT_DECLARATION, DESTINATION as ENHANCEMENT_DESTINATION,
+    FILENAME as ENHANCEMENT_FILENAME, validate_binding as validate_enhancement_binding,
+    validate_packaged_sidecar,
+)
 from regime_lab.run_registry import (
     RunRegistryError,
     append_run_event,
@@ -94,6 +99,7 @@ PUBLIC_COMPARISON_PATH = "data/v5-vs-v4-comparison.json"
 PUBLIC_GENERATION_MANIFEST_PATH = "data/generation-manifest.json"
 PUBLIC_SELECTION_FAMILY_PATH = "data/selection-family-audit.json"
 PUBLIC_MANIFEST_PATH = "publication-manifest.json"
+PUBLICATION_ENHANCEMENT_PATH = "publication/live/" + ENHANCEMENT_FILENAME
 PUBLIC_STATIC_ASSET_PATHS = (
     "index.html",
     "styles.css",
@@ -101,6 +107,8 @@ PUBLIC_STATIC_ASSET_PATHS = (
     "app.js",
     "insights.js",
     "insights.css",
+    "forecast-enhancements.js",
+    "forecast-enhancements.css",
 )
 AUTOMATION_LABEL = "com.sonchanggi.regime.weekly-release"
 AUTOMATION_TRAILER = "Regime-Automation: weekly-release-v1"
@@ -110,6 +118,7 @@ ALLOWED_REMOTE_DRIFT = frozenset(
         PUBLICATION_COMPARISON_PATH,
         PUBLICATION_GENERATION_MANIFEST_PATH,
         PUBLICATION_SELECTION_FAMILY_PATH,
+        PUBLICATION_ENHANCEMENT_PATH,
     }
 )
 DEFAULT_RETRY_HOURS = (3, 9, 15, 21)
@@ -178,6 +187,11 @@ class AutomationSettings:
     stale_heartbeat_after: timedelta = timedelta(minutes=15)
     notification_dedupe: timedelta = timedelta(hours=24)
     no_progress_timeout: timedelta = timedelta(minutes=45)
+    forecast_enhancements_research: bool = False
+    forecast_candidates_weekly: bool = False
+    # Internal override for building a complete reviewed generation off to the
+    # side. It never changes the configured status, collection or database paths.
+    candidate_directory: Path | None = None
 
     @classmethod
     def load(cls, path: str | Path | None = None) -> "AutomationSettings":
@@ -230,6 +244,12 @@ class AutomationSettings:
             raise AutomationError("automation retry and health timing values are invalid")
         if type(schedule.get("require_ac_power", True)) is not bool:
             raise AutomationError("schedule.require_ac_power must be boolean")
+        if type(build.get("forecast_enhancements_research", False)) is not bool:
+            raise AutomationError("build.forecast_enhancements_research must be boolean")
+        if type(build.get("forecast_candidates_weekly", False)) is not bool:
+            raise AutomationError("build.forecast_candidates_weekly must be boolean")
+        if build.get("forecast_candidates_weekly", False) and not build.get("forecast_enhancements_research", False):
+            raise AutomationError("weekly forecast candidates require forecast_enhancements_research")
 
         def mutable(value: object, label: str) -> Path:
             return confined_mutable_path(
@@ -254,6 +274,8 @@ class AutomationSettings:
 
         return cls(
             config_path=config_path.resolve(),
+            forecast_enhancements_research=build.get("forecast_enhancements_research", False),
+            forecast_candidates_weekly=build.get("forecast_candidates_weekly", False),
             root=root,
             automation_id=automation_id,
             schedule_hour=hour,
@@ -300,15 +322,16 @@ class AutomationSettings:
 
     @property
     def candidate_path(self) -> Path:
-        return self.state_directory / "candidate" / "regime-results.json"
+        directory = self.candidate_directory or self.state_directory / "candidate"
+        return directory / "regime-results.json"
 
     @property
     def candidate_metadata_path(self) -> Path:
-        return self.state_directory / "candidate" / "metadata.json"
+        return self.candidate_path.with_name("metadata.json")
 
     @property
     def candidate_comparison_path(self) -> Path:
-        return self.state_directory / "candidate" / "v5-vs-v4-comparison.json"
+        return self.candidate_path.with_name("v5-vs-v4-comparison.json")
 
     @property
     def unreviewed_comparison_path(self) -> Path:
@@ -328,7 +351,7 @@ class AutomationSettings:
 
     @property
     def candidate_generation_manifest_path(self) -> Path:
-        return self.state_directory / "candidate" / "generation-manifest.json"
+        return self.candidate_path.with_name("generation-manifest.json")
 
     @property
     def reviewed_generation_manifest_path(self) -> Path:
@@ -336,7 +359,7 @@ class AutomationSettings:
 
     @property
     def candidate_selection_family_path(self) -> Path:
-        return self.state_directory / "candidate" / "selection-family-audit.json"
+        return self.candidate_path.with_name("selection-family-audit.json")
 
     @property
     def reviewed_selection_family_path(self) -> Path:
@@ -367,6 +390,7 @@ class RemotePublication:
     comparison_bytes: bytes | None = None
     generation_manifest_bytes: bytes | None = None
     selection_family_bytes: bytes | None = None
+    forecast_enhancements_bytes: bytes | None = None
 
     @property
     def sha256(self) -> str:
@@ -1307,7 +1331,7 @@ def _failure_policy(
         return f"{stage}_blocked", "blocked", None
     if stage in {"collect_train_audit", "train_models", "audit_candidate"}:
         return "analysis_build_failed", "blocked", None
-    if stage in {"publish_snapshot", "wait_for_pages", "deployment_recovery"}:
+    if stage in {"publish_snapshot", "wait_for_pages", "deployment_recovery", "record_forecast_candidates"}:
         return f"{stage}_failed", "resume", None
     return (
         f"{stage}_failed",
@@ -1704,6 +1728,9 @@ def _git_preflight(settings: AutomationSettings) -> RemotePublication:
                 label="remote publication",
                 selection_family_raw=selection_family_bytes,
             )
+    forecast_enhancements_bytes = _remote_forecast_enhancements(
+        settings, head_sha=head_sha, payload=validated,
+    )
     return RemotePublication(
         head_sha=head_sha,
         payload_bytes=payload_bytes,
@@ -1711,7 +1738,36 @@ def _git_preflight(settings: AutomationSettings) -> RemotePublication:
         comparison_bytes=comparison_bytes,
         generation_manifest_bytes=generation_manifest_bytes,
         selection_family_bytes=selection_family_bytes,
+        forecast_enhancements_bytes=forecast_enhancements_bytes,
     )
+
+
+def _remote_forecast_enhancements(
+    settings: AutomationSettings, *, head_sha: str, payload: Mapping[str, Any],
+) -> bytes | None:
+    # ls-tree distinguishes an absent optional file from a failed Git read.
+    # Pin both reads to the already verified commit, rather than a moving ref.
+    entry = _run(
+        ["git", "ls-tree", "-z", head_sha, "--", PUBLICATION_ENHANCEMENT_PATH],
+        cwd=settings.root, capture=True,
+    )
+    if not entry:
+        if ENHANCEMENT_DECLARATION in payload.get("research", {}):
+            raise AutomationError("required remote forecast enhancement is missing")
+        return None
+    records = entry.rstrip(b"\0").split(b"\0")
+    expected_path = PUBLICATION_ENHANCEMENT_PATH.encode()
+    if (len(records) != 1 or b"\t" not in records[0]
+            or records[0].split(b"\t", 1)[1] != expected_path
+            or records[0].split(b"\t", 1)[0].split()[:2] not in
+            ([b"100644", b"blob"], [b"100755", b"blob"])):
+        raise AutomationError("remote forecast enhancement must be a regular Git file")
+    raw = _run(
+        ["git", "show", f"{head_sha}:{PUBLICATION_ENHANCEMENT_PATH}"],
+        cwd=settings.root, capture=True,
+    )
+    validate_enhancement_binding(_json_object(raw, label="remote forecast enhancements"), payload)
+    return raw
 
 
 def validate_automation_candidate(
@@ -2117,6 +2173,7 @@ def _load_cached_candidate(
     target: datetime,
     context: Mapping[str, str],
 ) -> bytes | None:
+    _recover_candidate_install(settings)
     try:
         metadata = json.loads(
             settings.candidate_metadata_path.read_text(encoding="utf-8")
@@ -2371,7 +2428,87 @@ def _walkforward_checkpoint_progress(
     }
 
 
+def _candidate_install_paths(settings: AutomationSettings, record: Mapping[str, str]):
+    parent = settings.state_directory.resolve()
+    if not isinstance(record, Mapping) or record.get("schema_version") != "regime-candidate-cutover/1":
+        raise AutomationError("candidate cutover receipt is invalid")
+    names = {key: record.get(key) for key in ("staged", "previous")}
+    for key, prefix in (("staged", ".candidate-staging-"), ("previous", "candidate-previous-")):
+        name = names[key]
+        if not isinstance(name, str) or Path(name).name != name or not name.startswith(prefix):
+            raise AutomationError("candidate cutover path is invalid")
+    current = settings.candidate_path.parent
+    paths = (current, parent / names["staged"], parent / names["previous"])
+    if current.parent.resolve() != parent or any(path.is_symlink() or (path.exists() and not path.is_dir()) for path in paths):
+        raise AutomationError("candidate generation directories must not be redirected")
+    return paths
+
+
+def _recover_candidate_install(settings: AutomationSettings) -> None:
+    """Recover a process interruption between the two directory renames."""
+    journal = settings.state_directory / "candidate-cutover.json"
+    if not journal.exists():
+        return
+    if journal.is_symlink():
+        raise AutomationError("candidate cutover receipt must not be redirected")
+    try:
+        record = json.loads(journal.read_text())
+        current, staged, previous = _candidate_install_paths(settings, record)
+    except (OSError, TypeError, ValueError) as exc:
+        raise AutomationError("candidate cutover receipt is unavailable") from exc
+    if not current.exists():
+        if previous.exists():
+            previous.rename(current)
+        elif staged.exists():
+            staged.rename(current)
+        else:
+            raise AutomationError("candidate cutover has no preserved generation")
+    journal.unlink()
+
+
+def _install_candidate_generation(settings: AutomationSettings, staged: Path) -> None:
+    """Replace a verified bundle; retain its predecessor and restore on failure."""
+    record = {"schema_version": "regime-candidate-cutover/1", "staged": staged.name,
+              "previous": "candidate-previous-" + datetime.now(UTC).strftime("%Y%m%dT%H%M%S") + "-" + uuid.uuid4().hex[:8]}
+    current, staged, previous = _candidate_install_paths(settings, record)
+    journal = settings.state_directory / "candidate-cutover.json"
+    write_json_atomic(journal, record)
+    try:
+        if current.exists():
+            current.rename(previous)
+        staged.rename(current)
+    except BaseException:
+        # Ordinary errors restore immediately. If the process is terminated, the
+        # same receipt restores last-good before the next cache read/build.
+        if not current.exists() and previous.exists():
+            previous.rename(current)
+        if current.exists() or not previous.exists():
+            journal.unlink()
+        raise
+    journal.unlink()
+
+
 def _build_candidate(
+    settings: AutomationSettings,
+    *,
+    target: datetime,
+    context: Mapping[str, str],
+    started_at: datetime | None = None,
+    run_id: str | None = None,
+) -> bytes:
+    """Finish promotion, package validation and receipts before replacing cache."""
+    _recover_candidate_install(settings)
+    settings.state_directory.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".candidate-staging-", dir=settings.state_directory) as temporary:
+        staged = Path(temporary)
+        staged_settings = replace(settings, candidate_directory=staged)
+        raw = _build_candidate_generation(staged_settings, target=target, context=context,
+                                          started_at=started_at, run_id=run_id)
+        _install_candidate_generation(settings, staged)
+    return raw
+
+
+def _build_candidate_generation(
     settings: AutomationSettings,
     *,
     target: datetime,
@@ -2383,12 +2520,7 @@ def _build_candidate(
     if sys.platform == "darwin" and settings.root == project_root().resolve():
         verify_provider_keychain_access()
     settings.collection_report_path.unlink(missing_ok=True)
-    settings.reviewed_payload_path.unlink(missing_ok=True)
-    settings.comparison_path.unlink(missing_ok=True)
-    settings.candidate_comparison_path.unlink(missing_ok=True)
     settings.unreviewed_comparison_path.unlink(missing_ok=True)
-    settings.reviewed_generation_manifest_path.unlink(missing_ok=True)
-    settings.reviewed_selection_family_path.unlink(missing_ok=True)
 
     last_progress_count: int | None = None
     initial_progress_monotonic = time.monotonic()
@@ -2476,6 +2608,8 @@ def _build_candidate(
         )
     if settings.require_ac_power:
         command.append("--require-ac-power")
+    if settings.forecast_enhancements_research:
+        command.append("--forecast-enhancements-research")
     try:
         _run(
             command,
@@ -2640,6 +2774,27 @@ def _build_candidate(
     return raw
 
 
+def _record_weekly_forecast_candidates(settings: AutomationSettings) -> dict | None:
+    """Issue/score an explicitly enabled local candidate ledger from this bundle."""
+    if not settings.forecast_candidates_weekly:
+        return None
+    if not settings.forecast_enhancements_research or settings.contract != "v5":
+        raise AutomationError("weekly forecast candidates require V5 forecast_enhancements_research")
+    from regime_lab.candidate_weekly import run_weekly_candidate_files
+    from regime_lab.forecast_enhancement_publication import FILENAME, STATES_FILENAME, STATES_MANIFEST_FILENAME
+    try:
+        return run_weekly_candidate_files(
+            settings.state_directory / "forecast-candidates",
+            payload_path=settings.candidate_path,
+            enhancement_path=settings.candidate_path.with_name(FILENAME),
+            states_path=settings.artifacts / STATES_FILENAME,
+            input_manifest_path=settings.artifacts / STATES_MANIFEST_FILENAME,
+            artifact_manifest_path=settings.candidate_generation_manifest_path,
+        )
+    except Exception as exc:
+        raise AutomationError(f"weekly candidate issuance/evaluation failed: {_safe_error(exc)}") from exc
+
+
 def _publish_candidate(
     settings: AutomationSettings,
     *,
@@ -2650,6 +2805,7 @@ def _publish_candidate(
     target: datetime,
     expected_head_sha: str,
     force_pages_rebuild: bool = False,
+    forecast_enhancements: bytes | None = None,
 ) -> str:
     origin_url = _run(
         ["git", "remote", "get-url", settings.remote],
@@ -2692,8 +2848,35 @@ def _publish_candidate(
                 raise AutomationError("publication parent must be a regular directory")
         if target_path.is_symlink() or not target_path.is_file():
             raise AutomationError("publication target must be an existing regular file")
+        enhancement_target = checkout / PUBLICATION_ENHANCEMENT_PATH
+        enhancement_existed = enhancement_target.is_file()
+        if enhancement_target.is_symlink() or (enhancement_target.exists() and not enhancement_target.is_file()):
+            raise AutomationError("publication forecast enhancement target must be a regular file")
+        candidate_document = _json_object(candidate, label="candidate publication")
+        if ENHANCEMENT_DECLARATION in candidate_document.get("research", {}):
+            if forecast_enhancements is None:
+                path = settings.candidate_path.with_name(ENHANCEMENT_FILENAME)
+                if path.is_symlink() or not path.is_file():
+                    raise AutomationError("required candidate forecast enhancement is missing")
+                forecast_enhancements = path.read_bytes()
+            validate_enhancement_binding(_json_object(forecast_enhancements, label="candidate forecast enhancements"), candidate_document)
+        elif force_pages_rebuild and target_path.read_bytes() == candidate:
+            # A manually reviewed optional sidecar belongs to this unchanged
+            # generation too. Recovery must preserve it, including callers that
+            # did not explicitly pass its bytes; new generations still remove it.
+            if forecast_enhancements is None and enhancement_existed:
+                forecast_enhancements = enhancement_target.read_bytes()
+            if forecast_enhancements is not None:
+                validate_enhancement_binding(_json_object(forecast_enhancements, label="recovery forecast enhancements"), candidate_document)
+        elif forecast_enhancements is not None:
+            raise AutomationError("forecast enhancement must be declared by the candidate generation")
         target_path.write_bytes(candidate)
         os.chmod(target_path, 0o644)
+        if forecast_enhancements is not None:
+            enhancement_target.write_bytes(forecast_enhancements)
+            os.chmod(enhancement_target, 0o644)
+        elif enhancement_existed:
+            enhancement_target.unlink()  # Explicit absence in the new generation removes the old sidecar.
         comparison_target = checkout / PUBLICATION_COMPARISON_PATH
         if selection_family is not None and generation_manifest is None:
             raise AutomationError(
@@ -2749,6 +2932,10 @@ def _publish_candidate(
             ).decode().splitlines()
         )
         expected = {f" M {PUBLICATION_PATH}"}
+        if forecast_enhancements is not None:
+            expected.add(f" M {PUBLICATION_ENHANCEMENT_PATH}" if enhancement_existed else f"?? {PUBLICATION_ENHANCEMENT_PATH}")
+        elif enhancement_existed:
+            expected.add(f" D {PUBLICATION_ENHANCEMENT_PATH}")
         if comparison is not None:
             expected.add(f" M {PUBLICATION_COMPARISON_PATH}")
         if generation_manifest is not None:
@@ -2763,6 +2950,7 @@ def _publish_candidate(
             if (
                 not changed
                 and target_path.read_bytes() == candidate
+                and (forecast_enhancements is None or enhancement_target.read_bytes() == forecast_enhancements)
                 and (
                     comparison is None
                     or comparison_target.read_bytes() == comparison
@@ -2809,6 +2997,8 @@ def _publish_candidate(
                 return commit_sha
             raise AutomationError("release checkout changed outside the publication snapshot")
         staged_paths = [PUBLICATION_PATH]
+        if forecast_enhancements is not None or enhancement_existed:
+            staged_paths.append(PUBLICATION_ENHANCEMENT_PATH)
         if comparison is not None:
             staged_paths.append(PUBLICATION_COMPARISON_PATH)
         if generation_manifest is not None:
@@ -2892,7 +3082,7 @@ def _expected_static_assets(settings: AutomationSettings) -> dict[str, bytes]:
             styles_raw=assets["styles.css"],
             app_raw=assets["app.js"],
             operating_contract_raw=operating_contract_raw,
-            extra_assets={name: assets[name] for name in ("insights.js", "insights.css")},
+            extra_assets={name: assets[name] for name in ("insights.js", "insights.css", "forecast-enhancements.js", "forecast-enhancements.css")},
         )
     except (BrowserContractError, PublicContractError) as exc:
         raise AutomationError(f"expected dashboard assets are invalid: {exc}") from exc
@@ -2984,6 +3174,9 @@ def verify_public_readback(
     )
     manifest_files = manifest.get("files")
     expected_files = {*PUBLIC_STATIC_ASSET_PATHS, PUBLIC_PAYLOAD_PATH}
+    enhancement_metadata = manifest.get("forecast_enhancements")
+    if isinstance(enhancement_metadata, dict) and enhancement_metadata.get("status") == "included":
+        expected_files.add(ENHANCEMENT_DESTINATION)
     expected_files.update(expected_split)
     if expected_comparison is not None:
         expected_files.add(PUBLIC_COMPARISON_PATH)
@@ -2999,6 +3192,17 @@ def verify_public_readback(
     if record.get("bytes") != len(public_payload):
         raise AutomationError("public manifest payload byte count is incorrect")
     fetched_files: dict[str, bytes] = {PUBLIC_PAYLOAD_PATH: public_payload}
+    enhancement_files = {}
+    if ENHANCEMENT_DESTINATION in expected_files:
+        enhancement_raw = fetch(urljoin(settings.public_root, ENHANCEMENT_DESTINATION))
+        enhancement_files[ENHANCEMENT_DESTINATION] = enhancement_raw
+        if manifest_files[ENHANCEMENT_DESTINATION] != {"bytes": len(enhancement_raw), "sha256": hashlib.sha256(enhancement_raw).hexdigest()}:
+            raise AutomationError("public forecast enhancement file hash differs")
+        fetched_files.update(enhancement_files)
+    try:
+        validate_packaged_sidecar(enhancement_files, enhancement_metadata, expected)
+    except PublicContractError as exc:
+        raise AutomationError(f"public forecast enhancement binding differs: {exc}") from exc
     for relative_path, expected_raw in expected_split.items():
         public_raw = fetch(urljoin(settings.public_root, relative_path))
         if public_raw != expected_raw:
@@ -3292,6 +3496,7 @@ def run_weekly_release(
                         target=target,
                         expected_head_sha=remote.head_sha,
                         force_pages_rebuild=True,
+                        **({"forecast_enhancements": remote.forecast_enhancements_bytes} if remote.forecast_enhancements_bytes is not None else {}),
                     )
                     workflow_url = _workflow_url(settings)
                     _wait_for_public_readback(
@@ -3313,6 +3518,7 @@ def run_weekly_release(
                         comparison_bytes=remote.comparison_bytes,
                         generation_manifest_bytes=remote.generation_manifest_bytes,
                         selection_family_bytes=remote.selection_family_bytes,
+                        forecast_enhancements_bytes=remote.forecast_enhancements_bytes,
                     )
                 result = _write_status(
                     settings,
@@ -3363,6 +3569,11 @@ def run_weekly_release(
                     detail="reusing the validated candidate without provider access",
                     run_id=run_id,
                 )
+
+            if settings.forecast_candidates_weekly:
+                _write_status(settings, status="running", stage="record_forecast_candidates",
+                              started_at=started, target=target, run_id=run_id)
+                _record_weekly_forecast_candidates(settings)
 
             candidate_comparison = (
                 settings.candidate_comparison_path.read_bytes()

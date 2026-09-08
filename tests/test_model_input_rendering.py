@@ -47,7 +47,8 @@ const program=source.replace('const dashboardApi = Object.freeze({',`const dashb
   applyExpiredForecastDomState=()=>{};renderTransitionModels=()=>{};renderConditionalStats=()=>{};
  },setHistoryLoader(loader){ensureHistory=loader},bumpLoad(){loadSequence+=1}},`);
 vm.runInContext(program,context);
-context.document={createElement:node,createTextNode(text){const n=node('text');n.textContent=text;return n}};
+context.document={createElement:node,createTextNode(text){const n=node('text');n.textContent=text;return n},
+ getElementById(id){return api.dom[id]||null}};
 let current=new URL('http://localhost/?model=causal_dynamic_ensemble&window=52#history');
 context.window={addEventListener(){},get location(){return current},history:{replaceState(_a,_b,value){current=new URL(value,current)}}};
 const api=context.module.exports.test;api.configure();
@@ -418,7 +419,7 @@ console.log(JSON.stringify({paths,asymmetric:api.dom['multistate-forecast'].text
     assert "다음 주 위험선호 80.0%" in result["paths"]
     assert "위험회피 진입" in result["paths"] and "40.0%" in result["paths"]
     assert "다음 주 위험선호 30.0%" in result["asymmetric"]
-    assert "4·13주 경로 예측 없음 · 다상태 모델" in result["asymmetric"]
+    assert "이 모델은 1주 예측만 제공합니다." in result["asymmetric"]
     assert "191주" in result["paths"] and "후보와 기준선" in result["paths"]
     assert result["officialUnchanged"] and result["query"]["research_model"] == "asymmetric"
 

@@ -77,6 +77,8 @@ class AuditResearchProtocol:
 
 
 def json_safe(value):
+    if value is None or value is pd.NaT or value is pd.NA:
+        return None
     if isinstance(value, dict):
         return {str(key): json_safe(item) for key, item in value.items()}
     if isinstance(value, (tuple, list)):
@@ -209,13 +211,25 @@ def economic_outcomes(canonical: pd.DataFrame, horizons=(4, 13), *, downside_thr
 
 def economic_validation(scored: pd.DataFrame, canonical: pd.DataFrame, protocol: AuditResearchProtocol) -> list[dict]:
     outcomes = economic_outcomes(canonical, downside_threshold=protocol.downside_return_threshold)
-    joined = scored[["model", "origin_date", "worsening_probability"]].merge(outcomes, on="origin_date", validate="many_to_many")
+    # Worsening is impossible in the worst ordinal state. Preserve the current
+    # state so a zero probability there is not interpreted as low absolute risk.
+    fields = ["model", "origin_date", "worsening_probability"]
+    if "current_state" in scored:
+        fields.append("current_state")
+    joined = scored[fields].merge(outcomes, on="origin_date", validate="many_to_many")
     joined["split"] = [split_for_dates(o, t) for o, t in zip(joined.origin_date, joined.target_date)]
     summaries = []
-    for (model, horizon, split), group in joined.dropna(subset=["split"]).groupby(["model", "horizon_weeks", "split"]):
+    samples = [("all", joined)]
+    if "current_state" in joined:
+        samples.extend((state, joined.loc[joined.current_state.eq(state)]) for state in STATE_ORDER)
+        samples.append(("at_risk", joined.loc[joined.current_state.ne("risk_off")]))
+    for stratum, sample in samples:
+      for (model, horizon, split), group in sample.dropna(subset=["split"]).groupby(["model", "horizon_weeks", "split"]):
         p = group.worsening_probability
         metrics = {"model": model, "horizon_weeks": int(horizon), "split": split,
                    "weeks": len(group), "origin_start": group.origin_date.min(), "origin_end": group.origin_date.max(),
+                   "stratum": stratum,
+                   "interpretation": ("pooled_descriptive_state_mix_not_incremental_skill" if stratum == "all" else "worsening_not_applicable_already_risk_off" if stratum == "risk_off" else "within_current_state_or_at_risk_association"),
                    "score_definition": "one_week_worsening_probability_as_risk_indicator",
                    "downside_threshold": protocol.downside_return_threshold,
                    "downside_events": int(group.downside_event.sum()), "risk_bins": []}

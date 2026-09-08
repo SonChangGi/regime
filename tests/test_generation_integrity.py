@@ -518,7 +518,9 @@ def test_packaging_requires_manifest_when_payload_carries_generation_binding(
     (web / "index.html").write_text("<main>test</main>\n", encoding="utf-8")
     (web / "styles.css").write_text("main {}\n", encoding="utf-8")
     (web / "insights.css").write_text(".insight {}\n", encoding="utf-8")
+    (web / "forecast-enhancements.css").write_text(".insight {}\n", encoding="utf-8")
     (web / "insights.js").write_text("'use strict';\n", encoding="utf-8")
+    (web / "forecast-enhancements.js").write_text("'use strict';\n", encoding="utf-8")
     (web / "operating-contract.generated.js").write_bytes(
         render_browser_contract_javascript()
     )

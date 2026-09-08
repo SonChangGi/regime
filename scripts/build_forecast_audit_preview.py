@@ -91,7 +91,7 @@ def build_preview(source: Path, research_files: dict[str,Path], output: Path) ->
     for name in STATIC_ALLOWLIST: files[name]=(ROOT/'web'/name).read_bytes()
     files['index.html']=rewrite_index_asset_versions(files['index.html'],styles_raw=files['styles.css'],
         app_raw=files['app.js'],operating_contract_raw=files['operating-contract.generated.js'],
-        extra_assets={name:files[name] for name in ('insights.js','insights.css')})
+        extra_assets={name:files[name] for name in ('insights.js','insights.css','forecast-enhancements.js','forecast-enhancements.css')})
     inventory={name:{'sha256':hashlib.sha256(data).hexdigest(),'bytes':len(data)} for name,data in files.items()}
     identity=hashlib.sha256(encoded(inventory)).hexdigest()
     generations=ROOT/'build'/'forecast-audit-improvements'/'preview-generations'

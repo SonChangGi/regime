@@ -263,10 +263,10 @@ def test_cli_composes_before_publication_and_does_not_cut_over_on_failure(monkey
     monkeypatch.setattr(cli, "operational_input_manifest_sha256", lambda *a: "d" * 64)
     monkeypatch.setattr(cli, "_prospective_actual_states", lambda b: pd.Series("risk_on", index=dataset.canonical.index))
     monkeypatch.setattr(cli, "build_research_replay_input_document", lambda **k: {})
-    monkeypatch.setattr(cli, "mature_forecast_evaluations", lambda *a, **k: SimpleNamespace(unresolved_due=()))
+    monkeypatch.setattr(cli, "mature_forecast_evaluations", lambda *a, **k: SimpleNamespace(unresolved_due=(), probability_maturity=None))
     ledger = SimpleNamespace(public_summary=lambda **k: {}, list_evaluations=lambda: [],
                              list_probability_forecasts=lambda: [],
-                             list_probability_evaluations=lambda: [])
+                             list_probability_evaluations=lambda: [], list_probability_revisions=lambda: [])
     monkeypatch.setattr(cli, "ForecastLedger", lambda p: nullcontext(ledger))
     monkeypatch.setattr(cli, "prospective_ledger_shadow_contract", lambda v: {})
 

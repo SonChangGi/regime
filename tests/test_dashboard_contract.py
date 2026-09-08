@@ -1514,7 +1514,7 @@ def test_model_forecast_selector_controls_the_one_week_forecast_layer() -> None:
     assert 'aria-describedby="model-forecast-scope"' in document
     assert (
         'id="model-forecast-scope" class="sr-only">'
-        "선택 모델의 요약·상세 지표, 예측 차트, 비교표와 예측 국면별 자산 성과에 적용"
+        "선택 모델·예측 기간을 요약, 평가, 예측 이력에 공통 적용"
     ) in document
     assert "관측 소속도와 1주 예측확률" in document
     assert 'id="chart-readout-actual"' in document
@@ -3305,10 +3305,9 @@ def test_v5_decision_evidence_is_collapsed_at_the_bottom_and_semantically_distin
         "실제 OOS",
         "FX 후보 gate",
         "core 비승격",
-        "공식 모델 선정",
-        "V4 기준 비교",
-        "입력 피처 품질",
-        "Markov 확률 완전 일치",
+        "성능 상위군 중 단순성 기준",
+        "통계적 상위군",
+        "기준선 대비 Log loss",
         "일반화 약화",
         "보정 드리프트",
     ):
@@ -3452,6 +3451,7 @@ process.stdout.write(JSON.stringify({{
     assert result["valid"] == {
         "week": "2026-08-07",
         "model": "xgboost",
+        "modelHorizon": 1,
         "window": 104,
         "basis": "forecast",
         "weighting": "episode",
@@ -3861,7 +3861,7 @@ def test_nonessential_decision_copy_is_collapsed_after_primary_flow() -> None:
     flow_end = document.index('data-flow-stage="allocation"')
     disclosure = document.index('class="decision-evidence-disclosure card"')
     assert flow_end < disclosure
-    assert "<summary>국면 판단 근거</summary>" in document
+    assert "<summary>시장 맥락</summary>" in document
     assert "<summary>발행 일정</summary>" not in document
     assert 'class="decision-evidence-disclosure card" open' not in document
     assert 'class="compact-table-details model-health-details" open' not in document

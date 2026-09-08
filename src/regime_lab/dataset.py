@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from datetime import timedelta
+import re
 from typing import Any, Literal, Mapping, Sequence
 
 import numpy as np
@@ -677,7 +678,24 @@ def factor_scores(
     ).clip(-1.0, 1.0)
 
 
+_EVIDENCE_FAMILIES = (
+    ("labor", r"unrate|payems|icsa|ccsa|claims|jolts|labor|employment"),
+    ("inflation", r"cpiaucsl|pcepi|inflation|t10yie|breakeven"),
+    ("activity", r"gdpc|indpro|rsafs|houst|growth|retail|housing|production"),
+    ("real_yield", r"dfii|real.?yield|tips"),
+    ("nominal_curve", r"dgs\d|fedfunds|t10y2y|treasury|yield.?curve"),
+    ("credit", r"nfcicredit|spread|oas|hyg|lqd|credit|baa|aaa"),
+    ("bank_lending", r"totbkcr|totci|h8b3094|bank.?loan"),
+    ("liquidity", r"dpsac|walcl|deposit|reserve|liquidity"),
+    ("financial_conditions", r"anfci|nfci|stlfsi|financial.?condition|financial.?stress"),
+    ("usd", r"dtwex|dollar|usd"),
+)
+
+
 def evidence_drivers(features: pd.DataFrame, at: pd.Timestamp, limit: int = 8) -> list[dict[str, Any]]:
+    """Strongest signal in each economic family, then the strongest families."""
+    if limit < 0:
+        raise ValueError("limit must be nonnegative")
     if at not in features.index:
         return []
     row = features.loc[at]
@@ -690,7 +708,17 @@ def evidence_drivers(features: pd.DataFrame, at: pd.Timestamp, limit: int = 8) -
         ),
         key=lambda item: abs(item[1]),
         reverse=True,
-    )[:limit]
+    )
+    representatives = []
+    seen = set()
+    for column, value in ranked:
+        base = column.split("__", 1)[0]
+        family = next((name for name, pattern in _EVIDENCE_FAMILIES
+                       if re.search(pattern, base, re.IGNORECASE)), base)
+        if family not in seen:
+            seen.add(family)
+            representatives.append((column, value))
+    ranked = representatives[:limit]
     labels = {
         "nfci": "Chicago Fed 금융여건",
         "nfcirisk": "Chicago Fed 금융위험 하위지수",

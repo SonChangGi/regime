@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
 import hashlib
+from importlib.metadata import version as dependency_version
 import json
 import os
 from pathlib import Path
@@ -38,6 +39,13 @@ from regime_lab.analysis.validation import (
 from regime_lab.integrity import canonical_json_sha256_v1
 
 EXPERTS = ("markov", "xgboost", "xgb_hazard_destination")
+RECIPE_FILES = (
+    "src/regime_lab/operational_forecast.py", "src/regime_lab/analysis/models.py",
+    "src/regime_lab/analysis/validation.py", "src/regime_lab/analysis/transitions.py",
+    "src/regime_lab/analysis/structural_models.py", "src/regime_lab/payload.py",
+    "src/regime_lab/analysis/decision_shadow.py",
+)
+RECIPE_SCHEMA = "regime-operational-recipe-lock/1"
 
 
 class OperationalPreparationError(ValueError):
@@ -58,6 +66,34 @@ def frame_sha256(frame: pd.DataFrame | pd.Series) -> str:
     return hashlib.sha256(
         header.encode() + pd.util.hash_pandas_object(table, index=True).values.tobytes()
     ).hexdigest()
+
+
+def preparation_recipe_lock(locked_payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Capture a reviewable code/runtime recipe; never infer input approval."""
+    from regime_lab.analysis.models import model_manifest
+    model = locked_payload["model"]
+    manifest = model["candidate_manifest"]
+    if canonical_json_sha256_v1(manifest) != model["candidate_manifest_sha256"]:
+        raise OperationalPreparationError("locked model manifest hash differs")
+    seed = manifest.get("random_state")
+    if type(seed) is not int:
+        raise OperationalPreparationError("locked recipe requires an integer random_state")
+    cfg = BenchmarkProfile(name=manifest["profile"], **manifest["profile_budget"])
+    current = model_manifest(cfg, random_state=seed, names=[r["name"] for r in manifest["models"]])
+    if canonical_json_sha256_v1(current) != canonical_json_sha256_v1(manifest):
+        raise OperationalPreparationError("current estimator recipe differs from the locked model manifest")
+    root = Path(__file__).resolve().parents[2]
+    body = {"schema_version": RECIPE_SCHEMA, "candidate_manifest_sha256": model["candidate_manifest_sha256"],
+        "feature_manifest_sha256": model["feature_manifest_sha256"], "random_state": seed,
+        "source_sha256": {name: hashlib.sha256((root / name).read_bytes()).hexdigest() for name in RECIPE_FILES},
+        "runtime_versions": {name: dependency_version(name) for name in ("numpy", "pandas", "scipy", "scikit-learn", "xgboost")}}
+    return {**body, "sha256": canonical_json_sha256_v1(body)}
+
+
+def validate_preparation_recipe(lock: Mapping[str, Any], locked_payload: Mapping[str, Any]) -> None:
+    body = {k: v for k, v in lock.items() if k != "sha256"}
+    if canonical_json_sha256_v1(body) != lock.get("sha256") or dict(lock) != preparation_recipe_lock(locked_payload):
+        raise OperationalPreparationError("preparation recipe lock differs from current code, runtime or approved model")
 
 
 def _completed_expert_history(
@@ -170,6 +206,9 @@ def prepare_operational_forecast(
     expected_input_hashes: Mapping[str, str],
     decision_at: datetime | None = None,
     research_replay: bool = False,
+    recipe_lock: Mapping[str, Any] | None = None,
+    input_manifest: Mapping[str, Any] | None = None,
+    issue_deadline_at: datetime | None = None,
 ) -> dict[str, Any]:
     """Refit only the latest two learned experts; preserve the locked selector.
 
@@ -256,12 +295,24 @@ def prepare_operational_forecast(
         raise OperationalPreparationError(
             "prepared input hashes differ from the supplied bundle identity"
         )
+    if input_manifest is not None:
+        if dict(input_manifest.get("frames", {})) != inputs or input_manifest.get("data_as_of") != origin.isoformat():
+            raise OperationalPreparationError("independent input manifest differs from the preparation bundle")
+        if input_manifest.get("candidate_manifest_sha256") != model["candidate_manifest_sha256"] or input_manifest.get("feature_manifest_sha256") != feature_hash:
+            raise OperationalPreparationError("independent input manifest has another model or feature identity")
+    if recipe_lock is not None:
+        validate_preparation_recipe(recipe_lock, locked_payload)
     try:
         calibration_version = transition_calibration_version(transition_predictions)
     except ValueError as exc:
         raise OperationalPreparationError(str(exc)) from exc
     target = origin + timedelta(days=7)
     entry = _scheduled_nyse_entry_at(target.date().isoformat()).tz_convert("UTC")
+    if issue_deadline_at is not None:
+        deadline = pd.Timestamp(issue_deadline_at)
+        if deadline.tzinfo is None or not origin < deadline <= target:
+            raise OperationalPreparationError("issue deadline must be aware and between origin and target")
+        entry = deadline.tz_convert("UTC")
     reasons = []
     if clock >= entry:
         reasons.append("scheduled_entry_missed")
@@ -275,6 +326,8 @@ def prepare_operational_forecast(
         "calibration_version": calibration_version,
         "inputs": inputs,
         "role": "research_replay" if research_replay else "operational_preparation",
+        "issue_deadline_at": entry.isoformat() if issue_deadline_at is not None else None,
+        "recipe_lock_sha256": recipe_lock.get("sha256") if recipe_lock is not None else None,
     }
     envelope = {
         "schema_version": "regime-fast-operational-preparation/1",
@@ -284,6 +337,12 @@ def prepare_operational_forecast(
         "origin_at": origin.isoformat(),
         "target_at": target.isoformat(),
         "expires_at": entry.isoformat(),
+        "issue_deadline_at": entry.isoformat() if issue_deadline_at is not None else None,
+        "input_cutoff_at": origin.isoformat(),
+        "input_manifest_verified": input_manifest is not None,
+        "recipe_verified": recipe_lock is not None,
+        "recipe_lock_sha256": recipe_lock.get("sha256") if recipe_lock is not None else None,
+        "local_issue_eligible": False,
         "status": "blocked" if reasons else "prepared",
         "blocked_reasons": reasons,
         "research_replay": research_replay,
@@ -296,11 +355,13 @@ def prepare_operational_forecast(
     }
     if reasons and not research_replay:
         envelope["elapsed_seconds"] = perf_counter() - started
+        envelope["document_sha256"] = canonical_json_sha256_v1(envelope)
         return envelope
     history, completed_frozen = _completed_expert_history(
         oos_predictions, locked_payload, states, origin
     )
     cfg = BenchmarkProfile(name=str(manifest["profile"]), **manifest["profile_budget"])
+    random_state = int(manifest.get("random_state", 17))
     base = {
         name: forecast_next_regime(
             features,
@@ -310,7 +371,7 @@ def prepare_operational_forecast(
             profile=cfg,
             gap=1,
             minimum_train_weeks=cfg.minimum_train_weeks,
-            random_state=17,
+            random_state=random_state,
         )
         for name in ("markov", "xgboost")
     }
@@ -328,7 +389,7 @@ def prepare_operational_forecast(
         train_stop=len(features) - 2,
         test_position=len(features) - 1,
         profile=cfg,
-        random_state=17,
+        random_state=random_state,
     )
     calibration = transition_predictions.loc[
         transition_predictions.model.eq("binary_xgboost")
@@ -347,7 +408,7 @@ def prepare_operational_forecast(
         )
     hazard, calibration_method, calibration_fallback, calibration_reason = (
         _calibrate_transition_probability(
-            raw, calibration, minimum_rows=12, random_state=17,
+            raw, calibration, minimum_rows=12, random_state=random_state,
             version=calibration_version, selection_end=selection_end, origin=origin,
         )
     )
@@ -372,6 +433,14 @@ def prepare_operational_forecast(
     ].iloc[0]
     if bool(selected["fallback"]):
         reasons.append("selected_forecast_fallback")
+    if not research_replay and pd.Timestamp.now(tz="UTC") >= entry:
+        if "scheduled_entry_missed" not in reasons:
+            reasons.append("issue_deadline_missed_during_preparation")
+    if recipe_lock is not None:
+        validate_preparation_recipe(recipe_lock, locked_payload)
+    if inputs != {"features": frame_sha256(features), "states": frame_sha256(states),
+                  "oos_predictions": frame_sha256(oos_predictions), "transition_predictions": frame_sha256(transition_predictions)}:
+        raise OperationalPreparationError("input bundle changed during preparation")
     probabilities = {s: float(selected[f"p_{s}"]) for s in STATE_ORDER}
     reference = next(
         (
@@ -403,6 +472,15 @@ def prepare_operational_forecast(
                 "state": str(selected["predicted"]),
                 "probabilities": probabilities,
             },
+            "model_forecasts": [
+                {"model": str(r["model"]), "date": target.date().isoformat(),
+                 "state": str(r["predicted"]), "fallback": bool(r["fallback"]),
+                 "probabilities": {s: float(r[f"p_{s}"]) for s in STATE_ORDER}}
+                for r in structural.probabilities.to_dict("records")
+            ] + [{"model": "persistence", "date": target.date().isoformat(),
+                  "state": str(states.iloc[-1]), "fallback": False,
+                  "probabilities": {s: float(s == str(states.iloc[-1])) for s in STATE_ORDER}}],
+            "local_issue_eligible": not research_replay and not reasons and input_manifest is not None and recipe_lock is not None and issue_deadline_at is not None,
             "calibration": {
                 "version": calibration_version,
                 "method": calibration_method,
@@ -430,6 +508,7 @@ def prepare_operational_forecast(
             "elapsed_seconds": perf_counter() - started,
         }
     )
+    envelope["document_sha256"] = canonical_json_sha256_v1(envelope)
     return envelope
 
 
@@ -465,7 +544,7 @@ def write_prepared_forecast(
         os.link(temporary, path)
     except FileExistsError:
         existing = json.loads(path.read_text())
-        for field in ("key", "forecast", "research_replay"):
+        for field in ("key", "forecast", "model_forecasts", "research_replay", "recipe_verified", "input_manifest_verified", "issue_deadline_at"):
             if existing.get(field) != document.get(field):
                 raise OperationalPreparationError(
                     "conflicting preparation already exists for this immutable key"

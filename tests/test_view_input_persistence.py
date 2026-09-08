@@ -24,7 +24,9 @@ const legacy=api.parseViewState(query,p,p.weekly);
 const full=api.parseViewState(query+'&alert=all_departure&budget=12&strategies=spy_buy_and_hold,realistic_60_40,spy_buy_and_hold,invalid',p,p.weekly);
 console.log(JSON.stringify({legacy,full}));
 """)
-    assert set(result["legacy"]) == {"week", "model", "window", "basis", "weighting", "horizon", "asset"}
+    assert set(result["legacy"]) == {"week", "model", "window", "basis", "weighting", "horizon", "asset", "modelHorizon"}
+    assert result["legacy"]["modelHorizon"] == 1
+    assert result["legacy"]["horizon"] == 4
     assert {key: result["full"][key] for key in result["legacy"]} == result["legacy"]
     assert result["full"]["alert"] == "all_departure"
     assert result["full"]["budget"] == 12

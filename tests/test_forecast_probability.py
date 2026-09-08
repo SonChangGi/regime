@@ -121,3 +121,76 @@ def test_republication_cannot_inflate_week_count_or_select_better_realized_score
     alternate_label['label_spec_sha256'] = 'f' * 64
     with pytest.raises(ValueError, match='one label specification'):
         probability_summary([docs[0], alternate_label])
+
+
+def test_revised_actual_labels_are_reported_without_rewriting_first_scores():
+    entry = _issued()
+    states = _states(entry.origin_week, entry.target_at.date())
+    with ForecastLedger(':memory:', clock=lambda: entry.decision_at) as ledger:
+        ledger.append(entry)
+        first = mature_probability_evaluations(ledger, states=states, evaluated_at=entry.target_at,
+            label_spec_sha256=entry.label_spec_sha256)
+        frozen = ledger.list_probability_evaluations()
+        assert frozen[0]['schema_version'] == 'regime-probability-evaluation/2'
+        assert frozen[0]['label_snapshot']['sha256'] == first['label_snapshot']['sha256']
+        states.iloc[-1] = 'risk_off'
+        for _ in range(2):
+            result = mature_probability_evaluations(ledger, states=states, evaluated_at=entry.target_at,
+                label_spec_sha256=entry.label_spec_sha256)
+            assert result['coverage']['status'] == 'needs_attention'
+            assert result['unresolved'][0]['reason'] == 'official_label_revision'
+            assert result['revision_conflicts'][0]['first_scores_preserved']
+        assert ledger.list_probability_evaluations() == frozen
+        assert len(ledger.list_probability_revisions()) == 1
+        with pytest.raises(sqlite3.IntegrityError, match='append-only'):
+            ledger._connection.execute('DELETE FROM forecast_probability_label_revisions')
+        ledger._connection.rollback()
+
+
+def test_probability_failure_propagates_even_when_investment_evaluation_completes():
+    entry = _issued()
+    document = deepcopy(entry.forecast)
+    document['model_forecasts'].append({'model':'invalid_extra_baseline', 'date':entry.target_at.date().isoformat(),
+        'probabilities':{'risk_on':-1,'transition':1,'risk_off':1}})
+    entry = replace(entry, forecast=document)
+    with ForecastLedger(':memory:', clock=lambda: entry.decision_at) as ledger:
+        ledger.append(entry)
+        report = mature_forecast_evaluations(ledger, canonical=_price_panel(entry.origin_week, entry.target_at.date()),
+            states=_states(entry.origin_week, entry.target_at.date()), evaluated_at=entry.target_at)
+        assert report.appended[0].status == 'completed'
+        assert report.probability_maturity['coverage']['missing_entries'] == 1
+        assert report.probability_maturity['unresolved'][0]['reason'].startswith('probability_contract:')
+        diagnostics = build_operational_diagnostics(ledger.list_probability_forecasts(), ledger.list_evaluations(),
+            probability_evaluations=[], probability_maturity=report.probability_maturity, as_of=entry.target_at)
+        assert diagnostics['probability_maturity']['coverage']['status'] == 'needs_attention'
+        assert diagnostics['probability_scores']['completed_weeks'] == 0
+
+
+def test_fixed_deadline_and_legacy_lead_cohorts_are_separate():
+    from regime_lab.forecast_probability import issue_evidence
+    entry = _issued()
+    deadline = entry.decision_at + timedelta(hours=60)
+    document = deepcopy(entry.forecast)
+    document['issue_deadline_at'] = deadline.isoformat()
+    document['input_cutoff_at'] = entry.decision_at.isoformat()
+    fixed = replace(entry, forecast=document, inserted_at=entry.decision_at)
+    snapshot = {'sha256':'f'*64, 'available_at':entry.target_at.isoformat(), 'label_spec_sha256':entry.label_spec_sha256}
+    score = make_probability_evaluation(fixed, actual='risk_on', evaluated_at=entry.target_at, label_snapshot=snapshot)
+    assert probability_summary([score])['issuance_cohorts']['fixed_deadline']['weeks'] == 1
+    assert score['issuance']['remaining_lead_hours'] == 168
+    assert not issue_evidence(replace(fixed, inserted_at=deadline))['eligible']
+    legacy = replace(entry, inserted_at=entry.target_at-timedelta(seconds=1))
+    legacy_score = make_probability_evaluation(legacy, actual='risk_on', evaluated_at=entry.target_at)
+    summary = probability_summary([legacy_score])
+    assert summary['issuance_cohorts']['legacy_target_deadline']['weeks'] == 1
+    assert summary['rows'][0]['remaining_lead_hours'] == pytest.approx(1/3600)
+
+
+def test_legacy_immutable_evaluation_stays_byte_equivalent():
+    entry = _issued()
+    with ForecastLedger(':memory:', clock=lambda: entry.decision_at) as ledger:
+        ledger.append(entry)
+        legacy = make_probability_evaluation(ledger.read(entry.key), actual='risk_on', evaluated_at=entry.target_at)
+        append_probability_evaluation(ledger, legacy)
+        mature_probability_evaluations(ledger, states=_states(entry.target_at.date()), evaluated_at=entry.target_at)
+        assert ledger.list_probability_evaluations() == (legacy,)

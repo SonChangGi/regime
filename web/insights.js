@@ -72,6 +72,8 @@
         firstDestination: direction?.first_destination || null, directionModel: direction?.model,
         baseline: number(week.duration_context?.departure_probability?.[key]),
         baselineSupport: number(week.duration_context?.support?.horizon_at_risk?.[key]),
+        baselineLower: number(week.duration_context?.ci95?.departure_probability?.[key]?.lower),
+        baselineUpper: number(week.duration_context?.ci95?.departure_probability?.[key]?.upper),
       });
     });
   }
@@ -195,13 +197,38 @@
     });
   }
   const FORECAST_RESEARCH_IDS = Object.freeze(["boundary_filtered_history", "boundary_student_t"]);
+  const ENHANCEMENT_MODEL_IDS = Object.freeze(["boundary_filtered_history", "causal_dynamic_ensemble", "direct_endpoint_ridge", "direct_endpoint_xgboost", "directional_duration_hazard", "evolving_boundary_ewma", "evolving_boundary_gjr_skewt", "markov_endpoint"]);
   const FORECAST_STATES = Object.freeze(["risk_on", "transition", "risk_off"]);
+  const enhancementIndexes = new WeakMap();
+  function enhancementIndex(payload = {}) {
+    const data = payload?.forecast_enhancements;
+    if (!data || data.source_generation_id !== payload.meta?.generation_id || Date.parse(data.data_as_of) !== Date.parse(payload.meta?.data_as_of)) return null;
+    if (!enhancementIndexes.has(data)) {
+      const byKey = new Map([...(data.history || []), ...(data.latest || [])].map((row) => [`${row.origin_date.slice(0, 10)}|${row.model}|${row.horizon_weeks}`, row]));
+      enhancementIndexes.set(data, { rows: [...byKey.values()], byKey });
+    }
+    return enhancementIndexes.get(data);
+  }
+  function enhancementForecastRows(payload = {}) { return enhancementIndex(payload)?.rows || []; }
+  function forecastModelIds(payload = {}, horizon = 1) {
+    const original = horizon === 1 ? [...(payload.model?.forecast_comparison?.models || []), ...forecastImprovementModels(payload).map((row) => row.id)] : [];
+    return [...new Set([...original, ...enhancementForecastRows(payload).filter((row) => row.horizon_weeks === horizon).map((row) => row.model)])];
+  }
+  function enhancedForecastForWeek(payload, model, origin, horizon = 1) {
+    const row = enhancementIndex(payload)?.byKey.get(`${origin}|${model}|${horizon}`);
+    if (!row?.probabilities) return null;
+    const probabilities = row.probabilities;
+    const predicted = FORECAST_STATES.reduce((best, code) => probabilities[code] > probabilities[best] ? code : best, FORECAST_STATES[0]);
+    return { model, date: row.target_date.slice(0,10), target_date: row.target_date, state: predicted, probabilities,
+      confidence: probabilities[predicted], fallback: row.fallback === true, actual: row.actual, horizon_weeks: horizon,
+      entropy: -FORECAST_STATES.reduce((sum, code) => sum + (probabilities[code] > 0 ? probabilities[code] * Math.log(probabilities[code]) : 0), 0) / Math.log(3), research_candidate: true };
+  }
   function forecastImprovementModels(payload = {}) {
     const block = payload?.research?.forecast_improvement;
     return block?.schema_version === "regime-forecast-improvement/1" && Array.isArray(block.models)
       ? block.models.filter((model) => FORECAST_RESEARCH_IDS.includes(model?.id)) : [];
   }
-  function forecastComparisonModel(payload = {}) {
+  function forecastComparisonModel(payload = {}, horizon = 1) {
     const official = payload.model || {};
     const research = forecastImprovementModels(payload).map((model) => ({
       ...(model.metrics?.holdout || {}), name: model.id, evaluation_split: "holdout",
@@ -209,9 +236,13 @@
       selection_calibration_error: model.metrics?.selection?.calibration_error ?? null,
       research_candidate: true,
     }));
-    return { ...official, leaderboard: [...(official.leaderboard || []), ...research] };
+    const existing = horizon === 1 ? [...(official.leaderboard || []), ...research] : [];
+    const names = new Set(existing.map((row) => row.name || row.model));
+    const extra = (enhancementIndex(payload) ? payload.forecast_enhancements.model_metrics || [] : []).filter((row) => row.horizon_weeks === horizon && row.evaluation_split === "retrospective_diagnostic" && !names.has(row.model))
+      .map((row) => ({ ...row, name: row.model, research_candidate: true }));
+    return { ...official, leaderboard: [...existing, ...extra] };
   }
-  function forecastEvaluation(payload = {}, { asOf, window = 52 } = {}) {
+  function forecastEvaluation(payload = {}, { asOf, window = 52, horizon = 1 } = {}) {
     const nameOf = (value) => typeof value === "string" ? value : value?.name ?? value?.model ?? value?.id ?? null;
     const dateOf = (value) => typeof value === "string" && /^\d{4}-\d{2}-\d{2}/.test(value)
       && Number.isFinite(Date.parse(value)) ? value.slice(0, 10) : null;
@@ -220,11 +251,13 @@
     const available = weekly.filter((row) => row.date <= cutoff);
     const count = [26, 52, 104].includes(Number(window)) ? Number(window) : 52;
     const origins = window === "all" ? available : available.slice(-count);
-    const comparisonModel = forecastComparisonModel(payload);
+    const comparisonModel = forecastComparisonModel(payload, horizon);
     const research = forecastImprovementModels(payload);
     const officialNames = payload.model?.forecast_comparison?.models
       || (payload.model?.leaderboard || []).map(nameOf);
-    const names = [...new Set([...officialNames, ...research.map((row) => row.id)])].filter(Boolean);
+    const extra = enhancementForecastRows(payload).filter((row) => row.horizon_weeks === horizon);
+    const names = [...new Set([...(horizon === 1 ? [...officialNames, ...research.map((row) => row.id)] : []), ...extra.map((row) => row.model)])].filter(Boolean);
+    const extraByModel = new Map(names.map((model) => [model, new Map(extra.filter((row) => row.model === model).map((row) => [row.origin_date.slice(0,10), row]))]));
     const actualByDate = new Map(weekly.map((row) => [row.date, row.current?.state]));
     const researchByModel = new Map(research.map((model) => [model.id,
       new Map([...(model.history || []), model.latest].filter(Boolean).map((row) => [dateOf(row.origin_date), row]))]));
@@ -234,8 +267,8 @@
       excludedCount: 0, completedStart: null, completedEnd: null };
     for (const week of origins) {
       const current = FORECAST_STATES.indexOf(week.current?.state);
-      const forecasts = names.map((name) => researchByModel.has(name) ? researchByModel.get(name).get(week.date)
-        : (week.model_forecasts || []).find((item) => item.model === name));
+      const forecasts = names.map((name) => (horizon === 1 ? researchByModel.get(name)?.get(week.date)
+        || (week.model_forecasts || []).find((item) => item.model === name) : null) || extraByModel.get(name)?.get(week.date));
       const targets = forecasts.map((row) => dateOf(row?.target_date ?? row?.date));
       const knownTargets = targets.filter(Boolean);
       if (knownTargets.length && knownTargets.every((target) => target > cutoff)) { scope.pendingCount += 1; continue; }
@@ -257,18 +290,26 @@
       const actual = FORECAST_STATES.indexOf(actualByDate.get(candidates[0].target));
       if (actual < 0) { scope.excludedCount += 1; continue; }
       scope.completedCount += 1;
+      scope.completedOriginStart ??= week.date;
+      scope.completedOriginEnd = week.date;
       scope.completedStart ??= candidates[0].target;
       scope.completedEnd = candidates[0].target;
       candidates.forEach((row, index) => rowsByModel.get(names[index]).push({ ...row, actual, origin: week.date }));
     }
-    const leaderboard = names.map((name) => ({
-      ...(comparisonModel.leaderboard || []).find((row) => nameOf(row) === name),
-      name, evaluation_split: "holdout", ...forecastEvaluationMetrics(rowsByModel.get(name)), scope_rank: null,
-    }));
+    const leaderboard = names.map((name) => {
+      const original = (comparisonModel.leaderboard || []).find((row) => nameOf(row) === name) || {};
+      return {
+        selection_log_loss: null, selection_calibration_error: null, ...original,
+        name, research_candidate: original.research_candidate === true,
+        horizon_weeks: horizon, target: "endpoint", evaluation_split: "holdout",
+        ...forecastEvaluationMetrics(rowsByModel.get(name)), n: rowsByModel.get(name).length, scope_rank: null,
+      };
+    });
+    if (horizon !== 1) for (const row of leaderboard) { row.mean_detection_delay_forecast_weeks = null; row.detected_event_count = null; }
     [...leaderboard].filter((row) => row.n_predictions > 0).sort((a, b) =>
       a.log_loss - b.log_loss || a.calibration_error - b.calibration_error || a.name.localeCompare(b.name))
       .forEach((row, index) => { row.scope_rank = index + 1; });
-    const referenceName = nameOf(payload.selection?.operating_champion) || nameOf(payload.model?.champion);
+    const referenceName = horizon === 1 ? nameOf(payload.selection?.operating_champion) || nameOf(payload.model?.champion) : "markov_endpoint";
     const reference = rowsByModel.get(referenceName) || [];
     const referenceLoss = leaderboard.find((row) => row.name === referenceName)?.log_loss;
     const comparisons = Object.fromEntries(leaderboard.map((metric) => {
@@ -743,5 +784,5 @@
 
     return { renderPerformanceLineChart, renderPerformanceDrawdownChart, renderPerformanceFallback, renderPerformanceBridge, renderPerformanceTurnover, renderPerformanceDetailTable, turnoverValues };
   }
-  return Object.freeze({ conditionalMetrics, portfolioAdjustment, forecastTiming, selectedForecastTiming, forecastDirections, transitionOutlook, durationEstimate, validateForecastResearch, researchForecastRow, multistateForecastForWeek, modelQuality, forecastImprovementModels, forecastComparisonModel, forecastEvaluation, researchForecastForWeek, validateForecastImprovement, FORECAST_RESEARCH_IDS, contextPosition, researchScope, sensitivityRanges, createPerformanceRenderers });
+  return Object.freeze({ conditionalMetrics, portfolioAdjustment, forecastTiming, selectedForecastTiming, forecastDirections, transitionOutlook, durationEstimate, validateForecastResearch, researchForecastRow, multistateForecastForWeek, modelQuality, forecastImprovementModels, forecastComparisonModel, forecastEvaluation, forecastModelIds, enhancedForecastForWeek, enhancementForecastRows, ENHANCEMENT_MODEL_IDS, researchForecastForWeek, validateForecastImprovement, FORECAST_RESEARCH_IDS, contextPosition, researchScope, sensitivityRanges, createPerformanceRenderers });
 });

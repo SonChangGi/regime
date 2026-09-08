@@ -852,6 +852,11 @@ class ForecastLedger:
         with self._lock:
             return read_probability_evaluations(self._connection)
 
+    def list_probability_revisions(self) -> tuple[dict[str, Any], ...]:
+        from regime_lab.forecast_probability import read_probability_revisions
+        with self._lock:
+            return read_probability_revisions(self._connection)
+
     def list_probability_forecasts(self):
         """Read frozen forecasts without reloading unrelated provider input rows."""
         from regime_lab.forecast_probability import FORECAST_PROJECTION, probability_forecast_from_row
@@ -1095,6 +1100,7 @@ class ForecastMaturityReport:
     appended: tuple[ForecastEvaluationEntry, ...]
     pending: tuple[ForecastLedgerKey, ...]
     unresolved_due: Mapping[ForecastLedgerKey, str]
+    probability_maturity: Mapping[str, Any] = field(default_factory=dict)
 
 
 def _entry_target_week(entry: ForecastLedgerEntry) -> date:
@@ -1774,8 +1780,8 @@ def mature_forecast_evaluations(
     # This independent ledger matures even if execution prices are missing or
     # an old investment evaluation is already terminal/partial.
     from regime_lab.forecast_probability import mature_probability_evaluations
-    mature_probability_evaluations(ledger, states=states, evaluated_at=evaluation_clock,
-                                  label_spec_sha256=label_spec_sha256)
+    probability_maturity = mature_probability_evaluations(ledger, states=states, evaluated_at=evaluation_clock,
+                                                         label_spec_sha256=label_spec_sha256)
     canonical_dates = _date_index(canonical.index, context="canonical")
     state_dates = _date_index(states.index, context="states")
     # Use the exact return decomposition shared by reconstructed and benchmark
@@ -2053,6 +2059,7 @@ def mature_forecast_evaluations(
         appended=tuple(appended),
         pending=tuple(pending),
         unresolved_due=unresolved,
+        probability_maturity=probability_maturity,
     )
 
 
@@ -2194,10 +2201,13 @@ def read_operational_diagnostics(
                 "SELECT * FROM forecast_evaluation_ledger ORDER BY target_at, decision_at"
             )
         ]
-        from regime_lab.forecast_probability import read_probability_evaluations
+        from regime_lab.forecast_probability import read_probability_evaluations, read_probability_revisions
         probability_evaluations = read_probability_evaluations(connection)
+        probability_revisions = read_probability_revisions(connection)
+        probability_table = connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='forecast_probability_evaluations'").fetchone() is not None
     return build_operational_diagnostics(entries, evaluations, as_of=as_of,
-        probability_evaluations=probability_evaluations or None)
+        probability_evaluations=probability_evaluations if probability_table else None,
+        probability_revision_conflicts=probability_revisions)
 
 
 def build_operational_diagnostics(
@@ -2206,6 +2216,8 @@ def build_operational_diagnostics(
     *,
     as_of: datetime | None = None,
     probability_evaluations: Sequence[Mapping[str, Any]] | None = None,
+    probability_maturity: Mapping[str, Any] | None = None,
+    probability_revision_conflicts: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
     """Read-only scores, deadlines and segmented benchmarks of frozen entries.
 
@@ -2397,6 +2409,21 @@ def build_operational_diagnostics(
             "status": "available" if rows else "not_frozen_in_completed_entries",
         }
     target_counts = Counter(r["target_week"] for r in timing_rows)
+    probability_status = dict(probability_maturity or {})
+    probability_status.pop("appended", None)
+    if probability_evaluations is not None and not probability_maturity:
+        scored = {tuple(d["forecast_key"][k] for k in ("origin_week", "decision_at", "target_at", "label_spec_sha256", "model_manifest_sha256", "input_snapshot_sha256")) for d in probability_evaluations}
+        due = [e for e in entries if e.target_at <= clock]
+        missing = [e for e in due if e.key.as_sql_tuple() not in scored]
+        probability_status = {"pending_count": len(entries) - len(due),
+            "unresolved": [{"forecast_key": e.key.as_dict(), "reason": "matured_probability_evaluation_missing"} for e in missing],
+            "coverage": {"due_entries": len(due), "completed_entries": len(due) - len(missing), "missing_entries": len(missing),
+                "unresolved_entries": len(missing), "oldest_missing_target_at": min((e.target_at.isoformat() for e in missing), default=None),
+                "maximum_delay_hours": max(((clock - e.target_at).total_seconds() / 3600 for e in missing), default=0),
+                "status": "needs_attention" if missing or probability_revision_conflicts else "current"}}
+    if probability_revision_conflicts:
+        probability_status["revision_conflicts"] = list(probability_revision_conflicts)
+        probability_status.setdefault("coverage", {})["status"] = "needs_attention"
     return {
         "schema_version": "regime-operational-diagnostics/1",
         "evidence_track": "operational_oos",
@@ -2404,6 +2431,7 @@ def build_operational_diagnostics(
         "issued_entries_unchanged": True,
         "source_forecast_hashes": [e.forecast_sha256 for e in entries],
         "source_evaluation_hashes": [e.evaluation_sha256 for e in evaluations],
+        "probability_maturity": probability_status,
         "timing": {
             "issued_entry_count": len(entries),
             "deadline_observed_entries": len(timing_rows),

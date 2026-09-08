@@ -5,6 +5,9 @@ import json
 
 
 def validate_research_extensions(research: dict, *, data_as_of: str | None = None) -> None:
+    from regime_lab.forecast_enhancement_publication import DECLARATION, validate_declaration
+    if DECLARATION in research:
+        validate_declaration(research[DECLARATION], data_as_of=data_as_of)
     _validate_required_forecast_publication(research, data_as_of=data_as_of)
     # JSON itself must remain finite; it is consumed without a Python runtime.
     json.dumps(research, allow_nan=False)

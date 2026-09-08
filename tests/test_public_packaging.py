@@ -123,7 +123,9 @@ def _web_root(tmp_path: Path) -> Path:
     (root / "index.html").write_text(
         '<link rel="stylesheet" href="./styles.css?v=manual">\n'
         '<link rel="stylesheet" href="./insights.css?v=manual">\n'
+        '<link rel="stylesheet" href="./forecast-enhancements.css?v=manual">\n'
         '<script src="./insights.js?v=manual"></script>\n'
+        '<script src="./forecast-enhancements.js?v=manual"></script>\n'
         '<main>demo</main>'
         '<script src="./operating-contract.generated.js?v=manual"></script>\n'
         '<script src="./app.js?v=manual"></script>\n',
@@ -135,7 +137,9 @@ def _web_root(tmp_path: Path) -> Path:
     )
     (root / "app.js").write_text("console.log('demo');\n", encoding="utf-8")
     (root / "insights.css").write_text(".insight { color: black; }\n")
+    (root / "forecast-enhancements.css").write_text(".insight { color: black; }\n")
     (root / "insights.js").write_text("window.RegimeInsights = {};\n")
+    (root / "forecast-enhancements.js").write_text("window.RegimeInsights = {};\n")
     return root
 
 
@@ -809,7 +813,9 @@ def test_package_copies_only_allowlisted_assets_and_synthetic_payload(tmp_path: 
         "index.html",
         "styles.css",
         "insights.css",
+        "forecast-enhancements.css",
         "insights.js",
+        "forecast-enhancements.js",
         "operating-contract.generated.js",
         "app.js",
         "data/regime-results.json",

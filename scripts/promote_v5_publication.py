@@ -453,6 +453,17 @@ def promote(
     if reviewed_at.tzinfo is None or reviewed_at.utcoffset() is None:
         raise PromotionError("reviewed_at must include a timezone")
     candidate = _read_json(candidate_path, label="V5 candidate")
+    from regime_lab.forecast_enhancement_publication import DECLARATION, FILENAME, encode, validate_binding
+    enhancement = None
+    enhancement_output = output_path.with_name(FILENAME)
+    if DECLARATION in candidate.get("research", {}):
+        enhancement_source = v5_artifacts / FILENAME
+        if enhancement_source.is_symlink() or not enhancement_source.is_file():
+            raise PromotionError("required forecast enhancement artifact is missing")
+        enhancement = _read_json(enhancement_source, label="forecast enhancement")
+        validate_binding(enhancement, candidate)
+        if enhancement_output.exists() or enhancement_output.is_symlink():
+            raise PromotionError("reviewed forecast enhancement output already exists")
     comparison = _read_json(comparison_path, label="V5 comparison")
     try:
         generation = validate_generation_manifest(
@@ -593,6 +604,11 @@ def promote(
     # can never overwrite or delete a prior last-good generation.
     created: list[Path] = []
     try:
+        if enhancement is not None:
+            validate_binding(enhancement, reviewed)
+            enhancement_output.parent.mkdir(parents=True, exist_ok=True)
+            enhancement_output.write_bytes(encode(enhancement))
+            created.append(enhancement_output)
         write_json_atomic(output_path, reviewed)
         created.append(output_path)
         write_json_atomic(reviewed_comparison_path, reviewed_comparison)
