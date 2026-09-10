@@ -13,8 +13,11 @@ ROOT = Path(__file__).resolve().parents[1]
 HARNESS = r"""
 const fs=require('fs'),vm=require('vm'),path=require('path');
 const source=fs.readFileSync('web/app.js','utf8');
+const html=fs.readFileSync('web/index.html','utf8');
+const htmlIds=new Set([...html.matchAll(/\bid="([^"]+)"/g)].map(match=>match[1]));
 const full=JSON.parse(fs.readFileSync('publication/live/regime-results.json'));
-function matches(node,selector){return selector.startsWith('.')?node.className.split(' ').includes(selector.slice(1)):node.tag===selector;}
+function matches(node,selector){const [tag,...classes]=selector.split('.');
+ return (!tag||node.tag===tag)&&classes.every(name=>node.className.split(' ').includes(name));}
 function descendants(node,selector){return node.children.flatMap(child=>[
  ...(matches(child,selector)?[child]:[]),...descendants(child,selector)]);}
 function node(tag='div'){
@@ -48,11 +51,13 @@ const program=source.replace('const dashboardApi = Object.freeze({',`const dashb
  },setHistoryLoader(loader){ensureHistory=loader},bumpLoad(){loadSequence+=1}},`);
 vm.runInContext(program,context);
 context.document={createElement:node,createTextNode(text){const n=node('text');n.textContent=text;return n},
- getElementById(id){return api.dom[id]||null}};
+ getElementById(id){return htmlIds.has(id)?api.dom[id]||null:null}};
 let current=new URL('http://localhost/?model=causal_dynamic_ensemble&window=52#history');
 context.window={addEventListener(){},get location(){return current},history:{replaceState(_a,_b,value){current=new URL(value,current)}}};
 const api=context.module.exports.test;api.configure();
-for(const id of [...source.matchAll(/dom\["([^"]+)"\]/g)].map(match=>match[1]))api.dom[id]=node();
+for(const id of new Set([
+ ...[...source.matchAll(/dom\["([^"]+)"\]/g)].map(match=>match[1]),
+ ...htmlIds]))api.dom[id]=node();
 api.dom.dashboard=node();
 for(const id of ['history-window','model-evaluation-window'])for(const value of ['26','52','104','all']){
  const option=node('option');option.value=value;api.dom[id].append(option);
@@ -220,7 +225,7 @@ console.log(JSON.stringify({previous,pending,pendingCaption,loaded:snapshot()}))
 """)
     assert not result["previous"]["metricsHidden"]
     assert all(value != "—" for value in result["previous"]["metricValues"])
-    assert "경계 전환 · 과거 충격" in result["pendingCaption"]
+    assert "경계 · 과거 잔차" in result["pendingCaption"]
     assert result["pending"]["model"] == "boundary_filtered_history"
     assert result["pending"]["metricsHidden"]
     assert result["pending"]["metricValues"] == ["—"] * 4
@@ -236,10 +241,12 @@ def test_historical_timing_uses_selected_origin_and_target_with_latest_publicati
     result = run_js("""
 api.selectWeek(full.weekly.length-2,false); api.renderContractOverview();
 const old={origin:api.dom['forecast-origin-at'].textContent,target:api.dom['forecast-target-at'].textContent,
- issued:api.dom['forecast-decision-at'].textContent,latest:api.dom['latest-publication-info'].textContent,latestHidden:api.dom['latest-publication-info'].hidden};
+ issued:api.dom['forecast-decision-at'].textContent,latest:api.dom['latest-publication-info'].textContent,latestHidden:api.dom['latest-publication-info'].hidden,
+ summary:api.dom['forecast-window-summary'].textContent};
 api.dom['latest-week'].listeners.click();api.renderContractOverview();
 console.log(JSON.stringify({old,current:{origin:api.dom['forecast-origin-at'].textContent,target:api.dom['forecast-target-at'].textContent,
- issued:api.dom['forecast-decision-at'].textContent,latestHidden:api.dom['latest-publication-info'].hidden,disabled:api.dom['latest-week'].disabled}}));
+ issued:api.dom['forecast-decision-at'].textContent,latestHidden:api.dom['latest-publication-info'].hidden,disabled:api.dom['latest-week'].disabled,
+ summary:api.dom['forecast-window-summary'].textContent}}));
 """)
     assert "8월 28일" in result["old"]["origin"]
     assert "9월 4일" in result["old"]["target"]
@@ -248,6 +255,8 @@ console.log(JSON.stringify({old,current:{origin:api.dom['forecast-origin-at'].te
     assert not result["old"]["latestHidden"] and result["current"]["latestHidden"]
     assert "9월 4일" in result["current"]["origin"]
     assert "9월 11일" in result["current"]["target"] and result["current"]["disabled"]
+    assert "2026.08.28 → 2026.09.04 · 과거" in result["old"]["summary"]
+    assert "2026.09.04 → 2026.09.11" in result["current"]["summary"]
 
 
 def test_period_predictions_directions_and_duration_render_real_values_for_each_origin():
@@ -275,7 +284,7 @@ console.log(JSON.stringify({latest:view(full.weekly.length-1),previous:view(full
 def test_model_timeline_remains_navigable_after_past_click_and_shared_latest_returns():
     result = run_js("""
 api.selectWeek(full.weekly.length-1,false);api.applyDashboardView('model');api.renderTimeline();
-const old=api.dom['regime-timeline'].children.find(item=>item.dataset.date==='2026-08-28');
+const old=api.dom['regime-timeline'].querySelectorAll('button.timeline-cell').find(item=>item.dataset.date==='2026-08-28');
 old.focus=()=>{};old.listeners.click();api.renderTimeline();
 const past={week:snapshot().week,end:api.dom['timeline-end'].textContent,view:api.dom.dashboard.dataset.activeView,
  next:!api.dom['next-week'].disabled,latest:!api.dom['latest-week'].disabled};
@@ -414,12 +423,14 @@ const official=JSON.stringify(api.state.raw.weekly.at(-1).next_week);
 api.renderMultistateForecast(full.weekly.at(-1));const paths=api.dom['multistate-forecast'].textContent;
 const control=api.dom['multistate-forecast'].querySelector('select');control.value='asymmetric';control.listeners.change();
 console.log(JSON.stringify({paths,asymmetric:api.dom['multistate-forecast'].textContent,
+ oneWeekNote:api.dom['multistate-forecast'].querySelector('.research-empty')?.textContent,
  officialUnchanged:official===JSON.stringify(api.state.raw.weekly.at(-1).next_week),query:Object.fromEntries(current.searchParams)}));
 """)
     assert "다음 주 위험선호 80.0%" in result["paths"]
     assert "위험회피 진입" in result["paths"] and "40.0%" in result["paths"]
     assert "다음 주 위험선호 30.0%" in result["asymmetric"]
-    assert "이 모델은 1주 예측만 제공합니다." in result["asymmetric"]
+    assert result["oneWeekNote"] == "1주 예측"
+    assert "위험회피 진입" not in result["asymmetric"]
     assert "191주" in result["paths"] and "후보와 기준선" in result["paths"]
     assert result["officialUnchanged"] and result["query"]["research_model"] == "asymmetric"
 
