@@ -187,13 +187,32 @@ def test_keyboard_focus_reduced_motion_and_mobile_rules_exist() -> None:
     ) in CSS
 
 
-def test_mobile_timeline_buttons_have_24px_targets_without_widening_the_marks() -> None:
+def test_mobile_timeline_groups_fit_24px_targets_without_widening_the_marks() -> None:
     assert "WCAG-sized keyboard/touch target on a 390px viewport" in CSS
-    assert "min-width: 24px;" in CSS
-    assert "min-height: 38px;" in CSS
     assert "touch-action: manipulation;" in CSS
     assert ".timeline-cell::before" in CSS
     assert "width: 8px;" in CSS
+    # Inspect the final, more specific rules: an earlier 24px declaration can
+    # exist while a year-wrapper rule silently reduces the actual touch target.
+    groups = list(re.finditer(r"\.timeline-year-group\s*\{([^}]+)\}", CSS))
+    cells = list(re.finditer(r"\.timeline-year-weeks \.timeline-cell\s*\{([^}]+)\}", CSS))
+    assert len(groups) == len(cells) == 2
+    assert "min-width: calc(var(--timeline-week-count) * var(--timeline-week-width))" in groups[0][1]
+    mobile_start = CSS.rfind("@media", 0, groups[-1].start())
+    assert CSS[mobile_start:].startswith("@media (max-width: 760px)")
+
+    def pixels(rule: str, property_name: str) -> float:
+        match = re.search(rf"{re.escape(property_name)}:\s*([0-9.]+)px", rule)
+        assert match is not None
+        return float(match[1])
+
+    target = pixels(cells[-1][1], "min-width")
+    height = pixels(cells[-1][1], "min-height")
+    week_width = pixels(groups[-1][1], "--timeline-week-width")
+    gap = pixels(re.search(r"\.timeline-year-weeks\s*\{([^}]+)\}", CSS)[1], "gap")
+    assert target >= 24 and height >= 24
+    for count in (1, 2, 52, 53):
+        assert count * week_width >= count * target + (count - 1) * gap
 
 
 def test_small_status_chips_use_high_contrast_text_tokens() -> None:

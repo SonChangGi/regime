@@ -5786,14 +5786,14 @@ tr.is-holdout-best td,
 }
 
 /* Year labels share each group's width with its weekly marks. */
-.timeline-year-group { display: flex; flex-direction: column; flex-basis: 0; flex-shrink: 0; gap: 7px; }
+.timeline-year-group { --timeline-week-width: 11px; display: flex; flex-direction: column; flex-basis: 0; flex-shrink: 0; min-width: calc(var(--timeline-week-count) * var(--timeline-week-width)); gap: 7px; }
 .timeline-year-label { display: block; padding: 0 4px; color: var(--ink-faint); font: 500 11px var(--mono); font-variant-numeric: tabular-nums; text-align: left; }
 .timeline-year-weeks { display: flex; flex: 1; gap: 1px; }
 .timeline-year-weeks .timeline-cell { min-width: 10px; min-height: 44px; padding: 0; flex-shrink: 0; border-radius: 2px; }
 .timeline-year-weeks .timeline-cell[aria-current="date"] { outline-width: 2px; outline-offset: 2px; }
 @media (max-width: 760px) {
-  .timeline-year-group { gap: 6px; }
-  .timeline-year-weeks .timeline-cell { min-width: 10px; min-height: 44px; }
+  .timeline-year-group { --timeline-week-width: 25px; gap: 6px; }
+  .timeline-year-weeks .timeline-cell { min-width: 24px; min-height: 44px; }
 }
 
 /* Shared-origin comparison: observed membership above, selected forecast below. */

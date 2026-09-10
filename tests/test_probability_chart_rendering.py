@@ -218,7 +218,9 @@ def test_year_wrappers_keep_chronological_keyboard_order_and_full_history():
     result = run_js(r"""
 const rows=weeks(30);render(rows,360,26);chart.renderTimeline();
 const timeline=chart.dom['regime-timeline'],buttons=timeline.querySelectorAll('button.timeline-cell');
-const groups=timeline.querySelectorAll('.timeline-year-group').map(n=>({year:n.dataset.year,dates:n.querySelectorAll('button.timeline-cell').map(b=>b.dataset.date)}));
+const groups=timeline.querySelectorAll('.timeline-year-group').map(n=>({year:n.dataset.year,
+ weekCount:Number(n.style['--timeline-week-count']),fixedMinWidth:n.style.minWidth??null,
+ dates:n.querySelectorAll('button.timeline-cell').map(b=>b.dataset.date)}));
 const before=chart.state.selectedIndex;
 chart.handleTimelineKeydown(key('ArrowRight',buttons[1]));
 const crossed=activeNode.dataset.date,afterMove=chart.state.selectedIndex;
@@ -234,6 +236,8 @@ console.log(JSON.stringify({groups,count:buttons.length,chartCount:chart.state.c
  labels:buttons.every(b=>b.attrs['aria-label'].includes('관측 국면'))}));
 """)
     assert [group["year"] for group in result["groups"]] == ["2025", "2026"]
+    # CSS owns width so rotating the viewport needs no timeline rerender.
+    assert all(group["weekCount"] == len(group["dates"]) and group["fixedMinWidth"] is None for group in result["groups"])
     dates = [day for group in result["groups"] for day in group["dates"]]
     assert dates == sorted(set(dates)) and result["count"] == 30
     assert result["chartCount"] == 26

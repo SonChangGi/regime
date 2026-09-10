@@ -6301,7 +6301,7 @@
       });
       yearWeeks.append(button);
       yearGroup.style.flexGrow = String(yearWeeks.children.length);
-      yearGroup.style.minWidth = `${yearWeeks.children.length * 11}px`;
+      yearGroup.style.setProperty("--timeline-week-count", String(yearWeeks.children.length));
     }
     setText(dom["timeline-start"], history[0].date);
     setText(dom["timeline-end"], history[history.length - 1].date);
