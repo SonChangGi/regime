@@ -502,7 +502,128 @@
     ];
   }
   function createPerformanceRenderers(dependencies) {
-    const { createElement, createSvg, finiteNumber, firstValue, isObject, formatNumber, formatSignedPercent, formatDate, performanceRowValue, performanceRowDate, strategySummaryRow, svgLinePath } = dependencies;
+    const { createElement, createSvg, finiteNumber, firstValue, formatNumber, formatSignedPercent, formatDate, performanceRowValue, performanceRowDate, strategySummaryRow } = dependencies;
+  // Presentation only: retain the original values, row positions, and missing spans.
+  function performanceScale(low, high, minimumSpan = 0.01) {
+    const span = Math.max(minimumSpan, high - low);
+    const magnitude = 10 ** Math.floor(Math.log10(span / 4));
+    const step = [1, 2, 5, 10].find((value) => value * magnitude >= span / 4) * magnitude;
+    const minimum = Math.floor(low / step) * step;
+    const maximum = Math.max(minimum + step, Math.ceil(high / step) * step);
+    const ticks = Array.from({ length: Math.round((maximum - minimum) / step) + 1 }, (_, index) => minimum + index * step);
+    return { minimum, maximum, step, ticks };
+  }
+
+  function performanceSegments(values) {
+    const segments = [];
+    let segment = [];
+    values.forEach((value, index) => {
+      if (finiteNumber(value) === null) {
+        if (segment.length) segments.push(segment);
+        segment = [];
+      } else segment.push({ value, index });
+    });
+    if (segment.length) segments.push(segment);
+    return segments;
+  }
+
+  function performancePath(segment, xForIndex, yForValue) {
+    return segment.map((point, index) => `${index ? "L" : "M"}${xForIndex(point.index).toFixed(2)},${yForValue(point.value).toFixed(2)}`).join(" ");
+  }
+
+  function benchmarkClass(key) {
+    return /(?:buy_and_hold|60_40)$/.test(key) ? " is-benchmark" : "";
+  }
+
+  function appendPerformanceAxes(svg, rows, scale, xForIndex, yForValue, width, height, margin, formatter, reference = null) {
+    for (const value of scale.ticks) {
+      const y = yForValue(value);
+      svg.append(createSvg("line", { class: Math.abs(value) < scale.step * 1e-8 ? "performance-zero-line" : "performance-grid-line", x1: margin.left, x2: width - margin.right, y1: y, y2: y }));
+      const label = createSvg("text", { class: "performance-axis-label", x: margin.left - 9, y: y + 4, "text-anchor": "end" });
+      label.textContent = formatter(value);
+      svg.append(label);
+    }
+    if (reference !== null && reference >= scale.minimum && reference <= scale.maximum) {
+      svg.append(createSvg("line", { class: "performance-reference-line", x1: margin.left, x2: width - margin.right, y1: yForValue(reference), y2: yForValue(reference) }));
+    }
+    const indices = [...new Set(Array.from({ length: Math.min(5, rows.length) }, (_, index) => Math.round(index * (rows.length - 1) / Math.max(1, Math.min(5, rows.length) - 1))))];
+    for (const index of indices) {
+      const x = xForIndex(index);
+      svg.append(createSvg("line", { class: "performance-axis-tick", x1: x, x2: x, y1: height - margin.bottom, y2: height - margin.bottom + 5 }));
+      const label = createSvg("text", { class: "performance-axis-label", x, y: height - 9, "text-anchor": index === 0 ? "start" : index === rows.length - 1 ? "end" : "middle" });
+      const date = performanceRowDate(rows[index]);
+      label.textContent = typeof date === "string" && /^\d{4}-\d{2}-\d{2}/.test(date)
+        ? (rows.length > 26 ? date.slice(0, 7) : date.slice(5, 10)).replace("-", ".")
+        : formatDate(date);
+      const title = createSvg("title");
+      title.textContent = formatDate(date);
+      label.append(title);
+      svg.append(label);
+    }
+  }
+
+  function appendPerformanceSeries(svg, series, xForIndex, yForValue, primaryKey, zeroY = null) {
+    // Draw the selected strategy last so benchmarks never obscure it.
+    const ordered = [...series.filter((item) => item.key !== primaryKey), ...series.filter((item) => item.key === primaryKey)];
+    for (const item of ordered) {
+      const segments = performanceSegments(item.values);
+      const className = `performance-series performance-series-${item.key}${benchmarkClass(item.key)}${item.key === primaryKey ? " is-primary" : ""}`;
+      for (const segment of segments) {
+        const line = performancePath(segment, xForIndex, yForValue);
+        if (zeroY !== null && item.key === primaryKey && segment.length > 1) {
+          const area = `${line} L${xForIndex(segment.at(-1).index).toFixed(2)},${zeroY.toFixed(2)} L${xForIndex(segment[0].index).toFixed(2)},${zeroY.toFixed(2)} Z`;
+          svg.append(createSvg("path", { class: "performance-drawdown-area", d: area }));
+        }
+        svg.append(createSvg("path", { class: className, d: line, fill: "none" }));
+        if (segment.length === 1) svg.append(createSvg("circle", { class: `${className} performance-endpoint-dot`, cx: xForIndex(segment[0].index), cy: yForValue(segment[0].value), r: 2.5 }));
+      }
+    }
+  }
+
+  function appendPerformanceEndpoints(svg, series, rows, xForIndex, yForValue, width, height, margin, formatter) {
+    const endpoints = series.map((item) => {
+      const index = item.values.findLastIndex((value) => finiteNumber(value) !== null);
+      return { item, index, value: item.values[index], x: xForIndex(index), y: yForValue(item.values[index]) };
+    }).sort((left, right) => left.y - right.y);
+    const gap = Math.min(20, (height - margin.bottom - margin.top) / Math.max(1, endpoints.length - 1));
+    endpoints.forEach((point, index) => { point.labelY = Math.max(point.y, index ? endpoints[index - 1].labelY + gap : margin.top); });
+    for (let index = endpoints.length - 1; index >= 0; index -= 1) {
+      endpoints[index].labelY = Math.min(endpoints[index].labelY, index === endpoints.length - 1 ? height - margin.bottom : endpoints[index + 1].labelY - gap);
+    }
+    for (const point of endpoints) {
+      svg.append(createSvg("line", { class: `performance-endpoint-guide performance-series-${point.item.key}`, x1: point.x, y1: point.y, x2: width - margin.right + 9, y2: point.labelY }));
+      svg.append(createSvg("circle", { class: `performance-endpoint-dot performance-series-${point.item.key}`, cx: point.x, cy: point.y, r: 2.7 }));
+      const label = createSvg("text", { class: `performance-endpoint-label performance-label-${point.item.key}`, x: width - margin.right + 15, y: point.labelY + 4 });
+      label.textContent = point.item.label.replace("실행 기준 · ", "").replace("관찰 후보 · ", "");
+      const value = createSvg("text", { class: "performance-endpoint-value", x: width - 6, y: point.labelY + 4, "text-anchor": "end" });
+      value.textContent = formatter(point.value);
+      const title = createSvg("title");
+      title.textContent = `${point.item.label} · ${formatDate(performanceRowDate(rows[point.index]))} · ${formatter(point.value)}`;
+      const group = createSvg("g");
+      group.append(title, label, value);
+      svg.append(group);
+    }
+  }
+
+  function appendPerformanceBarAxis(bars, scale, formatter) {
+    const axis = createElement("div", "performance-bar-axis");
+    for (const value of scale.ticks) {
+      const tick = createElement("span", "performance-bar-tick", formatter(value));
+      tick.style.left = `${(value - scale.minimum) / (scale.maximum - scale.minimum) * 100}%`;
+      axis.append(tick);
+    }
+    bars.append(axis);
+  }
+
+  function performanceChartScroll(svg, label) {
+    const wrap = createElement("div", "performance-chart-scroll");
+    wrap.tabIndex = 0;
+    wrap.setAttribute("role", "group");
+    wrap.setAttribute("aria-label", `${label} 차트 · 좌우 탐색`);
+    wrap.append(svg);
+    return wrap;
+  }
+
   function renderPerformanceLineChart(rows, strategyKeys, labels, evaluationRange, primaryKey) {
     const card = createElement("section", "performance-visual performance-wealth-card");
     const heading = createElement("div", "performance-visual-heading");
@@ -519,13 +640,14 @@
     if (rows.length < 8 || !series.length) return null;
     const width = 960;
     const height = 286;
-    const margin = { top: 18, right: 170, bottom: 34, left: 54 };
+    const margin = { top: 20, right: 190, bottom: 34, left: 60 };
     const values = series.flatMap((item) => item.values).filter((value) => finiteNumber(value) !== null);
-    const low = Math.min(...values);
-    const high = Math.max(...values);
+    const low = Math.min(1, ...values);
+    const high = Math.max(1, ...values);
     const padding = Math.max(0.03, (high - low) * 0.08);
-    const yMin = low - padding;
-    const yMax = high + padding;
+    const scale = performanceScale(low - padding, high + padding);
+    const yMin = scale.minimum;
+    const yMax = scale.maximum;
     const innerWidth = width - margin.left - margin.right;
     const innerHeight = height - margin.top - margin.bottom;
     const xForIndex = (index) => margin.left + innerWidth * index / Math.max(1, rows.length - 1);
@@ -536,46 +658,18 @@
       role: "img",
       "aria-label": `${evaluationRange} 누적 자산 지수. ${series.map((item) => item.label).join(", ")} 비교`,
     });
-    for (let index = 0; index < 4; index += 1) {
-      const value = yMin + (yMax - yMin) * index / 3;
-      const y = yForValue(value);
-      svg.append(createSvg("line", { class: "performance-grid-line", x1: margin.left, x2: width - margin.right, y1: y, y2: y }));
-      const label = createSvg("text", { class: "performance-axis-label", x: margin.left - 8, y: y + 4, "text-anchor": "end" });
-      label.textContent = formatNumber(value, 2);
-      svg.append(label);
-    }
-    for (const item of series) {
-      svg.append(createSvg("path", {
-        class: `performance-series performance-series-${item.key}${item.key === primaryKey ? " is-primary" : ""}`,
-        d: svgLinePath(item.values, xForIndex, yForValue),
-        fill: "none",
-      }));
-    }
-    const endpoints = series.map((item) => {
-      const index = item.values.findLastIndex((value) => finiteNumber(value) !== null);
-      return { item, value: item.values[index], x: xForIndex(index), y: yForValue(item.values[index]) };
-    }).sort((left, right) => left.y - right.y);
-    let previousY = margin.top - 18;
-    for (const point of endpoints) {
-      const labelY = Math.min(height - margin.bottom, Math.max(point.y, previousY + 17));
-      previousY = labelY;
-      svg.append(createSvg("line", { class: `performance-endpoint-guide performance-series-${point.item.key}`, x1: point.x, y1: point.y, x2: width - margin.right + 8, y2: labelY }));
-      const text = createSvg("text", { class: `performance-endpoint-label performance-label-${point.item.key}`, x: width - margin.right + 12, y: labelY + 4 });
-      text.textContent = `${point.item.label.replace("실행 기준 · ", "").replace("관찰 후보 · ", "")} ${formatNumber(point.value, 2)}`;
-      svg.append(text);
-    }
-    const firstLabel = createSvg("text", { class: "performance-axis-label", x: margin.left, y: height - 8, "text-anchor": "start" });
-    firstLabel.textContent = formatDate(performanceRowDate(rows[0]));
-    const lastLabel = createSvg("text", { class: "performance-axis-label", x: width - margin.right, y: height - 8, "text-anchor": "end" });
-    lastLabel.textContent = formatDate(performanceRowDate(rows[rows.length - 1]));
-    svg.append(firstLabel, lastLabel);
+    appendPerformanceAxes(svg, rows, scale, xForIndex, yForValue, width, height, margin, (value) => formatNumber(value, 2), 1);
+    appendPerformanceSeries(svg, series, xForIndex, yForValue, primaryKey);
+    appendPerformanceEndpoints(svg, series, rows, xForIndex, yForValue, width, height, margin, (value) => formatNumber(value, 2));
     const legend = createElement("div", "performance-legend");
     for (const item of series) {
-      const legendItem = createElement("span", `performance-legend-${item.key}${item.key === primaryKey ? " is-primary" : ""}`);
-      legendItem.append(createElement("i"), createElement("span", null, item.label));
+      const legendItem = createElement("span", `performance-legend-${item.key}${benchmarkClass(item.key)}${item.key === primaryKey ? " is-primary" : ""}`);
+      const swatch = createSvg("svg", { class: "performance-legend-swatch performance-chart", viewBox: "0 0 26 10", "aria-hidden": "true" });
+      swatch.append(createSvg("line", { class: `performance-series performance-series-${item.key}${benchmarkClass(item.key)}${item.key === primaryKey ? " is-primary" : ""}`, x1: 1, x2: 25, y1: 5, y2: 5 }));
+      legendItem.append(swatch, createElement("span", null, item.label));
       legend.append(legendItem);
     }
-    card.append(svg, legend);
+    card.append(performanceChartScroll(svg, "누적 자산"), legend, createElement("p", "performance-scroll-guide", "좌우로 탐색"));
     return card;
   }
 
@@ -599,13 +693,14 @@
     const heading = createElement("div", "performance-visual-heading");
     heading.append(
       createElement("strong", null, "낙폭"),
-      createElement("span", null, "고점 대비"),
+      createElement("span", null, "고점 대비 · %"),
     );
     const width = 960;
-    const height = 190;
-    const margin = { top: 16, right: 18, bottom: 28, left: 54 };
+    const height = 218;
+    const margin = { top: 20, right: 190, bottom: 34, left: 60 };
     const values = series.flatMap((item) => item.values).filter((value) => finiteNumber(value) !== null);
-    const yMin = Math.min(-0.01, ...values);
+    const scale = performanceScale(Math.min(-0.01, ...values), 0);
+    const yMin = scale.minimum;
     const innerWidth = width - margin.left - margin.right;
     const innerHeight = height - margin.top - margin.bottom;
     const xForIndex = (index) => margin.left + innerWidth * index / Math.max(1, rows.length - 1);
@@ -617,22 +712,10 @@
       role: "img",
       "aria-label": `${evaluationRange} 낙폭. 0선 포함`,
     });
-    svg.append(createSvg("line", { class: "performance-zero-line", x1: margin.left, x2: width - margin.right, y1: zeroY, y2: zeroY }));
-    for (const item of [...series].reverse()) {
-      const line = svgLinePath(item.values, xForIndex, yForValue);
-      if (!line) continue;
-      if (item.key === primaryKey) {
-        const area = `${line} L${xForIndex(rows.length - 1).toFixed(2)},${zeroY.toFixed(2)} L${xForIndex(0).toFixed(2)},${zeroY.toFixed(2)} Z`;
-        svg.append(createSvg("path", { class: "performance-drawdown-area", d: area }));
-      }
-      svg.append(createSvg("path", { class: `performance-series performance-series-${item.key}${item.key === primaryKey ? " is-primary" : ""}`, d: line, fill: "none" }));
-    }
-    const minLabel = createSvg("text", { class: "performance-axis-label", x: margin.left - 8, y: yForValue(yMin) + 4, "text-anchor": "end" });
-    minLabel.textContent = formatSignedPercent(yMin, 0);
-    const zeroLabel = createSvg("text", { class: "performance-axis-label", x: margin.left - 8, y: zeroY + 4, "text-anchor": "end" });
-    zeroLabel.textContent = "0%";
-    svg.append(minLabel, zeroLabel);
-    card.append(heading, svg);
+    appendPerformanceAxes(svg, rows, scale, xForIndex, yForValue, width, height, margin, (value) => formatSignedPercent(value, scale.step < 0.01 ? 1 : 0));
+    appendPerformanceSeries(svg, series, xForIndex, yForValue, primaryKey, zeroY);
+    appendPerformanceEndpoints(svg, series, rows, xForIndex, yForValue, width, height, margin, (value) => formatSignedPercent(value, 1));
+    card.append(heading, performanceChartScroll(svg, "낙폭"), createElement("p", "performance-scroll-guide", "좌우로 탐색"));
     return card;
   }
 
@@ -648,17 +731,22 @@
       label: labels[key],
       value: finiteNumber(strategySummaryRow(strategies, key).cumulative_return),
     })).filter((item) => item.value !== null);
-    const scale = Math.max(0.01, ...rows.map((row) => Math.abs(row.value)));
+    const scale = performanceScale(Math.min(0, ...rows.map((row) => row.value)), Math.max(0, ...rows.map((row) => row.value)));
+    const position = (value) => (value - scale.minimum) / (scale.maximum - scale.minimum) * 100;
     const bars = createElement("div", "performance-summary-bars");
     for (const row of rows) {
-      const item = createElement("div", `performance-summary-bar ${row.key === primaryKey ? "is-primary" : ""}`);
+      const item = createElement("div", `performance-summary-bar${row.value < 0 ? " is-negative" : ""}${row.key === primaryKey ? " is-primary" : ""}`);
       const track = createElement("span", "performance-summary-track");
       const fill = createElement("i");
-      fill.style.width = `${Math.max(2, Math.abs(row.value) / scale * 100)}%`;
-      track.append(fill);
+      fill.style.left = `${Math.min(position(0), position(row.value))}%`;
+      fill.style.width = `${Math.abs(position(row.value) - position(0))}%`;
+      const zero = createElement("i", "performance-bar-zero");
+      zero.style.left = `${position(0)}%`;
+      track.append(fill, zero);
       item.append(createElement("span", null, row.label), track, createElement("strong", null, formatSignedPercent(row.value)));
       bars.append(item);
     }
+    appendPerformanceBarAxis(bars, scale, (value) => formatSignedPercent(value, scale.step < 0.01 ? 1 : 0));
     card.append(heading, bars);
     return card;
   }
@@ -672,18 +760,40 @@
     const heading = createElement("div", "performance-visual-heading");
     heading.append(
       createElement("strong", null, "Gross → Cost → Net"),
-      createElement("span", null, "누적 수익률"),
+      createElement("span", null, "누적 수익률 · 비용 효과 %p"),
     );
-    const bridge = createElement("div", "performance-bridge");
-    for (const [label, value, operator] of [
-      ["Gross", gross, ""],
-      ["Cost drag", costDrag, "+"],
-      ["Net", net, "="],
-    ]) {
-      const step = createElement("div", `performance-bridge-step is-${label.toLowerCase().replace(/\s+/g, "-")}`);
-      if (operator) step.append(createElement("span", "performance-bridge-operator", operator));
-      step.append(createElement("small", null, label), createElement("strong", null, formatSignedPercent(value, 2)));
-      bridge.append(step);
+    const width = 460;
+    const height = 224;
+    const margin = { top: 30, right: 16, bottom: 37, left: 54 };
+    const scale = performanceScale(Math.min(0, gross, net), Math.max(0, gross, net));
+    const yForValue = (value) => margin.top + (height - margin.top - margin.bottom) * (scale.maximum - value) / (scale.maximum - scale.minimum);
+    const bridge = createSvg("svg", { class: "performance-chart performance-bridge-chart", viewBox: `0 0 ${width} ${height}`, role: "img", "aria-label": `${evaluationRange} 비용 전 ${formatSignedPercent(gross, 2)}, 비용 효과 ${formatNumber(costDrag * 100, 2)}%p, 비용 후 ${formatSignedPercent(net, 2)}` });
+    for (const value of scale.ticks) {
+      const y = yForValue(value);
+      bridge.append(createSvg("line", { class: Math.abs(value) < scale.step * 1e-8 ? "performance-zero-line" : "performance-grid-line", x1: margin.left, x2: width - margin.right, y1: y, y2: y }));
+      const label = createSvg("text", { class: "performance-axis-label", x: margin.left - 9, y: y + 4, "text-anchor": "end" });
+      label.textContent = formatSignedPercent(value, scale.step < 0.01 ? 1 : 0);
+      bridge.append(label);
+    }
+    const steps = [
+      { label: "Gross", kind: "gross", start: 0, end: gross, value: gross },
+      { label: "Cost drag", kind: "cost", start: gross, end: net, value: costDrag },
+      { label: "Net", kind: "net", start: 0, end: net, value: net },
+    ];
+    const column = (width - margin.left - margin.right) / steps.length;
+    const barWidth = 54;
+    for (const [index, step] of steps.entries()) {
+      const x = margin.left + column * (index + 0.5);
+      const top = yForValue(Math.max(step.start, step.end));
+      const bottom = yForValue(Math.min(step.start, step.end));
+      const bar = createSvg("rect", { class: `performance-bridge-bar is-${step.kind}`, x: x - barWidth / 2, y: top, width: barWidth, height: bottom - top });
+      bridge.append(bar);
+      if (index < steps.length - 1) bridge.append(createSvg("line", { class: "performance-bridge-connector", x1: x + barWidth / 2, x2: x + column - barWidth / 2, y1: yForValue(step.end), y2: yForValue(step.end) }));
+      const value = createSvg("text", { class: "performance-bridge-value", x, y: Math.max(16, top - 9), "text-anchor": "middle" });
+      value.textContent = step.kind === "cost" ? `${formatNumber(step.value * 100, 2)}%p` : formatSignedPercent(step.value, 2);
+      const label = createSvg("text", { class: "performance-axis-label", x, y: height - 12, "text-anchor": "middle" });
+      label.textContent = step.label;
+      bridge.append(value, label);
     }
     card.append(heading, bridge);
     return card;
@@ -710,7 +820,7 @@
       ...turnoverValues(strategySummaryRow(strategies, key)),
     })).filter((item) => item.oneWay !== null);
     if (!rows.length) return null;
-    const scale = Math.max(0.01, ...rows.map((row) => row.oneWay));
+    const scale = performanceScale(0, Math.max(0.01, ...rows.map((row) => row.oneWay)));
     const card = createElement("section", "performance-visual performance-turnover-card");
     const heading = createElement("div", "performance-visual-heading");
     heading.append(
@@ -722,12 +832,14 @@
       const item = createElement("div", `performance-turnover-row ${row.key === primaryKey ? "is-primary" : ""}`);
       const track = createElement("span", "performance-turnover-track");
       const fill = createElement("i");
-      fill.style.width = `${Math.max(2, row.oneWay / scale * 100)}%`;
+      fill.style.left = "0%";
+      fill.style.width = `${row.oneWay / scale.maximum * 100}%`;
       track.append(fill);
       item.append(createElement("span", null, row.label), track, createElement("strong", null, formatSignedPercent(row.oneWay)));
       item.title = `투자자 one-way ${formatSignedPercent(row.oneWay)} · full-L1 ${formatSignedPercent(row.fullL1)}${row.inferred ? " · one-way는 full-L1의 1/2 환산" : ""}`;
       bars.append(item);
     }
+    appendPerformanceBarAxis(bars, scale, (value) => formatSignedPercent(value, scale.step < 0.01 ? 1 : 0));
     card.append(heading, bars);
     return card;
   }

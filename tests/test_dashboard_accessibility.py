@@ -95,11 +95,13 @@ def test_interactive_controls_have_accessible_names() -> None:
 def test_visuals_have_semantic_fallbacks_and_non_color_encoding() -> None:
     assert 'id="probability-chart"' in HTML
     assert 'role="img"' in HTML
-    assert "차트 값을 표로 보기" in HTML
+    assert '<summary>수치 표</summary>' in HTML
     assert '<tbody id="history-data-body">' in HTML
-    assert 'data-state-label="risk_on">Risk-on</span> · 실선' in HTML
-    assert 'data-state-label="transition">Transition</span> · 파선' in HTML
-    assert 'data-state-label="risk_off">Risk-off</span> · 점선' in HTML
+    for code, line_class in (("risk_on", "risk-on-line"), ("transition", "transition-line"), ("risk_off", "risk-off-line")):
+        assert f'class="legend-line {line_class}" aria-hidden="true"' in HTML
+        assert f'data-state-label="{code}"' in HTML
+    assert 'const lineStyles = { risk_on: "실선", transition: "파선", risk_off: "점선" }' in JS
+    assert 'setAttribute("aria-label", historyMeta.legendLabel)' in JS
     assert "실제 t+1 결과" in HTML
     assert 'id="chart-selection-readout"' in HTML and 'aria-live="polite"' in HTML
     assert 'id="probability-chart-wrap"' in HTML and 'tabindex="0"' in HTML
@@ -109,12 +111,12 @@ def test_visuals_have_semantic_fallbacks_and_non_color_encoding() -> None:
     assert 'data-state-symbol="risk_off"' in HTML
     assert "function stateMeta(" in JS
     assert "현재 t" not in HTML and "예측 t+1" not in HTML
-    assert '`${membership ? "관측 소속도" : "관측 확률"}와 ${state.modelForecastHorizon}주 예측확률`' in JS
+    assert 'setText(dom["probability-chart-title"], historyMeta.title)' in JS
     assert "function actualNextWeekForWeek(" in JS
     assert "function forecastEntropyForWeek(" in JS
     assert 'tableCaption: `${model} ${membership ? "관측 소속도" : "관측 확률"}·${state.modelForecastHorizon}주 예측확률·실제 ${state.modelForecastHorizon}주 후 결과·정규화 예측 엔트로피`' in JS
     assert 'setText(dom["history-observed-group-label"], `${historyMeta.observedMeasure} · t`)' in JS
-    assert 'setText(dom["chart-readout-observed-label"], `${historyMeta.observedMeasure} · t`)' in JS
+    assert 'setText(dom["chart-readout-observed-label"], historyMeta.observedMeasure)' in JS
     assert 'isCurrent && isV5Payload() ? "소속도"' in JS
     assert '"예측확률"' in JS
     assert "52주 극단값은 시장 맥락이며 예측 기여도와는 별도" not in HTML
@@ -238,7 +240,7 @@ def test_actual_payload_marks_are_separate_from_wcag_text_tokens_in_both_themes(
 
 
 def test_context_and_performance_units_are_explicit() -> None:
-    assert "52주 표준화 기반 합성점수" in HTML
+    assert re.search(r'id="factor-caption"[^>]*>52주 표준화[^<]*점수</p>', HTML)
     assert "52주 표준화 기반 합성점수" in JS
     assert "평균 95% CI" in HTML
     assert "연율 하방 변동성" in HTML

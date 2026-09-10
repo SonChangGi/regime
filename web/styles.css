@@ -33,7 +33,12 @@
   --status-ok-text: #006b52;
   --status-review-text: #805000;
   --chart-grid: #dfe5ec;
-  --chart-text: #4e5968;
+  --chart-text: #657386;
+  --chart-risk-on: var(--risk-on-mark);
+  --chart-transition: var(--transition-mark);
+  --chart-risk-off: var(--risk-off-mark);
+  --chart-panel: #fafbfd;
+  --chart-regime-opacity: .08;
   --shadow: 0 8px 20px rgb(25 31 40 / 5%);
   --shadow-raised: 0 16px 36px rgb(25 31 40 / 8%);
   --radius-lg: 8px;
@@ -80,7 +85,12 @@ html[data-theme="dark"] {
   --status-ok-text: #62d4a4;
   --status-review-text: #ffd166;
   --chart-grid: #303948;
-  --chart-text: #c3ccda;
+  --chart-text: #a8b6c8;
+  --chart-risk-on: var(--risk-on-text);
+  --chart-transition: var(--transition-text);
+  --chart-risk-off: var(--risk-off-text);
+  --chart-panel: #1b212b;
+  --chart-regime-opacity: .12;
   --shadow: 0 8px 20px rgb(0 0 0 / 16%);
   --shadow-raised: 0 16px 36px rgb(0 0 0 / 24%);
 }
@@ -836,6 +846,7 @@ input[type="date"] {
 .probability-chart {
   display: block;
   width: 100%;
+  min-width: 0;
   min-height: 260px;
   overflow: visible;
 }
@@ -846,15 +857,17 @@ input[type="date"] {
 }
 
 .chart-axis-label {
-  fill: var(--ink-faint);
+  fill: var(--chart-text);
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
 }
 
 .chart-date-label {
-  fill: var(--ink-faint);
+  fill: var(--chart-text);
   font-family: var(--mono);
-  font-size: 9px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
 }
 
 .chart-series {
@@ -2186,11 +2199,11 @@ tr.is-champion td {
 
 .model-loss-figure {
   min-width: 0;
-  margin: 20px 0 0;
-  padding: 16px 18px 12px;
+  margin: 22px 0 0;
+  padding: 18px 16px 14px;
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
-  background: var(--surface-soft);
+  background: var(--surface);
 }
 
 .model-loss-figure figcaption {
@@ -2228,16 +2241,9 @@ tr.is-champion td {
 }
 
 .model-loss-row.is-champion {
-  box-shadow: inset 3px 0 0 var(--brand);
-  background: var(--brand-soft);
-  color: var(--brand-dark);
+  color: var(--ink-soft);
 }
 
-.model-loss-row.is-holdout-best:not(.is-champion) {
-  box-shadow: inset 3px 0 0 var(--risk-on);
-  background: color-mix(in srgb, var(--risk-on-soft) 60%, var(--surface));
-  color: var(--risk-on);
-}
 
 .model-loss-label {
   display: grid;
@@ -3246,6 +3252,9 @@ details.alert[open] > summary::after {
 
 .chart-grid-line {
   stroke: var(--chart-grid);
+  stroke-opacity: .68;
+  stroke-dasharray: 2 5;
+  vector-effect: non-scaling-stroke;
 }
 
 .chart-axis-label,
@@ -3623,10 +3632,6 @@ tr.is-holdout-best td {
     scrollbar-width: thin;
   }
 
-  .probability-chart {
-    width: 680px;
-    min-width: 680px;
-  }
 
   .driver-item {
     grid-template-columns: 22px minmax(0, 1fr) 58px;
@@ -3807,10 +3812,6 @@ tr.is-holdout-best td {
     overflow: visible;
   }
 
-  .probability-chart {
-    width: 100%;
-    min-width: 0;
-  }
 }
 
 /* Final responsive placement overrides: keep the shared control baseline intact. */
@@ -3874,9 +3875,7 @@ tr.is-holdout-best td {
 /* Model evaluation accents are diagnostic, not market-regime colors. */
 
 .model-loss-row.is-holdout-best:not(.is-champion) {
-  box-shadow: inset 3px 0 0 var(--transition);
-  background: color-mix(in srgb, var(--transition-soft) 60%, var(--surface));
-  color: var(--transition);
+  color: var(--ink-soft);
 }
 
 #leaderboard-body tr:first-child:not(.is-champion) td:first-child,
@@ -3960,6 +3959,41 @@ tr.is-holdout-best td,
   .model-loss-axis {
     margin-inline: 10px;
   }
+}
+
+/* The ranking axis and guide ticks share the exact track columns. */
+#models .model-loss-figure { --loss-label-width: 210px; --loss-value-width: 110px; --loss-gap: 18px; }
+#models .model-loss-row {
+  --loss-row-padding: 10px;
+  min-height: 58px;
+  padding: 10px 10px;
+  grid-template-columns: var(--loss-label-width) minmax(0, 1fr) var(--loss-value-width);
+  gap: var(--loss-gap);
+  border: 1px solid transparent;
+  border-radius: 5px;
+}
+#models .model-loss-row:hover { background: var(--surface-soft); }
+#models .model-loss-label strong { font: 600 12px/1.45 var(--sans); white-space: normal; overflow-wrap: anywhere; }
+#models .model-loss-label span { font-size: 10px; line-height: 1.45; }
+#models .model-loss-values { flex-direction: column; align-items: flex-end; gap: 2px; }
+#models .model-loss-values strong { font-size: 14px; font-weight: 650; }
+#models .model-loss-values span { min-width: 0; font-size: 10px; }
+#models .model-loss-track { height: 24px; margin: 0; grid-column: auto; grid-row: auto; }
+#models .model-loss-track::before { border-top-width: 1px; }
+#models .model-loss-point { width: 9px; height: 9px; border-width: 1.5px; }
+#models .model-loss-axis { margin: 8px calc(var(--loss-value-width) + var(--loss-gap) + 11px) 0 calc(var(--loss-label-width) + var(--loss-gap) + 11px); font: 10px var(--mono); font-variant-numeric: tabular-nums; }
+.model-loss-grid { position: absolute; inset: 0; pointer-events: none; }
+.model-loss-grid > :is(span, i) { position: absolute; top: 1px; bottom: 1px; border-left: 1px solid var(--line); }
+@media (max-width: 1000px) {
+  #models .model-loss-figure { --loss-label-width: 176px; --loss-value-width: 92px; --loss-gap: 12px; }
+}
+@media (max-width: 600px) {
+  #models .model-loss-figure { padding-inline: 10px; }
+  #models .model-loss-row { --loss-row-padding: 8px; grid-template-columns: minmax(0, 1fr) auto; gap: 5px 12px; padding: 10px 8px; }
+  #models .model-loss-label strong { font-size: 11px; }
+  #models .model-loss-values { grid-column: 2; grid-row: 1; }
+  #models .model-loss-track { grid-column: 1 / -1; grid-row: 2; margin-inline: 5px; }
+  #models .model-loss-axis { margin: 6px 14px 0; }
 }
 
 /* V3 additive stay/switch surfaces. */
@@ -4723,8 +4757,6 @@ tr.is-holdout-best td,
   }
 
   .probability-chart {
-    width: 920px;
-    min-width: 920px;
     min-height: 230px;
   }
 
@@ -4792,10 +4824,6 @@ tr.is-holdout-best td,
     display: block;
   }
 
-  .probability-chart {
-    width: 100%;
-    min-width: 0;
-  }
 }
 
 /* v5 semantic extensions; appended after the frozen v4 layout overrides. */
@@ -5757,6 +5785,17 @@ tr.is-holdout-best td,
   }
 }
 
+/* Year labels share each group's width with its weekly marks. */
+.timeline-year-group { display: flex; flex-direction: column; flex-basis: 0; flex-shrink: 0; gap: 7px; }
+.timeline-year-label { display: block; padding: 0 4px; color: var(--ink-faint); font: 500 11px var(--mono); font-variant-numeric: tabular-nums; text-align: left; }
+.timeline-year-weeks { display: flex; flex: 1; gap: 1px; }
+.timeline-year-weeks .timeline-cell { min-width: 10px; min-height: 44px; padding: 0; flex-shrink: 0; border-radius: 2px; }
+.timeline-year-weeks .timeline-cell[aria-current="date"] { outline-width: 2px; outline-offset: 2px; }
+@media (max-width: 760px) {
+  .timeline-year-group { gap: 6px; }
+  .timeline-year-weeks .timeline-cell { min-width: 10px; min-height: 44px; }
+}
+
 /* Shared-origin comparison: observed membership above, selected forecast below. */
 
 #history .history-heading-controls {
@@ -5768,16 +5807,21 @@ tr.is-holdout-best td,
 }
 
 #history .chart-context-row {
-  grid-template-columns: minmax(250px, 0.5fr) minmax(650px, 1.5fr);
+  grid-template-columns: minmax(0, 1fr);
   align-items: stretch;
+  gap: 12px;
+  margin: 18px 0 10px;
 }
 
 .chart-selection-readout {
   min-width: 0;
-  padding: 11px 12px;
-  grid-template-columns: 132px minmax(0, 1fr);
+  padding: 14px 16px;
+  grid-template-columns: 126px minmax(0, 1fr);
   align-items: stretch;
-  gap: 14px;
+  gap: 18px;
+  border-color: var(--line);
+  border-radius: 6px;
+  background: var(--surface);
 }
 
 .chart-readout-date {
@@ -5787,15 +5831,15 @@ tr.is-holdout-best td,
 .chart-readout-date small {
   color: var(--ink-faint);
   font-family: var(--mono);
-  font-size: 9px;
-  line-height: 1.35;
+  font-size: 10px;
+  line-height: 1.5;
 }
 
 .chart-readout-grid {
   display: grid;
   min-width: 0;
-  grid-template-columns: repeat(2, minmax(180px, 1fr)) minmax(170px, 0.85fr);
-  gap: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr)) minmax(190px, .95fr);
+  gap: 18px;
 }
 
 .chart-readout-series,
@@ -5810,11 +5854,12 @@ tr.is-holdout-best td,
 
 .chart-readout-series-label {
   display: block;
-  margin-bottom: 6px;
+  margin-bottom: 8px;
   color: var(--ink-soft);
-  font-size: 9px;
-  font-weight: 800;
-  line-height: 1.35;
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
 }
 
 .chart-selection-readout .chart-readout-series dl,
@@ -5846,11 +5891,82 @@ tr.is-holdout-best td,
   white-space: nowrap;
 }
 
-.chart-panel-title {
-  fill: var(--ink-soft);
-  font-size: 11px;
-  font-weight: 800;
+.chart-panel-bg { fill: var(--chart-panel); }
+.chart-regime-band {
+  fill-opacity: var(--chart-regime-opacity);
+  stroke: none;
+  pointer-events: none;
 }
+.chart-regime-band.risk_on { fill: var(--chart-risk-on); }
+.chart-regime-band.transition { fill: var(--chart-transition); }
+.chart-regime-band.risk_off { fill: var(--chart-risk-off); }
+.chart-panel-kicker {
+  fill: var(--chart-text);
+  font: 600 10px var(--mono);
+  letter-spacing: .07em;
+}
+.chart-panel-title {
+  fill: var(--ink-strong);
+  font: 650 13px var(--sans);
+}
+.chart-panel-divider,
+.chart-axis-boundary {
+  stroke: var(--line-strong);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+.chart-hover-line {
+  stroke: var(--ink-faint);
+  stroke-width: 1;
+  stroke-dasharray: 3 4;
+  pointer-events: none;
+  vector-effect: non-scaling-stroke;
+}
+.chart-selected-band {
+  fill: var(--brand);
+  fill-opacity: .055;
+  pointer-events: none;
+}
+.chart-selected-label { pointer-events: none; }
+.chart-selected-label rect { fill: var(--surface); stroke: var(--line-strong); stroke-width: 1; }
+.chart-selected-label text { fill: var(--brand-dark); stroke: none; font: 600 11px var(--mono); }
+.chart-endpoint-label {
+  fill: var(--ink-strong);
+  font: 650 12px var(--mono);
+  font-variant-numeric: tabular-nums;
+  paint-order: stroke;
+  stroke: var(--chart-panel);
+  stroke-width: 4;
+  stroke-linejoin: round;
+}
+.chart-endpoint-dot {
+  fill: var(--surface);
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+.chart-endpoint-leader {
+  fill: none;
+  stroke-width: 1;
+  opacity: .65;
+  vector-effect: non-scaling-stroke;
+}
+.chart-endpoint-dot.risk_on, .chart-endpoint-leader.risk_on { stroke: var(--chart-risk-on); }
+.chart-endpoint-dot.transition, .chart-endpoint-leader.transition { stroke: var(--chart-transition); }
+.chart-endpoint-dot.risk_off, .chart-endpoint-leader.risk_off { stroke: var(--chart-risk-off); }
+.chart-endpoint-label.risk_on { fill: var(--chart-risk-on); }
+.chart-endpoint-label.transition { fill: var(--chart-transition); }
+.chart-endpoint-label.risk_off { fill: var(--chart-risk-off); }
+#history .chart-selection-readout dt { font-size: 10px; font-weight: 500; }
+#history .chart-selection-readout dd { font-size: 12px; font-weight: 650; font-variant-numeric: tabular-nums; }
+#history .chart-readout-date strong { font-size: 13px; }
+#history .chart-legend { gap: 8px 18px; font-size: 11px; }
+#history .legend-regime-background { color: var(--ink-faint); font-size: 10px; }
+#history .chart-readout-series.forecast { padding-left: 18px; }
+#history .svg-chart-wrap { padding-block: 6px 4px; }
+#history .probability-chart:not(.is-dense) .chart-point { opacity: .6; r: 2; }
+#history .probability-chart.is-dense .chart-point:not(.is-active) { opacity: 0; }
+#history .probability-chart .chart-point.is-active { opacity: 1; r: 4; stroke-width: 2; }
+
 
 .chart-panel-separator {
   stroke: var(--line-strong);
@@ -5858,12 +5974,12 @@ tr.is-holdout-best td,
 }
 
 .chart-series.observed {
-  opacity: 0.82;
-  stroke-width: 2.4;
+  opacity: .88;
+  stroke-width: 2;
 }
 
 .chart-series.forecast {
-  stroke-width: 2.8;
+  stroke-width: 2.5;
 }
 
 .chart-outcome-label {
@@ -5923,10 +6039,11 @@ tr.is-holdout-best td,
   text-align: center;
 }
 
-@media (max-width: 1100px) {
-  #history .chart-context-row {
-    grid-template-columns: minmax(0, 1fr);
-  }
+@media (max-width: 980px) {
+  #history .chart-selection-readout { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  #history .chart-readout-date { grid-template-columns: auto 1fr; align-items: baseline; gap: 4px 14px; }
+  #history .chart-readout-date > span { grid-column: 1 / -1; }
+  #history .chart-readout-grid { grid-template-columns: repeat(2, minmax(0, 1fr)) minmax(180px, 1fr); gap: 12px; }
 }
 
 @media (max-width: 760px) {
@@ -5941,7 +6058,7 @@ tr.is-holdout-best td,
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .chart-readout-grid {
+  #history .chart-readout-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
@@ -5963,19 +6080,41 @@ tr.is-holdout-best td,
     text-align: left;
   }
 
-  #history .probability-chart {
-    width: 900px;
-    min-width: 900px;
-  }
 }
 
-@media (max-width: 460px) {
+@media (max-width: 480px) {
   .chart-selection-readout {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .chart-readout-grid {
+  #history .chart-readout-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+  #history .chart-selection-readout { padding: 12px; }
+  #history .chart-readout-series.forecast { padding: 0 0 0 12px; border-top: 0; border-left: 1px solid var(--line); }
+  #history .chart-selection-readout dd { font-size: 11px; }
+  #history .chart-readout-date small { font-size: 9px; }
+
+  #history .chart-readout-series {
+    display: grid;
+    grid-template-rows: 1fr auto;
+  }
+
+  #history .chart-selection-readout .chart-readout-series dl {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  #history .chart-readout-series dl > div {
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: baseline;
+    gap: 8px;
+  }
+
+  #history .chart-readout-series dt,
+  #history .chart-readout-series dd {
+    white-space: nowrap;
+  }
+
+  #history .chart-readout-series dd {
+    text-align: right;
   }
 
   .chart-readout-series.forecast {
@@ -5985,16 +6124,18 @@ tr.is-holdout-best td,
   }
 
   .chart-selection-readout .chart-readout-diagnostics {
-    grid-column: auto;
-    grid-template-columns: minmax(0, 1fr);
+    grid-column: 1 / -1;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
   .chart-selection-readout .chart-readout-diagnostics > div {
-    grid-template-columns: minmax(90px, 1fr) auto;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .chart-selection-readout .chart-readout-diagnostics dd {
-    text-align: right;
+    text-align: left;
+    white-space: normal;
+    overflow-wrap: anywhere;
   }
 }
 
@@ -6584,18 +6725,18 @@ tr.is-holdout-best td,
 .probability-fill.risk_off,
 .transition-card.alert-high .transition-meter span,
 .driver-fill.risk_off { background: var(--risk-off-mark); }
-.risk-on-line { color: var(--risk-on-mark); }
-.transition-line { color: var(--transition-mark); }
-.risk-off-line { color: var(--risk-off-mark); }
-.chart-series.risk_on { stroke: var(--risk-on-mark); }
-.chart-series.transition { stroke: var(--transition-mark); }
-.chart-series.risk_off { stroke: var(--risk-off-mark); }
-.chart-point.risk_on { stroke: var(--risk-on-mark); }
-.chart-point.transition { stroke: var(--transition-mark); }
-.chart-point.risk_off { stroke: var(--risk-off-mark); }
-.actual-outcome-marker.risk_on { fill: var(--risk-on-mark); }
-.actual-outcome-marker.transition { fill: var(--transition-mark); }
-.actual-outcome-marker.risk_off { fill: var(--risk-off-mark); }
+.risk-on-line { color: var(--chart-risk-on); }
+.transition-line { color: var(--chart-transition); }
+.risk-off-line { color: var(--chart-risk-off); }
+.chart-series.risk_on { stroke: var(--chart-risk-on); }
+.chart-series.transition { stroke: var(--chart-transition); }
+.chart-series.risk_off { stroke: var(--chart-risk-off); }
+.chart-point.risk_on { stroke: var(--chart-risk-on); }
+.chart-point.transition { stroke: var(--chart-transition); }
+.chart-point.risk_off { stroke: var(--chart-risk-off); }
+.actual-outcome-marker.risk_on { fill: var(--chart-risk-on); }
+.actual-outcome-marker.transition { fill: var(--chart-transition); }
+.actual-outcome-marker.risk_off { fill: var(--chart-risk-off); }
 
 @media (max-width: 1120px) {
   .decision-shadow-strategy-grid {
@@ -7779,11 +7920,15 @@ tr.is-holdout-best td,
 
 .decision-shadow-track {
   display: grid;
+  min-width: 0;
   gap: 14px;
 }
 
 .performance-visual {
-  padding: 14px;
+  --performance-label-width: 92px;
+  --performance-value-width: 64px;
+  --performance-bar-gap: 9px;
+  padding: 16px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--surface);
@@ -7816,12 +7961,27 @@ tr.is-holdout-best td,
   overflow: visible;
 }
 
+.performance-scroll-guide {
+  display: none;
+}
+
+.performance-chart-scroll {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.performance-chart-scroll:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+}
+
 .performance-grid-line,
 .performance-zero-line {
   stroke: var(--chart-grid);
   stroke-width: 1;
   vector-effect: non-scaling-stroke;
 }
+.performance-grid-line { stroke-opacity: .65; stroke-dasharray: 2 5; }
 
 .performance-zero-line {
   stroke: var(--line-strong);
@@ -7830,7 +7990,8 @@ tr.is-holdout-best td,
 .performance-axis-label {
   fill: var(--chart-text);
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
 }
 
 .performance-comparison-grid {
@@ -7848,7 +8009,7 @@ tr.is-holdout-best td,
 .performance-summary-bar,
 .performance-turnover-row {
   display: grid;
-  grid-template-columns: 92px minmax(80px, 1fr) 64px;
+  grid-template-columns: var(--performance-label-width, 92px) minmax(60px, 1fr) var(--performance-value-width, 64px);
   align-items: center;
   gap: 9px;
   color: var(--ink-soft);
@@ -7866,14 +8027,16 @@ tr.is-holdout-best td,
 .performance-summary-track,
 .performance-turnover-track {
   display: block;
+  position: relative;
   height: 8px;
-  overflow: hidden;
-  border-radius: 99px;
-  background: var(--surface-strong);
+  overflow: visible;
+  border-radius: 2px;
+  background: var(--surface-soft);
 }
 
 .performance-summary-track i,
 .performance-turnover-track i {
+  position: absolute;
   display: block;
   height: 100%;
   border-radius: inherit;
@@ -8168,6 +8331,29 @@ tr.is-holdout-best td,
     min-height: 150px;
   }
 
+  .performance-wealth-card,
+  .performance-drawdown-card {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  :is(.performance-wealth-card, .performance-drawdown-card) > .performance-chart-scroll {
+    overflow-x: auto;
+  }
+
+  :is(.performance-wealth-card, .performance-drawdown-card) > .performance-chart-scroll > .performance-chart {
+    width: 760px;
+    min-width: 760px;
+    min-height: 0;
+  }
+
+  .performance-scroll-guide {
+    display: block;
+    margin: 8px 0 0;
+    color: var(--ink-soft);
+    font-size: 11px;
+  }
+
   .performance-visual-heading {
     display: grid;
     gap: 2px;
@@ -8256,8 +8442,8 @@ tr.is-holdout-best td,
 
   .performance-summary-bar,
   .performance-turnover-row {
-    grid-template-columns: 76px minmax(52px, 1fr) 57px;
-    gap: 6px;
+    grid-template-columns: var(--performance-label-width, 76px) minmax(52px, 1fr) var(--performance-value-width, 57px);
+    gap: var(--performance-bar-gap, 6px);
   }
 
   .performance-bridge {

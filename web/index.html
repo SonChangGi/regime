@@ -10,13 +10,13 @@
     >
     <title>US Market Regime Lab | Quant Research</title>
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23111727'/%3E%3Cpath d='M14 43 26 31l9 8 15-20' fill='none' stroke='%2334d399' stroke-width='7' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
-    <link rel="stylesheet" href="./styles.css?v=a87c49339958f048b36531ca361bad3c766380a327cff3aeed8b07d6a2420ce6">
-    <link rel="stylesheet" href="./insights.css?v=0d6f7a5cbea294ea6a7aab20c8df9af63d7e41a83fa20ff565f8584cb65ba2fd">
-    <link rel="stylesheet" href="./forecast-enhancements.css?v=107ab79f222937f8d69ea1ffa6ceb526e2c42e36f35df8e23489181bec43d35f">
-    <script src="./insights.js?v=9affb1afe9772d5d7f51b4ee543d5a0c8db146596c4ebb1ced2b011fb903fb5f" defer></script>
-    <script src="./forecast-enhancements.js?v=f9ecad622450a6f3f377dc13a6a1b43d3f6ab5b42a5a86e6c12e65e8e87343bc" defer></script>
+    <link rel="stylesheet" href="./styles.css?v=3dc06bf750ea9f062bb3b3761173f4543076bb8182662a2a0cd1cf3ea554fa87">
+    <link rel="stylesheet" href="./insights.css?v=1e23d447c449cfdcd5f2e8945c6cff5a3b0e06f1d4b075cff26f9d94ca35e8af">
+    <link rel="stylesheet" href="./forecast-enhancements.css?v=c08cf84ef8306ae71e1e374c37dfa25369a5796e7dbc4b5adcfc2b43888425d2">
+    <script src="./insights.js?v=14247ef0dee7a464045b4ffac6aaf029891597b74dc3b64311bcdcf1252ac854" defer></script>
+    <script src="./forecast-enhancements.js?v=ebea912e76f53df34a8573e1ddc69be66684738c9aee4c2c99308099dc7ac7b5" defer></script>
     <script src="./operating-contract.generated.js?v=5078635e5a1fb2b9300e56f045b51c4e85ee047a21a3f64a15cd4e69261c9a20" defer></script>
-    <script src="./app.js?v=b866bd733157e594071edf6eb57abac4c8f977d2ab35a2616e0e203c7ede88d0" defer></script>
+    <script src="./app.js?v=342cb7bfc299136dfc6f02b8f9800850c99e9d190e043debdf2996328ff8999a" defer></script>
   </head>
   <body id="top">
     <a class="skip-link" href="#main-content">본문으로 건너뛰기</a>
@@ -126,10 +126,21 @@
             </form>
           </div>
 
-            <section id="forecast-window-section" class="forecast-window-section v5-only" aria-labelledby="forecast-window-title" hidden>
-              <h2 id="forecast-window-title">운영 1주 예측 시점</h2>
-              <dl class="forecast-timing"><div><dt>기준</dt><dd id="forecast-origin-at">—</dd></div><div><dt>운영 발행</dt><dd id="forecast-decision-at">—</dd></div><div><dt>운영 대상</dt><dd id="forecast-target-at">—</dd></div><div><dt>운영 예측 상태</dt><dd id="forecast-remaining-horizon">—</dd></div></dl><p id="latest-publication-info" class="section-caption"></p>
-            </section>
+          <section id="forecast-window-section" class="forecast-window-section v5-only" aria-labelledby="forecast-window-summary" hidden>
+            <details class="forecast-window-details">
+              <summary id="forecast-window-summary">최신 운영 예측 · —</summary>
+              <div class="forecast-window-body">
+                <h2 id="forecast-window-title">운영 1주 예측 시점</h2>
+                <dl class="forecast-timing">
+                  <div><dt>기준</dt><dd id="forecast-origin-at">—</dd></div>
+                  <div><dt>발행</dt><dd id="forecast-decision-at">—</dd></div>
+                  <div><dt>대상</dt><dd id="forecast-target-at">—</dd></div>
+                  <div><dt>상태</dt><dd id="forecast-remaining-horizon">—</dd></div>
+                </dl>
+                <p id="latest-publication-info" class="section-caption"></p>
+              </div>
+            </details>
+          </section>
         <section id="overview" class="dashboard-section overview-section" data-dashboard-view="execution" aria-labelledby="dashboard-title">
           <div class="section-heading overview-heading">
             <div>
@@ -210,7 +221,7 @@
             <div class="card-heading">
               <div>
                 <h2 id="duration-context-title">현재 국면 지속</h2>
-                <p id="duration-context-caption" class="section-caption">현재 상태의 과거 지속 패턴</p>
+                <p id="duration-context-caption" class="section-caption">과거 지속 패턴</p>
               </div>
             </div>
             <dl id="duration-context" class="metric-list"></dl>
@@ -365,7 +376,7 @@
               </div>
               <div class="history-heading-controls">
                 <div class="field-group inline-field">
-                  <label for="history-window">예측 분석 기간</label>
+                  <label for="history-window">분석 기간</label>
                   <select id="history-window">
                     <option value="26" selected>26주</option>
                     <option value="52">52주</option>
@@ -379,9 +390,10 @@
             <p id="history-load-status" class="history-load-status" role="status" aria-live="polite" hidden></p>
             <div class="chart-context-row">
               <div id="history-chart-legend" class="chart-legend" aria-label="국면 상태 선 범례">
-                <span><i class="legend-line risk-on-line" aria-hidden="true"></i><span data-state-label="risk_on">Risk-on</span> · 실선</span>
-                <span><i class="legend-line transition-line" aria-hidden="true"></i><span data-state-label="transition">Transition</span> · 파선</span>
-                <span><i class="legend-line risk-off-line" aria-hidden="true"></i><span data-state-label="risk_off">Risk-off</span> · 점선</span>
+                <span><i class="legend-line risk-on-line" aria-hidden="true"></i><span data-state-label="risk_on">Risk-on</span></span>
+                <span><i class="legend-line transition-line" aria-hidden="true"></i><span data-state-label="transition">Transition</span></span>
+                <span><i class="legend-line risk-off-line" aria-hidden="true"></i><span data-state-label="risk_off">Risk-off</span></span>
+                <span class="legend-regime-background">배경 · 국면</span>
                 <span><i class="legend-outcome-markers" aria-hidden="true">● ◆ ▼</i><span id="history-actual-legend">실제 t+1 결과</span></span>
               </div>
               <div id="chart-selection-readout" class="chart-selection-readout" aria-live="polite">
@@ -410,7 +422,7 @@
                   <dl class="chart-readout-diagnostics">
                     <div><dt>예측 국면</dt><dd id="chart-readout-predicted">—</dd></div>
                     <div><dt id="chart-readout-actual-label">실제 1주 후</dt><dd id="chart-readout-actual">—</dd></div>
-                    <div><dt>예측 엔트로피 (0–1)</dt><dd id="chart-readout-entropy">—</dd></div>
+                    <div><dt>엔트로피 (0–1)</dt><dd id="chart-readout-entropy">—</dd></div>
                   </dl>
                 </div>
               </div>
@@ -434,14 +446,14 @@
               <div id="chart-tooltip" class="chart-tooltip" role="status" hidden></div>
             </div>
             <p id="chart-interaction-hint" class="sr-only">클릭 또는 방향키로 날짜 이동</p>
-            <p id="history-scroll-guide" class="history-scroll-guide" hidden>확장 구간 · 좌우로 탐색</p>
+            <p id="history-scroll-guide" class="history-scroll-guide" hidden>좌우로 탐색</p>
             <div id="history-range-labels" class="history-range-labels" aria-label="차트 표시 시작일과 종료일">
               <span id="history-range-start">—</span>
               <span id="history-range-end">—</span>
             </div>
 
             <details class="data-details">
-              <summary>차트 값을 표로 보기</summary>
+              <summary>수치 표</summary>
               <div id="history-table-scroll" class="table-scroll" tabindex="0" aria-label="표시 기간의 국면 상태 표">
                 <table>
                   <caption id="history-table-caption" class="sr-only">표시 기간의 현재 국면 상태 값</caption>
@@ -474,7 +486,7 @@
             <div class="card-heading">
               <div>
                 <h2 id="factor-title">국면 팩터</h2>
-                <p id="factor-caption" class="section-caption">52주 표준화 기반 합성점수</p>
+                <p id="factor-caption" class="section-caption">52주 표준화 점수</p>
               </div>
             </div>
             <div id="context-plane" class="context-plane" role="img" aria-label="추세와 시장 스트레스"></div>
@@ -489,7 +501,7 @@
           <div class="card-heading">
             <div>
               <h2 id="timeline-title">위험 상태 타임라인</h2>
-              <p class="section-caption">전체 관측 이력 · 1칸 = 1주 · 선택해 날짜 이동</p>
+              <p class="section-caption">전체 이력 · 1칸 = 1주</p>
             </div>
             <div class="timeline-key" aria-label="타임라인 기호 범례">
               <span><b data-state-symbol="risk_on" aria-hidden="true">↗</b> <span data-state-label="risk_on">Risk-on</span></span>
@@ -549,7 +561,7 @@
                 <h2 id="model-title">모델 비교</h2>
                 <div id="champion-summary" class="champion-summary" aria-label="선택 모델"></div>
               </div>
-              <p id="model-caption" class="section-caption">선택한 관측 주까지 완료된 예측 평가</p>
+              <p id="model-caption" class="section-caption">선택 주까지 확정된 결과</p>
             </div>
             <div class="model-heading-controls">
               <div id="model-forecast-field" class="field-group model-forecast-field v5-only" hidden>
@@ -586,7 +598,7 @@
               <div>
                 <span id="model-forecast-role" class="sr-only">공식 모델</span>
                 <h3 id="model-forecast-title">주간 예측 비교</h3>
-                <p id="model-forecast-caption" class="section-caption">선택한 관측 주의 1주 예측</p>
+                <p id="model-forecast-caption" class="section-caption">선택 주 · 1주 예측</p>
               </div>
               <div class="model-forecast-state">
                 <span id="model-forecast-symbol" class="model-forecast-symbol" aria-hidden="true">—</span>
@@ -613,7 +625,7 @@
             <div id="model-loss-axis" class="fixed-axis model-loss-axis" aria-hidden="true"><span>0</span><span>0.55</span><span>1.10</span></div>
           </figure>
           <details class="compact-table-details">
-            <summary>전체 모델 보기</summary>
+            <summary>모델별 지표</summary>
             <div class="table-scroll" tabindex="0" aria-label="선택 기간 모델 진단 지표 표">
               <table id="leaderboard-table">
                 <caption class="sr-only">선택 기간 진단 지표</caption>
@@ -652,7 +664,7 @@
           </div>
           <div id="transition-model-summary" class="transition-model-summary" aria-live="polite"></div>
           <details class="compact-table-details">
-            <summary>전체 이탈 모델 표</summary>
+            <summary>이탈 모델별 지표</summary>
             <div class="table-scroll" tabindex="0" aria-label="국면 이탈 모델 진단 지표 표">
               <table id="transition-leaderboard-table">
                 <caption id="transition-leaderboard-caption" class="sr-only">1주 이탈 모델 진단 지표</caption>
@@ -679,7 +691,7 @@
           <summary>검증·운영 상세</summary>
           <div class="research-methods-body">
             <section class="model-evaluation-details" aria-labelledby="model-details-title">
-              <h2 id="model-details-title">선택 모델 평가 상세</h2>
+              <h2 id="model-details-title">선택 모델 평가</h2>
               <p id="model-detail-caption" class="section-caption"></p>
               <p id="model-evaluation-note" class="section-caption"></p>
               <div id="model-input-comparison" class="model-input-comparison" aria-live="polite" hidden></div>
@@ -709,7 +721,7 @@
               <div class="table-scroll" tabindex="0" aria-label="데이터 소스 상태 표">
                 <table><caption class="sr-only">데이터 소스 상태</caption><thead><tr><th scope="col">소스</th><th scope="col">상태</th><th scope="col">가용 시점</th><th scope="col">범위 / 주기</th></tr></thead><tbody id="source-health-body"></tbody></table>
               </div>
-              <details class="feature-details"><summary>Feature catalog</summary><div id="feature-catalog" class="feature-catalog"></div></details>
+              <details class="feature-details"><summary>입력 지표</summary><div id="feature-catalog" class="feature-catalog"></div></details>
               <nav class="source-links" aria-label="데이터 제공처"><a href="https://fred.stlouisfed.org/">FRED</a><a href="https://www.alphavantage.co/">Alpha Vantage</a><a href="https://www.federalreserve.gov/releases/h10/">Federal Reserve H.10</a></nav>
               <dl class="footer-meta operations-meta"><div><dt>모델 버전</dt><dd id="footer-model-version">—</dd></div><div><dt>스키마</dt><dd id="footer-schema-version">—</dd></div><div><dt>생성 시각</dt><dd id="footer-generated-at">—</dd></div></dl>
             </section>
@@ -729,20 +741,20 @@
               </div>
             </section>
             <section><h3>경로·지속기간</h3>
-              <p>최초 이탈은 현재 국면을 처음 떠나는 사건입니다. 위험회피 진입은 중간 국면을 거치는 경우도 포함합니다. 기간 중 관측은 한 번 이상, 기간 말은 마지막 주의 상태입니다.</p>
-              <p id="duration-estimate-note">KM은 과거 지속패턴입니다. 95% 구간은 추정치 구간이며 종료시점 예측구간과 다릅니다.</p>
+              <p>최초 이탈: 현재 국면을 처음 떠남. 위험회피 진입: 중간 국면을 거쳐도 포함. 기간 중: 한 번 이상 관측. 기간 말: 마지막 주 상태.</p>
+              <p id="duration-estimate-note">KM은 과거 지속 패턴, 95% 구간은 추정 불확실성입니다.</p>
             </section>
             <section><h3>모델 평가·보정</h3>
-              <p>Log loss·Brier는 낮을수록 좋습니다. 오차 차이는 후보−기준선입니다. 발행 확률과 연구 보정값은 구분해 표시합니다.</p>
-              <p>2023년 이후는 과거 진단 구간입니다. 탐지 지연은 포착된 전환의 평균입니다.</p>
+              <p>Log loss·Brier: 낮을수록 정확. 오차 차이: 후보−기준선. 탐지 지연: 포착한 전환의 평균.</p>
+              <p>2023년 이후 과거 진단과 발행 후 평가를 구분합니다.</p>
               <div id="forecast-method-notes"></div>
             </section>
             <section><h3>발행 원장</h3>
-              <p>발행 후 평가는 대상 시각 전 저장된 예측을 주별 한 건씩 셉니다. 국면 평가는 매매 평가와 독립적입니다.</p>
+              <p>대상 시각 전 저장한 예측을 주별 한 건씩 평가합니다.</p>
             </section>
             <section><h3>자산·시장 점수</h3>
-              <p>구간 평균은 국면 구간에, 주별 평균은 각 주에 같은 비중을 줍니다. 4·13주 성과는 보유기간이 겹칩니다.</p>
-              <p>2축 차트는 오른쪽이 추세 강세, 위쪽이 스트레스 증가입니다.</p>
+              <p>구간 평균: 국면 구간별 동일 비중. 주별 평균: 각 주 동일 비중. 4·13주 성과는 보유기간이 겹칩니다.</p>
+              <p>2축 차트: 오른쪽은 추세 강세, 위쪽은 스트레스 증가.</p>
             </section>
           </div>
         </details>

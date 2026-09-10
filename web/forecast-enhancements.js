@@ -9,16 +9,18 @@
   const STATE_LABELS = { risk_on: "위험 선호", transition: "전환", risk_off: "위험 회피" };
   const LABELS = {
     causal_dynamic_ensemble: "운영 앙상블", recency_weighted_xgboost_208w: "최근 가중 XGBoost",
-    markov: "Markov", persistence: "현재 상태 유지", boundary_filtered_history: "경계 · 과거 분포",
+    markov: "Markov", persistence: "현재 상태 유지", boundary_filtered_history: "경계 · 과거 잔차",
     boundary_student_t: "경계 · Student-t", boundary_asymmetric_ewma: "경계 · 비대칭 변동성",
-    directional_duration_hazard: "방향·지속기간", markov_duration_path_baseline: "Markov 경로",
-    adaptive_shrink_after_coherence: "적응형 축소 보정", identity_after_coherence: "무보정·정합", frozen_stored_calibration: "기존 발행 보정",
+    directional_duration_hazard: "방향·기간", markov_duration_path_baseline: "Markov 경로",
+    direct_endpoint_ridge: "직접 국면 · Ridge", direct_endpoint_xgboost: "직접 국면 · XGBoost",
+    evolving_boundary_ewma: "EWMA 경로", evolving_boundary_gjr_skewt: "GJR-GARCH 경로", markov_endpoint: "Markov · 기간 말",
+    adaptive_shrink_after_coherence: "축소 보정", identity_after_coherence: "무보정·정합", frozen_stored_calibration: "발행 보정",
     weekly_threshold: "기존 주별 기준", episode_hysteresis_cooldown: "기존 구간 기준", bounded_episode_budget: "1주 만료 · 예산 제한",
     boundary_cleveland_inflation: "경계 + 물가", boundary_nyfed_growth: "경계 + 성장", boundary_reserve_elasticity: "경계 + 준비금",
     official: "기본 정의", wider_thresholds: "경계 넓힘", narrower_thresholds: "경계 좁힘", less_hysteresis: "완충 폭 축소", more_hysteresis: "완충 폭 확대", boundary_residual_raw: "경계 잔차 기준선",
     first_departure: "최초 이탈", risk_off_entry: "위험회피 진입", risk_off_occupancy: "위험회피 관측",
     endpoint_risk_on: "기간 말 위험선호", endpoint_transition: "기간 말 전환", endpoint_risk_off: "기간 말 위험회피", worsening: "기간 말 악화", recovery: "기간 말 회복",
-    downside_state_only: "현재 국면만", downside_direct_market: "현재 국면 + 시장 지표", downside_state_plus_direct_endpoint_ridge: "현재 국면 + Ridge 예측", downside_state_plus_evolving_boundary_gjr_skewt: "현재 국면 + GJR 경로 예측",
+    downside_state_only: "국면", downside_direct_market: "국면 + 시장 지표", downside_state_plus_direct_endpoint_ridge: "국면 + Ridge", downside_state_plus_evolving_boundary_gjr_skewt: "국면 + GJR 경로",
   };
   const state = { context: null, data: null, loading: null, generation: null, model: null, horizon: 1, labelHorizon: null, evaluationScope: "selected", alertModel: null, healthTarget: "worsening", healthScope: "current", error: null };
   const finite = (value) => typeof value === "number" && Number.isFinite(value);
@@ -28,7 +30,7 @@
   const pct = (value) => finite(value) ? `${n(value * 100, 1)}%` : "—";
   const signed = (value, digits = 4) => finite(value) ? `${value > 0 ? "+" : ""}${n(value, digits)}` : "—";
   const count = (value) => finite(value) ? n(value, 0) : "—";
-  const label = (model, data = state.data) => data?.model_labels?.[model] || LABELS[model] || model.replaceAll("_", " ");
+  const label = (model, data = state.data) => LABELS[model] || data?.model_labels?.[model] || model.replaceAll("_", " ");
   const split = (value) => ({ selection: "선정", holdout: "과거 진단", retrospective_diagnostic: "과거 진단", retrospective_2023_2026: "2023년 이후", prospective: "발행 후", operational_oos: "발행 후" }[value] || value || "과거 진단");
   const key = (row) => `${date(row.origin_date)}|${row.model}|${row.horizon_weeks}`;
 
@@ -217,7 +219,7 @@
     const applied = el("section", "enhancement-applied");
     const heading = el("div", "enhancement-applied-heading");
     const historical = week.date !== date(state.data.data_as_of);
-    heading.append(el("h3", null, "공식 모델값"), el("span", "enhancement-status", historical ? "과거 OOS" : "운영 모델 유지"));
+    heading.append(el("h3", null, "공식 예측"), el("span", "enhancement-status", historical ? "과거 OOS" : "운영"));
     applied.append(heading);
     if (next?.probabilities) {
       applied.append(el("p", "section-caption", `1주 국면 · ${date(next.date || next.target_date || week.next_week?.date)} 대상 · ${label(next.model)}`));
@@ -225,8 +227,8 @@
     }
     const comparisons = appliedComparison(state.data, week);
     if (comparisons.some((row) => finite(row.applied))) {
-      applied.append(el("h4", null, "최초 이탈 · 적용값과 보정안"));
-      table(applied, ["기간 · 대상", "공식 적용", "보정 연구안", "차이", "과거 KM · 95% 구간"], comparisons.map((row) => [
+      applied.append(el("h4", null, "최초 이탈 확률"));
+      table(applied, ["기간 · 대상", "공식", "연구 보정", "차이", "과거 KM · 95% 구간"], comparisons.map((row) => [
         `${row.horizon}주 · ${row.target || "—"}`, pct(row.applied), pct(row.candidate), finite(row.delta) ? `${signed(row.delta * 100, 1)}%p` : "—",
         `${pct(row.km)}${finite(row.interval?.lower) && finite(row.interval?.upper) ? ` · ${pct(row.interval.lower)}–${pct(row.interval.upper)}` : ""}`,
       ]), "같은 최초 이탈 사건의 공식 적용값과 보정 연구안 비교");
@@ -238,13 +240,13 @@
     if (!rows(data.alerts?.metrics).length) return;
     const selected = alertView(data, { week: state.context.week.date, model: state.alertModel }); state.alertModel = selected.model;
     const section = el("section", "enhancement-alerts");
-    const heading = el("div", "enhancement-applied-heading"); heading.append(el("h3", null, "1주 악화 경보 비교"), el("span", "enhancement-status", "연구 정책")); section.append(heading);
-    section.append(selectControl("enhancement-alert-model", "경보 확률 모델", selected.models.map((model) => [model, label(model)]), selected.model, (model) => { state.alertModel = model; render(); syncUrl(); }));
+    const heading = el("div", "enhancement-applied-heading"); heading.append(el("h3", null, "1주 악화 경보"), el("span", "enhancement-status", "연구")); section.append(heading);
+    section.append(selectControl("enhancement-alert-model", "경보 모델", selected.models.map((model) => [model, label(model)]), selected.model, (model) => { state.alertModel = model; render(); syncUrl(); }));
     const policy = data.alerts.policy || {};
-    section.append(el("p", "section-caption", `선택 주 ${state.context.week.date} · 새 정책 유효 ${count(policy.validity_weeks || 1)}주 · 오경보 예산 연 ${count(policy.budget ?? policy.annual_false_week_budget ?? 4)}주 · 최근 최대 ${count(policy.calibration_window_weeks || policy.window_weeks || 156)}주 기준`));
+    section.append(el("p", "section-caption", `신규 정책 · 유효 ${count(policy.validity_weeks || 1)}주 · 오경보 예산 연 ${count(policy.budget ?? policy.annual_false_week_budget ?? 4)}주 · 평가 창 최대 ${count(policy.calibration_window_weeks || policy.window_weeks || 156)}주`));
     const statuses = { issued: "경보", watching: "관찰", insufficient_history: "표본 대기", budget_limited: "예산 대기", cooldown: "재경보 대기", awaiting_reset: "신호 해제 대기", no_supported_policy: "유효 정책 대기", off: "경보 중단" };
-    table(section, ["정책", "현재 상태", "확률 / 기준", "유효 종료", "평가 창 잔여 예산"], selected.forecasts.map((row) => [label(row.policy), statuses[row.policy_status] || (row.alert ? "경보" : "관찰"), `${pct(row.probability)} / ${row.threshold > 1 ? "중단" : pct(row.threshold)}`, alertExpiry(row), finite(row.budget_capacity_remaining) ? `${count(row.budget_capacity_remaining)}주 / ${count(row.calibration_rows)}주 창` : "—"]), "선택 주의 경보 상태와 만료일");
-    disclosure(section, "전체기간 경보 평가", (body) => {
+    table(section, ["정책", "상태", "확률 / 기준", "유효 종료", "잔여 예산 / 평가 창"], selected.forecasts.map((row) => [label(row.policy), statuses[row.policy_status] || (row.alert ? "경보" : "관찰"), `${pct(row.probability)} / ${row.threshold > 1 ? "중단" : pct(row.threshold)}`, alertExpiry(row), finite(row.budget_capacity_remaining) ? `${count(row.budget_capacity_remaining)}주 / ${count(row.calibration_rows)}주` : "—"]), "선택 주의 경보 상태와 만료일");
+    disclosure(section, "경보 평가 · 전체 기간", (body) => {
       const criteria = { bounded_episode_budget: "다음 주 1:1 · 단일 경보 선행", weekly_threshold: "다음 주 임계값 · 구간 선행", episode_hysteresis_cooldown: "활성 구간 내 악화 · 구간 선행" };
       table(body, ["정책 · 성공/선행 기준", "평가 기준일", "평가 주 / 악화", "포착 / 악화", "포착률", "오경보 주 / 년", "오경보 구간 / 년", "평균 선행"], selected.metrics.map((row) => [
         `${label(row.policy)} · ${criteria[row.policy] || "—"}`,
@@ -258,7 +260,7 @@
   function renderWeeklyCandidates(container) {
     const value = state.data.weekly_candidates;
     if (!value || value.schema_version !== "regime-weekly-candidates-summary/1") return;
-    disclosure(container, "후보 주간 기록 · 최신 집계", (body) => {
+    disclosure(container, "후보 주간 기록", (body) => {
       const status = { deadline_missed: "발행 마감 경과", issued: "발행 완료", issued_local_preview: "로컬 발행 완료", already_issued: "발행 기록 유지", pending: "결과 대기", ready: "발행 준비" }[value.status || value.latest?.status] || "기록 확인";
       body.append(el("p", "section-caption", `${status} · 기준 ${date(value.latest_origin_at || value.latest?.origin_at) || "—"} · 갱신 ${date(value.as_of) || "—"}`));
       metrics(body, [["발행", `${count(value.issued_packets)}회`], ["결과 대기", `${count(value.pending_predictions)}건`], ["평가 완료", `${count(value.matured_predictions)}건`]], "enhancement-events");
@@ -269,7 +271,7 @@
   function renderPrediction(container, selected) {
     const forecast = selected.forecast;
     const result = el("div", "enhancement-prediction");
-    if (!forecast) { result.append(el("p", "section-caption", "이 기준일에는 해당 모델의 예측이 없습니다.")); container.append(result); return; }
+    if (!forecast) { result.append(el("p", "section-caption", "선택 모델·기준일의 예측 없음")); container.append(result); return; }
     const predicted = STATES.reduce((best, code) => forecast.probabilities[code] > forecast.probabilities[best] ? code : best, STATES[0]);
     const heading = el("div", "enhancement-prediction-heading");
     heading.append(el("span", null, `${date(forecast.target_date).replaceAll("-", ".")} 시점`), el("strong", `state-text-${predicted}`, STATE_LABELS[predicted]));
@@ -277,7 +279,7 @@
     const reference = selected.horizon === 1 ? (state.context.officialForecast || state.context.week.next_week)
       : forecastRows(state.data).find((row) => row.model === "markov_endpoint" && row.horizon_weeks === selected.horizon && date(row.origin_date) === state.context.week.date);
     const referenceName = selected.horizon === 1 ? "공식 1주 예측" : `Markov ${selected.horizon}주 기준선`;
-    if (reference?.probabilities) result.append(el("p", "section-caption", `우측 차이: ${referenceName} 대비`));
+    if (reference?.probabilities) result.append(el("p", "section-caption", `차이 · ${referenceName} 대비`));
     const probabilities = el("div", "enhancement-probabilities");
     for (const code of STATES) {
       const row = el("div", "enhancement-probability");
@@ -296,33 +298,33 @@
   }
   function renderScorecard(container, selected) {
     const metric = selected.evaluation.find((row) => row.model === selected.model);
-    const card = el("div", "enhancement-scorecard"); card.append(el("h3", null, "기간 말 국면 평가"));
+    const card = el("div", "enhancement-scorecard"); card.append(el("h3", null, "기간 말 평가"));
     if (state.context.modelEvaluation) card.append(selectControl("enhancement-evaluation-window", "평가 기간 · 선택 주까지", [[26, "26주"], [52, "52주"], [104, "104주"], ["all", "전체"]], state.context.evaluationWindow, (window) => changeComparison({ window })));
     if (!metric || !metric.n_predictions) { card.append(el("p", "section-caption", "확정된 공통 비교 표본 없음")); container.append(card); return; }
-    card.append(el("p", "section-caption", `결과 확정 ${metric.evaluation_start}–${metric.evaluation_end} · ${selected.horizon}주 예측`));
+    card.append(el("p", "section-caption", `확정 ${metric.evaluation_start}–${metric.evaluation_end} · ${selected.horizon}주`));
     const baseline = metric.baseline_model ? label(metric.baseline_model) : "기준선";
     metrics(card, [["Log loss", n(metric.log_loss, 4)], ["기준선 대비", signed(metric.delta_log_loss), baseline], ["평가 표본", `${count(metric.n_predictions)}주`], ["Brier", n(metric.brier, 4)]]);
-    const link = el("a", "enhancement-evaluation-link", "모델 검증 · 비교표와 예측 이력 →"); link.href = "#history";
+    const link = el("a", "enhancement-evaluation-link", "모델 비교·이력 →"); link.href = "#history";
     card.append(link); container.append(card);
   }
   function renderDetails(container, selected) {
     const data = state.data;
-    const diagnosticHeading = el("p", "enhancement-evaluation-heading", `이하 전체기간 진단 · 자료 ${date(data.data_as_of)}까지`); container.append(diagnosticHeading);
-    if (selected.calibration.length) disclosure(container, "이탈 보정의 전체기간 평가", (body) => {
+    const diagnosticHeading = el("p", "enhancement-evaluation-heading", `전체 기간 진단 · ${date(data.data_as_of)} 기준`); container.append(diagnosticHeading);
+    if (selected.calibration.length) disclosure(container, "이탈 확률 보정", (body) => {
       table(body, ["보정", "기간", "평가", "표본", "Log loss ↓", "Brier ↓"], selected.calibration.map((row) => [label(row.model), `${row.horizon_weeks}주`, split(row.evaluation_split), count(row.n_predictions), n(row.log_loss, 4), n(row.brier, 4)]), "운영 이탈 확률의 보정 방법별 평가");
     });
-    if (selected.economics.length) disclosure(container, `악화 신호 뒤 ${selected.economicHorizon}주 시장 움직임`, (body) => {
+    if (selected.economics.length) disclosure(container, `악화 신호 후 ${selected.economicHorizon}주 시장`, (body) => {
       const current = state.context.week.current.state;
       const conditioned = selected.economics.filter((row) => row.stratum === current);
       const values = conditioned.flatMap((row) => rows(row.risk_bins).filter((bin) => bin.weeks > 0).map((bin) => [
         split(row.split), `${pct(bin.lower_inclusive)}–${pct(bin.upper)}`, count(bin.weeks),
         pct(bin.downside_event_rate), pct(bin.mean_forward_return), pct(bin.mean_minimum_cumulative_return), pct(bin.mean_realized_volatility),
       ]));
-      body.append(el("p", "section-caption", `현재와 같은 ${STATE_LABELS[current]} 국면 · 1주 악화확률로 구분${current === "risk_off" ? " · 이미 위험회피 상태에서는 악화확률이 0입니다" : ""}`));
+      body.append(el("p", "section-caption", `${STATE_LABELS[current]} 국면${current === "risk_off" ? " · 악화확률 0 (최하위 국면)" : ""}`));
       table(body, ["평가", "1주 악화확률", "표본", "5% 이상 하락", "평균 수익", "평균 최저 수익", "연율 변동성"], values, "같은 현재 국면에서 악화 신호와 이후 시장 위험 비교");
     });
-    if (selected.economicIncremental.length) disclosure(container, `${selected.economicHorizon}주 하락 예측의 추가 정보`, (body) => {
-      body.append(el("p", "section-caption", "주간 종가가 기준일보다 5% 이상 하락하는 사건 · 현재 국면만 사용한 예측과 비교"));
+    if (selected.economicIncremental.length) disclosure(container, `${selected.economicHorizon}주 하락 예측 비교`, (body) => {
+      body.append(el("p", "section-caption", "주간 종가 −5% 이하 (기준일 대비) · 국면 단독 예측 대비"));
       table(body, ["입력", "평가", "표본 / 사건", "Log loss", "차이", "차이 95% 구간"], selected.economicIncremental.map((row) => [label(row.model), split(row.evaluation_split), `${count(row.n_predictions)}/${count(row.event_count)}`, n(row.log_loss, 4), signed(row.delta_log_loss), `${signed(row.ci_low)}–${signed(row.ci_high)}`]), "국면 예측값이 실제 하락 위험 예측에 더하는 정보");
     });
     if (selected.eventMetrics.length) disclosure(container, "사건별 예측 평가", (body) => {
@@ -331,8 +333,7 @@
     renderReliability(container, selected);
     renderRobustness(container, selected);
     renderInformation(container);
-    disclosure(container, "평가 기준·파일", (body) => {
-      body.append(el("p", "section-caption", `기준 ${date(data.data_as_of)} · 기간 말 국면과 기간 내 이탈을 별도로 평가합니다.`));
+    disclosure(container, "평가 파일", (body) => {
       const nav = el("nav", "source-links");
       const link = el("a", null, "전체 예측·평가 JSON"); link.href = "./data/forecast-enhancements.json"; nav.append(link);
       for (const artifact of rows(data.provenance?.artifacts)) {
@@ -353,7 +354,7 @@
     const chosenTarget = targets.includes(state.healthTarget) ? state.healthTarget : targets.includes("endpoint_risk_off") ? "endpoint_risk_off" : targets[0];
     const result = available.find((row) => row.target === chosenTarget);
     disclosure(container, "최근 확률 신뢰도", (body) => {
-      body.append(el("p", "section-caption", `전체 자료의 최근 확정 52주 · 기준 ${date(state.data.data_as_of)}`));
+      body.append(el("p", "section-caption", "최근 확정 52주"));
       const controls = el("div", "enhancement-controls");
       controls.append(selectControl("enhancement-health-scope", "기준 국면", scopes.map((value) => [value, value === "all" ? "전체 상태" : STATE_LABELS[value]]), chosenScope, (value) => { state.healthScope = value; render(); syncUrl(); }),
         selectControl("enhancement-health-target", "예측 사건", targets.map((value) => [value, label(value)]), chosenTarget, (value) => { state.healthTarget = value; render(); syncUrl(); }));
@@ -399,15 +400,15 @@
     const labels = labelSensitivityRows(robustness, labelHorizon);
     const competitive = applicable(robustness.label_sensitivity?.competitive_baselines?.rows || robustness.competitive_baselines?.rows);
     if (!events.length && !blocks.length && !labels.length && !competitive.length) return;
-    disclosure(container, "사건·평가 조건별 안정성", (body) => {
+    disclosure(container, "조건별 안정성", (body) => {
       table(body, ["제외 사건", "평가", "제외 표본", "남은 표본", "기준선 대비"], events.map((row) => [date(row.episode_id) || row.event_label || row.event || row.excluded_event, split(row.evaluation_split), count(row.removed_origins), count(row.remaining_origins ?? row.n_predictions ?? row.n), signed(row.delta_log_loss)]), "사건 하나씩 제외한 모델 점수");
       table(body, ["평가", "블록 길이", "확률 오차 차이", "95% 하한", "95% 상한"], blocks.map((row) => [split(row.evaluation_split), `${count(row.block_weeks ?? row.block_length)}주`, signed(row.delta_log_loss ?? row.mean_difference), signed(row.ci_low ?? row.ci_lower ?? row.lower), signed(row.ci_high ?? row.ci_upper ?? row.upper)]), "시계열 블록 길이별 점수 차이");
       if (competitive.length) {
-        body.append(el("h4", null, `${selected.horizon}주 기존 강한 기준선과 비교`));
+        body.append(el("h4", null, `${selected.horizon}주 기준선 비교`));
         table(body, ["모델 / 기준선", "기간", "평가", "블록", "표본", "Δ Log loss", "차이 95% 구간"], competitive.map((row) => [`${label(row.model)} / ${label(row.baseline_model)}`, `${row.horizon_weeks}주`, split(row.evaluation_split), `${row.block_weeks}주`, count(row.n_predictions), signed(row.delta_log_loss), `${signed(row.ci_low)}–${signed(row.ci_high)}`]), "공식 국면 정의에서 동일 표본의 기존 기준선 비교");
       }
       if (labels.length) {
-        body.append(el("h4", null, "국면 정의별 예측 안정성"));
+        body.append(el("h4", null, "국면 정의별 비교"));
         body.append(selectControl("enhancement-label-horizon", "국면 정의 평가기간", [[1, "1주"], [4, "4주"], [13, "13주"]], labelHorizon, (value) => { state.labelHorizon = Number(value); render(); syncUrl(); }));
       }
       table(body, ["국면 정의", "모델", "기간", "평가", "표본", "Log loss", "기준선 대비"], labels.map((row) => [row.spec_label || label(row.spec_id), label(row.model), `${row.horizon_weeks}주`, split(row.evaluation_split), count(row.n_predictions ?? row.n), n(row.log_loss, 4), signed(row.delta_log_loss)]), `국면 정의별 ${labelHorizon}주 예측 안정성`);
@@ -418,7 +419,7 @@
     const info = state.data.additional_information;
     const sources = rows(info?.sources);
     if (!sources.length) return;
-    disclosure(container, "추가 정보 · 최신 확보", (body) => {
+    disclosure(container, "추가 정보", (body) => {
       const grid = el("div", "enhancement-source-grid");
       const features = rows(info.features);
       for (const source of sources) {
@@ -467,7 +468,7 @@
     if (!items.length) { container.hidden = true; return; }
     container.append(el("small", "section-caption", "SPY 국면 점수 = 추세 − 스트레스"));
     metrics(container, items, "enhancement-events");
-    if (finite(value.known_zero_return_rolloff_change)) container.append(el("p", "section-caption", `가격 불변 시 다음 주 점수 변화 ${signed(value.known_zero_return_rolloff_change, 3)}`));
+    if (finite(value.known_zero_return_rolloff_change)) container.append(el("p", "section-caption", `다음 주 점수 변화 ${signed(value.known_zero_return_rolloff_change, 3)} · 가격 불변 가정`));
   }
   function render() {
     if (typeof document === "undefined" || !state.context) return;
@@ -496,11 +497,11 @@
       : evaluate(state.data, { week: state.context.week.date, horizon: selected.horizon, scope: state.evaluationScope });
     state.model = selected.model; state.horizon = selected.horizon;
     const heading = el("div", "enhancement-heading");
-    const copy = el("div"); copy.append(el("h2", null, "예측 · 적용값과 연구 비교"), el("p", "section-caption", `${state.context.week.date.replaceAll("-", ".")} 기준`));
+    const copy = el("div"); copy.append(el("h2", null, "예측 비교"), el("p", "section-caption", `${state.context.week.date.replaceAll("-", ".")} 기준`));
     heading.append(copy); container.append(heading);
     renderApplied(container);
     const researchHeading = el("div", "enhancement-heading enhancement-research-heading");
-    researchHeading.append(el("h3", null, `선택 모델 · ${selected.horizon}주 말 국면`));
+    researchHeading.append(el("h3", null, `${selected.horizon}주 말 국면 · ${selected.model === (state.context.officialForecast || state.context.week.next_week)?.model ? "공식" : "연구"}`));
     const controls = el("div", "enhancement-controls");
     controls.append(selectControl("enhancement-model", "예측 모델", selected.models.map((model) => [model, label(model)]), selected.model, (model) => changeComparison({ model })),
       selectControl("enhancement-horizon", "예측 기간", (state.context.modelOptions ? [1, 4, 13] : selected.horizons).map((h) => [h, `${h}주`]), selected.horizon, (h) => changeComparison({ horizon: Number(h) })));

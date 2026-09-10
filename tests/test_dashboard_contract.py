@@ -1583,10 +1583,9 @@ def test_results_first_layout_keeps_decision_flow_and_wide_history() -> None:
     assert 'id="duration-context-card" class="card v5-only"' in document
     assert 'id="fx-context-card" class="card v5-only"' in document
     assert 'id="conditional-stats" class="dashboard-section conditional-stats-section card v5-only"' in document
-    assert 'viewBox="0 0 1200 560"' in document
-    assert "width: 1200" in script
-    assert "panelGap: 64" in script
-    assert "const desiredTicks = Math.min(7, history.length)" in script
+    # Actual width, tick density and date mapping are exercised by
+    # test_probability_chart_rendering rather than frozen implementation strings.
+    assert 'id="probability-chart"' in document
     assert "function scrollChartDateIntoView" in script
     assert "requestAnimationFrame(() => scrollChartDateIntoView(state.chartPinnedDate))" in script
     assert ".overview-section .decision-pipeline" in styles
@@ -1621,8 +1620,8 @@ def test_v5_only_sections_fail_closed_for_v4_payloads() -> None:
 
 def test_full_model_and_conditional_tables_are_collapsed_by_default() -> None:
     document = HTML_PATH.read_text(encoding="utf-8")
-    assert "<summary>전체 모델 보기</summary>" in document
-    assert "<summary>전체 이탈 모델 표</summary>" in document
+    assert "<summary>모델별 지표</summary>" in document
+    assert "<summary>이탈 모델별 지표</summary>" in document
     assert "상세 성과 표" in document
     assert '<details id="research-methods" class="research-methods card">' in document
     collapsed_methods = document.split('<details id="research-methods"', 1)[1]
