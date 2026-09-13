@@ -1306,6 +1306,7 @@ def test_dashboard_assets_are_local_and_present() -> None:
         "https://sonchanggi.github.io/etf-tracking/",
         "https://sonchanggi.github.io/sox/",
         "https://sonchanggi.github.io/regime/",
+        "https://sonchanggi.github.io/news/",
         "https://fred.stlouisfed.org/",
         "https://www.alphavantage.co/",
         "https://www.federalreserve.gov/releases/h10/",
@@ -1457,7 +1458,7 @@ def test_date_controls_share_one_control_row_and_one_helper_row() -> None:
 def test_shared_navigation_and_theme_contract_are_explicit() -> None:
     document = HTML_PATH.read_text(encoding="utf-8")
     script = JS_PATH.read_text(encoding="utf-8") + (WEB / "insights.js").read_text(encoding="utf-8")
-    assert 'class="site-nav"' in document
+    assert 'class="site-nav quant-shared-nav"' in document
     assert (
         'href="https://sonchanggi.github.io/regime/" '
         'aria-current="page">Regime</a>'
