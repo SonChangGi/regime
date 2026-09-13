@@ -16,6 +16,10 @@ import pytest
 from regime_lab import automation
 from regime_lab import cli
 from regime_lab.dashboard_split import build_dashboard_split, build_history_chunks
+from regime_lab.forecast_enhancement_publication import (
+    DESTINATION as ENHANCEMENT_DESTINATION,
+    package_sidecar,
+)
 from regime_lab.forecast_exports import build_forecast_exports
 from regime_lab.web_contract import render_browser_contract_javascript
 
@@ -1029,6 +1033,12 @@ def test_v5_public_readback_requires_hash_bound_core_and_research_split(
     comparison = (live_root / "v5-vs-v4-comparison.json").read_bytes()
     generation = (live_root / "generation-manifest.json").read_bytes()
     selection = (live_root / "selection-family-audit.json").read_bytes()
+    enhancement_files, enhancement_metadata = package_sidecar(
+        json.loads(payload),
+        payload_raw=payload,
+        payload_path=live_root / "regime-results.json",
+        mode="required",
+    )
     core, research = build_dashboard_split(json.loads(payload), payload_raw=payload)
     history, _ = build_history_chunks(json.loads(payload), payload_raw=payload)
     operating_contract = render_browser_contract_javascript()
@@ -1045,6 +1055,7 @@ def test_v5_public_readback_requires_hash_bound_core_and_research_split(
     }
     published = {
         **history,
+        **enhancement_files,
         **build_forecast_exports(json.loads(payload)),
         automation.PUBLIC_PAYLOAD_PATH: payload,
         automation.PUBLIC_CORE_PAYLOAD_PATH: core,
@@ -1057,6 +1068,7 @@ def test_v5_public_readback_requires_hash_bound_core_and_research_split(
     manifest = json.dumps(
         {
             "payload_data_as_of": json.loads(payload)["meta"]["data_as_of"],
+            "forecast_enhancements": enhancement_metadata,
             "files": {
                 path: {
                     "sha256": hashlib.sha256(raw).hexdigest(),
@@ -1096,6 +1108,21 @@ def test_v5_public_readback_requires_hash_bound_core_and_research_split(
         raise AssertionError(url)
 
     with pytest.raises(automation.AutomationError, match="research.*expected generation"):
+        automation.verify_public_readback(
+            settings,
+            expected_payload=payload,
+            expected_comparison=comparison,
+            expected_generation_manifest=generation,
+            expected_selection_family=selection,
+            expected_assets=assets,
+            fetch=tampered_fetch,
+        )
+
+    # The fixture must exercise the generation-bound forecast sidecar as well
+    # as the core/research split when a weekly refresh requires that sidecar.
+    tampered[ENHANCEMENT_DESTINATION] = published[ENHANCEMENT_DESTINATION] + b" "
+    tampered[automation.PUBLIC_RESEARCH_SIDECAR_PATH] = research
+    with pytest.raises(automation.AutomationError, match="forecast enhancement file hash"):
         automation.verify_public_readback(
             settings,
             expected_payload=payload,

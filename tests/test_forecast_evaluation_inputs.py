@@ -79,7 +79,7 @@ def expected_frame(payload, scope):
             target = source.get("target_date", source.get("date"))[:10]
             if target > scope["asOf"]:
                 continue
-            records.append({"model": name, "origin_date": week["date"], "actual": actual[target],
+            records.append({"model": name, "origin_date": week["date"], "target_date": target, "actual": actual[target],
                             "current_state": actual[week["date"]], "fallback": source.get("fallback", False),
                             **{"p_" + state: source["probabilities"][state] for state in STATES}})
     return pd.DataFrame(records)
@@ -221,16 +221,54 @@ def test_python_hard_probability_clamping_and_calibration_bins(example):
 
 def test_published_thirteen_models_match_python_scorer_for_full_and_selected_scope():
     payload = json.loads((ROOT / "publication/live/regime-results.json").read_text())
-    output = run_evaluation(payload, {"window": "all"}, {"window": 52}, {"asOf": "2025-12-26", "window": 52})
+    options = ({"window": "all"}, {"window": 52}, {"asOf": "2025-12-26", "window": 52})
+    output = run_evaluation(payload, *options)
     assert output["unchanged"]
-    for result, n in zip(output["results"], (191, 51, 51), strict=True):
+    weekly = sorted(payload["weekly"], key=lambda week: week["date"])
+    names = {*payload["model"]["forecast_comparison"]["models"], *RESEARCH}
+    assert len(names) == 13
+    reference_name = payload["selection"]["operating_champion"]
+    probability_columns = ["p_" + state for state in STATES]
+    for result, option in zip(output["results"], options, strict=True):
+        # Derive the expected scope from the source and requested inputs, not
+        # the JavaScript result or a count that ages with weekly publication.
+        cutoff = option.get("asOf", weekly[-1]["date"])
+        selected = [week for week in weekly if week["date"] <= cutoff]
+        if option["window"] != "all":
+            selected = selected[-option["window"]:]
+        expected_scope = {"start": selected[0]["date"], "end": selected[-1]["date"], "asOf": cutoff}
+        frame = expected_frame(payload, expected_scope)
+        completed = frame["origin_date"].unique()
+        pending = [week for week in selected if week["date"] not in completed]
+        assert all(all(row["date"][:10] > cutoff for row in week["model_forecasts"]) for week in pending)
+        assert frame.groupby("origin_date")["model"].agg(set).map(lambda group: group == names).all()
+        assert {row["name"] for row in result["leaderboard"]} == names
         assert len(result["leaderboard"]) == 13
-        assert result["scope"]["completedCount"] == n
-        assert result["scope"]["excludedCount"] == 0
+        scope = result["scope"]
+        assert {key: scope[key] for key in expected_scope} == expected_scope
+        assert scope["originCount"] == len(selected)
+        assert scope["completedCount"] == len(completed)
+        assert scope["pendingCount"] == len(pending)
+        assert scope["excludedCount"] == 0
+        assert scope["completedOriginStart"] == min(completed)
+        assert scope["completedOriginEnd"] == max(completed)
+        assert scope["completedStart"] == frame["target_date"].min()
+        assert scope["completedEnd"] == frame["target_date"].max()
         assert_python_metrics(payload, result)
-    full = output["results"][0]
-    dynamic = next(row for row in full["leaderboard"] if row["name"] == "causal_dynamic_ensemble")
-    multiscale = next(row for row in full["leaderboard"] if row["name"] == "causal_multiscale_ensemble")
-    assert dynamic["log_loss"] != multiscale["log_loss"]
-    assert full["comparisons"]["causal_multiscale_ensemble"]["samePredictions"] == 191
-    assert full["comparisons"]["causal_multiscale_ensemble"]["meanProbabilityDifference"] > 0
+
+        # New weeks may change whether models choose the same state. Compare
+        # every model with the actual operating reference on matched origins.
+        expected_metrics = evaluate_predictions(frame).set_index("model")
+        reference = frame.loc[frame.model.eq(reference_name)].set_index("origin_date").sort_index()
+        for name in names:
+            candidate = frame.loc[frame.model.eq(name)].set_index("origin_date").sort_index()
+            assert candidate.index.equals(reference.index)
+            values = candidate[probability_columns].to_numpy()
+            reference_values = reference[probability_columns].to_numpy()
+            comparison = result["comparisons"][name]
+            assert comparison["comparedWeeks"] == len(candidate)
+            assert comparison["samePredictions"] == int((values.argmax(axis=1) == reference_values.argmax(axis=1)).sum())
+            assert comparison["meanProbabilityDifference"] == pytest.approx(np.abs(values - reference_values).mean(), abs=1e-12)
+            assert comparison["logLossDifference"] == pytest.approx(
+                expected_metrics.loc[name, "log_loss"] - expected_metrics.loc[reference_name, "log_loss"], abs=1e-12)
+    assert output["results"][0]["comparisons"]["causal_multiscale_ensemble"]["meanProbabilityDifference"] > 0

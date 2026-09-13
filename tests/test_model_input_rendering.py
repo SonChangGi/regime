@@ -2,13 +2,114 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
+from functools import lru_cache
+import math
 from pathlib import Path
 import subprocess
+from zoneinfo import ZoneInfo
 
+import pandas as pd
 import pytest
+
+from regime_lab.analysis.validation import evaluate_predictions
 
 
 ROOT = Path(__file__).resolve().parents[1]
+STATES = ("risk_on", "transition", "risk_off")
+
+
+@lru_cache
+def published_payload():
+    """Use the same current publication as the renderer, never a dated snapshot."""
+    return json.loads((ROOT / "publication/live/regime-results.json").read_text())
+
+
+def number_text(value, digits=0):
+    if value is None or not math.isfinite(value):
+        return "—"
+    rounded = math.floor(value * 10 ** digits + .5) / 10 ** digits
+    text = f"{rounded:,.{digits}f}"
+    return text.rstrip("0").rstrip(".") if "." in text else text
+
+
+def percent_text(value):
+    return "—" if value is None else f"{math.floor(value * 1000 + .5) / 10:.1f}%"
+
+
+@lru_cache
+def expected_evaluation(as_of=None, window=52):
+    """Select completed targets independently and score with the Python oracle.
+
+    The published contract provides a matched model panel; missing forecasts or
+    inconsistent targets must fail here, rather than silently shrink expectations.
+    No browser-produced scope, score, rank or stored actual label is an oracle.
+    """
+    payload = published_payload()
+    weekly = payload["weekly"]
+    as_of = as_of or weekly[-1]["date"]
+    available = [week for week in weekly if week["date"] <= as_of]
+    origins = available if window == "all" else available[-window:]
+    actual = {week["date"]: week["current"]["state"] for week in available}
+    research = {
+        model["id"]: {row["origin_date"][:10]: row for row in [*model["history"], model["latest"]]}
+        for model in payload["research"]["forecast_improvement"]["models"]
+    }
+    names = [*payload["model"]["forecast_comparison"]["models"], *research]
+    records, completed, pending = [], [], 0
+    for week in origins:
+        official = {row["model"]: row for row in week["model_forecasts"]}
+        forecasts = {name: research[name][week["date"]] if name in research else official[name] for name in names}
+        targets = {row.get("target_date", row.get("date"))[:10] for row in forecasts.values()}
+        assert len(targets) == 1, (week["date"], targets)
+        target = targets.pop()
+        assert target > week["date"]
+        if target > as_of:
+            pending += 1
+            continue
+        assert target in actual
+        completed.append((week["date"], target))
+        for name, row in forecasts.items():
+            assert set(row["probabilities"]) == set(STATES)
+            assert sum(row["probabilities"].values()) == pytest.approx(1, abs=1e-6)
+            records.append({"model": name, "origin_date": week["date"],
+                            "current_state": actual[week["date"]], "actual": actual[target],
+                            "fallback": row.get("fallback", False),
+                            **{f"p_{state}": row["probabilities"][state] for state in STATES}})
+    scope = {"start": origins[0]["date"], "end": origins[-1]["date"], "asOf": as_of,
+             "originCount": len(origins), "completedCount": len(completed),
+             "pendingCount": pending, "excludedCount": 0,
+             "completedStart": completed[0][1] if completed else None,
+             "completedEnd": completed[-1][1] if completed else None}
+    if completed:
+        scope.update(completedOriginStart=completed[0][0], completedOriginEnd=completed[-1][0])
+    frame = pd.DataFrame(records)
+    scores = evaluate_predictions(frame).set_index("model") if records else pd.DataFrame()
+    ranked = sorted(names, key=lambda name: (scores.loc[name, "log_loss"], scores.loc[name, "calibration_error"], name)) if records else []
+    return scope, scores, ranked, frame
+
+
+def assert_scoped_view(view, model, *, as_of=None, window=52):
+    scope, scores, ranked, _ = expected_evaluation(as_of, window)
+    assert view["scope"] == scope
+    score = scores.loc[model]
+    assert view["metricValues"] == [
+        f"{ranked.index(model) + 1} / {len(ranked)}", number_text(score.log_loss, 4),
+        number_text(score.brier, 4), number_text(score.calibration_error, 4),
+    ]
+    capture = ("평가 전환 없음" if score.transition_event_count == 0 else
+               f"{number_text(score.on_time_departure_count)}/{number_text(score.transition_event_count)}회")
+    assert f"확률 오차 {number_text(score.log_loss, 4)} Log loss" in view["quality"]
+    assert capture in view["quality"]
+    assert f"평가 {number_text(scope['completedCount'])}주" in view["caption"]
+
+
+def publication_date_text(value):
+    if "T" in value:
+        value = datetime.fromisoformat(value).astimezone(ZoneInfo(published_payload()["meta"]["timezone"]))
+    else:
+        value = datetime.fromisoformat(value)
+    return f"{value.year}년 {value.month}월 {value.day}일"
 
 HARNESS = r"""
 const fs=require('fs'),vm=require('vm'),path=require('path');
@@ -103,16 +204,16 @@ api.selectWeek(full.weekly.length-1,false);const dynamic=snapshot();
 chooseModel('causal_multiscale_ensemble');const multi=snapshot();
 chooseModel('boundary_filtered_history');console.log(JSON.stringify({dynamic,multi,boundary:snapshot()}));
 """)
-    assert "0.6345" in result["dynamic"]["quality"]
-    assert "0.6349" in result["multi"]["quality"]
-    assert "0/14회" in result["multi"]["quality"]
-    assert "51/51주" in result["multi"]["comparison"]
-    assert "예측 국면 일치 51/51주" in result["multi"]["comparison"]
+    for key, model in (("dynamic", "causal_dynamic_ensemble"), ("multi", "causal_multiscale_ensemble"),
+                       ("boundary", "boundary_filtered_history")):
+        assert_scoped_view(result[key], model)
+    scope, _, _, frame = expected_evaluation()
+    predictions = frame.set_index(["origin_date", "model"])[[f"p_{state}" for state in STATES]].idxmax(axis=1).unstack("model")
+    agreement = int(predictions.causal_dynamic_ensemble.eq(predictions.causal_multiscale_ensemble).sum())
+    assert f"예측 국면 일치 {agreement}/{scope['completedCount']}주" in result["multi"]["comparison"]
     assert "선택 모델 멀티스케일 앙상블" in result["multi"]["summary"]
     assert result["multi"]["selectedRows"] == ["causal_multiscale_ensemble"]
     assert result["multi"]["qualityModel"] == "causal_multiscale_ensemble"
-    assert "0.4953" in result["boundary"]["quality"]
-    assert "5/14회" in result["boundary"]["quality"]
     assert result["boundary"]["selectedRows"] == ["boundary_filtered_history"]
     assert result["boundary"]["query"]["model"] == "boundary_filtered_history"
 
@@ -123,12 +224,9 @@ def test_each_window_control_updates_both_selects_and_real_model_outputs(control
 (async()=>{{api.selectWeek(full.weekly.length-1,false);const recent=snapshot();
 await chooseWindow('{control}','all');console.log(JSON.stringify({{recent,all:snapshot()}}));}})();
 """)
-    assert result["recent"]["scope"]["completedCount"] == 51
+    assert_scoped_view(result["recent"], "causal_dynamic_ensemble")
     assert result["all"]["windows"] == ["all", "all"]
-    assert result["all"]["scope"]["completedCount"] == 191
-    assert "0.495 Log loss" in result["all"]["quality"]
-    assert "3/40회" in result["all"]["quality"]
-    assert "평가 191주" in result["all"]["caption"]
+    assert_scoped_view(result["all"], "causal_dynamic_ensemble", window="all")
     assert result["all"]["table"] != result["recent"]["table"]
     assert result["all"]["chart"] != result["recent"]["chart"]
     assert result["all"]["query"]["window"] == "all"
@@ -136,14 +234,13 @@ await chooseWindow('{control}','all');console.log(JSON.stringify({{recent,all:sn
 
 def test_date_input_recalculates_completed_scope_and_starting_week_has_no_rank():
     result = run_js("""
-(async()=>{api.selectWeek(full.weekly.length-1,false);await chooseDate('2025-12-26');const historical=snapshot();
+(async()=>{api.selectWeek(full.weekly.length-1,false);await chooseDate(full.weekly.at(-40).date);const historical=snapshot();
 await chooseDate(full.weekly[0].date);console.log(JSON.stringify({historical,start:snapshot()}));})();
 """)
-    assert result["historical"]["week"] == "2025-12-26"
-    assert "0.4081" in result["historical"]["quality"]
-    assert "1/7회" in result["historical"]["quality"]
-    assert result["historical"]["scope"]["completedEnd"] == "2025-12-26"
-    assert result["start"]["scope"]["completedCount"] == 0
+    historical = published_payload()["weekly"][-40]["date"]
+    assert result["historical"]["week"] == historical
+    assert_scoped_view(result["historical"], "causal_dynamic_ensemble", as_of=historical)
+    assert result["start"]["scope"] == expected_evaluation(published_payload()["weekly"][0]["date"])[0]
     assert result["start"]["rank"] == "—"
     assert "완료된 예측 없음" in result["start"]["caption"]
     assert "평가 0주" in result["start"]["caption"]
@@ -154,23 +251,24 @@ await chooseDate(full.weekly[0].date);console.log(JSON.stringify({historical,sta
 def test_delayed_date_request_cannot_replace_a_later_week_choice():
     result = run_js("""
 (async()=>{const response=delayHistory();api.selectWeek(25,false);
-const older=chooseDate('2025-01-03');api.dom['week-select'].value='2026-08-28';api.dom['week-select'].listeners.change();
+const older=chooseDate(full.weekly[20].date);api.dom['week-select'].value=full.weekly.at(-2).date;api.dom['week-select'].listeners.change();
 const chosen=snapshot();response.resolve();await older;console.log(JSON.stringify({chosen,ready:snapshot()}));})();
 """)
-    assert result["chosen"]["week"] == result["ready"]["week"] == "2026-08-28"
-    assert result["ready"]["query"]["week"] == "2026-08-28"
-    assert result["ready"]["scope"]["completedEnd"] == "2026-08-28"
+    chosen = published_payload()["weekly"][-2]["date"]
+    assert result["chosen"]["week"] == result["ready"]["week"] == chosen
+    assert result["ready"]["query"]["week"] == chosen
+    assert_scoped_view(result["ready"], "causal_dynamic_ensemble", as_of=chosen)
 
 
 def test_latest_of_two_pending_date_inputs_wins_after_history_arrives():
     result = run_js("""
 (async()=>{const response=delayHistory();api.selectWeek(25,false);
-const older=chooseDate('2025-01-03'),newer=chooseDate('2025-12-26');response.resolve();await Promise.all([older,newer]);
+const older=chooseDate(full.weekly[20].date),newer=chooseDate(full.weekly.at(-40).date);response.resolve();await Promise.all([older,newer]);
 console.log(JSON.stringify(snapshot()));})();
 """)
-    assert result["week"] == "2025-12-26"
-    assert "0.4081" in result["quality"]
-    assert result["scope"]["completedEnd"] == "2025-12-26"
+    chosen = published_payload()["weekly"][-40]["date"]
+    assert result["week"] == chosen
+    assert_scoped_view(result, "causal_dynamic_ensemble", as_of=chosen)
 
 
 def test_longer_window_loads_deferred_history_and_recalculates_without_changing_selected_week():
@@ -180,8 +278,8 @@ const during={enabled:!api.dom['model-evaluation-window'].options.find(option=>o
 response.resolve();await pending;console.log(JSON.stringify({during,ready:snapshot()}));})();
 """)
     assert result["during"]["enabled"]
-    assert result["ready"]["week"] == "2026-09-04"
-    assert result["ready"]["scope"]["completedCount"] == 103
+    assert result["ready"]["week"] == published_payload()["weekly"][-1]["date"]
+    assert_scoped_view(result["ready"], "causal_dynamic_ensemble", window=104)
     assert result["ready"]["windows"] == ["104", "104"]
     assert result["ready"]["query"]["window"] == "104"
 
@@ -208,9 +306,10 @@ console.log(JSON.stringify({previous,view:snapshot(),scopeAbsent:comparison.eval
     assert all(value != "—" for value in result["previous"]["metricValues"])
     assert result["view"]["metricsHidden"]
     assert result["view"]["metricValues"] == ["—"] * 4
-    assert "191주" in result["view"]["caption"]
-    assert "Log loss" in result["view"]["quality"]
-    assert "3/40회" in result["view"]["quality"]
+    published = next(row for row in published_payload()["model"]["leaderboard"] if row["name"] == "causal_dynamic_ensemble")
+    assert f"{number_text(published['n_predictions'])}주" in result["view"]["caption"]
+    assert f"확률 오차 {number_text(published['log_loss'], 4)} Log loss" in result["view"]["quality"]
+    assert f"{number_text(published['on_time_departure_count'])}/{number_text(published['transition_event_count'])}회" in result["view"]["quality"]
 
 
 def test_pending_research_model_clears_previous_metrics_then_shows_its_own_after_loading():
@@ -233,8 +332,7 @@ console.log(JSON.stringify({previous,pending,pendingCaption,loaded:snapshot()}))
     assert not result["loaded"]["metricsHidden"]
     assert all(value != "—" for value in result["loaded"]["metricValues"])
     assert result["loaded"]["metricValues"] != result["previous"]["metricValues"]
-    assert result["loaded"]["rank"] == "1 / 13"
-    assert "0.4953" in result["loaded"]["metricValues"][1]
+    assert_scoped_view(result["loaded"], "boundary_filtered_history")
 
 
 def test_historical_timing_uses_selected_origin_and_target_with_latest_publication_separate():
@@ -248,35 +346,75 @@ console.log(JSON.stringify({old,current:{origin:api.dom['forecast-origin-at'].te
  issued:api.dom['forecast-decision-at'].textContent,latestHidden:api.dom['latest-publication-info'].hidden,disabled:api.dom['latest-week'].disabled,
  summary:api.dom['forecast-window-summary'].textContent}}));
 """)
-    assert "8월 28일" in result["old"]["origin"]
-    assert "9월 4일" in result["old"]["target"]
+    payload = published_payload()
+    previous, forecast = payload["weekly"][-2], payload["forecast"]
+    issued = next(forecast[key] for key in ("issued_at", "published_at", "decision_at") if forecast.get(key))
+    assert result["old"]["origin"] == publication_date_text(previous["date"])
+    assert result["old"]["target"] == publication_date_text(previous["next_week"]["date"])
     assert "과거 재구성" in result["old"]["issued"]
-    assert "9월 6일" in result["old"]["latest"] and "9월 11일" in result["old"]["latest"]
+    assert publication_date_text(issued) in result["old"]["latest"]
+    assert publication_date_text(forecast["target_at"][:10]) in result["old"]["latest"]
     assert not result["old"]["latestHidden"] and result["current"]["latestHidden"]
-    assert "9월 4일" in result["current"]["origin"]
-    assert "9월 11일" in result["current"]["target"] and result["current"]["disabled"]
-    assert "2026.08.28 → 2026.09.04 · 과거" in result["old"]["summary"]
-    assert "2026.09.04 → 2026.09.11" in result["current"]["summary"]
+    assert publication_date_text(forecast["origin_at"]) in result["current"]["origin"]
+    assert publication_date_text(forecast["target_at"]) in result["current"]["target"]
+    assert publication_date_text(issued) in result["current"]["issued"]
+    assert result["current"]["disabled"]
+    assert f"{previous['date'].replace('-', '.')} → {previous['next_week']['date'].replace('-', '.')} · 과거" in result["old"]["summary"]
+    assert f"{forecast['origin_at'][:10].replace('-', '.')} → {forecast['target_at'][:10].replace('-', '.')}" in result["current"]["summary"]
 
 
 def test_period_predictions_directions_and_duration_render_real_values_for_each_origin():
     result = run_js("""
 function view(index){api.selectWeek(index,false);const week=full.weekly[index];
  api.renderTransitionHorizons(week);api.renderDurationContext(week.duration_context);api.renderNextForecastSurface(week);
- return {horizon:api.dom['transition-horizon-bars'].textContent,duration:api.dom['duration-context'].textContent,
+ return {horizon:api.dom['transition-horizon-bars'].textContent,
+ horizonRows:api.dom['transition-horizon-bars'].children.map(row=>row.textContent),
+ duration:api.dom['duration-context'].textContent,
+ durationValues:api.dom['duration-context'].children.map(row=>row.children[1].textContent),
  direction:api.dom['next-direction-summary'].textContent,
  research:api.dom['multistate-forecast'].textContent};}
 console.log(JSON.stringify({latest:view(full.weekly.length-1),previous:view(full.weekly.length-2)}));
 """)
+    payload = published_payload()
+    for key, week in (("latest", payload["weekly"][-1]), ("previous", payload["weekly"][-2])):
+        rendered = result[key]
+        duration = week["duration_context"]
+        for index, horizon in enumerate((4, 13)):
+            text = rendered["horizonRows"][index]
+            risk = week["transition_risk"][f"{horizon}w"]
+            direction = week["directional_risk"][f"{horizon}w"]
+            interval = duration["ci95"]["departure_probability"][f"{horizon}w"]
+            assert f"{horizon}주 내 이탈" in text
+            assert percent_text(risk["probability"]) in text
+            assert f"과거 KM 기준률 {percent_text(duration['departure_probability'][f'{horizon}w'])}" in text
+            if interval and interval["lower"] is not None and interval["upper"] is not None:
+                assert f"KM 95% 구간 {percent_text(interval['lower'])}–{percent_text(interval['upper'])}" in text
+            else:
+                assert "KM 95% 구간" not in text
+            assert f"기간 내 유지 {percent_text(direction['no_departure'])}" in text
+            assert "최초 이탈" in text
+            for state, probability in direction["first_destination"].items():
+                if state != week["current"]["state"]:
+                    assert percent_text(probability) in text
+        estimate = "median_remaining_weeks" if duration["median_remaining_weeks"] is not None else "restricted_mean_remaining_weeks"
+        interval = duration["ci95"][estimate]
+        interval_text = (f"{number_text(interval['lower'], 1)}–{number_text(interval['upper'], 1)}주"
+                         if interval and interval["lower"] is not None and interval["upper"] is not None else "자료 없음")
+        assert rendered["durationValues"] == [
+            f"{number_text(duration['elapsed_weeks'])}주", f"{number_text(duration[estimate], 1)}주" if duration[estimate] is not None else "—",
+            interval_text,
+            f"{number_text(duration['completed_spells'])} / {number_text(duration['censored_spells'])}개",
+            f"{number_text(duration['support']['completed_at_current_age'])} / {number_text(duration['support']['at_risk_at_current_age'])}개",
+        ]
+        assert "추정치 95% 구간" in rendered["duration"]
+        current_state = STATES.index(week["current"]["state"])
+        probabilities = week["next_week"]["probabilities"]
+        for label, value in (("유지", probabilities[STATES[current_state]]),
+                             ("악화", sum(probabilities[state] for state in STATES[current_state + 1:])),
+                             ("회복", sum(probabilities[state] for state in STATES[:current_state]))):
+            assert f"{label} {percent_text(value)}" in rendered["direction"]
     latest = result["latest"]
-    for value in ("50.7%", "63.7%", "45.5%", "78.2%", "최초 이탈", "6.9%"):
-        assert value in latest["horizon"]
-    for value in ("3–8주", "46 / 1개", "46 / 47개"):
-        assert value in latest["duration"]
-    assert "추정치 95% 구간" in latest["duration"]
-    assert "유지 80.7%" in latest["direction"] and "악화 19.3%" in latest["direction"]
     assert result["previous"]["horizon"] != latest["horizon"]
-    assert result["previous"]["duration"] != latest["duration"]
     assert "국면 예측 연구" in latest["research"]
     assert "연구 비교 모델" in latest["research"]
 
@@ -284,7 +422,7 @@ console.log(JSON.stringify({latest:view(full.weekly.length-1),previous:view(full
 def test_model_timeline_remains_navigable_after_past_click_and_shared_latest_returns():
     result = run_js("""
 api.selectWeek(full.weekly.length-1,false);api.applyDashboardView('model');api.renderTimeline();
-const old=api.dom['regime-timeline'].querySelectorAll('button.timeline-cell').find(item=>item.dataset.date==='2026-08-28');
+const old=api.dom['regime-timeline'].querySelectorAll('button.timeline-cell').find(item=>item.dataset.date===full.weekly.at(-2).date);
 old.focus=()=>{};old.listeners.click();api.renderTimeline();
 const past={week:snapshot().week,end:api.dom['timeline-end'].textContent,view:api.dom.dashboard.dataset.activeView,
  next:!api.dom['next-week'].disabled,latest:!api.dom['latest-week'].disabled};
@@ -292,8 +430,9 @@ api.dom['next-week'].listeners.click();const next=snapshot().week;
 api.dom['previous-week'].listeners.click();api.dom['latest-week'].listeners.click();
 console.log(JSON.stringify({past,next,latest:snapshot().week}));
 """)
-    assert result["past"] == {"week": "2026-08-28", "end": "2026-09-04", "view": "model", "next": True, "latest": True}
-    assert result["next"] == result["latest"] == "2026-09-04"
+    previous, latest = published_payload()["weekly"][-2:]
+    assert result["past"] == {"week": previous["date"], "end": latest["date"], "view": "model", "next": True, "latest": True}
+    assert result["next"] == result["latest"] == latest["date"]
 
 
 def test_detection_delay_is_displayed_with_recognized_and_unrecognized_denominators():
@@ -301,8 +440,10 @@ def test_detection_delay_is_displayed_with_recognized_and_unrecognized_denominat
 (async()=>{api.selectWeek(full.weekly.length-1,false);await chooseWindow('model-evaluation-window','all');
 chooseModel('boundary_filtered_history');console.log(JSON.stringify(api.dom['model-health-strip'].textContent));})();
 """)
-    assert "인식한 전환의 평균 지연 0.56주" in result
-    assert "인식 36/40건 · 미인식 4건" in result
+    _, scores, _, _ = expected_evaluation(window="all")
+    score = scores.loc["boundary_filtered_history"]
+    assert f"인식한 전환의 평균 지연 {number_text(score.mean_detection_delay_forecast_weeks, 2)}주" in result
+    assert f"인식 {number_text(score.detected_event_count)}/{number_text(score.transition_event_count)}건 · 미인식 {number_text(score.transition_event_count - score.detected_event_count)}건" in result
 
 
 def test_operational_scores_distinguish_mature_labels_from_verified_prospective_denominator():
