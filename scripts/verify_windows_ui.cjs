@@ -213,6 +213,7 @@ async function main() {
       return { before, after };
     });
     await check("forecast horizon changes rendered results", async () => {
+      const initialModel = await page.locator("#enhancement-model").inputValue();
       const before = await page.locator(".enhancement-primary").innerText();
       await page.locator("#enhancement-horizon").selectOption("4");
       await page.waitForFunction(() => document.querySelector("#forecast-enhancements").dataset.horizon === "4");
@@ -221,7 +222,11 @@ async function main() {
       assert.equal(new URL(page.url()).searchParams.get("forecast_horizon"), "4");
       await page.locator("#enhancement-horizon").selectOption("1");
       await page.waitForFunction(() => document.querySelector("#forecast-enhancements").dataset.horizon === "1");
-      return { before, after };
+      // Horizon changes can select a different compatible model. Restore the
+      // initial model so the asset check measures the reviewed operating model.
+      await page.locator("#enhancement-model").selectOption(initialModel);
+      await page.waitForFunction((expected) => document.querySelector("#forecast-enhancements").dataset.model === expected, initialModel);
+      return { initialModel, before, after };
     });
     await navigate(page, "performance");
     await page.locator("#decision-action-card").waitFor({ state: "visible" });
@@ -248,6 +253,9 @@ async function main() {
     await check("asset controls change analysis", async () => {
       await page.locator("#conditional-stat-grid").waitFor({ state: "visible" });
       const before = await page.locator("#conditional-stat-grid").textContent();
+      report.assetControlBefore = { url: page.url(), model: await page.locator("#forecast-enhancements").getAttribute("data-model"),
+        horizon: await page.locator("#conditional-horizon-select").inputValue(),
+        caption: await page.locator("#conditional-stats-caption").textContent(), results: before };
       await page.locator("#conditional-horizon-select").selectOption("4");
       await page.waitForFunction((previous) => document.querySelector("#conditional-stat-grid").textContent !== previous && document.querySelector("#conditional-horizon-select").value === "4" && document.querySelector("#conditional-stats-caption").textContent.includes("4주"), before);
       const after = await page.locator("#conditional-stat-grid").textContent();
@@ -276,6 +284,17 @@ async function main() {
     report.errors.push(error.stack || error.message);
     console.error(error.stack || error.message);
     if (page && !page.isClosed()) {
+      try {
+        report.failureState = await page.evaluate(() => ({ url: location.href,
+          activeView: document.querySelector("#dashboard")?.dataset.activeView,
+          model: document.querySelector("#forecast-enhancements")?.dataset.model,
+          forecastHorizon: document.querySelector("#forecast-enhancements")?.dataset.horizon,
+          assetHorizon: document.querySelector("#conditional-horizon-select")?.value,
+          assetCaption: document.querySelector("#conditional-stats-caption")?.textContent,
+          assetResultsHidden: document.querySelector("#conditional-results")?.hidden,
+          assetUnavailable: document.querySelector("#conditional-unavailable")?.textContent,
+          assetResults: document.querySelector("#conditional-stat-grid")?.textContent }));
+      } catch (stateError) { report.errors.push(`Failure state: ${stateError.message}`); }
       try { await capture(page, "failure"); }
       catch (captureError) { report.errors.push(`Failure screenshot: ${captureError.message}`); }
     }

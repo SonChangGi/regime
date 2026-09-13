@@ -383,7 +383,7 @@ const target=node();api.renderForecastAuditPanels({forecast_information:{
     assert "VIX3M 기간구조" in result["text"] and "경계 + VIX3M" in result["text"]
     assert "0.3732" in result["text"] and "0.3739" in result["text"]
     assert "6.30e-6" in result["text"]
-    assert "EBP: 실제 최초 확보 시점" in result["methods"]
+    assert "EBP: 최초 확보 이후 평가 자료 축적" in result["methods"]
     assert "최초 확보" not in result["text"]
     assert "prospective_only" not in result["methods"]
 
@@ -396,7 +396,7 @@ const target=node();api.renderForecastAuditPanels({forecast_information:{schema_
 const notes=api.dom['forecast-method-notes'].textContent;
 api.renderForecastAuditPanels({},target);console.log(JSON.stringify({notes,cleared:api.dom['forecast-method-notes'].textContent}));
 """)
-    assert result["notes"].count("실제 최초 확보 시점") == 1
+    assert result["notes"].count("최초 확보 이후 평가 자료 축적") == 1
     assert "FOMC 일정 · CPI·고용 일정" in result["notes"]
     assert "모든 비교는" not in result["notes"]
     assert result["cleared"] == ""
