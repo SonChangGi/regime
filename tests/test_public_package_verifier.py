@@ -52,6 +52,7 @@ def _web_root(tmp_path: Path) -> Path:
     web = tmp_path / "web"
     web.mkdir()
     (web / "index.html").write_text(
+        '<link rel="stylesheet" href="./fonts.css?v=manual">\n'
         '<link rel="stylesheet" href="./styles.css?v=manual">\n'
         '<link rel="stylesheet" href="./insights.css?v=manual">\n'
         '<link rel="stylesheet" href="./forecast-enhancements.css?v=manual">\n'
@@ -62,6 +63,9 @@ def _web_root(tmp_path: Path) -> Path:
         '<script src="./app.js?v=manual"></script>\n',
         encoding="utf-8",
     )
+    (web / "fonts").mkdir()
+    for name in ("fonts.css", "fonts/PretendardVariable-1.3.9.woff2", "fonts/OFL.txt"):
+        (web / name).write_bytes((ROOT / "web" / name).read_bytes())
     (web / "styles.css").write_text("main { color: black; }\n", encoding="utf-8")
     (web / "insights.css").write_text(".insight { display: block; }\n", encoding="utf-8")
     (web / "forecast-enhancements.css").write_text(".insight { display: block; }\n", encoding="utf-8")
@@ -708,7 +712,7 @@ def test_verifier_checks_history_against_source_after_manifest_refresh(
         verify_public_package.verify_public_package(output)
 
 
-@pytest.mark.parametrize("asset", ["insights.js", "insights.css", "forecast-enhancements.js", "forecast-enhancements.css"])
+@pytest.mark.parametrize("asset", ["fonts.css", "insights.js", "insights.css", "forecast-enhancements.js", "forecast-enhancements.css"])
 def test_verifier_checks_insight_cache_key_after_manifest_refresh(
     tmp_path: Path, asset: str,
 ) -> None:
@@ -720,7 +724,7 @@ def test_verifier_checks_insight_cache_key_after_manifest_refresh(
         verify_public_package.verify_public_package(output)
 
 
-@pytest.mark.parametrize("asset", ["insights.js", "insights.css", "forecast-enhancements.js", "forecast-enhancements.css"])
+@pytest.mark.parametrize("asset", ["fonts.css", "insights.js", "insights.css", "forecast-enhancements.js", "forecast-enhancements.css"])
 def test_verifier_rejects_missing_insight_reference_after_manifest_refresh(
     tmp_path: Path, asset: str,
 ) -> None:

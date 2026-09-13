@@ -136,7 +136,7 @@ def build_preview(source: Path, modeling: Path, information: Path, features: Pat
         path = ROOT/"web"/name
         originals[path] = path.read_bytes()
         files[name] = originals[path]
-    extras = {name: files[name] for name in ("insights.js", "insights.css", "forecast-enhancements.js", "forecast-enhancements.css")}
+    extras = {name: files[name] for name in ("fonts.css", "insights.js", "insights.css", "forecast-enhancements.js", "forecast-enhancements.css")}
     files["index.html"] = rewrite_index_asset_versions(files["index.html"], styles_raw=files["styles.css"],
         app_raw=files["app.js"], operating_contract_raw=files["operating-contract.generated.js"], extra_assets=extras)
     inventory = {name: {"sha256": hashlib.sha256(content).hexdigest(), "bytes": len(content)} for name, content in files.items()}

@@ -1,0 +1,12 @@
+{
+  "name": "regime-windows-ui-verification",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Actual Windows Edge and Chrome rendering checks for the packaged Regime dashboard",
+  "scripts": {
+    "verify": "node ../../scripts/verify_windows_ui.cjs"
+  },
+  "dependencies": {
+    "playwright-core": "1.63.0"
+  }
+}

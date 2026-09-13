@@ -9,6 +9,9 @@
   const STATE_LABELS = { risk_on: "위험 선호", transition: "전환", risk_off: "위험 회피" };
   const LABELS = {
     causal_dynamic_ensemble: "운영 앙상블", recency_weighted_xgboost_208w: "최근 가중 XGBoost",
+    majority: "다수 국면", xgboost: "XGBoost", pca_ridge_logistic: "PCA · Ridge Logistic",
+    recency_weighted_ridge_logistic_208w: "Ridge Logistic · 최근 가중", discounted_markov_208w: "Markov · 최근 가중",
+    xgb_hazard_destination: "XGBoost · 이탈/목적지", causal_multiscale_ensemble: "멀티스케일 앙상블",
     markov: "Markov", persistence: "현재 상태 유지", boundary_filtered_history: "경계 · 과거 잔차",
     boundary_student_t: "경계 · Student-t", boundary_asymmetric_ewma: "경계 · 비대칭 변동성",
     directional_duration_hazard: "방향·기간", markov_duration_path_baseline: "Markov 경로",
@@ -243,7 +246,7 @@
     const heading = el("div", "enhancement-applied-heading"); heading.append(el("h3", null, "1주 악화 경보"), el("span", "enhancement-status", "연구")); section.append(heading);
     section.append(selectControl("enhancement-alert-model", "경보 모델", selected.models.map((model) => [model, label(model)]), selected.model, (model) => { state.alertModel = model; render(); syncUrl(); }));
     const policy = data.alerts.policy || {};
-    section.append(el("p", "section-caption", `신규 정책 · 유효 ${count(policy.validity_weeks || 1)}주 · 오경보 예산 연 ${count(policy.budget ?? policy.annual_false_week_budget ?? 4)}주 · 평가 창 최대 ${count(policy.calibration_window_weeks || policy.window_weeks || 156)}주`));
+    section.append(el("p", "section-caption", `유효 ${count(policy.validity_weeks || 1)}주 · 오경보 한도 연 ${count(policy.budget ?? policy.annual_false_week_budget ?? 4)}주 · 평가 창 최대 ${count(policy.calibration_window_weeks || policy.window_weeks || 156)}주`));
     const statuses = { issued: "경보", watching: "관찰", insufficient_history: "표본 대기", budget_limited: "예산 대기", cooldown: "재경보 대기", awaiting_reset: "신호 해제 대기", no_supported_policy: "유효 정책 대기", off: "경보 중단" };
     table(section, ["정책", "상태", "확률 / 기준", "유효 종료", "잔여 예산 / 평가 창"], selected.forecasts.map((row) => [label(row.policy), statuses[row.policy_status] || (row.alert ? "경보" : "관찰"), `${pct(row.probability)} / ${row.threshold > 1 ? "중단" : pct(row.threshold)}`, alertExpiry(row), finite(row.budget_capacity_remaining) ? `${count(row.budget_capacity_remaining)}주 / ${count(row.calibration_rows)}주` : "—"]), "선택 주의 경보 상태와 만료일");
     disclosure(section, "경보 평가 · 전체 기간", (body) => {
@@ -279,7 +282,7 @@
     const reference = selected.horizon === 1 ? (state.context.officialForecast || state.context.week.next_week)
       : forecastRows(state.data).find((row) => row.model === "markov_endpoint" && row.horizon_weeks === selected.horizon && date(row.origin_date) === state.context.week.date);
     const referenceName = selected.horizon === 1 ? "공식 1주 예측" : `Markov ${selected.horizon}주 기준선`;
-    if (reference?.probabilities) result.append(el("p", "section-caption", `차이 · ${referenceName} 대비`));
+    if (reference?.probabilities) result.append(el("p", "section-caption", `${referenceName} 대비 차이`));
     const probabilities = el("div", "enhancement-probabilities");
     for (const code of STATES) {
       const row = el("div", "enhancement-probability");
@@ -300,7 +303,7 @@
     const metric = selected.evaluation.find((row) => row.model === selected.model);
     const card = el("div", "enhancement-scorecard"); card.append(el("h3", null, "기간 말 평가"));
     if (state.context.modelEvaluation) card.append(selectControl("enhancement-evaluation-window", "평가 기간 · 선택 주까지", [[26, "26주"], [52, "52주"], [104, "104주"], ["all", "전체"]], state.context.evaluationWindow, (window) => changeComparison({ window })));
-    if (!metric || !metric.n_predictions) { card.append(el("p", "section-caption", "확정된 공통 비교 표본 없음")); container.append(card); return; }
+    if (!metric || !metric.n_predictions) { card.append(el("p", "section-caption", "확정된 공통 표본 없음")); container.append(card); return; }
     card.append(el("p", "section-caption", `확정 ${metric.evaluation_start}–${metric.evaluation_end} · ${selected.horizon}주`));
     const baseline = metric.baseline_model ? label(metric.baseline_model) : "기준선";
     metrics(card, [["Log loss", n(metric.log_loss, 4)], ["기준선 대비", signed(metric.delta_log_loss), baseline], ["평가 표본", `${count(metric.n_predictions)}주`], ["Brier", n(metric.brier, 4)]]);

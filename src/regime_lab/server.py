@@ -13,6 +13,7 @@ from regime_lab.publication_contract import PublicContractError
 
 
 class DashboardHandler(SimpleHTTPRequestHandler):
+    extensions_map = {**SimpleHTTPRequestHandler.extensions_map, ".woff2": "font/woff2"}
     payload_bytes: bytes | None = None
     core_bytes: bytes | None = None
     research_bytes: bytes | None = None

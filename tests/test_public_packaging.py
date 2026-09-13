@@ -121,6 +121,7 @@ def _web_root(tmp_path: Path) -> Path:
     root = tmp_path / "web"
     root.mkdir()
     (root / "index.html").write_text(
+        '<link rel="stylesheet" href="./fonts.css?v=manual">\n'
         '<link rel="stylesheet" href="./styles.css?v=manual">\n'
         '<link rel="stylesheet" href="./insights.css?v=manual">\n'
         '<link rel="stylesheet" href="./forecast-enhancements.css?v=manual">\n'
@@ -131,6 +132,9 @@ def _web_root(tmp_path: Path) -> Path:
         '<script src="./app.js?v=manual"></script>\n',
         encoding="utf-8",
     )
+    (root / "fonts").mkdir()
+    for name in ("fonts.css", "fonts/PretendardVariable-1.3.9.woff2", "fonts/OFL.txt"):
+        (root / name).write_bytes((ROOT / "web" / name).read_bytes())
     (root / "styles.css").write_text("main { color: black; }\n", encoding="utf-8")
     (root / "operating-contract.generated.js").write_bytes(
         render_browser_contract_javascript()
@@ -812,6 +816,9 @@ def test_package_copies_only_allowlisted_assets_and_synthetic_payload(tmp_path: 
     assert packaged == {
         "index.html",
         "styles.css",
+        "fonts.css",
+        "fonts/PretendardVariable-1.3.9.woff2",
+        "fonts/OFL.txt",
         "insights.css",
         "forecast-enhancements.css",
         "insights.js",

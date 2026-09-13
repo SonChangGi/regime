@@ -50,7 +50,7 @@ def test_methodology_is_one_closed_disclosure_after_results_with_named_controls_
 def test_document_has_language_landmarks_and_skip_link() -> None:
     assert '<html lang="ko"' in HTML
     assert 'class="skip-link" href="#main-content"' in HTML
-    assert '<nav class="site-nav" aria-label="연결 프로젝트 바로가기">' in HTML
+    assert re.search(r'<nav class="[^"]*\bsite-nav\b[^"]*" aria-label="연결 프로젝트 바로가기">', HTML)
     assert '<header class="page-header" aria-labelledby="page-title">' in HTML
     assert '<nav class="section-nav" aria-label="페이지 섹션 바로가기" id="dashboard-view-nav">' in HTML
     assert '<main id="main-content" tabindex="-1">' in HTML

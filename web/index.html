@@ -10,13 +10,15 @@
     >
     <title>US Market Regime Lab | Quant Research</title>
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23111727'/%3E%3Cpath d='M14 43 26 31l9 8 15-20' fill='none' stroke='%2334d399' stroke-width='7' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
-    <link rel="stylesheet" href="./styles.css?v=adbf573d32a317f7e3d56ff56fd1a3d2747dda4452e143aaecd87ae59df4a0a8">
-    <link rel="stylesheet" href="./insights.css?v=1e23d447c449cfdcd5f2e8945c6cff5a3b0e06f1d4b075cff26f9d94ca35e8af">
-    <link rel="stylesheet" href="./forecast-enhancements.css?v=c08cf84ef8306ae71e1e374c37dfa25369a5796e7dbc4b5adcfc2b43888425d2">
+    <link rel="preload" href="./fonts/PretendardVariable-1.3.9.woff2" as="font" type="font/woff2" crossorigin>
+    <link rel="stylesheet" href="./fonts.css?v=8f7120c59d879fc2a19c102fb1dcf3d151f38037d52410562bf03f64d9242fcd">
+    <link rel="stylesheet" href="./styles.css?v=266af08f82fe0869eb8aa74a3eba15c48238d7ffa26119689e219fd6fd3c3dfe">
+    <link rel="stylesheet" href="./insights.css?v=6f92c8db6392bad88657d9a0f88a1c09673a2d2c681c2f31c5d8a74c06389abe">
+    <link rel="stylesheet" href="./forecast-enhancements.css?v=8513b4ae050b28e674dbed5316d0860076ea8ffe476c0f0e57c6ecac7c9c7c9f">
     <script src="./insights.js?v=14247ef0dee7a464045b4ffac6aaf029891597b74dc3b64311bcdcf1252ac854" defer></script>
-    <script src="./forecast-enhancements.js?v=ebea912e76f53df34a8573e1ddc69be66684738c9aee4c2c99308099dc7ac7b5" defer></script>
+    <script src="./forecast-enhancements.js?v=b7182a157ae09590b18066c8c4587750ceacb7e3004423808eafd7bb6ac1de04" defer></script>
     <script src="./operating-contract.generated.js?v=5078635e5a1fb2b9300e56f045b51c4e85ee047a21a3f64a15cd4e69261c9a20" defer></script>
-    <script src="./app.js?v=2d5796cf163f2443aa66f662238f78bcd0903f2a5425bdafaf5594d68b366051" defer></script>
+    <script src="./app.js?v=37a0fd6d64e34a8bb4e5062c08bd6c5897ec9c8ca069f9aedfe3f4f586c347c3" defer></script>
   </head>
   <body id="top" class="has-quant-shared-nav">
     <a class="skip-link" href="#main-content">본문으로 건너뛰기</a>
@@ -222,7 +224,7 @@
             <div class="card-heading">
               <div>
                 <h2 id="duration-context-title">현재 국면 지속</h2>
-                <p id="duration-context-caption" class="section-caption">과거 지속 패턴</p>
+                <p id="duration-context-caption" class="section-caption">과거 지속 패턴 · KM</p>
               </div>
             </div>
             <dl id="duration-context" class="metric-list"></dl>
@@ -738,20 +740,20 @@
               <div id="label-definition-card">
                 <h3 id="label-definition-title">국면·소속도 <span id="label-spec-identity" class="contract-chip"></span></h3>
                 <p>SPY의 추세·변동성·낙폭으로 시장 위험상태를 구분합니다.</p>
-                <p id="membership-definition">소속도는 현재 국면 기준에 가까운 정도, 예측확률은 다음 주 가능성입니다.</p>
+                <p id="membership-definition">소속도: 현재 국면 기준과의 근접도. 예측확률: 다음 주 국면별 가능성.</p>
               </div>
             </section>
             <section><h3>경로·지속기간</h3>
-              <p>최초 이탈: 현재 국면을 처음 떠남. 위험회피 진입: 중간 국면을 거쳐도 포함. 기간 중: 한 번 이상 관측. 기간 말: 마지막 주 상태.</p>
-              <p id="duration-estimate-note">KM은 과거 지속 패턴, 95% 구간은 추정 불확실성입니다.</p>
+              <p>최초 이탈: 현재 국면을 처음 떠남. 위험회피 진입: 중간 국면 경유 포함. 기간 중: 한 번 이상. 기간 말: 마지막 주 상태.</p>
+              <p id="duration-estimate-note">KM: 과거 국면의 지속 분포. 95% 구간: 추정치의 불확실성. 검열: 종료 전 관측이 끝난 구간. 현재 기간 기준 표본: 지금만큼 오래 지속한 구간.</p>
             </section>
             <section><h3>모델 평가·보정</h3>
               <p>Log loss·Brier: 낮을수록 정확. 오차 차이: 후보−기준선. 탐지 지연: 포착한 전환의 평균.</p>
-              <p>2023년 이후 과거 진단과 발행 후 평가를 구분합니다.</p>
+              <p>평가 구간: 2023년 이후 과거 진단 / 실제 발행 후 평가.</p>
               <div id="forecast-method-notes"></div>
             </section>
             <section><h3>발행 원장</h3>
-              <p>대상 시각 전 저장한 예측을 주별 한 건씩 평가합니다.</p>
+              <p>대상 시각 전 저장한 예측 · 주별 1건 평가.</p>
             </section>
             <section><h3>자산·시장 점수</h3>
               <p>구간 평균: 국면 구간별 동일 비중. 주별 평균: 각 주 동일 비중. 4·13주 성과는 보유기간이 겹칩니다.</p>
@@ -767,8 +769,7 @@
 
     <noscript>
       <div class="noscript-message">
-        이 대시보드는 날짜 선택과 차트 렌더링에 JavaScript가 필요합니다. JavaScript를 켠 뒤 다시
-        열어 주세요.
+        JavaScript를 켜면 날짜 선택과 차트를 사용할 수 있습니다.
       </div>
     </noscript>
   </body>

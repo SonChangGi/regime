@@ -5555,8 +5555,7 @@
       meter.append(meterFill);
       row.append(heading, meter);
       const comparison = createElement("div", "horizon-comparison");
-      comparison.append(createElement("span", null, `모델 예측 ${formatPercent(value)}`),
-        createElement("span", null, `과거 KM 기준률 ${formatPercent(result.baseline)}`));
+      comparison.append(createElement("span", null, `과거 KM 기준률 ${formatPercent(result.baseline)}`));
       if (Number.isFinite(result.baselineLower) && Number.isFinite(result.baselineUpper)) {
         comparison.append(createElement("small", null, `KM 95% 구간 ${formatPercent(result.baselineLower)}–${formatPercent(result.baselineUpper)}`));
       }
@@ -6317,7 +6316,7 @@
     });
     const available = entries.filter((entry) => entry.value !== null);
     if (!available.length) {
-      dom["factor-scores"].append(createElement("p", "empty-inline", "이 관측 주에는 팩터 점수가 없습니다."));
+      dom["factor-scores"].append(createElement("p", "empty-inline", "선택 주의 팩터 점수 없음"));
       dom["factor-axis"].replaceChildren(createElement("span", null, "−1"), createElement("span", null, "0"), createElement("span", null, "+1"));
       return;
     }
@@ -6352,7 +6351,7 @@
   function renderDrivers(drivers) {
     dom["top-drivers"].replaceChildren();
     if (!Array.isArray(drivers) || !drivers.length) {
-      dom["top-drivers"].append(createElement("li", "empty-inline", "이 관측 주에는 드라이버 설명 값이 없습니다."));
+      dom["top-drivers"].append(createElement("li", "empty-inline", "선택 주의 주요 지표 없음"));
       return;
     }
     const sorted = [...drivers]
@@ -6474,25 +6473,25 @@
     const supported = duration.status === "ok";
     const estimate = INSIGHTS.durationEstimate(duration);
     dom["duration-context"].replaceChildren();
-    appendMetric(dom["duration-context"], "현재 지속", `${formatNumber(duration.elapsed_weeks, 0)}주`);
+    appendMetric(dom["duration-context"], "지속 기간", `${formatNumber(duration.elapsed_weeks, 0)}주`);
     appendMetric(
       dom["duration-context"],
-      estimate.restricted ? `${formatNumber(estimate.restriction, 0)}주 제한 평균 잔여기간` : "중앙 잔여기간",
+      estimate.restricted ? `남은 기간 · ${formatNumber(estimate.restriction, 0)}주 제한 평균` : "남은 기간 · 중앙값",
       estimate.value === null ? "—" : `${formatNumber(estimate.value, 1)}주`,
     );
     appendMetric(dom["duration-context"], "추정치 95% 구간", estimate.lower === null || estimate.upper === null ? "자료 없음" : `${formatNumber(estimate.lower, 1)}–${formatNumber(estimate.upper, 1)}주`);
-    appendMetric(dom["duration-context"], "과거 완료 / 검열 구간", `${formatNumber(estimate.completed, 0)} / ${formatNumber(estimate.censored, 0)}개`);
-    appendMetric(dom["duration-context"], "현재 연령 이후 완료 / 지원 표본", `${formatNumber(estimate.supportedCompleted, 0)} / ${formatNumber(estimate.supportedAtRisk, 0)}개`);
-    setText(dom["duration-context-caption"], supported ? "과거 지속패턴" : duration.status === "insufficient_tail_support" ? "현재 지속 연령의 표본 부족" : "표본 축적 중");
+    appendMetric(dom["duration-context"], "과거 구간 · 완료 / 검열", `${formatNumber(estimate.completed, 0)} / ${formatNumber(estimate.censored, 0)}개`);
+    appendMetric(dom["duration-context"], "현재 기간 기준 완료 / 전체", `${formatNumber(estimate.supportedCompleted, 0)} / ${formatNumber(estimate.supportedAtRisk, 0)}개`);
+    setText(dom["duration-context-caption"], supported ? "과거 지속 패턴 · KM" : duration.status === "insufficient_tail_support" ? "현재 기간 기준 표본 부족 · KM" : "표본 축적 중 · KM");
     setText(
       dom["duration-research-detail"],
-      `상태별 Kaplan–Meier · 완료 구간 ${formatNumber(duration.completed_spells, 0)}개 · 검열 구간 ${formatNumber(duration.censored_spells, 0)}개${isObject(duration.support) ? ` · 현재 지속 연령 이후 완료 ${formatNumber(duration.support.completed_at_current_age, 0)}개` : ""}`,
+      `Kaplan–Meier · 완료 ${formatNumber(duration.completed_spells, 0)}구간 · 검열 ${formatNumber(duration.censored_spells, 0)}구간${isObject(duration.support) ? ` · 현재 기간 이상 지속 후 완료 ${formatNumber(duration.support.completed_at_current_age, 0)}구간` : ""}`,
     );
     dom["duration-baselines"].replaceChildren();
     for (const horizon of [4, 13]) {
       const departure = probability(duration.departure_probability && duration.departure_probability[`${horizon}w`]);
       const block = createElement("div", "duration-baseline");
-      block.append(createElement("span", null, `${horizon}주 이탈 · 과거 KM`), createElement("strong", null, formatPercent(departure)), createElement("small", null, `해당 연령 생존 표본 ${formatNumber(duration.support?.horizon_at_risk?.[`${horizon}w`], 0)}개`));
+      block.append(createElement("span", null, `${horizon}주 내 이탈`), createElement("strong", null, formatPercent(departure)), createElement("small", null, `해당 시점 생존 표본 ${formatNumber(duration.support?.horizon_at_risk?.[`${horizon}w`], 0)}개`));
       const interval = duration.ci95?.departure_probability?.[`${horizon}w`];
       if (Number.isFinite(interval?.lower) && Number.isFinite(interval?.upper)) block.append(createElement("small", null, `95% 구간 ${formatPercent(interval.lower)}–${formatPercent(interval.upper)}`));
       dom["duration-baselines"].append(block);
@@ -7467,7 +7466,7 @@
     const container = dom["forecast-method-notes"];
     if (!container) return;
     container.replaceChildren();
-    if (research.calibration_audit) container.append(createElement("p", null, "보정은 과거 구간으로 선택하고, 최종 확률은 1·4·13주 이탈 확률의 순서를 맞춘 값입니다."));
+    if (research.calibration_audit) container.append(createElement("p", null, "보정: 과거 구간에서 선택. 최종 이탈 확률: 1주 ≤ 4주 ≤ 13주."));
     const notes = research.forecast_information?.notes;
     const prospective = [];
     for (const note of [...new Set(Array.isArray(notes) ? notes.filter((value) => typeof value === "string") : [])]) {
@@ -7475,9 +7474,9 @@
       const label = { fomc: "FOMC 일정", bls: "CPI·고용 일정", cftc_tff: "CFTC 포지션", board_ebp: "EBP" }[source];
       if (label) prospective.push(label);
       else if (/^모든 비교는 같은 origin|^2023년 이후 holdout|^확률 점수 차이는/.test(note)) continue;
-      else container.append(createElement("p", null, note.startsWith("VIX3M은") ? "VIX3M 비교는 이전 관측일 종가를 이용한 과거 재구성입니다." : note));
+      else container.append(createElement("p", null, note.startsWith("VIX3M은") ? "VIX3M: 직전 관측일 종가로 과거 재구성." : note));
     }
-    if (prospective.length) container.append(createElement("p", null, `${prospective.join(" · ")}: 실제 최초 확보 시점부터 평가 자료를 축적합니다.`));
+    if (prospective.length) container.append(createElement("p", null, `${prospective.join(" · ")}: 최초 확보 이후 평가 자료 축적.`));
   }
 
   function appendForecastArtifactLinks(container, artifacts) {
@@ -7506,7 +7505,7 @@
           formatNumber(row.previous_published_log_loss, 4), formatNumber(row.final_log_loss, 4), formatResearchDelta(row.final_log_loss - row.previous_published_log_loss),
         ]), "발행 모델 보정 비교");
         const detail = createElement("details", "research-calibration-detail");
-        detail.append(createElement("summary", null, "모든 모델·기간의 보정 근거"));
+        detail.append(createElement("summary", null, "모델·기간별 보정 근거"));
         appendResearchTable(detail, ["모델·기간", "평가 구간", "동일 표본", "기존 발행 Log loss", "무보정 Log loss", "새 보정 연구 Log loss", "새 최종 연구 Log loss", "기존 발행 Brier", "무보정 Brier", "새 최종 연구 Brier", "선택 보정"], rows.map((row) => [
           `${modelForecastLabel(row.model)} · ${formatNumber(row.horizon_weeks, 0)}주`, forecastEvidenceLabel(row.evidence_track || row.evaluation_split),
           `${formatNumber(row.n_predictions, 0)}주`, formatNumber(row.previous_published_log_loss, 4), formatNumber(row.raw_log_loss, 4), formatNumber(row.calibrated_log_loss, 4), formatNumber(row.final_log_loss, 4),
@@ -8213,7 +8212,7 @@
       && !comparisonRows.length) {
       setText(dom["conditional-stats-caption"], `${modelForecastLabel(state.comparisonModel)} · 자산 성과 미집계`);
       setText(dom["conditional-comparison-caption"], "미집계");
-      dom["conditional-stat-grid"].append(createElement("p", "empty-inline", "이 연구 모델의 예측 국면별 자산 성과는 아직 집계되지 않았습니다."));
+      dom["conditional-stat-grid"].append(createElement("p", "empty-inline", "선택 모델의 자산 성과 미집계"));
       return;
     }
 
@@ -8641,7 +8640,7 @@
     dom["market-context"].replaceChildren();
     if (!isObject(market) || !Object.keys(market).length) {
       const empty = createElement("div", "empty-inline");
-      empty.append(createElement("dt", "sr-only", "데이터 상태"), createElement("dd", null, "이 관측 주에는 시장 맥락 값이 없습니다."));
+      empty.append(createElement("dt", "sr-only", "데이터 상태"), createElement("dd", null, "선택 주의 시장 지표 없음"));
       dom["market-context"].append(empty);
       return;
     }

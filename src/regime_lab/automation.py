@@ -103,6 +103,9 @@ PUBLICATION_ENHANCEMENT_PATH = "publication/live/" + ENHANCEMENT_FILENAME
 PUBLIC_STATIC_ASSET_PATHS = (
     "index.html",
     "styles.css",
+    "fonts.css",
+    "fonts/PretendardVariable-1.3.9.woff2",
+    "fonts/OFL.txt",
     "operating-contract.generated.js",
     "app.js",
     "insights.js",
@@ -3082,7 +3085,7 @@ def _expected_static_assets(settings: AutomationSettings) -> dict[str, bytes]:
             styles_raw=assets["styles.css"],
             app_raw=assets["app.js"],
             operating_contract_raw=operating_contract_raw,
-            extra_assets={name: assets[name] for name in ("insights.js", "insights.css", "forecast-enhancements.js", "forecast-enhancements.css")},
+            extra_assets={name: assets[name] for name in ("fonts.css", "insights.js", "insights.css", "forecast-enhancements.js", "forecast-enhancements.css")},
         )
     except (BrowserContractError, PublicContractError) as exc:
         raise AutomationError(f"expected dashboard assets are invalid: {exc}") from exc

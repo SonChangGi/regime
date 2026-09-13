@@ -162,7 +162,7 @@
   font-size: 12px;
 }
 
-.hero-grid > .decision-action-card .decision-action-summary,
+.decision-action-card .decision-action-summary,
 .hero-grid > .decision-action-card .decision-action-facts {
   grid-template-columns: minmax(0, 1fr);
 }
@@ -172,6 +172,20 @@
   grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
   gap: 0 !important;
 }
+
+.decision-action-card .decision-action-timing { gap: 12px !important; }
+.decision-action-card .decision-action-timing > div {
+  display: flex;
+  min-width: 0;
+  padding: 14px;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  gap: 8px;
+  background: var(--surface-soft);
+}
+.decision-action-card .decision-action-timing dt { font-size: 12px; font-weight: 500; }
+.decision-action-card .decision-action-timing dd { margin: 0; font-size: 13px; font-weight: 600; text-align: left; }
 
 .hero-grid > .decision-action-card .decision-action-timing > div {
   min-width: 0;
@@ -636,13 +650,15 @@ html[data-theme="dark"] {
 .allocation-research-panel { scroll-margin-top: 120px; }
 
 /* Global origin navigation stays reachable from every forecast view. */
+.dashboard-shell > .dashboard-section { margin-top: 20px; }
+.dashboard-shell > .decision-evidence-disclosure { margin-top: 20px; }
 .shared-date-controls { display: flex; flex-wrap: wrap; gap: 12px; margin: 0; padding: 14px 16px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
 .shared-date-controls .date-controls { display: flex; align-items: end; gap: 10px; flex-wrap: wrap; width: 100%; }
 .shared-date-controls .field-group { display: grid; gap: 5px; min-width: 145px; }
 .shared-date-controls .date-field { display: grid !important; }
 .shared-date-controls .latest-control { margin-left: auto; }
 .shared-date-controls .control-action-group { margin: 0; }
-.shared-date-controls label { color: var(--ink-soft); font-size: 11px; }
+.shared-date-controls label { color: var(--ink-soft); font-size: 12px; }
 .shared-date-controls input, .shared-date-controls select { min-height: 40px; max-width: 100%; }
 #forecast-window-section { padding: 0 4px; margin: -4px 0 0; border: 0; }
 #forecast-window-summary { min-height: 36px; max-width: 100%; padding: 7px 0; color: var(--ink-soft); font-size: 12px; font-weight: 500; line-height: 1.5; }
@@ -662,23 +678,30 @@ html[data-theme="dark"] {
 .forecast-direction.worsening { border-bottom: 2px solid var(--risk-off-mark, var(--risk-off)); }
 .forecast-direction.recovery { border-bottom: 2px solid var(--risk-on-mark, var(--risk-on)); }
 .transition-outlook { padding: 20px; }
-.forecast-outlook-grid { display: grid; grid-template-columns: 1.3fr 1fr; gap: 24px; align-items: start; }
+.forecast-outlook-grid { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr); gap: 24px; align-items: start; }
 #transition-horizon-bars:not([hidden]) { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; margin: 0; }
-#transition-horizon-bars .transition-horizon-row { display: block; padding: 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
-#transition-horizon-bars .transition-horizon-heading { display: flex; justify-content: space-between; gap: 12px; font-size: 12px; }
+#transition-horizon-bars .transition-horizon-row { display: block; padding: 18px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+#transition-horizon-bars .transition-horizon-heading { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; font-size: 13px; }
 #transition-horizon-bars .transition-horizon-heading strong { font-size: 19px; font-family: var(--mono); color: var(--ink-strong); }
 #transition-horizon-bars .transition-horizon-meter { display: block; height: 5px; margin: 10px 0; overflow: hidden; background: var(--line); border-radius: 4px; }
 #transition-horizon-bars .transition-horizon-meter > span { display: block; height: 100%; background: var(--brand); }
-.horizon-comparison { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 6px; font-size: 11px; }
+.horizon-comparison { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 12px; color: var(--ink-soft); }
 .horizon-comparison > :last-child { color: var(--ink-soft); }
 .first-destination-list { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 13px 0 0; padding-top: 10px; border-top: 1px solid var(--line); }
-.first-destination-list dt { color: var(--ink-soft); font-size: 10px; }
+.first-destination-list dt { color: var(--ink-soft); font-size: 12px; }
 .first-destination-list dd { margin: 4px 0 0; font-family: var(--mono); font-size: 13px; }
 .horizon-model-note, .forecast-definition { color: var(--ink-soft); font-size: 11px; line-height: 1.6; margin: 12px 0 0; }
 .forecast-outlook-grid #duration-context-card { padding: 0; border: 0; box-shadow: none; background: transparent; }
-#duration-context-card .metric-list > div { padding: 9px 0; }
+#duration-context-card .metric-list > div { padding: 16px 18px; justify-content: flex-start; gap: 10px; }
+#duration-context-card .metric-list dt { min-height: 0; font-size: 12px; font-weight: 550; color: var(--ink-soft); }
+#duration-context-card .metric-list dd { margin: auto 0 0; font-size: 23px; font-weight: 650; line-height: 1.3; letter-spacing: -.02em; }
+#duration-context-card .metric-list > div:last-child { grid-column: 1 / -1; }
+#duration-context-card .duration-baselines { gap: 12px; }
+#duration-context-card .duration-baseline { padding: 16px 18px; justify-content: flex-start; gap: 6px; }
+#duration-context-card .duration-baseline > span { min-height: 0; font-size: 12px; color: var(--ink-soft); }
+#duration-context-card .duration-baseline > strong { margin: 4px 0; font-size: 24px; font-weight: 650; line-height: 1.3; }
 #duration-estimate-note { font-size: 11px; line-height: 1.6; margin: 12px 0; }
-.duration-baseline small { display: block; grid-column: 1 / -1; color: var(--ink-soft); font-size: 10px; }
+.duration-baseline small { display: block; grid-column: 1 / -1; color: var(--ink-soft); font-size: 12px; line-height: 1.5; }
 .multistate-forecast { border-top: 1px solid var(--line); margin-top: 18px; padding-top: 14px; }
 .multistate-forecast h3 { font-size: 14px; }
 #forecast-alert-research { padding: 20px; }
@@ -691,6 +714,9 @@ html[data-theme="dark"] {
   .shared-date-controls .field-group { flex: 1 1 140px; min-width: 0; }
   .shared-date-controls .control-action-group { flex: 0 0 auto; }
   .transition-outlook { padding: 16px; }
+  #duration-context-card .metric-list > div,
+  #duration-context-card .duration-baseline { padding: 14px; }
+  #duration-context-card .metric-list dd { font-size: 21px; }
 }
 @media (max-width: 540px) {
   .overview-section .decision-pipeline { grid-template-columns: minmax(0, 1fr); }

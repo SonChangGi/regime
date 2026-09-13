@@ -21,6 +21,10 @@ from regime_lab.web_contract import render_browser_contract_javascript
 
 
 ROOT = Path(__file__).resolve().parents[1]
+FONT_ASSETS = {
+    name: (ROOT / "web" / name).read_bytes()
+    for name in ("fonts.css", "fonts/PretendardVariable-1.3.9.woff2", "fonts/OFL.txt")
+}
 UTC = timezone.utc
 LIVE_TARGET = datetime.fromisoformat("2026-08-07T20:00:00+00:00")
 LIVE_PAYLOAD = (
@@ -826,6 +830,7 @@ def test_public_readback_requires_exact_payload_manifest_and_consumer(
         "forecast-enhancements.js": b"",
         "insights.css": b"",
         "forecast-enhancements.css": b"",
+        **FONT_ASSETS,
     }
     manifest = json.dumps(
         {
@@ -939,6 +944,7 @@ def test_public_readback_expects_packaged_content_hash_index(tmp_path: Path) -> 
         b'<script src="./forecast-enhancements.js?v=manual"></script>'
         b'<link rel="stylesheet" href="./insights.css?v=manual">'
         b'<link rel="stylesheet" href="./forecast-enhancements.css?v=manual">'
+        b'<link rel="stylesheet" href="./fonts.css?v=manual">'
     )
     (web / "index.html").write_bytes(source_index)
     (web / "styles.css").write_bytes(styles)
@@ -948,6 +954,9 @@ def test_public_readback_expects_packaged_content_hash_index(tmp_path: Path) -> 
     (web / "forecast-enhancements.js").write_bytes(b"")
     (web / "insights.css").write_bytes(b"")
     (web / "forecast-enhancements.css").write_bytes(b"")
+    (web / "fonts").mkdir()
+    for name, raw in FONT_ASSETS.items():
+        (web / name).write_bytes(raw)
     packaged_index = (
         '<title>US Market Regime Lab</title>'
         '<link rel="stylesheet" '
@@ -959,6 +968,7 @@ def test_public_readback_expects_packaged_content_hash_index(tmp_path: Path) -> 
         f'<script src="./forecast-enhancements.js?v={hashlib.sha256(b"").hexdigest()}"></script>'
         f'<link rel="stylesheet" href="./insights.css?v={hashlib.sha256(b"").hexdigest()}">'
         f'<link rel="stylesheet" href="./forecast-enhancements.css?v={hashlib.sha256(b"").hexdigest()}">'
+        f'<link rel="stylesheet" href="./fonts.css?v={hashlib.sha256(FONT_ASSETS["fonts.css"]).hexdigest()}">'
     ).encode()
     public_assets = {
         "index.html": packaged_index,
@@ -969,6 +979,7 @@ def test_public_readback_expects_packaged_content_hash_index(tmp_path: Path) -> 
         "forecast-enhancements.js": b"",
         "insights.css": b"",
         "forecast-enhancements.css": b"",
+        **FONT_ASSETS,
     }
     payload_sha256 = hashlib.sha256(LIVE_PAYLOAD).hexdigest()
     manifest = json.dumps(
@@ -1030,6 +1041,7 @@ def test_v5_public_readback_requires_hash_bound_core_and_research_split(
         "forecast-enhancements.js": b"",
         "insights.css": b"",
         "forecast-enhancements.css": b"",
+        **FONT_ASSETS,
     }
     published = {
         **history,
@@ -1114,6 +1126,9 @@ def test_expected_static_assets_reject_one_sided_application_shell(
     (web / "forecast-enhancements.js").write_bytes(b"")
     (web / "insights.css").write_bytes(b"")
     (web / "forecast-enhancements.css").write_bytes(b"")
+    (web / "fonts").mkdir()
+    for name, raw in FONT_ASSETS.items():
+        (web / name).write_bytes(raw)
 
     with pytest.raises(
         automation.AutomationError,

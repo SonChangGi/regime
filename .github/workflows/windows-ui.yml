@@ -1,0 +1,106 @@
+name: Verify actual Windows dashboard rendering
+
+on:
+  push:
+    branches: ['codex/**']
+  workflow_dispatch:
+    inputs:
+      site_url:
+        description: 'Optional deployed URL: https://sonchanggi.github.io/regime/'
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-ui-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  package:
+    # Standard runners are free for public repositories. Do not silently use
+    # a private repository's metered minutes or any larger runner.
+    if: github.event.repository.private == false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.13.13'
+          cache: pip
+          cache-dependency-path: requirements-ci.lock
+      - name: Install locked packaging environment
+        run: |
+          python -m pip install --require-hashes -r requirements-ci.lock
+          python -m pip install --no-build-isolation --no-deps -e .
+          python -m pip check
+      - name: Build and verify the Pages package
+        run: |
+          python scripts/package_public_demo.py \
+            --payload publication/live/regime-results.json \
+            --comparison publication/live/v5-vs-v4-comparison.json \
+            --manifest publication/live/generation-manifest.json \
+            --forecast-enhancements-mode required \
+            --publication-mode live-derived \
+            --acknowledge-personal-noncommercial-publication \
+            --output dist/public-dashboard
+          python scripts/verify_public_package.py dist/public-dashboard
+      - name: Pass only the verified derived package to Windows
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-ui-package
+          path: dist/public-dashboard
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 9
+
+  windows:
+    needs: package
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-11-arm
+            browser: msedge
+          - runner: windows-2025
+            browser: chrome
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up exact Node runtime
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24.7.0'
+      - name: Retrieve verified Pages package
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: windows-ui-package
+          path: dist/public-dashboard
+      - name: Install exact browser driver library
+        run: npm ci --prefix tools/windows-ui --ignore-scripts --no-audit --no-fund
+      - name: Render with the browser installed on actual Windows
+        env:
+          UI_BROWSER: ${{ matrix.browser }}
+          UI_SITE_URL: ${{ inputs.site_url }}
+        shell: pwsh
+        run: |
+          $uiArguments = @('scripts/verify_windows_ui.cjs', '--browser', $env:UI_BROWSER, '--package', 'dist/public-dashboard', '--output', 'build/windows-ui')
+          if ($env:UI_SITE_URL) { $uiArguments += @('--base-url', $env:UI_SITE_URL) }
+          node @uiArguments
+          exit $LASTEXITCODE
+      - name: Preserve actual screenshots and font evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-ui-${{ matrix.runner }}-${{ matrix.browser }}
+          path: build/windows-ui
+          if-no-files-found: warn
+          retention-days: 1
+          compression-level: 9
