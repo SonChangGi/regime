@@ -1232,11 +1232,44 @@ def _validate_stored_record(
     )
 
 
+def _inspect_directional_cache(root: Path) -> None:
+    """Validate the private sibling cache written by the V5 directional stage.
+
+    Its probability contents and cache keys are validated by that stage, not
+    reused as base walk-forward origins.  Keep its filesystem boundary closed
+    while allowing the layout that the full pipeline creates after base fitting.
+    """
+
+    _require_real_private_directory(root, label="directional checkpoint cache")
+    for entry in root.iterdir():
+        if entry.is_symlink():
+            raise CheckpointPrivacyError("directional cache entries must not be symlinks")
+        is_record = re.fullmatch(r"[0-9a-f]{64}\.json", entry.name)
+        is_temporary = re.fullmatch(r"\.[0-9a-f]{64}\.json\.[^/]+\.tmp", entry.name)
+        if not entry.is_file() or not (is_record or is_temporary):
+            raise CheckpointCorruptionError(
+                f"unexpected directional cache entry: {entry.name}"
+            )
+        _require_private_mode(entry, directory=False)
+
+
+def prepare_directional_checkpoint_cache(root: str | Path) -> Path:
+    """Prepare the pipeline's sibling cache without changing existing permissions."""
+
+    checkpoint_root = Path(root)
+    _require_real_private_directory(checkpoint_root, label="checkpoint root")
+    cache = checkpoint_root / "directional"
+    if not cache.exists() and not cache.is_symlink():
+        cache.mkdir(mode=0o700)
+    _inspect_directional_cache(cache)
+    return cache
+
+
 def _inspect_stored_checkpoint(root: Path) -> _StoredCheckpointInspection:
     """Validate an existing checkpoint without assuming the requested identity."""
 
     _require_real_private_directory(root, label="checkpoint root")
-    allowed_root_entries = {"manifest.json", "origins", "runs"}
+    allowed_root_entries = {"manifest.json", "origins", "runs", "directional"}
     for entry in root.iterdir():
         if entry.is_symlink():
             raise CheckpointPrivacyError("checkpoint entries must not be symlinks")
@@ -1244,6 +1277,8 @@ def _inspect_stored_checkpoint(root: Path) -> _StoredCheckpointInspection:
             raise CheckpointCorruptionError(
                 f"unexpected checkpoint root entry: {entry.name}"
             )
+        if entry.name == "directional":
+            _inspect_directional_cache(entry)
 
     manifest_path = root / "manifest.json"
     if manifest_path.is_symlink():

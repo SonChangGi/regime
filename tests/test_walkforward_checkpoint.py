@@ -10,6 +10,7 @@ import pandas as pd
 import pytest
 
 from regime_lab.analysis import run_benchmark
+from regime_lab.analysis.directional import run_directional_transition_benchmark
 import regime_lab.analysis.validation as validation_module
 from regime_lab.analysis.models import BenchmarkProfile
 from regime_lab.walkforward_checkpoint import PREDICTION_COLUMNS
@@ -24,6 +25,7 @@ from regime_lab.walkforward_checkpoint import WalkForwardCheckpoint
 from regime_lab.walkforward_checkpoint import _sha256_document
 from regime_lab.walkforward_checkpoint import decode_checkpoint_scalar
 from regime_lab.walkforward_checkpoint import encode_checkpoint_scalar
+from regime_lab.walkforward_checkpoint import prepare_directional_checkpoint_cache
 
 
 def _inputs(rows: int = 42) -> tuple[pd.DataFrame, pd.Series]:
@@ -722,6 +724,65 @@ def test_versioned_open_rejects_symlinked_or_non_private_rollover_state(
         WalkForwardCheckpoint.open_versioned(root, changed_identity)
 
 
+@pytest.mark.parametrize(
+    ("invalid_entry", "error", "message"),
+    [
+        ("unknown_directory", CheckpointCorruptionError, "unexpected checkpoint root"),
+        ("directional_file", CheckpointPrivacyError, "real directory"),
+        ("directional_symlink", CheckpointPrivacyError, "symlink"),
+        ("directional_mode", CheckpointPrivacyError, "group/world accessible"),
+        ("record_symlink", CheckpointPrivacyError, "symlink"),
+        ("record_mode", CheckpointPrivacyError, "group/world accessible"),
+        ("nested_directory", CheckpointCorruptionError, "unexpected directional cache"),
+        ("unknown_file", CheckpointCorruptionError, "unexpected directional cache"),
+    ],
+)
+def test_directional_namespace_keeps_invalid_checkpoint_layouts_closed(
+    tmp_path: Path,
+    invalid_entry: str,
+    error: type[Exception],
+    message: str,
+) -> None:
+    root = tmp_path / "v5-checkpoint"
+    identity = _identity()
+    checkpoint = WalkForwardCheckpoint.open_versioned(root, identity)
+    rows, split = _rows(identity)
+    record = checkpoint.save_origin(1, rows, split)
+    original = record.read_bytes()
+    cache = root / "directional"
+    if invalid_entry == "unknown_directory":
+        (root / "unknown").mkdir(mode=0o700)
+    elif invalid_entry == "directional_file":
+        cache.write_text("{}", encoding="utf-8")
+    elif invalid_entry == "directional_symlink":
+        backing = tmp_path / "cache-backing"
+        backing.mkdir(mode=0o700)
+        cache.symlink_to(backing, target_is_directory=True)
+    else:
+        cache.mkdir(mode=0o700)
+        cache_record = cache / ("a" * 64 + ".json")
+        if invalid_entry == "directional_mode":
+            os.chmod(cache, 0o755)
+        elif invalid_entry == "record_symlink":
+            cache_record.symlink_to(record)
+        elif invalid_entry == "record_mode":
+            cache_record.write_text("{}", encoding="utf-8")
+            os.chmod(cache_record, 0o644)
+        elif invalid_entry == "nested_directory":
+            cache_record.mkdir(mode=0o700)
+        else:
+            (cache / "unknown.json").write_text("{}", encoding="utf-8")
+
+    for requested in (identity, _identity(source="b" * 64)):
+        with pytest.raises(error, match=message):
+            WalkForwardCheckpoint.open_versioned(root, requested)
+    if invalid_entry != "unknown_directory":
+        with pytest.raises(error, match=message):
+            prepare_directional_checkpoint_cache(root)
+    assert not (root / "runs").exists()
+    assert record.read_bytes() == original
+
+
 def test_record_schema_and_unexpected_files_fail_closed(tmp_path: Path) -> None:
     identity = _identity()
     checkpoint = WalkForwardCheckpoint.open(tmp_path / "v5-checkpoint", identity)
@@ -815,6 +876,35 @@ def test_appended_week_versioned_benchmark_is_exact_and_resumes_child(
         source_fingerprint_sha256=source_fingerprint,
         **arguments,
     )
+    # The full V5 pipeline writes this cache after base fitting.  Its next
+    # weekly invocation must accept the complete layout, even with CLI umask.
+    directional_cache = root / "directional"
+    previous_umask = os.umask(0o022)
+    try:
+        prepared_cache = prepare_directional_checkpoint_cache(root)
+        assert prepared_cache == directional_cache
+        run_directional_transition_benchmark(
+            features,
+            states,
+            horizons=(1,),
+            models=("empirical_first_passage",),
+            minimum_train_weeks=12,
+            selection_end="2020-07-03",
+            minimum_selection_predictions=3,
+            minimum_diagnostic_predictions=3,
+            selection_max_origins=3,
+            maximum_diagnostic_origins=3,
+            cache_directory=directional_cache,
+        )
+    finally:
+        os.umask(previous_umask)
+    assert directional_cache.stat().st_mode & 0o077 == 0
+    directional_bytes = {
+        path.name: path.read_bytes() for path in directional_cache.iterdir()
+    }
+    assert directional_bytes
+    resumed_first = WalkForwardCheckpoint.open_versioned(root, first_identity)
+    assert len(resumed_first.load_completed_origins()) == len(first_identity.origins)
     legacy_manifest_bytes = (root / "manifest.json").read_bytes()
     legacy_record_bytes = {
         path.name: path.read_bytes()
@@ -862,6 +952,9 @@ def test_appended_week_versioned_benchmark_is_exact_and_resumes_child(
         path.name: path.read_bytes()
         for path in (root / "origins").glob("*.json")
     } == legacy_record_bytes
+    assert {
+        path.name: path.read_bytes() for path in directional_cache.iterdir()
+    } == directional_bytes
 
     child_records = sorted(appended_checkpoint.records_root.glob("*.json"))
     child_records[-1].unlink()

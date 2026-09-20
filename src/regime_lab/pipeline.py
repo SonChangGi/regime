@@ -1396,6 +1396,7 @@ def build_dashboard_result(
     )
     if contract_version == "v5":
         from regime_lab.v5 import build_v5_payload, run_v5_directional_benchmark
+        from regime_lab.walkforward_checkpoint import prepare_directional_checkpoint_cache
 
         if progress is not None:
             progress("v5 최초 이탈 방향 benchmark 시작")
@@ -1404,7 +1405,11 @@ def build_dashboard_result(
             states,
             profile_name=profile_name,
             selection_end=benchmark_selection_end,
-            cache_directory=(Path(checkpoint_directory) / "directional" if checkpoint_directory is not None else None),
+            cache_directory=(
+                prepare_directional_checkpoint_cache(checkpoint_directory)
+                if checkpoint_directory is not None
+                else None
+            ),
         )
         bootstrap_resamples = 199 if profile_name == "quick" else 1_999
         if progress is not None:
