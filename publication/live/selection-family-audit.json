@@ -1,7 +1,7 @@
 {
   "schema_version": "selection-family-audit/v2",
   "status": "completed",
-  "generation_id": "20260913T085650.036621Z",
+  "generation_id": "20260921T014805.017772Z",
   "evidence_track": "reconstructed_oos",
   "evidence_status": "historical_reconstructed_oos",
   "candidate_manifest_sha256": "c167514c2f5daa8353dc3a2ba951f7a8cc0aca16076ad78c3b77e611258093ca",
@@ -17,12 +17,12 @@
   "source_artifacts": {
     "oos_predictions": {
       "path": "oos-predictions.csv",
-      "sha256": "c5de6f4a13e320be44ce713d07eb332a4588ae37ce01f7321262f84b81baf627",
-      "row_count": 6127
+      "sha256": "d8fff947608c4e8606496b65fb6b430398cb08edfab72ae31adb0d676cc94c8e",
+      "row_count": 6138
     },
     "selection_diagnostics": {
       "path": "selection-diagnostics.csv",
-      "sha256": "4909136a770d7afabc66618047f8c6f1e8ed071f883b9fe58bd0ed6b4f7de483",
+      "sha256": "75ce69290bf3308dfa190cdb950f7d239bb72845f98b64c2b80c92f153596678",
       "row_count": 11
     }
   },
@@ -98,8 +98,8 @@
         "holm_adjusted_p_value": 0.012
       },
       "metrics": {
-        "log_loss": 0.3158039823651632,
-        "brier": 0.1644285157181558,
+        "log_loss": 0.3157450916058579,
+        "brier": 0.1644524952305148,
         "calibration_error": null,
         "n_predictions": 365
       }
@@ -120,8 +120,8 @@
         "holm_adjusted_p_value": 0.0315
       },
       "metrics": {
-        "log_loss": 0.3251915661233283,
-        "brier": 0.1686962438899064,
+        "log_loss": 0.3247440337978695,
+        "brier": 0.1684532982129808,
         "calibration_error": null,
         "n_predictions": 365
       }
@@ -142,8 +142,8 @@
         "holm_adjusted_p_value": 0.0315
       },
       "metrics": {
-        "log_loss": 0.3253153845813598,
-        "brier": 0.1688594734706861,
+        "log_loss": 0.3248346669587428,
+        "brier": 0.1685958973773171,
         "calibration_error": null,
         "n_predictions": 365
       }
@@ -162,12 +162,12 @@
           "holm_not_significant"
         ],
         "fallback_count": 0,
-        "raw_p_value": 0.175,
-        "holm_adjusted_p_value": 0.7875
+        "raw_p_value": 0.165,
+        "holm_adjusted_p_value": 0.7324999999999999
       },
       "metrics": {
-        "log_loss": 0.3384837573836063,
-        "brier": 0.1791381656697259,
+        "log_loss": 0.3373002254589268,
+        "brier": 0.1779598768323214,
         "calibration_error": null,
         "n_predictions": 365
       }
@@ -186,12 +186,12 @@
           "holm_not_significant"
         ],
         "fallback_count": 0,
-        "raw_p_value": 0.1575,
-        "holm_adjusted_p_value": 0.7875
+        "raw_p_value": 0.1465,
+        "holm_adjusted_p_value": 0.7324999999999999
       },
       "metrics": {
-        "log_loss": 0.3394614643698815,
-        "brier": 0.1836830639573227,
+        "log_loss": 0.3385407370343566,
+        "brier": 0.1827256950587631,
         "calibration_error": null,
         "n_predictions": 365
       }
@@ -263,8 +263,8 @@
         "holm_adjusted_p_value": 1.0
       },
       "metrics": {
-        "log_loss": 0.6141414692430108,
-        "brier": 0.3760818075377349,
+        "log_loss": 0.6141413672824175,
+        "brier": 0.3760815357070194,
         "calibration_error": null,
         "n_predictions": 365
       }
@@ -289,8 +289,8 @@
         "holm_adjusted_p_value": 1.0
       },
       "metrics": {
-        "log_loss": 1.1101886453510563,
-        "brier": 0.4140811582061952,
+        "log_loss": 1.1101623979862436,
+        "brier": 0.4140849999523474,
         "calibration_error": null,
         "n_predictions": 365
       }
@@ -406,50 +406,50 @@
       {
         "model": "xgb_hazard_destination",
         "n_predictions": 365,
-        "log_loss": 0.3158039823651631,
-        "brier": 0.1644285157181558,
-        "normalized_entropy_sharpness": 0.6771912238972839,
-        "mean_max_probability": 0.8959247139467116,
+        "log_loss": 0.31574509160585795,
+        "brier": 0.1644524952305148,
+        "normalized_entropy_sharpness": 0.6780159159785473,
+        "mean_max_probability": 0.8961905148066446,
         "fallback_count": 128,
         "primary_metric_crosscheck": "matched"
       },
       {
         "model": "causal_multiscale_ensemble",
         "n_predictions": 365,
-        "log_loss": 0.32519156612332834,
-        "brier": 0.16869624388990645,
-        "normalized_entropy_sharpness": 0.6296475273515814,
-        "mean_max_probability": 0.8727043538794326,
+        "log_loss": 0.3247440337978694,
+        "brier": 0.16845329821298077,
+        "normalized_entropy_sharpness": 0.629494140019682,
+        "mean_max_probability": 0.8726000776724344,
         "fallback_count": 0,
         "primary_metric_crosscheck": "matched"
       },
       {
         "model": "causal_dynamic_ensemble",
         "n_predictions": 365,
-        "log_loss": 0.3253153845813597,
-        "brier": 0.1688594734706861,
-        "normalized_entropy_sharpness": 0.6300373707948751,
-        "mean_max_probability": 0.8727945027965165,
+        "log_loss": 0.32483466695874275,
+        "brier": 0.1685958973773171,
+        "normalized_entropy_sharpness": 0.6298261299972959,
+        "mean_max_probability": 0.872663394054934,
         "fallback_count": 0,
         "primary_metric_crosscheck": "matched"
       },
       {
         "model": "xgboost",
         "n_predictions": 365,
-        "log_loss": 0.33848375738360625,
-        "brier": 0.17913816566972596,
-        "normalized_entropy_sharpness": 0.6261527737266839,
-        "mean_max_probability": 0.8632545381910666,
+        "log_loss": 0.33730022545892674,
+        "brier": 0.17795987683232148,
+        "normalized_entropy_sharpness": 0.6261776728675449,
+        "mean_max_probability": 0.863569385584013,
         "fallback_count": 0,
         "primary_metric_crosscheck": "matched"
       },
       {
         "model": "recency_weighted_xgboost_208w",
         "n_predictions": 365,
-        "log_loss": 0.3394614643698815,
-        "brier": 0.18368306395732276,
-        "normalized_entropy_sharpness": 0.6514761062946408,
-        "mean_max_probability": 0.8735687036324675,
+        "log_loss": 0.3385407370343566,
+        "brier": 0.18272569505876315,
+        "normalized_entropy_sharpness": 0.651573896640138,
+        "mean_max_probability": 0.8739830716268667,
         "fallback_count": 0,
         "primary_metric_crosscheck": "matched"
       },
@@ -476,20 +476,20 @@
       {
         "model": "pca_ridge_logistic",
         "n_predictions": 365,
-        "log_loss": 0.6141414692430109,
-        "brier": 0.3760818075377349,
-        "normalized_entropy_sharpness": 0.5034337013408088,
-        "mean_max_probability": 0.7543816948528184,
+        "log_loss": 0.6141413672824175,
+        "brier": 0.3760815357070194,
+        "normalized_entropy_sharpness": 0.5034341300117058,
+        "mean_max_probability": 0.7543820997638174,
         "fallback_count": 0,
         "primary_metric_crosscheck": "matched"
       },
       {
         "model": "recency_weighted_ridge_logistic_208w",
         "n_predictions": 365,
-        "log_loss": 1.110188645351061,
-        "brier": 0.4140811582061952,
-        "normalized_entropy_sharpness": 0.8226079028591193,
-        "mean_max_probability": 0.9194847974608487,
+        "log_loss": 1.1101623979862476,
+        "brier": 0.4140849999523475,
+        "normalized_entropy_sharpness": 0.8226085040150887,
+        "mean_max_probability": 0.9194862408067496,
         "fallback_count": 0,
         "primary_metric_crosscheck": "matched"
       },
@@ -599,8 +599,8 @@
         "model": "xgboost",
         "state": "transition",
         "support": 107,
-        "true_positive": 87,
-        "recall": 0.8130841121495327,
+        "true_positive": 88,
+        "recall": 0.822429906542056,
         "status": "computed"
       },
       {
@@ -623,16 +623,16 @@
         "model": "recency_weighted_xgboost_208w",
         "state": "transition",
         "support": 107,
-        "true_positive": 85,
-        "recall": 0.794392523364486,
+        "true_positive": 86,
+        "recall": 0.8037383177570093,
         "status": "computed"
       },
       {
         "model": "recency_weighted_xgboost_208w",
         "state": "risk_off",
         "support": 103,
-        "true_positive": 95,
-        "recall": 0.9223300970873787,
+        "true_positive": 96,
+        "recall": 0.9320388349514563,
         "status": "computed"
       },
       {
@@ -834,12 +834,12 @@
         "on_time_departure_count": 9,
         "on_time_destination_count": 9,
         "destination_detection_rate": 0.9444444444444444,
-        "mean_detection_delay_forecast_weeks": 0.7941176470588235,
+        "mean_detection_delay_forecast_weeks": 0.7647058823529411,
         "median_detection_delay_forecast_weeks": 1.0,
         "maximum_detection_delay_forecast_weeks": 2,
-        "false_alarm_count": 9,
+        "false_alarm_count": 8,
         "exposure_years": 6.995352402855636,
-        "false_alarms_per_year": 1.286568493150685
+        "false_alarms_per_year": 1.1436164383561644
       },
       {
         "model": "recency_weighted_xgboost_208w",
@@ -849,12 +849,12 @@
         "on_time_departure_count": 6,
         "on_time_destination_count": 6,
         "destination_detection_rate": 0.9444444444444444,
-        "mean_detection_delay_forecast_weeks": 0.9117647058823529,
+        "mean_detection_delay_forecast_weeks": 0.8823529411764706,
         "median_detection_delay_forecast_weeks": 1.0,
         "maximum_detection_delay_forecast_weeks": 2,
-        "false_alarm_count": 13,
+        "false_alarm_count": 11,
         "exposure_years": 6.995352402855636,
-        "false_alarms_per_year": 1.8583767123287673
+        "false_alarms_per_year": 1.5724726027397262
       },
       {
         "model": "markov",
@@ -2295,8 +2295,8 @@
         "source_state": "risk_on",
         "destination_state": "transition",
         "status": "detected",
-        "detected_target_at": "2020-11-13T21:00:00+00:00",
-        "detection_delay_forecast_weeks": 2
+        "detected_target_at": "2020-11-06T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
       },
       {
         "model": "xgboost",
@@ -2655,8 +2655,8 @@
         "source_state": "risk_on",
         "destination_state": "transition",
         "status": "detected",
-        "detected_target_at": "2020-11-13T21:00:00+00:00",
-        "detection_delay_forecast_weeks": 2
+        "detected_target_at": "2020-11-06T21:00:00+00:00",
+        "detection_delay_forecast_weeks": 1
       },
       {
         "model": "recency_weighted_xgboost_208w",
@@ -4951,12 +4951,12 @@
             "persistence",
             "majority"
           ],
-          "test_statistic": 8.608340475670097,
+          "test_statistic": 8.60803896549919,
           "test_statistic_nonfinite": false,
           "bootstrap_p_value": 0.0005,
           "rejected": true,
           "eliminated_model": "majority",
-          "elimination_score": 8.608340475670097,
+          "elimination_score": 8.60803896549919,
           "remaining_models": [
             "xgb_hazard_destination",
             "causal_multiscale_ensemble",
@@ -4984,12 +4984,12 @@
             "recency_weighted_ridge_logistic_208w",
             "persistence"
           ],
-          "test_statistic": 5.8106815274041,
+          "test_statistic": 5.8150404160409455,
           "test_statistic_nonfinite": false,
           "bootstrap_p_value": 0.0005,
           "rejected": true,
           "eliminated_model": "persistence",
-          "elimination_score": 5.8106815274041,
+          "elimination_score": 5.8150404160409455,
           "remaining_models": [
             "xgb_hazard_destination",
             "causal_multiscale_ensemble",
@@ -5015,12 +5015,12 @@
             "pca_ridge_logistic",
             "recency_weighted_ridge_logistic_208w"
           ],
-          "test_statistic": 4.797286999613069,
+          "test_statistic": 4.798372587885811,
           "test_statistic_nonfinite": false,
           "bootstrap_p_value": 0.0005,
           "rejected": true,
           "eliminated_model": "recency_weighted_ridge_logistic_208w",
-          "elimination_score": 4.797286999613069,
+          "elimination_score": 4.798372587885811,
           "remaining_models": [
             "xgb_hazard_destination",
             "causal_multiscale_ensemble",
@@ -5044,12 +5044,12 @@
             "discounted_markov_208w",
             "pca_ridge_logistic"
           ],
-          "test_statistic": 4.597840990621457,
+          "test_statistic": 4.595292862172236,
           "test_statistic_nonfinite": false,
           "bootstrap_p_value": 0.0005,
           "rejected": true,
           "eliminated_model": "pca_ridge_logistic",
-          "elimination_score": 4.597840990621457,
+          "elimination_score": 4.595292862172236,
           "remaining_models": [
             "xgb_hazard_destination",
             "causal_multiscale_ensemble",
@@ -5071,12 +5071,12 @@
             "markov",
             "discounted_markov_208w"
           ],
-          "test_statistic": 3.393500183006972,
+          "test_statistic": 3.4165218450804007,
           "test_statistic_nonfinite": false,
-          "bootstrap_p_value": 0.0115,
+          "bootstrap_p_value": 0.01,
           "rejected": true,
           "eliminated_model": "discounted_markov_208w",
-          "elimination_score": 3.393500183006972,
+          "elimination_score": 3.4165218450804007,
           "remaining_models": [
             "xgb_hazard_destination",
             "causal_multiscale_ensemble",
@@ -5096,12 +5096,12 @@
             "recency_weighted_xgboost_208w",
             "markov"
           ],
-          "test_statistic": 2.901949030456201,
+          "test_statistic": 2.9232724803836794,
           "test_statistic_nonfinite": false,
-          "bootstrap_p_value": 0.028,
+          "bootstrap_p_value": 0.0265,
           "rejected": true,
           "eliminated_model": "markov",
-          "elimination_score": 2.901949030456201,
+          "elimination_score": 2.9232724803836794,
           "remaining_models": [
             "xgb_hazard_destination",
             "causal_multiscale_ensemble",
@@ -5119,9 +5119,9 @@
             "xgboost",
             "recency_weighted_xgboost_208w"
           ],
-          "test_statistic": 1.6262532809107577,
+          "test_statistic": 1.57285279473551,
           "test_statistic_nonfinite": false,
-          "bootstrap_p_value": 0.379,
+          "bootstrap_p_value": 0.409,
           "rejected": false,
           "eliminated_model": null,
           "elimination_score": null,
@@ -5135,7 +5135,7 @@
         }
       ]
     },
-    "sha256": "abb11dabb05eec7574b21aa6e7d6ac31d5246306bef8a52402f66df37765c1bd"
+    "sha256": "56b4efc46108145781f662c667adddb183c8eb9f6519b925943425419501703c"
   },
-  "sha256": "d6638ea3f05d670b7ef887b1ad356b35cdbc2126b2cf984c821ea61f7930064c"
+  "sha256": "f4e6e4292dd68fc99fd8c94127f126f95a1392a55025f1d86d862c7ed1181f79"
 }
