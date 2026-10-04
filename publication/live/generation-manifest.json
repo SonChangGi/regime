@@ -1,25 +1,25 @@
 {
   "schema_version": "regime-generation-manifest/2",
-  "generation_id": "20260927T024913.117091Z",
+  "generation_id": "20261004T024627.516348Z",
   "payload": {
     "path": "publication/live/regime-results.json",
-    "payload_contract_sha256": "2ea4fddedf947977926ce5ea6caf48eb9ab88a3aab65e1e58da738d4a2e67b6e"
+    "payload_contract_sha256": "8bff652cace3de4f054ca9b290ba1627305f0e1facf412aca25476f9a9df6201"
   },
   "comparison_sidecar": {
     "path": "publication/live/v5-vs-v4-comparison.json",
-    "comparison_contract_sha256": "2edf53f8313b4f9d34117edf92eafe3956c6adfe159af1285d6b8181fc3927a9"
+    "comparison_contract_sha256": "5304a25f7652ffac13df1d4dca593be6f8f1723379317c3d55c9cdb8f7ffd695"
   },
   "selection_family_sidecar": {
     "path": "publication/live/selection-family-audit.json",
-    "selection_family_contract_sha256": "a5c0b0dc0d3aabdfdf4260c1faa87d8e2699896303121b6a4611dfa489381bfd"
+    "selection_family_contract_sha256": "1f236efc7fb70464e165013536d9f63e84f6b0d1e48870868cbf55f816e1456e"
   },
   "artifact_inventory": {
-    "sha256": "114a3cbafca3838c692c624029ecabbf696c4a0c89362660a4bb1434f8d2156d",
+    "sha256": "4d942cfc0d3d2d392d472989ca4ca92c83669792583a2280b11ba33b20b8a15b",
     "file_count": 43
   },
   "input_snapshot": {
-    "data_as_of": "2026-09-25T20:00:00+00:00",
-    "sha256": "b7fa0c91ff2776d9cc81a0386757193d5eabfee86909289b6b13c4b6a8852208"
+    "data_as_of": "2026-10-02T20:00:00+00:00",
+    "sha256": "3390dbec5d6cdd6ddb51052b3f0dfb10c9d4be5430f0c46f903386ac47eb5be4"
   },
   "label_spec": {
     "path": "config/label-spec.json",
