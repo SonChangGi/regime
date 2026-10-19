@@ -544,6 +544,9 @@ api.renderForecastAuditPanels({},target);console.log(JSON.stringify({notes,clear
 
 
 RESEARCH_RENDER_FIXTURE = r"""
+// Keep this synthetic risk-on scenario internally consistent as publication states change.
+const publicationBefore=JSON.stringify(full);
+const researchWeek={...full.weekly.at(-1),current:{...full.weekly.at(-1).current,state:'risk_on'}};
 const origin=full.meta.data_as_of;
 const horizons=Object.fromEntries([1,4,13].map(h=>[`${h}w`,{horizon_weeks:h,target_date:new Date(Date.parse(origin)+h*7*86400000).toISOString(),
  endpoint:h===1?{risk_on:.8,transition:.15,risk_off:.05}:h===4?{risk_on:.6,transition:.25,risk_off:.15}:{risk_on:.4,transition:.35,risk_off:.25},
@@ -554,17 +557,19 @@ const block={schema_version:'regime-forecast-research/1',data_as_of:origin,selec
  {id:'asymmetric',label:'비대칭 경계',role:'challenger',history:[],latest:{origin_date:origin,current_state:'risk_on',next_state:{risk_on:.3,transition:.5,risk_off:.2},horizons:{}}}],
  metrics:[{model:'paths',horizon_weeks:1,target:'next_state',period:'retrospective_2023_2026',weeks:191,log_loss:.54,brier:.33,worsening_brier:.083,worsening_events:19,worsening_hits:0,recovery_events:21,recovery_hits:0,departure_false_alarms_per_year:0},
  {model:'asymmetric',horizon_weeks:1,target:'next_state',period:'retrospective_2023_2026',weeks:191,log_loss:.36,brier:.22,worsening_brier:.076,worsening_events:19,worsening_hits:0,recovery_events:21,recovery_hits:16,departure_false_alarms_per_year:.82}]};
+const researchPayload={...full,weekly:[...full.weekly.slice(0,-1),researchWeek],research:{...full.research,forecast_research:block}};
 """
 
 
 def test_research_selector_changes_native_probabilities_without_replacing_official_model():
     result = run_js(RESEARCH_RENDER_FIXTURE + r"""
-api.state.raw={...full,research:{...full.research,forecast_research:block}};
+api.state.raw=researchPayload;
 const official=JSON.stringify(api.state.raw.weekly.at(-1).next_week);
-api.renderMultistateForecast(full.weekly.at(-1));const paths=api.dom['multistate-forecast'].textContent;
+api.renderMultistateForecast(researchWeek);const paths=api.dom['multistate-forecast'].textContent;
 const control=api.dom['multistate-forecast'].querySelector('select');control.value='asymmetric';control.listeners.change();
 console.log(JSON.stringify({paths,asymmetric:api.dom['multistate-forecast'].textContent,
  oneWeekNote:api.dom['multistate-forecast'].querySelector('.research-empty')?.textContent,
+ publicationUnchanged:publicationBefore===JSON.stringify(full),
  officialUnchanged:official===JSON.stringify(api.state.raw.weekly.at(-1).next_week),query:Object.fromEntries(current.searchParams)}));
 """)
     assert "다음 주 위험선호 80.0%" in result["paths"]
@@ -573,19 +578,20 @@ console.log(JSON.stringify({paths,asymmetric:api.dom['multistate-forecast'].text
     assert result["oneWeekNote"] == "1주 예측"
     assert "위험회피 진입" not in result["asymmetric"]
     assert "191주" in result["paths"] and "후보와 기준선" in result["paths"]
-    assert result["officialUnchanged"] and result["query"]["research_model"] == "asymmetric"
+    assert result["publicationUnchanged"] and result["officialUnchanged"] and result["query"]["research_model"] == "asymmetric"
 
 
 def test_pending_research_is_labeled_loading_then_renders_when_evidence_arrives():
     result = run_js(RESEARCH_RENDER_FIXTURE + r"""
-api.state.raw={...full,research:{...full.research}};delete api.state.raw.research.forecast_research;
-api.state.sidecarAvailability.research='pending';api.renderMultistateForecast(full.weekly.at(-1));
+api.state.raw={...researchPayload,research:{...full.research}};delete api.state.raw.research.forecast_research;
+api.state.sidecarAvailability.research='pending';api.renderMultistateForecast(researchWeek);
 const pending={text:api.dom['multistate-forecast'].textContent,busy:api.dom['multistate-forecast'].attrs['aria-busy']};
-api.state.raw={...full,research:{...full.research,forecast_research:block}};api.state.sidecarAvailability.research='ready';
-api.renderTransitionHorizons(full.weekly.at(-1));console.log(JSON.stringify({pending,ready:api.dom['multistate-forecast'].textContent,
- busy:api.dom['multistate-forecast'].attrs['aria-busy']}));
+api.state.raw=researchPayload;api.state.sidecarAvailability.research='ready';
+api.renderTransitionHorizons(researchWeek);console.log(JSON.stringify({pending,ready:api.dom['multistate-forecast'].textContent,
+ busy:api.dom['multistate-forecast'].attrs['aria-busy'],publicationUnchanged:publicationBefore===JSON.stringify(full)}));
 """)
     assert "불러오는 중" in result["pending"]["text"]
     assert "결과가 아직 없습니다" not in result["pending"]["text"]
     assert result["pending"]["busy"] == "true" and result["busy"] == "false"
     assert "40.0%" in result["ready"]
+    assert result["publicationUnchanged"]

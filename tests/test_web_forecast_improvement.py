@@ -98,7 +98,7 @@ console.log(JSON.stringify(rows));
         assert actual["quality"]["model"] == expected["id"]
         assert actual["quality"]["logLoss"] == expected["metrics"]["holdout"]["log_loss"]
         assert actual["quality"]["researchCandidate"]
-        assert actual["quality"]["worseningCaptured"] == 0
+        assert actual["quality"]["worseningCaptured"] == expected["metrics"]["holdout"]["on_time_worsening_count"]
         assert actual["forecast"]["probabilities"] == expected["latest"]["probabilities"]
         assert actual["history"]["probabilities"] == expected["history"][-1]["probabilities"]
         assert expected["id"] in actual["chart"]
@@ -240,8 +240,13 @@ def test_research_assets_reuse_full_existing_return_contract(payload_with_assets
 @pytest.fixture
 def path_payload():
     from datetime import datetime, timedelta
-    result = json.loads((ROOT / "publication/live/regime-results.json").read_text())
-    origin = result["meta"]["data_as_of"]
+    # These synthetic path probabilities describe a risk-on origin. Keep their
+    # observed state and cutoff independent of the changing live publication.
+    origin = "2026-09-04T20:00:00Z"
+    result = {"meta": {"data_as_of": origin}, "weekly": [
+        {"date": "2026-08-28", "current": {"state": "risk_on"}},
+        {"date": "2026-09-04", "current": {"state": "risk_on"}},
+    ], "research": {}}
     probabilities = {
         1: ({"risk_on": .8, "transition": .15, "risk_off": .05}, {"no_departure": .8, "risk_on": 0, "transition": .15, "risk_off": .05}, .05),
         4: ({"risk_on": .6, "transition": .25, "risk_off": .15}, {"no_departure": .5, "risk_on": 0, "transition": .4, "risk_off": .1}, .2),
@@ -270,8 +275,17 @@ console.log(JSON.stringify({errors:insights.validateForecastResearch(input),
     assert horizon["endpoint"]["risk_off"] == .25
 
 
+@pytest.mark.parametrize("state", ["transition", "risk_off"])
+def test_optional_paths_reject_origin_state_mismatch(path_payload, state):
+    assert run_js("console.log(JSON.stringify(insights.validateForecastResearch(input)));", path_payload) == []
+    path_payload["weekly"][-1]["current"]["state"] = state
+    errors = run_js("console.log(JSON.stringify(insights.validateForecastResearch(input)));", path_payload)
+    assert errors == ["research.forecast_research.directional_duration_hazard: origin or state mismatch"]
+
+
 @pytest.mark.parametrize("change", ["nan", "sum", "reverse", "duplicate", "wrong_state", "wrong_target", "entry_gt_occupancy", "one_week_path", "timezone", "cutoff"])
 def test_optional_path_contract_rejects_corrupt_temporal_and_event_probabilities(path_payload, change):
+    assert run_js("console.log(JSON.stringify(insights.validateForecastResearch(input)));", path_payload) == []
     block = path_payload["research"]["forecast_research"]
     model = block["models"][0]
     row = model["latest"]
