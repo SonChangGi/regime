@@ -1307,6 +1307,8 @@ def test_dashboard_assets_are_local_and_present() -> None:
         "https://sonchanggi.github.io/sox/",
         "https://sonchanggi.github.io/regime/",
         "https://sonchanggi.github.io/news/",
+        "https://sonchanggi.github.io/SPO/",
+        "https://research-observatory-changgi.changgi-son.chatgpt.site/",
         "https://fred.stlouisfed.org/",
         "https://www.alphavantage.co/",
         "https://www.federalreserve.gov/releases/h10/",
