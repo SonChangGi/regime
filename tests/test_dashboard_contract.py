@@ -1294,15 +1294,25 @@ def test_dashboard_assets_are_local_and_present() -> None:
         if source.startswith("./app.js?")
     )
 
-    assert all(not str(script.get("src", "")).startswith(("http://", "https://", "//")) for script in parser.scripts)
-    assert all(not str(link.get("href", "")).startswith(("http://", "https://", "//")) for link in parser.links)
+    shared_base = "https://sonchanggi.github.io/quant-dashboard/shared/navigation/v1/"
+    external_scripts = [
+        str(script.get("src", "")) for script in parser.scripts
+        if str(script.get("src", "")).startswith(("http://", "https://", "//"))
+    ]
+    external_styles = [
+        str(link.get("href", "")) for link in parser.links
+        if str(link.get("href", "")).startswith(("http://", "https://", "//"))
+    ]
+    assert external_scripts == [shared_base + "nav.js"]
+    assert external_styles == [shared_base + "nav.css"]
+    shared_script = next(script for script in parser.scripts if script.get("src") == shared_base + "nav.js")
+    assert shared_script["data-quant-project"] == "regime"
 
     allowed_external_links = {
         "https://sonchanggi.github.io/quant-dashboard/",
         "https://sonchanggi.github.io/fearNgreed/",
-        "https://sonchanggi.github.io/momentum-factor-lab/",
+        "https://sonchanggi.github.io/factor/",
         "https://sonchanggi.github.io/dram-price/",
-        "https://sonchanggi.github.io/best-factor/",
         "https://sonchanggi.github.io/etf-tracking/",
         "https://sonchanggi.github.io/sox/",
         "https://sonchanggi.github.io/regime/",
