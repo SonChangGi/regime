@@ -166,6 +166,8 @@ def test_quick_benchmark_is_deterministic_and_limited_to_ten_origins() -> None:
 
 
 def test_parallel_model_workers_preserve_serial_predictions() -> None:
+    from threadpoolctl import threadpool_limits
+
     features, states = _model_inputs()
     models = (
         "majority",
@@ -173,6 +175,7 @@ def test_parallel_model_workers_preserve_serial_predictions() -> None:
         "ridge_logistic",
         "shrinkage_lda",
         "spline_logistic",
+        "xgboost",
     )
     arguments = {
         "profile": "quick",
@@ -180,7 +183,8 @@ def test_parallel_model_workers_preserve_serial_predictions() -> None:
         "minimum_train_weeks": 52,
         "random_state": 41,
     }
-    serial = run_benchmark(features, states, model_workers=1, **arguments)
+    with threadpool_limits(limits=1):
+        serial = run_benchmark(features, states, model_workers=1, **arguments)
     parallel = run_benchmark(features, states, model_workers=3, **arguments)
 
     columns = ["model", "origin_date", "actual", *PROBABILITY_COLUMNS, "fallback"]
@@ -192,6 +196,14 @@ def test_parallel_model_workers_preserve_serial_predictions() -> None:
         atol=1e-12,
     )
     assert serial.champion == parallel.champion
+    assert_frame_equal(
+        serial.predictions[columns].reset_index(drop=True).round(8),
+        parallel.predictions[columns].reset_index(drop=True).round(8),
+        check_exact=True,
+    )
+    assert_frame_equal(
+        serial.leaderboard.round(8), parallel.leaderboard.round(8), check_exact=True,
+    )
 
 
 def test_full_model_suite_emits_aligned_probabilities() -> None:

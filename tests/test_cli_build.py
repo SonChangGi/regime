@@ -542,6 +542,7 @@ def test_v5_live_build_forwards_preflight_fingerprint_and_private_checkpoint(
     args = argparse.Namespace(
         alfred_rights_confirmed=True,
         profile=profile,
+        model_workers=1,
         contract="v5",
         config=tmp_path / "series.json",
         database=database,
@@ -572,6 +573,7 @@ def test_v5_live_build_forwards_preflight_fingerprint_and_private_checkpoint(
         )
         assert captured["source_fingerprint_sha256"] == source_fingerprint
         assert captured["minimum_log_loss_improvement"] == 0.01
+        assert captured["model_workers"] == 1
     receipt = json.loads(report.read_text(encoding="utf-8"))
     assert receipt["ready_for_training"] is True
     assert receipt["gate_error"] is None
