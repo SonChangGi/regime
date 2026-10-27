@@ -78,7 +78,11 @@ from regime_lab.integrity import (
     validate_generation_manifest,
 )
 from regime_lab.analysis.label_spec import default_label_spec_path
-from regime_lab.path_safety import confined_mutable_path
+from regime_lab.path_safety import (
+    confined_generation_path,
+    confined_mutable_path,
+    generation_contract_path,
+)
 from regime_lab.provider_rights import (
     ProviderRightsError,
     providers_for_live_config,
@@ -247,6 +251,15 @@ def _mutable_path(value: str | Path, *, label: str) -> Path:
         value,
         project_directory=_CLI_STATE_ROOT.get() or project_root(),
         label=label,
+    )
+
+
+def _generation_contract_path(value: Path, *, label: str) -> Path:
+    state_root = _CLI_STATE_ROOT.get()
+    if state_root is None:
+        return value
+    return generation_contract_path(
+        value, source_root=project_root(), state_root=state_root, label=label,
     )
 
 
@@ -911,6 +924,13 @@ def _publish_active_generation(
 
     output = _mutable_path(output, label="dashboard output")
     artifacts = _mutable_path(artifacts, label="artifact output")
+    if _CLI_STATE_ROOT.get() is not None:
+        output = confined_generation_path(
+            output, root=_CLI_STATE_ROOT.get(), label="generation payload",
+        )
+        artifacts = confined_generation_path(
+            artifacts, root=_CLI_STATE_ROOT.get(), label="generation artifacts",
+        )
     manifest_path = output.with_name("generation-manifest.json")
     output_absolute = output.absolute()
     artifacts_absolute = artifacts.absolute()
@@ -1083,9 +1103,23 @@ def _publish_active_generation(
                     "data_as_of": payload["meta"]["data_as_of"],
                     "sha256": snapshot_sha256,
                 },
-                label_spec_path=default_label_spec_path(),
+                label_spec_path=(
+                    confined_generation_path(
+                        default_label_spec_path(), root=project_root(),
+                        label="generation source label registry",
+                    )
+                    if _CLI_STATE_ROOT.get() is not None
+                    else default_label_spec_path()
+                ),
                 selection_family=selection_family,
                 selection_family_path=artifacts / "selection-family-audit.json",
+                payload_contract_path=_generation_contract_path(
+                    output, label="generation payload contract",
+                ),
+                selection_family_contract_path=_generation_contract_path(
+                    artifacts / "selection-family-audit.json",
+                    label="generation selection-family contract",
+                ),
             )
             payload = bind_payload_to_generation_manifest(
                 payload,
@@ -1121,6 +1155,8 @@ def _publish_active_generation(
                 require_selection_family=True,
                 require_artifacts=True,
                 artifact_directory=artifacts,
+                payload_path_override=output,
+                selection_family_path_override=artifacts / "selection-family-audit.json",
             )
         if finalization is not None:
             finalization(payload)
