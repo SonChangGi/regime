@@ -178,6 +178,64 @@ def test_pipeline_passes_profile_specific_time_split_minimums(
 
 
 @pytest.mark.parametrize(
+    ("profile_name", "workers", "expected"),
+    (("quick", None, 1), ("standard", None, 4), ("full", None, 4),
+     ("standard", 1, 1), ("full", 1, 1), ("standard", 2, 2)),
+)
+def test_pipeline_worker_budget_reaches_base_and_ablation(
+    monkeypatch: pytest.MonkeyPatch,
+    profile_name: str,
+    workers: int | None,
+    expected: int,
+) -> None:
+    captured: dict[str, dict[str, object]] = {}
+
+    def base(*_args, **kwargs):
+        captured["base"] = kwargs
+        return object()
+
+    def ablation(*_args, **kwargs):
+        captured["ablation"] = kwargs
+        raise _BenchmarkIntercept
+
+    monkeypatch.setattr(pipeline, "verify_frozen_v4_baseline", lambda: {})
+    monkeypatch.setattr(pipeline, "run_benchmark", base)
+    monkeypatch.setattr(pipeline, "run_transition_benchmark", lambda *_a, **_kw: object())
+    monkeypatch.setattr(pipeline, "augment_benchmark_with_structural_models", lambda *_a, **_kw: object())
+    monkeypatch.setattr(pipeline, "run_feature_ablation", ablation)
+    with pytest.raises(_BenchmarkIntercept):
+        pipeline.build_dashboard_result(
+            _minimal_weekly_dataset(), None,
+            profile_name=profile_name,
+            mode="demo" if profile_name == "quick" else "live",
+            selection_end="2023-01-01", model_workers=workers,
+        )
+    assert captured["base"]["model_workers"] == expected
+    assert captured["ablation"]["model_workers"] == expected
+    assert captured["base"]["profile"].name == profile_name
+    assert captured["base"]["minimum_selection_predictions"] == (
+        3 if profile_name == "quick" else 12
+    )
+
+
+@pytest.mark.parametrize("workers", [0, -1, 5, True, 1.5])
+def test_pipeline_rejects_invalid_worker_budget(workers: object) -> None:
+    with pytest.raises(ValueError, match="model_workers must be an integer from 1 to 4"):
+        pipeline.build_dashboard_result(
+            _minimal_weekly_dataset(), None, model_workers=workers,
+        )
+
+
+def test_build_cli_exposes_explicit_worker_budget() -> None:
+    parser = cli.build_parser()
+    assert parser.parse_args(["build"]).model_workers is None
+    assert parser.parse_args(["build", "--model-workers", "1"]).model_workers == 1
+    for invalid in ("0", "-1", "5", "1.5"):
+        with pytest.raises(SystemExit):
+            parser.parse_args(["build", "--model-workers", invalid])
+
+
+@pytest.mark.parametrize(
     ("contract_version", "override", "expected"),
     (("v4", 0.01, 0.05), ("v5", 0.05, 0.01)),
 )

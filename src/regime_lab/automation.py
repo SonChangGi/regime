@@ -37,6 +37,7 @@ from regime_lab.collection import (
     last_completed_week_cutoff,
 )
 from regime_lab.config import load_config, project_root
+from regime_lab.compute_budget import ActiveClock, ComputeBudgetError, CpuBudget
 from regime_lab.runtime_inputs import prepare_runtime_inputs
 from regime_lab.research.additional_sources import AdditionalSourceUnavailable, SOURCES as ADDITIONAL_SOURCES
 from regime_lab.frozen_v4 import FrozenV4BaselineError
@@ -697,6 +698,203 @@ def _validate_v5_champion_evidence(
         )
 
 
+def _compute_group_alive(pid: int) -> bool:
+    """Probe only the process group created by this invocation."""
+    try:
+        os.killpg(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # A denial or a Darwin exiting-process race cannot prove group exit.
+        return True
+    return True
+
+
+def _compute_pause_heartbeat(settings: AutomationSettings) -> None:
+    """A retained compute lease is blocked, and its previous stage did not pass."""
+    document = _read_status(settings)
+    if not document:
+        return
+    now = datetime.now(UTC).isoformat()
+    document.update(
+        status="blocked", stage="compute_paused", heartbeat_at=now, updated_at=now,
+        error_code="compute_control_paused", retry_class="blocked",
+        next_retry_at=None,
+        detail="Normal compute cancellation is pending; automation lock retained.",
+    )
+    write_json_atomic(settings.status_path, document)
+
+
+def _run_low_load(
+    args: Sequence[str], *, cwd: Path, capture: bool, timeout: float | None,
+    heartbeat: Callable[[], None] | None, heartbeat_interval: float,
+    output_activity: Callable[[], None] | None, env: Mapping[str, str] | None,
+    cpu_percent: float, active_clock: ActiveClock | None,
+    paused_heartbeat: Callable[[], None] | None,
+) -> bytes:
+    """Keep the supervisor responsive while its owned compute group rests."""
+    process_env = os.environ.copy()
+    if env is not None:
+        process_env.update(env)
+    # The scheduled build uses one model worker. These controls also prevent a
+    # single estimator's native libraries from starting a separate CPU pool.
+    process_env.update({name: "1" for name in (
+        "OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
+        "VECLIB_MAXIMUM_THREADS", "NUMEXPR_NUM_THREADS",
+    )})
+    process = subprocess.Popen(
+        list(args), cwd=cwd, stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE if capture or output_activity is not None else None,
+        stderr=subprocess.PIPE if capture else None, env=process_env,
+        start_new_session=True,
+    )
+    reader = None
+    if output_activity is not None:
+        assert process.stdout is not None
+
+        def forward() -> None:
+            binary = getattr(sys.stdout, "buffer", None)
+            for line in iter(process.stdout.readline, b""):
+                output_activity()
+                try:
+                    if binary is not None:
+                        binary.write(line)
+                        binary.flush()
+                    else:
+                        sys.stdout.write(line.decode("utf-8", errors="replace"))
+                        sys.stdout.flush()
+                except (BrokenPipeError, OSError, ValueError):
+                    pass
+
+        reader = threading.Thread(target=forward, name="regime-low-load-stdout", daemon=True)
+    budget = None
+    stdout, stderr = b"", b""
+    deadline = time.monotonic() + timeout if timeout is not None else None
+    next_heartbeat = time.monotonic() + heartbeat_interval
+    try:
+        if process.poll() is None:
+            try:
+                budget = CpuBudget(process.pid, percent=cpu_percent, active_clock=active_clock)
+            except ComputeBudgetError:
+                if process.poll() is None:
+                    raise
+        if reader is not None:
+            reader.start()
+        while process.poll() is None:
+            assert budget is not None
+            try:
+                delay = budget.tick(deadline=deadline)
+            except ComputeBudgetError:
+                # A short-lived child may exit between poll and its CPU sample.
+                if process.poll() is not None:
+                    break
+                raise
+            try:
+                if output_activity is None and capture:
+                    stdout, stderr = process.communicate(timeout=max(delay, .001))
+                else:
+                    process.wait(timeout=max(delay, .001))
+            except subprocess.TimeoutExpired:
+                pass
+            if process.poll() is None and time.monotonic() >= next_heartbeat:
+                if heartbeat is not None:
+                    heartbeat()
+                next_heartbeat = time.monotonic() + heartbeat_interval
+        if _compute_group_alive(process.pid):
+            raise ComputeBudgetError("compute leader exited before its owned group")
+        if capture:
+            stdout, stderr = process.communicate()
+    except BaseException:
+        # Normal Python cancellation preserves finally blocks and atomic writes.
+        # Never release the automation lock while a paused child remains alive.
+        if budget is not None:
+            try:
+                budget.close(child_exited=not _compute_group_alive(process.pid))
+            except ComputeBudgetError:
+                pass
+        if _compute_group_alive(process.pid):
+            try:
+                os.killpg(process.pid, signal.SIGINT)
+            except OSError:
+                pass
+            cleanup_deadline = time.monotonic() + 30
+            # A short, bounded grace quantum works even if the leader has
+            # already exited or a CPU sampler failed. It is never an unlimited
+            # CONT and it does not require reclassifying a denied sample.
+            cleanup_signal_denied = False
+            while _compute_group_alive(process.pid) and time.monotonic() < cleanup_deadline:
+                def stop_cleanup_group() -> None:
+                    nonlocal cleanup_signal_denied
+                    if cleanup_signal_denied:
+                        return
+                    try:
+                        os.killpg(process.pid, signal.SIGSTOP)
+                    except ProcessLookupError:
+                        pass
+                    except OSError:
+                        cleanup_signal_denied = True
+
+                timer = threading.Timer(.03, stop_cleanup_group)
+                timer.daemon = True
+                quantum_started = time.monotonic()
+                try:
+                    timer.start()
+                    os.killpg(process.pid, signal.SIGCONT)
+                    try:
+                        if capture or reader is None or reader.ident is None:
+                            process.communicate(timeout=.03)
+                        else:
+                            process.wait(timeout=.03)
+                    except subprocess.TimeoutExpired:
+                        pass
+                    if _compute_group_alive(process.pid):
+                        # wait() returns immediately after a leader's exit.
+                        # Its surviving workers still need a real grace slice.
+                        time.sleep(max(0, .03 - (time.monotonic() - quantum_started)))
+                except BaseException:
+                    break
+                finally:
+                    stop_cleanup_group()
+                    timer.cancel()
+                process.poll()  # Reap the leader before checking group exit.
+                if cleanup_signal_denied:
+                    break
+                if _compute_group_alive(process.pid):
+                    time.sleep(.07)
+            if _compute_group_alive(process.pid):
+                # Never release the lease or fall back to unrestricted CPU
+                # while normal cancellation still has a live owned group.
+                print(f"Compute paused; normal cancellation pending for PGID {process.pid}. "
+                      "Automation lock retained.", flush=True)
+                while _compute_group_alive(process.pid):
+                    process.poll()
+                    if paused_heartbeat is not None:
+                        try:
+                            paused_heartbeat()
+                        except Exception:
+                            pass
+                    try:
+                        time.sleep(min(heartbeat_interval, 30))
+                    except KeyboardInterrupt:
+                        pass
+        raise
+    finally:
+        if budget is not None:
+            try:
+                budget.close(child_exited=not _compute_group_alive(process.pid))
+            except ComputeBudgetError:
+                if _compute_group_alive(process.pid):
+                    raise
+        if reader is not None and reader.ident is not None:
+            reader.join(timeout=10)
+            assert process.stdout is not None
+            process.stdout.close()
+    if process.returncode != 0:
+        label = Path(args[0]).name if args else "command"
+        raise AutomationError(f"{label} failed with exit code {process.returncode}")
+    return stdout or b""
+
+
 def _run(
     args: Sequence[str],
     *,
@@ -707,9 +905,19 @@ def _run(
     heartbeat_interval: float = 120.0,
     output_activity: Callable[[], None] | None = None,
     env: Mapping[str, str] | None = None,
+    cpu_percent: float | None = None,
+    active_clock: ActiveClock | None = None,
+    paused_heartbeat: Callable[[], None] | None = None,
 ) -> bytes:
     if capture and output_activity is not None:
         raise AutomationError("captured commands cannot stream output activity")
+    if cpu_percent is not None:
+        return _run_low_load(
+            args, cwd=cwd, capture=capture, timeout=timeout,
+            heartbeat=heartbeat, heartbeat_interval=heartbeat_interval,
+            output_activity=output_activity, env=env, cpu_percent=cpu_percent,
+            active_clock=active_clock, paused_heartbeat=paused_heartbeat,
+        )
     process_env = None
     if env is not None:
         process_env = os.environ.copy()
@@ -1952,10 +2160,18 @@ def _verify_candidate_package(
         _run(
             command,
             cwd=settings.root,
+            cpu_percent=30,
+            heartbeat=lambda: _heartbeat_status(settings, stage="audit_candidate"),
+            heartbeat_interval=settings.heartbeat_interval.total_seconds(),
+            paused_heartbeat=lambda: _compute_pause_heartbeat(settings),
         )
         _run(
             [sys.executable, "scripts/verify_public_package.py", str(output)],
             cwd=settings.root,
+            cpu_percent=30,
+            heartbeat=lambda: _heartbeat_status(settings, stage="audit_candidate"),
+            heartbeat_interval=settings.heartbeat_interval.total_seconds(),
+            paused_heartbeat=lambda: _compute_pause_heartbeat(settings),
         )
         if (output / PUBLIC_PAYLOAD_PATH).read_bytes() != candidate_path.read_bytes():
             raise AutomationError("verified package payload bytes differ from the candidate")
@@ -2581,19 +2797,20 @@ def _build_candidate_generation(
     settings.unreviewed_comparison_path.unlink(missing_ok=True)
 
     last_progress_count: int | None = None
-    initial_progress_monotonic = time.monotonic()
+    compute_clock = ActiveClock(time.monotonic)
+    initial_progress_monotonic = compute_clock.now()
     last_checkpoint_progress_monotonic = initial_progress_monotonic
     last_child_activity_monotonic = initial_progress_monotonic
     last_reported_child_activity_monotonic = initial_progress_monotonic
 
     def note_child_activity() -> None:
         nonlocal last_child_activity_monotonic
-        last_child_activity_monotonic = time.monotonic()
+        last_child_activity_monotonic = compute_clock.now()
 
     def heartbeat() -> None:
         nonlocal last_checkpoint_progress_monotonic, last_progress_count
         nonlocal last_reported_child_activity_monotonic
-        heartbeat_monotonic = time.monotonic()
+        heartbeat_monotonic = compute_clock.now()
         report = _load_collection_report(settings, target=target)
         stage = "train_models" if report and report.get("ready_for_training") else "collect_live_data"
         progress = (
@@ -2650,6 +2867,8 @@ def _build_candidate_generation(
         str(settings.artifacts),
         "--profile",
         settings.profile,
+        "--model-workers",
+        "1",
         "--expected-cutoff",
         target.astimezone(UTC).isoformat(),
         "--collection-report",
@@ -2677,6 +2896,9 @@ def _build_candidate_generation(
             heartbeat=heartbeat if started_at is not None else None,
             heartbeat_interval=settings.heartbeat_interval.total_seconds(),
             output_activity=note_child_activity if started_at is not None else None,
+            cpu_percent=30,
+            active_clock=compute_clock,
+            paused_heartbeat=lambda: _compute_pause_heartbeat(settings),
         )
         if started_at is not None:
             _heartbeat_status(
@@ -2709,9 +2931,17 @@ def _build_candidate_generation(
         raise
     if _candidate_context(settings) != dict(context):
         raise AutomationError("tracked source or config changed during live build")
+    def audit_run(args: Sequence[str], *, cwd: Path) -> bytes:
+        return _run(
+            args, cwd=cwd, cpu_percent=30,
+            heartbeat=lambda: _heartbeat_status(settings, stage="audit_candidate"),
+            heartbeat_interval=settings.heartbeat_interval.total_seconds(),
+            paused_heartbeat=lambda: _compute_pause_heartbeat(settings),
+        )
+
     _heartbeat_status(settings, stage="audit_candidate")
     _sqlite_quick_check(settings.database)
-    _run(
+    audit_run(
         [sys.executable, "-m", "regime_lab", "validate", str(settings.payload)],
         cwd=settings.root,
     )
@@ -2733,12 +2963,12 @@ def _build_candidate_generation(
         ])
     if settings.storage_root != settings.root:
         generation_audit_command.extend(["--state-root", str(settings.storage_root)])
-    _run(
+    audit_run(
         generation_audit_command,
         cwd=settings.root,
     )
     if settings.contract == "v5":
-        _run(
+        audit_run(
             [
                 sys.executable,
                 "scripts/compare_v5_to_frozen_v4.py",
@@ -2751,7 +2981,7 @@ def _build_candidate_generation(
             ],
             cwd=settings.root,
         )
-        _run(
+        audit_run(
             [
                 sys.executable,
                 "scripts/promote_v5_publication.py",
@@ -2786,11 +3016,11 @@ def _build_candidate_generation(
         selection_family_path: Path | None = (
             settings.reviewed_selection_family_path
         )
-        _run(
+        audit_run(
             [sys.executable, "-m", "regime_lab", "validate", str(candidate_path)],
             cwd=settings.root,
         )
-        _run(
+        audit_run(
             [
                 sys.executable,
                 "scripts/audit_outputs.py",

@@ -666,6 +666,7 @@ def build_dashboard_result(
     checkpoint_directory: str | Path | None = None,
     source_fingerprint_sha256: str | None = None,
     minimum_log_loss_improvement: float | None = None,
+    model_workers: int | None = None,
 ) -> tuple[dict[str, Any], Any]:
     if contract_version not in {"v4", "v5"}:
         raise ValueError("contract_version must be v4 or v5")
@@ -678,6 +679,13 @@ def build_dashboard_result(
         raise ValueError(
             "live mode does not permit the three-origin quick smoke profile"
         )
+    if model_workers is not None and (
+        type(model_workers) is not int or not 1 <= model_workers <= 4
+    ):
+        raise ValueError("model_workers must be an integer from 1 to 4")
+    resolved_model_workers = (
+        1 if profile_name == "quick" else 4
+    ) if model_workers is None else model_workers
     if contract_version == "v5":
         verify_frozen_v4_baseline()
     contract_minimum_log_loss_improvement = (
@@ -758,7 +766,7 @@ def build_dashboard_result(
         random_state=17,
         selection_end=benchmark_selection_end,
         selection_max_origins=3 if profile_name == "quick" else None,
-        model_workers=1 if profile_name == "quick" else 4,
+        model_workers=resolved_model_workers,
         minimum_selection_predictions=split_prediction_minimum,
         minimum_holdout_predictions=split_prediction_minimum,
         minimum_log_loss_improvement=(
@@ -814,7 +822,7 @@ def build_dashboard_result(
         minimum_selection_predictions=split_prediction_minimum,
         minimum_holdout_predictions=split_prediction_minimum,
         random_state=17,
-        model_workers=1 if profile_name == "quick" else 4,
+        model_workers=resolved_model_workers,
         progress=progress,
     )
     ablation_manifest = feature_ablation_manifest_document(ablation.manifest)

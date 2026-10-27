@@ -1708,6 +1708,7 @@ def command_build(args: argparse.Namespace) -> int:
                 dataset,
                 collection,
                 profile_name=args.profile,
+                model_workers=getattr(args, "model_workers", None),
                 mode="live",
                 selection_end=str(config["model"]["final_holdout_start"]),
                 progress=_flush_progress,
@@ -2109,6 +2110,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="artifact target (v4: artifacts/latest; v5: build/v5-live)",
     )
     build.add_argument("--profile", choices=("standard", "full"), default="standard")
+    build.add_argument(
+        "--model-workers", type=int, choices=range(1, 5), default=None,
+        help="maximum concurrent model fits (default: 4; use 1 for low-load runs)",
+    )
     build.add_argument("--forecast-enhancements-research", action="store_true",
                        help="Opt in to generation-bound 1/4/13-week comparison research using this build's frozen inputs; requires research-volatility dependencies")
     build.add_argument(

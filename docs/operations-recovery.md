@@ -69,6 +69,19 @@ health와 발행 지연은 `diagnostic_issues`에 분리해 표시한다.
 체크포인트가 늘지 않으면 자식 process group을 종료하고 실패로 기록한다. 단순히
 process가 살아 있거나 heartbeat가 갱신된다는 이유만으로 계산 진행을 추정하지 않는다.
 
+예약 학습은 `--model-workers 1`과 BLAS/OpenMP 단일 스레드를 사용하며, 계산
+process group의 관측 CPU 시간에 따라 짧게 실행·휴식하여 한 코어의 약 30%를
+목표로 한다. stdout은 부모가 계속 읽고 heartbeat·중복 실행 잠금·엄격한 결과
+검증을 유지한다. 제어기가 확인한 CPU 휴식만 no-progress 시계에서 제외하며,
+실제 유휴 시간과 별도의 명령 wall timeout은 계속 흐른다. 단일 코어 계산은
+대략 3배 이상 오래 걸릴 수 있다. 짧은 하위 명령의 관측 오차가 있으므로 실제
+CPU 측정도 확인한다.
+
+취소는 제한된 CPU 구간에서 정상 SIGINT 정리를 시도한다. 정리가 끝나지 않으면
+`compute_paused` 상태로 기존 잠금을 유지하며 무제한 재개나 강제 종료를 하지
+않는다. worker 수나 계산 소스가 달라지면 checkpoint 지문도 달라지므로 기존
+loader가 무결성을 확인한 캐시만 재사용한다.
+
 ## Keychain 접근 복구
 
 `Keychain item cannot be read`가 기록되면 로그인 Keychain을 잠금 해제하고 두 항목
