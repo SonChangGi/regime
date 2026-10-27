@@ -95,6 +95,8 @@ from regime_lab.publication_contract import (
 )
 from regime_lab.pipeline import build_dashboard_result
 from regime_lab.research.publication import compose_live_publication_research
+from regime_lab.research import publication as research_publication
+from regime_lab.research.additional_sources import AdditionalSourceUnavailable
 from regime_lab.schema import validate_dashboard_payload
 from regime_lab.server import serve_dashboard
 from regime_lab.smoke import main as smoke_main
@@ -271,6 +273,31 @@ def _backup_database_before_mutation(
     )
 
 
+def _record_additional_source_failure(
+    collection_report: Path | None,
+    expected_cutoff: datetime,
+    exc: AdditionalSourceUnavailable,
+) -> None:
+    """Preserve a narrow retry signal across the child-process boundary."""
+    if collection_report is None:
+        return
+    try:
+        report = json.loads(collection_report.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    cutoff = expected_cutoff.astimezone(timezone.utc).isoformat()
+    if (not isinstance(report, dict) or type(report.get("schema_version")) is not int
+            or report["schema_version"] != 1 or report.get("ready_for_training") is not True
+            or report.get("expected_cutoff") != cutoff or report.get("model_cutoff") != cutoff
+            or report.get("gate_error") is not None):
+        return
+    report["post_collection_failure"] = {
+        "schema_version": 1, "error_code": exc.error_code,
+        "source_id": exc.source_id, "expected_cutoff": cutoff,
+    }
+    write_json_atomic(collection_report, report)
+
+
 _CONTRACT_DEFAULT_TARGETS: dict[tuple[str, str], tuple[str, str]] = {
     ("build", "v4"): ("web/data/regime-results.json", "artifacts/latest"),
     ("build", "v5"): (
@@ -329,6 +356,15 @@ def _paths_overlap(left: Path, right: Path) -> bool:
     )
 
 
+def _reserved_write_paths(targets: tuple[str, ...]) -> tuple[Path, ...]:
+    """Protect operating surfaces in both the source and private-state roots."""
+    roots = [project_root().resolve()]
+    state_root = _CLI_STATE_ROOT.get()
+    if state_root is not None and state_root.resolve() not in roots:
+        roots.append(state_root.resolve())
+    return tuple((root / target).absolute() for root in roots for target in targets)
+
+
 def _resolve_contract_write_targets(
     *,
     command: str,
@@ -359,9 +395,7 @@ def _resolve_contract_write_targets(
             f"{output_path} conflicts with {artifact_path}"
         )
     if contract_version == "v5":
-        protected = tuple(
-            _root_path(target).absolute() for target in _V4_OWNED_WRITE_TARGETS
-        )
+        protected = _reserved_write_paths(_V4_OWNED_WRITE_TARGETS)
         for label, candidate in (
             ("dashboard output", output_path),
             ("artifact output", artifact_path),
@@ -406,9 +440,7 @@ def _resolve_live_checkpoint_directory(
                 "private V5 checkpoint directory must not overlap the "
                 f"{label}: {checkpoint} conflicts with {target}"
             )
-    protected = tuple(
-        _root_path(target).absolute() for target in _V4_OWNED_WRITE_TARGETS
-    )
+    protected = _reserved_write_paths(_V4_OWNED_WRITE_TARGETS)
     conflict = next(
         (target for target in protected if _paths_overlap(checkpoint, target)),
         None,
@@ -432,9 +464,7 @@ def _resolve_h10_collection_receipt(
         _V5_H10_DEFAULT_RECEIPT if value is None else value,
         label="H.10 collection receipt",
     )
-    protected = tuple(
-        _root_path(target).absolute() for target in _V4_OWNED_WRITE_TARGETS
-    )
+    protected = _reserved_write_paths(_V4_OWNED_WRITE_TARGETS)
     conflict = next(
         (target for target in protected if _paths_overlap(receipt, target)),
         None,
@@ -444,10 +474,7 @@ def _resolve_h10_collection_receipt(
             "v5 H.10 receipt overlaps a v4-owned target: "
             f"{receipt} conflicts with {conflict}"
         )
-    protected_research = tuple(
-        _root_path(target).absolute()
-        for target in _H10_RECEIPT_PROTECTED_WRITE_TARGETS
-    )
+    protected_research = _reserved_write_paths(_H10_RECEIPT_PROTECTED_WRITE_TARGETS)
     conflict = next(
         (
             target
@@ -487,10 +514,7 @@ def _resolve_ofr_fsi_collection_targets(
         label="OFR FSI collection receipt",
     )
     lock = database.with_name(f"{database.name}.ofr-fsi-collect.lock")
-    protected = tuple(
-        _root_path(target).absolute()
-        for target in _OFR_FSI_PROTECTED_WRITE_TARGETS
-    )
+    protected = _reserved_write_paths(_OFR_FSI_PROTECTED_WRITE_TARGETS)
     for label, candidate in (
         ("shadow database", database),
         ("collection receipt", receipt),
@@ -1616,6 +1640,12 @@ def command_build(args: argparse.Namespace) -> int:
                         "live build stopped before analysis: "
                         f"{h10_gate_error}"
                     )
+            if contract_version == "v5" and args.profile in {"standard", "full"}:
+                print("확장 연구 추가 자료 스냅샷 사전 준비", flush=True)
+                research_publication._source_snapshot(
+                    artifacts.parent / "research-cache" / "additional-sources",
+                    expected_cutoff.astimezone(timezone.utc).isoformat(),
+                )
             print("Point-in-time weekly frame 조립", flush=True)
             dataset = build_weekly_dataset(
                 config,
@@ -1882,6 +1912,8 @@ def command_build(args: argparse.Namespace) -> int:
                 status="interrupted",
                 detail={"error_type": type(exc).__name__},
             )
+        if isinstance(exc, AdditionalSourceUnavailable):
+            _record_additional_source_failure(collection_report, expected_cutoff, exc)
         raise
     print(
         json.dumps(

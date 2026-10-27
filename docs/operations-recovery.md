@@ -39,6 +39,16 @@ PYTHONPATH=src <state-root>/.venv/bin/python -m regime_lab automation status --s
 이 옵션도 기존 quota·권한·Git·데이터 검사를 유지하며, 실행 잠금이 있어 중복 수집을
 시작하지 않는다. 겹친 예약의 정상 skip에는 UTC 확인 시각을 기록한다.
 
+추가 연구 자료는 primary/H.10 수집 검증 뒤, 모델 학습 전에 해당 cutoff의
+스냅샷을 준비한다. 같은 cutoff의 스냅샷은 기존 해시·자료 목록·기준일 검증을
+통과해야 재사용하며, 이전 주차 자료로 대체하지 않는다. 일시적인 연결·시간초과와
+HTTP 408/429/5xx만 최대 3번 요청하고, 소진되면 cutoff와 source ID를 결속한
+receipt를 통해 기존 예약 재시도 정책으로 전달한다. 접근 거부·인증서·프록시 거부,
+자료·캐시·registry 무결성 오류는 이 경로로 재시도 대상으로 바꾸지 않는다.
+
+완료한 학습은 동일한 source/config/input 지문일 때만 기존 체크포인트 검증을 거쳐
+재사용한다. 오류 수정으로 source 지문이 바뀌면 필요한 재학습을 생략하지 않는다.
+
 ## 상태는 세 축으로 읽는다
 
 `automation status`의 단일 `operational` 값만으로 게시 성공을 판단하지 않는다.

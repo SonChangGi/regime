@@ -54,7 +54,7 @@ from regime_lab.frozen_v4 import (
     FROZEN_V4_BASELINE,
     verify_frozen_v4_baseline,
 )
-from regime_lab.payload import STATE_DEFINITIONS, estimate_from_probabilities
+from regime_lab.payload import PROBABILITY_SCALE, STATE_DEFINITIONS, estimate_from_probabilities
 from regime_lab.schema import STATE_ORDER
 from regime_lab.v5_artifacts import build_v5_core_artifact_manifest
 from regime_lab.v5_preflight import STRUCTURAL_V5_PREREGISTRATION_SHA256
@@ -545,21 +545,24 @@ def _transition_risk_history(
     return output
 
 
-def _next_week_estimate(probabilities: Mapping[str, float], target_date: pd.Timestamp) -> dict[str, Any]:
-    estimate = estimate_from_probabilities(probabilities)
+def _next_week_estimate(
+    probabilities: Mapping[str, float], target_date: pd.Timestamp, *, conserve_mass: bool = False,
+) -> dict[str, Any]:
+    estimate = estimate_from_probabilities(probabilities, conserve_mass=conserve_mass)
     estimate["date"] = target_date.date().isoformat()
     estimate["method"] = "champion_walk_forward_probability"
     return estimate
 
 
-def _comparison_forecast_record(row: Mapping[str, Any]) -> dict[str, Any]:
+def _comparison_forecast_record(row: Mapping[str, Any], *, conserve_mass: bool = False) -> dict[str, Any]:
     probabilities = {
-        state: float(row[f"p_{state}"])
+        state: row[f"p_{state}"] if conserve_mass else float(row[f"p_{state}"])
         for state in STATE_ORDER
     }
     estimate = _next_week_estimate(
         probabilities,
         pd.Timestamp(row["target_date"]),
+        conserve_mass=conserve_mass,
     )
     estimate.update(
         {
@@ -581,6 +584,7 @@ def _comparison_forecasts_by_origin(
     latest_forecasts: pd.DataFrame,
     *,
     model_names: Sequence[str],
+    conserve_mass: bool = False,
 ) -> dict[pd.Timestamp, list[dict[str, Any]]]:
     comparison_models = tuple(dict.fromkeys(str(name) for name in model_names))
     if not comparison_models:
@@ -639,7 +643,7 @@ def _comparison_forecasts_by_origin(
                 f"model comparison forecasts are incomplete at {origin}"
             )
         result[pd.Timestamp(origin)] = [
-            _comparison_forecast_record(by_model[model])
+            _comparison_forecast_record(by_model[model], conserve_mass=conserve_mass)
             for model in comparison_models
         ]
     return result
@@ -1115,6 +1119,7 @@ def build_dashboard_result(
             benchmark.predictions,
             structural_forecasts,
             model_names=comparison_models,
+            conserve_mass=True,
         )
         if contract_version == "v5"
         else {}
@@ -1145,13 +1150,20 @@ def build_dashboard_result(
         prediction_fallback = bool(prediction["fallback"])
         current_state = str(states.loc[origin])
         current = _current_estimate(current_probabilities.loc[origin], current_state)
-        next_week = _next_week_estimate(next_probabilities, target_date)
+        next_week = _next_week_estimate(
+            next_probabilities, target_date, conserve_mass=contract_version == "v5",
+        )
         next_week["model"] = benchmark.champion
         next_week["fallback"] = prediction_fallback
         next_week["fallback_reason"] = prediction["fallback_reason"]
         if prediction_fallback:
             next_week["method"] = "class_prior_fallback"
-        transition_probability = 1.0 - float(next_probabilities[current_state])
+        transition_probability = (
+            (PROBABILITY_SCALE - int(round(next_week["probabilities"][current_state] * PROBABILITY_SCALE)))
+            / PROBABILITY_SCALE
+            if contract_version == "v5"
+            else 1.0 - float(next_probabilities[current_state])
+        )
         transition_risk = transition_history.get(origin)
         if transition_risk is None:
             # The multiclass forecast remains the authoritative 1w alias.  A

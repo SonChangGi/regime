@@ -6,12 +6,14 @@ New collection only. Historical downloads never imply observed historical PIT.
 from __future__ import annotations
 
 from datetime import datetime, timezone, timedelta
+import errno
 import hashlib
 import io
 import json
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 import re
+import time
 import zipfile
 import xml.etree.ElementTree as ET
 
@@ -46,6 +48,62 @@ SOURCES = {
 }
 
 
+class AdditionalSourceUnavailable(RuntimeError):
+    """A known public research source exhausted bounded transport retries."""
+
+    error_code = "additional_source_unavailable"
+
+    def __init__(self, source_id: str) -> None:
+        if source_id not in SOURCES:
+            raise ValueError("unknown additional research source")
+        self.source_id = source_id
+        super().__init__(f"additional research source {source_id} is temporarily unavailable")
+
+
+def _transport_denied(error: BaseException) -> bool:
+    """Keep SSL, proxy and OS access denials out of transport retry policy."""
+    pending: list[object] = [error]
+    seen: set[int] = set()
+    while pending:
+        item = pending.pop()
+        if id(item) in seen:
+            continue
+        seen.add(id(item))
+        if isinstance(item, (requests.exceptions.SSLError, requests.exceptions.ProxyError, PermissionError)):
+            return True
+        if isinstance(item, OSError) and item.errno in {errno.EACCES, errno.EPERM}:
+            return True
+        if isinstance(item, BaseException):
+            pending.extend((item.__cause__, item.__context__, getattr(item, "reason", None), *item.args))
+        elif isinstance(item, (tuple, list)):
+            pending.extend(item)
+    return False
+
+
+def _download_source(source_id: str, url: str) -> bytes:
+    for attempt in range(3):
+        try:
+            response = requests.get(
+                url, timeout=(15, 90), headers={"User-Agent": "RegimePrivateResearch/1.0"}
+            )
+            response.raise_for_status()
+            return response.content
+        except requests.exceptions.RequestException as exc:
+            if _transport_denied(exc):
+                raise
+            if isinstance(exc, requests.exceptions.HTTPError):
+                status = getattr(exc.response, "status_code", None)
+                if status not in {408, 429} and not (isinstance(status, int) and 500 <= status <= 599):
+                    raise
+            elif not isinstance(exc, (requests.exceptions.ConnectionError, requests.exceptions.Timeout)):
+                raise
+            failure = exc
+        if attempt == 2:
+            raise AdditionalSourceUnavailable(source_id) from failure
+        time.sleep(attempt + 1)
+    raise AssertionError("unreachable additional source retry state")
+
+
 def collect_sources(directory: Path, *, refresh: bool = False) -> dict:
     """Cache downloaded bytes by hash and persist first-seen availability."""
     directory.mkdir(parents=True, exist_ok=True)
@@ -64,11 +122,7 @@ def collect_sources(directory: Path, *, refresh: bool = False) -> dict:
             if hashlib.sha256(raw).hexdigest() != old["sha256"]:
                 raise ValueError(f"{key} cached snapshot checksum mismatch")
             return key, old
-        response = requests.get(
-            url, timeout=(15, 90), headers={"User-Agent": "RegimePrivateResearch/1.0"}
-        )
-        response.raise_for_status()
-        raw = response.content
+        raw = _download_source(key, url)
         if not raw or len(raw) > 200_000_000:
             raise ValueError(f"{key} invalid snapshot size")
         digest = hashlib.sha256(raw).hexdigest()
@@ -95,9 +149,20 @@ def collect_sources(directory: Path, *, refresh: bool = False) -> dict:
         return key, record
 
     results = {}
+    failures: list[Exception] = []
     with ThreadPoolExecutor(max_workers=3) as pool:
-        for key, record in pool.map(collect, SOURCES.items()):
-            results[key] = record
+        pending = [pool.submit(collect, item) for item in SOURCES.items()]
+        for future in pending:
+            try:
+                key, record = future.result()
+                results[key] = record
+            except Exception as exc:
+                failures.append(exc)
+    if failures:
+        # Inspect every source before classifying the collection. A transport
+        # outage must never hide another source's denial or integrity failure.
+        # Within each class, input order keeps the chosen error deterministic.
+        raise next((exc for exc in failures if not isinstance(exc, AdditionalSourceUnavailable)), failures[0])
     manifest = {"schema_version": "regime-additional-sources/1", "sources": results}
     temporary = directory / ".manifest.json.tmp"
     temporary.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
