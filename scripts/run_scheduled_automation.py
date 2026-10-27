@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import fcntl
 import json
 import os
@@ -93,7 +94,7 @@ def _check_checkout(source: Path) -> None:
         raise LaunchError("effective source origin must identify SonChangGi/regime on GitHub")
 
 
-def launch(source_root: Path, state_root: Path, python: Path) -> None:
+def launch(source_root: Path, state_root: Path, python: Path, *, force_retry: bool = False) -> None:
     source, state = source_root.resolve(), state_root.resolve()
     # Preserve the venv entry point: resolving its symlink would select the base
     # interpreter and lose the existing virtual environment.
@@ -151,6 +152,8 @@ def launch(source_root: Path, state_root: Path, python: Path) -> None:
             "--config", str(source / "config/automation.json"),
             "--state-root", str(state),
         ]
+        if force_retry:
+            arguments.append("--force-retry")
         # flock must survive exec and cover the automation, not only git fetch.
         os.set_inheritable(lock.fileno(), True)
         os.chdir(source)
@@ -162,11 +165,15 @@ def main() -> int:
     parser.add_argument("--source-root", type=Path, required=True)
     parser.add_argument("--state-root", type=Path, required=True)
     parser.add_argument("--python", type=Path, required=True)
+    parser.add_argument("--force-retry", action="store_true",
+                        help="explicit operator recovery of a repaired transient failure; normal guards remain")
     arguments = parser.parse_args()
     try:
-        launch(arguments.source_root, arguments.state_root, arguments.python)
+        launch(arguments.source_root, arguments.state_root, arguments.python,
+               force_retry=arguments.force_retry)
     except LaunchAlreadyRunning:
-        print(json.dumps({"ok": True, "status": "already_running"}))
+        print(json.dumps({"ok": True, "status": "already_running",
+                          "checked_at": datetime.now(timezone.utc).isoformat()}))
         return 0
     except (LaunchError, OSError, ValueError) as exc:
         print(f"scheduled automation refused: {exc}", file=sys.stderr)

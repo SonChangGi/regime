@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts/run_scheduled_automation.py"
 GITHUB_URL = "https://github.com/SonChangGi/regime.git"
 BOOTSTRAP = """
-import importlib.util, pathlib, sys
+import importlib.util, pathlib, sys, os
 sys.dont_write_bytecode = True
 source, state, python, origin = sys.argv[1:]
 spec = importlib.util.spec_from_file_location('scheduled_launcher', pathlib.Path(source) / 'scripts/run_scheduled_automation.py')
@@ -29,6 +29,8 @@ spec.loader.exec_module(launcher)
 identity = launcher._repository_identity
 launcher._repository_identity = lambda url: launcher.REPOSITORY if url == origin else identity(url)
 sys.argv = ['run_scheduled_automation.py', '--source-root', source, '--state-root', state, '--python', python]
+if os.environ.get('TEST_FORCE_RETRY') == '1':
+    sys.argv.append('--force-retry')
 raise SystemExit(launcher.main())
 """
 APPLICATION = """
@@ -124,6 +126,15 @@ def advance_origin(checkout: dict[str, Path]) -> str:
     commit(seed, "new automation source")
     git(seed, "push", str(checkout["origin"]), "main")
     return git(seed, "rev-parse", "HEAD")
+
+
+def test_transient_recovery_is_forwarded_only_when_explicitly_requested(checkout: dict[str, Path]) -> None:
+    result = run_launcher(checkout, TEST_FORCE_RETRY="1")
+    assert result.returncode == 0, result.stderr
+    output = json.loads(result.stdout)
+    assert output["argv"][-1] == "--force-retry"
+    assert output["lock_held"] is True
+    assert "--force-blocked-recovery" not in output["argv"]
 
 
 def git_inventory(root: Path) -> dict[str, str]:
@@ -274,7 +285,11 @@ def test_concurrent_launch_skips_successfully_without_source_or_editor_changes(c
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         result = run_launcher(checkout)
     assert result.returncode == 0 and result.stderr == ""
-    assert json.loads(result.stdout) == {"ok": True, "status": "already_running"}
+    output = json.loads(result.stdout)
+    assert set(output) == {"ok", "status", "checked_at"}
+    assert output["ok"] is True and output["status"] == "already_running"
+    from datetime import datetime
+    assert datetime.fromisoformat(output["checked_at"]).utcoffset().total_seconds() == 0
     assert git(checkout["source"], "rev-parse", "HEAD") == before
     assert git(checkout["source"], "rev-parse", "origin/main") == remote_before
     assert (checkout["state"] / "editor.py").read_bytes() == editor_before

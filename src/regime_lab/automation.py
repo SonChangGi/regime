@@ -36,7 +36,10 @@ from regime_lab.collection import (
     alpha_market_week_is_current,
     last_completed_week_cutoff,
 )
-from regime_lab.config import project_root
+from regime_lab.config import load_config, project_root
+from regime_lab.runtime_inputs import prepare_runtime_inputs
+from regime_lab.frozen_v4 import FrozenV4BaselineError
+from regime_lab.v5_preflight import V5PreflightError, verify_v5_preflight
 from regime_lab.io import write_json_atomic
 from regime_lab.integrity import (
     GENERATION_MANIFEST_SCHEMA_VERSION,
@@ -3565,6 +3568,7 @@ def run_weekly_release(
 
             _validate_local_authorization(settings, now=started)
             _ensure_ac_power(settings)
+            _prepare_isolated_runtime(settings)
             context = _candidate_context(settings)
             candidate = _load_cached_candidate(
                 settings, target=target, context=context
@@ -3936,6 +3940,26 @@ def uninstall_launch_agent(settings: AutomationSettings) -> dict[str, Any]:
     return {"ok": True, "installed": False, "label": AUTOMATION_LABEL}
 
 
+def _prepare_isolated_runtime(
+    settings: AutomationSettings, *, full_preflight: bool = False,
+) -> dict[str, Any] | None:
+    if settings.storage_root == settings.root or settings.contract != "v5":
+        return None
+    try:
+        receipt = prepare_runtime_inputs(
+            source_root=settings.root, state_root=settings.storage_root, contract=settings.contract,
+        )
+        if full_preflight:
+            verify_v5_preflight(
+                profile=settings.profile, database_path=settings.database,
+                project_directory=settings.root,
+                config=load_config(settings.root / "config/series.json"),
+            )
+        return receipt
+    except (OSError, ValueError, FrozenV4BaselineError, V5PreflightError) as exc:
+        raise AutomationError(f"isolated runtime inputs failed validation: {exc}") from exc
+
+
 def restore_launch_agent(settings: AutomationSettings) -> dict[str, Any]:
     """Restore this existing schedule without renewing rights or authorization.
 
@@ -3966,11 +3990,13 @@ def restore_launch_agent(settings: AutomationSettings) -> dict[str, Any]:
             target = _launch_agent_path()
             if not target.is_file():
                 raise AutomationError("restore requires an existing LaunchAgent plist")
+            runtime_inputs = _prepare_isolated_runtime(settings, full_preflight=True)
             document = launch_agent_document(settings)
             was_loaded = _launch_agent_loaded(settings)
             if _launch_agent_configuration(settings, target=target)["configuration_matches"] and was_loaded:
                 return {"ok": True, "installed": True, "restored": False,
-                        "label": AUTOMATION_LABEL, "detail": "existing schedule is already loaded"}
+                        "label": AUTOMATION_LABEL, "detail": "existing schedule is already loaded",
+                        "runtime_inputs": runtime_inputs}
             previous = target.read_bytes()
             previous_mode = target.stat().st_mode & 0o777
             backup = settings.state_directory / (
@@ -4023,6 +4049,7 @@ def restore_launch_agent(settings: AutomationSettings) -> dict[str, Any]:
     return {"ok": True, "installed": True, "restored": True,
             "label": AUTOMATION_LABEL, "path": str(target), "previous_plist": str(backup),
             "operating_source_root": str(settings.root), "state_root": str(settings.storage_root),
+            "runtime_inputs": runtime_inputs,
             "runs_immediately": True, **_launch_agent_configuration(settings, target=target)}
 
 

@@ -11,6 +11,9 @@ DB·계산 캐시·백업·승인 문서·가상환경은 `--state-root`로 지�
 유지한다. 별도 source checkout은 기존 공유 Git worktree가 아닌 독립 clone이다.
 `state-root/build/weekly-automation/runtime-checkout.json`은 source/state/Python 경로와
 저장소·branch를 결속하며, 값이 다르면 예약 실행을 차단한다.
+Git에 포함되지 않는 동결 V4 비교 자료는 원본·staging의 고정 해시를 모두 확인한
+뒤 운영 source에만 복사한다. 이미 존재하는 자료는 덮어쓰지 않고 검증한다.
+예약 복구 전에 V5 전체 사전검사를 실행하고, 새 주차 계산 전에도 이 입력을 준비한다.
 
 기존 LaunchAgent의 label과 예약 시각은 유지한다. launcher는 전용 checkout의
 clean 상태와 원격을 확인하고 `main`을 fast-forward한 뒤 새 Python 프로세스에서
@@ -30,6 +33,11 @@ PYTHONPATH=src <state-root>/.venv/bin/python -m regime_lab automation status --s
 않는다. 이전 plist를 보존한 뒤 동일 label을 복구한다. bootstrap 실패로 서비스가
 로드되지 않았다면 이전 plist를 돌려놓는다. `status`의 `operating_source_root`와
 `state_root`로 실제 코드·데이터 경로를 확인한다.
+
+수리된 transient 오류의 대기 시간을 운영자가 명시적으로 해제할 때는 동일 launcher의
+`--force-retry`를 한 번 사용할 수 있다. 예약 plist에는 이 옵션을 넣지 않는다.
+이 옵션도 기존 quota·권한·Git·데이터 검사를 유지하며, 실행 잠금이 있어 중복 수집을
+시작하지 않는다. 겹친 예약의 정상 skip에는 UTC 확인 시각을 기록한다.
 
 ## 상태는 세 축으로 읽는다
 

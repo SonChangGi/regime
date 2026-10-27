@@ -191,6 +191,35 @@ def restoration(
 
     monkeypatch.setattr(automation, "_validate_local_authorization", validate)
     monkeypatch.setattr(automation, "_ensure_installable_checkout", lambda _settings: None)
+    preflight_config = {"source_config_fixture": True}
+
+    def prepare(*, source_root: Path, state_root: Path, contract: str) -> dict[str, object]:
+        assert source_root == runtime.root
+        assert state_root == runtime.storage_root
+        assert contract == "v5"
+        assert plist.read_bytes() == original_plist or environment.loaded
+        environment.events.append("prepare_runtime_inputs")
+        return {"ok": True, "baseline": "prepared fixture"}
+
+    def config(path: Path) -> dict[str, object]:
+        assert path == runtime.root / "config/series.json"
+        environment.events.append("load_config")
+        return preflight_config
+
+    def preflight(**kwargs: object) -> dict[str, object]:
+        assert kwargs == {
+            "profile": runtime.profile,
+            "database_path": runtime.database,
+            "project_directory": runtime.root,
+            "config": preflight_config,
+        }
+        assert environment.events[-2:] == ["prepare_runtime_inputs", "load_config"]
+        environment.events.append("verify_v5_preflight")
+        return {"ok": True}
+
+    monkeypatch.setattr(automation, "prepare_runtime_inputs", prepare)
+    monkeypatch.setattr(automation, "load_config", config)
+    monkeypatch.setattr(automation, "verify_v5_preflight", preflight)
 
     def forbidden_authorization_write(*_args: object, **_kwargs: object) -> None:
         pytest.fail("restore must validate existing authorization without renewing it")
@@ -277,12 +306,29 @@ def test_restore_atomically_backs_up_existing_plist_and_releases_lock_before_boo
     assert current_auth_stat.st_ino == original_auth_stat.st_ino
     assert current_auth_stat.st_mtime_ns == original_auth_stat.st_mtime_ns
     assert current_auth_stat.st_mode == original_auth_stat.st_mode
-    expected_events = ["lint"] + (["bootout"] if previously_loaded else [])
+    expected_events = [
+        "prepare_runtime_inputs", "load_config", "verify_v5_preflight", "lint"
+    ] + (["bootout"] if previously_loaded else [])
     assert environment.events == expected_events + [
         "atomic_replace", "bootstrap_with_weekly_lock_free"
     ]
     assert all("enable" not in command and "kickstart" not in command
                for command in environment.commands)
+
+
+def test_restore_prepares_and_validates_private_inputs_before_replacing_the_plist(
+    restoration: RestoreEnvironment,
+) -> None:
+    environment = restoration
+
+    result = automation.restore_launch_agent(environment.settings)
+
+    assert environment.events.index("prepare_runtime_inputs") < environment.events.index(
+        "verify_v5_preflight"
+    ) < environment.events.index("atomic_replace")
+    assert result["runtime_inputs"] == {"ok": True, "baseline": "prepared fixture"}
+    assert environment.settings.authorization.read_bytes() == environment.authorization
+    assert Path(result["previous_plist"]).read_bytes() == environment.original_plist
 
 
 def test_restore_is_idempotent_when_the_matching_service_is_already_loaded(
