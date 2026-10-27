@@ -329,6 +329,15 @@ def _paths_overlap(left: Path, right: Path) -> bool:
     )
 
 
+def _reserved_write_paths(targets: tuple[str, ...]) -> tuple[Path, ...]:
+    """Protect operating surfaces in both the source and private-state roots."""
+    roots = [project_root().resolve()]
+    state_root = _CLI_STATE_ROOT.get()
+    if state_root is not None and state_root.resolve() not in roots:
+        roots.append(state_root.resolve())
+    return tuple((root / target).absolute() for root in roots for target in targets)
+
+
 def _resolve_contract_write_targets(
     *,
     command: str,
@@ -359,9 +368,7 @@ def _resolve_contract_write_targets(
             f"{output_path} conflicts with {artifact_path}"
         )
     if contract_version == "v5":
-        protected = tuple(
-            _root_path(target).absolute() for target in _V4_OWNED_WRITE_TARGETS
-        )
+        protected = _reserved_write_paths(_V4_OWNED_WRITE_TARGETS)
         for label, candidate in (
             ("dashboard output", output_path),
             ("artifact output", artifact_path),
@@ -406,9 +413,7 @@ def _resolve_live_checkpoint_directory(
                 "private V5 checkpoint directory must not overlap the "
                 f"{label}: {checkpoint} conflicts with {target}"
             )
-    protected = tuple(
-        _root_path(target).absolute() for target in _V4_OWNED_WRITE_TARGETS
-    )
+    protected = _reserved_write_paths(_V4_OWNED_WRITE_TARGETS)
     conflict = next(
         (target for target in protected if _paths_overlap(checkpoint, target)),
         None,
@@ -432,9 +437,7 @@ def _resolve_h10_collection_receipt(
         _V5_H10_DEFAULT_RECEIPT if value is None else value,
         label="H.10 collection receipt",
     )
-    protected = tuple(
-        _root_path(target).absolute() for target in _V4_OWNED_WRITE_TARGETS
-    )
+    protected = _reserved_write_paths(_V4_OWNED_WRITE_TARGETS)
     conflict = next(
         (target for target in protected if _paths_overlap(receipt, target)),
         None,
@@ -444,10 +447,7 @@ def _resolve_h10_collection_receipt(
             "v5 H.10 receipt overlaps a v4-owned target: "
             f"{receipt} conflicts with {conflict}"
         )
-    protected_research = tuple(
-        _root_path(target).absolute()
-        for target in _H10_RECEIPT_PROTECTED_WRITE_TARGETS
-    )
+    protected_research = _reserved_write_paths(_H10_RECEIPT_PROTECTED_WRITE_TARGETS)
     conflict = next(
         (
             target
@@ -487,10 +487,7 @@ def _resolve_ofr_fsi_collection_targets(
         label="OFR FSI collection receipt",
     )
     lock = database.with_name(f"{database.name}.ofr-fsi-collect.lock")
-    protected = tuple(
-        _root_path(target).absolute()
-        for target in _OFR_FSI_PROTECTED_WRITE_TARGETS
-    )
+    protected = _reserved_write_paths(_OFR_FSI_PROTECTED_WRITE_TARGETS)
     for label, candidate in (
         ("shadow database", database),
         ("collection receipt", receipt),
