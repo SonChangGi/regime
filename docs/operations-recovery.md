@@ -4,9 +4,41 @@
 게시 추적, 비파괴 백업 복구 절차를 정의한다. API와 데이터 제공자 권한 계약은 별도
 검토 대상이며 여기서는 변경하지 않는다.
 
+## 편집 경로와 예약 실행 경로
+
+예약 작업은 편집용 저장소와 독립된 clean `main` checkout에서 실행한다. 기존
+DB·계산 캐시·백업·승인 문서·가상환경은 `--state-root`로 지정한 원래 경로에
+유지한다. 별도 source checkout은 기존 공유 Git worktree가 아닌 독립 clone이다.
+`state-root/build/weekly-automation/runtime-checkout.json`은 source/state/Python 경로와
+저장소·branch를 결속하며, 값이 다르면 예약 실행을 차단한다.
+
+기존 LaunchAgent의 label과 예약 시각은 유지한다. launcher는 전용 checkout의
+clean 상태와 원격을 확인하고 `main`을 fast-forward한 뒤 새 Python 프로세스에서
+코드를 읽는다. 편집용 checkout의 Git 상태와 파일은 갱신하지 않는다. 전용
+checkout이 dirty하거나 로컬에만 있는 커밋이 있으면 reset·stash 없이 차단한다.
+장시간 실행 중 다음 예약이 겹치면 잠금을 유지한 채 정상 `already_running`으로
+건너뛰며 중복 수집을 시작하지 않는다.
+
+기존 승인 문서를 유지하는 예약 복구는 운영 source 디렉터리에서 다음과 같이 한다.
+
+```bash
+PYTHONPATH=src <state-root>/.venv/bin/python -m regime_lab automation restore --state-root <state-root>
+PYTHONPATH=src <state-root>/.venv/bin/python -m regime_lab automation status --state-root <state-root>
+```
+
+`restore`는 기존 plist와 승인 문서가 있어야 하며, 승인 갱신·서비스 enable은 하지
+않는다. 이전 plist를 보존한 뒤 동일 label을 복구한다. bootstrap 실패로 서비스가
+로드되지 않았다면 이전 plist를 돌려놓는다. `status`의 `operating_source_root`와
+`state_root`로 실제 코드·데이터 경로를 확인한다.
+
 ## 상태는 세 축으로 읽는다
 
 `automation status`의 단일 `operational` 값만으로 게시 성공을 판단하지 않는다.
+`ok/operational`은 scheduler와 공개 최신성 검사를 모두 통과해야 참이다.
+조회 시점의 provider 대기 기간을 반영한 `expected_public_data_as_of`와 실제
+`public_data_as_of`를 비교하므로, 과거 health의 `publication_current=true`가
+남아 있어도 새 주차를 최신으로 오인하지 않는다. 미등록·설정 불일치·오래된
+health와 발행 지연은 `diagnostic_issues`에 분리해 표시한다.
 
 | 필드 | 의미 | 성공으로 간주하지 않는 경우 |
 |---|---|---|

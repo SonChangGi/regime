@@ -195,10 +195,26 @@ class AutomationSettings:
     # Internal override for building a complete reviewed generation off to the
     # side. It never changes the configured status, collection or database paths.
     candidate_directory: Path | None = None
+    # A dedicated source checkout can reuse the existing private state and venv
+    # without moving data, renewing authorization, or touching the editor tree.
+    state_root: Path | None = None
+
+    @property
+    def storage_root(self) -> Path:
+        return self.state_root or self.root
+
+    @property
+    def runtime_python(self) -> Path:
+        return self.storage_root / ".venv" / "bin" / "python"
 
     @classmethod
-    def load(cls, path: str | Path | None = None) -> "AutomationSettings":
+    def load(
+        cls, path: str | Path | None = None, *, state_root: str | Path | None = None
+    ) -> "AutomationSettings":
         root = project_root().resolve()
+        storage_root = Path(state_root).resolve() if state_root is not None else root
+        if state_root is not None and not storage_root.is_dir():
+            raise AutomationError("automation state root must be an existing directory")
         raw_path = Path(path or "config/automation.json")
         config_path = raw_path if raw_path.is_absolute() else root / raw_path
         try:
@@ -256,7 +272,7 @@ class AutomationSettings:
 
         def mutable(value: object, label: str) -> Path:
             return confined_mutable_path(
-                str(value), project_directory=root, label=label
+                str(value), project_directory=storage_root, label=label
             )
 
         repository = str(github.get("repository", ""))
@@ -280,6 +296,7 @@ class AutomationSettings:
             forecast_enhancements_research=build.get("forecast_enhancements_research", False),
             forecast_candidates_weekly=build.get("forecast_candidates_weekly", False),
             root=root,
+            state_root=storage_root if state_root is not None else None,
             automation_id=automation_id,
             schedule_hour=hour,
             schedule_minute=minute,
@@ -1894,8 +1911,13 @@ def _verify_candidate_package(
     selection_family_path: Path | None = None,
 ) -> None:
     settings.state_directory.mkdir(parents=True, exist_ok=True)
+    # Public packaging remains confined to the source checkout even when the
+    # authoritative private database and generation live in the state root.
+    package_directory = (settings.root / "build" / "weekly-package-checks"
+                         if settings.storage_root != settings.root else settings.state_directory)
+    package_directory.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(
-        prefix=".package-check-", dir=settings.state_directory
+        prefix=".package-check-", dir=package_directory
     ) as temporary:
         output = Path(temporary) / "public-dashboard"
         command = [
@@ -2601,6 +2623,8 @@ def _build_candidate_generation(
         str(settings.collection_report_path),
         "--alfred-rights-confirmed",
     ]
+    if settings.storage_root != settings.root:
+        command.extend(["--state-root", str(settings.storage_root)])
     workspace_fingerprint = context.get("workspace_state_sha256")
     if workspace_fingerprint:
         command.extend(
@@ -3699,29 +3723,30 @@ def run_weekly_release(
 
 
 def launch_agent_document(settings: AutomationSettings) -> dict[str, Any]:
-    python = settings.root / ".venv" / "bin" / "python"
+    python = settings.runtime_python
     if not python.is_file():
         raise AutomationError(f"project virtualenv Python is missing: {python}")
     settings.state_directory.mkdir(parents=True, exist_ok=True)
     schedule_hours = settings.retry_hours or (settings.schedule_hour,)
+    arguments = [str(python), "-m", "regime_lab", "automation", "run",
+                 "--config", str(settings.config_path)]
+    environment = {
+        "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
+        "PYTHONUNBUFFERED": "1",
+    }
+    if settings.storage_root != settings.root:
+        launcher = settings.root / "scripts/run_scheduled_automation.py"
+        if not launcher.is_file():
+            raise AutomationError("isolated runtime launcher is missing")
+        arguments = [str(python), str(launcher), "--source-root", str(settings.root),
+                     "--state-root", str(settings.storage_root), "--python", str(python)]
+        environment["PYTHONPATH"] = str(settings.root / "src")
+        environment["PYTHONDONTWRITEBYTECODE"] = "1"
     return {
         "Label": AUTOMATION_LABEL,
-        "ProgramArguments": [
-            "/usr/bin/caffeinate",
-            "-s",
-            str(python),
-            "-m",
-            "regime_lab",
-            "automation",
-            "run",
-            "--config",
-            str(settings.config_path),
-        ],
+        "ProgramArguments": ["/usr/bin/caffeinate", "-s", *arguments],
         "WorkingDirectory": str(settings.root),
-        "EnvironmentVariables": {
-            "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
-            "PYTHONUNBUFFERED": "1",
-        },
+        "EnvironmentVariables": environment,
         "StartCalendarInterval": [
             {"Hour": hour, "Minute": settings.schedule_minute}
             for hour in schedule_hours
@@ -3911,6 +3936,96 @@ def uninstall_launch_agent(settings: AutomationSettings) -> dict[str, Any]:
     return {"ok": True, "installed": False, "label": AUTOMATION_LABEL}
 
 
+def restore_launch_agent(settings: AutomationSettings) -> dict[str, Any]:
+    """Restore this existing schedule without renewing rights or authorization.
+
+    The isolated checkout owns code only. All mutable state and the authorized
+    Python environment stay at their original paths. An explicit disable is
+    never cleared here; bootstrap must respect launchd's existing setting.
+    """
+    if sys.platform != "darwin":
+        raise AutomationError("LaunchAgent restoration requires macOS")
+    with automation_lock(settings.install_lock_path):
+        with automation_lock(settings.state_directory / "scheduled-launch.lock"), automation_lock(settings.lock_path):
+            _validate_local_authorization(settings, now=datetime.now(UTC))
+            _ensure_installable_checkout(settings)
+            if settings.storage_root != settings.root:
+                expected = {
+                    "schema_version": 1, "repository": settings.repository,
+                    "branch": settings.branch, "source_root": str(settings.root),
+                    "state_root": str(settings.storage_root),
+                    "python_executable": str(settings.runtime_python),
+                }
+                marker = settings.state_directory / "runtime-checkout.json"
+                try:
+                    actual = json.loads(marker.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError) as exc:
+                    raise AutomationError("isolated runtime ownership receipt is missing or invalid") from exc
+                if actual != expected or type(actual.get("schema_version")) is not int:
+                    raise AutomationError("isolated runtime ownership receipt does not match")
+            target = _launch_agent_path()
+            if not target.is_file():
+                raise AutomationError("restore requires an existing LaunchAgent plist")
+            document = launch_agent_document(settings)
+            was_loaded = _launch_agent_loaded(settings)
+            if _launch_agent_configuration(settings, target=target)["configuration_matches"] and was_loaded:
+                return {"ok": True, "installed": True, "restored": False,
+                        "label": AUTOMATION_LABEL, "detail": "existing schedule is already loaded"}
+            previous = target.read_bytes()
+            previous_mode = target.stat().st_mode & 0o777
+            backup = settings.state_directory / (
+                "launch-agent-before-restore-" + datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
+                + "-" + uuid.uuid4().hex[:8] + ".plist"
+            )
+            with backup.open("xb") as handle:
+                handle.write(previous)
+                handle.flush()
+                os.fsync(handle.fileno())
+            raw = plistlib.dumps(document, fmt=plistlib.FMT_XML, sort_keys=False)
+            with tempfile.NamedTemporaryFile(mode="wb", dir=target.parent,
+                                             prefix=f".{target.name}.", delete=False) as handle:
+                handle.write(raw)
+                handle.flush()
+                os.fsync(handle.fileno())
+                temporary = Path(handle.name)
+            os.chmod(temporary, previous_mode)
+            try:
+                _run(["/usr/bin/plutil", "-lint", str(temporary)], cwd=settings.root)
+                _bootout_launch_agent_if_loaded(settings)
+                os.replace(temporary, target)
+            finally:
+                temporary.unlink(missing_ok=True)
+            if not _launch_agent_configuration(settings, target=target)["configuration_matches"]:
+                raise AutomationError("restored LaunchAgent plist failed exact verification")
+        # RunAtLoad starts the normal pipeline only after its weekly lock is free.
+        try:
+            _run(["/bin/launchctl", "bootstrap", f"gui/{os.getuid()}", str(target)], cwd=settings.root)
+            if not _launch_agent_loaded(settings):
+                raise AutomationError("restored LaunchAgent is not loaded")
+        except AutomationError:
+            # A nonzero bootstrap can have an uncertain outcome. Never unload a
+            # service that has actually started; inspect it before another try.
+            if _launch_agent_loaded(settings):
+                raise AutomationError(
+                    "bootstrap returned an error but the service is loaded; inspect before retrying"
+                )
+            with tempfile.NamedTemporaryFile(mode="wb", dir=target.parent,
+                                             prefix=f".{target.name}.rollback.", delete=False) as handle:
+                handle.write(previous)
+                handle.flush()
+                os.fsync(handle.fileno())
+                rollback = Path(handle.name)
+            os.chmod(rollback, previous_mode)
+            os.replace(rollback, target)
+            # Restore the file, but never retry a refused bootstrap or clear an
+            # explicit disabled setting. The failed action needs inspection.
+            raise
+    return {"ok": True, "installed": True, "restored": True,
+            "label": AUTOMATION_LABEL, "path": str(target), "previous_plist": str(backup),
+            "operating_source_root": str(settings.root), "state_root": str(settings.storage_root),
+            "runs_immediately": True, **_launch_agent_configuration(settings, target=target)}
+
+
 def launch_agent_status(settings: AutomationSettings) -> dict[str, Any]:
     target = _launch_agent_path()
     health = _read_status(settings) or None
@@ -3919,6 +4034,18 @@ def launch_agent_status(settings: AutomationSettings) -> dict[str, Any]:
     configuration = _launch_agent_configuration(settings, target=target)
     health_ok = bool(health)
     checked_at = datetime.now(UTC)
+    eligible_publication_cutoff = last_completed_week_cutoff(
+        checked_at - settings.minimum_cutoff_age
+    )
+    diagnostic_issues: list[str] = []
+    if not installed:
+        diagnostic_issues.append("launch_agent_not_installed")
+    if not loaded:
+        diagnostic_issues.append("launch_agent_not_loaded")
+    if not configuration["configuration_matches"]:
+        diagnostic_issues.append("launch_agent_configuration_drift")
+    if not health:
+        diagnostic_issues.append("health_missing")
     provider_rights_ok = True
     provider_rights_error: str | None = None
     try:
@@ -3926,6 +4053,7 @@ def launch_agent_status(settings: AutomationSettings) -> dict[str, Any]:
     except AutomationError as exc:
         provider_rights_ok = False
         provider_rights_error = _safe_error(exc)
+        diagnostic_issues.append("provider_rights_invalid")
     authorization_ok = True
     authorization_error: str | None = None
     try:
@@ -3933,28 +4061,33 @@ def launch_agent_status(settings: AutomationSettings) -> dict[str, Any]:
     except AutomationError as exc:
         authorization_ok = False
         authorization_error = _safe_error(exc)
+        diagnostic_issues.append("authorization_invalid")
     heartbeat_stale = False
     health_stale = False
     if health:
         if health.get("schema_version") != HEALTH_SCHEMA_VERSION:
             health_ok = False
+            diagnostic_issues.append("health_schema_mismatch")
         if health.get("status") in {"failed", "blocked"}:
             health_ok = False
+            diagnostic_issues.append("automation_failed_or_blocked")
         failures = health.get("consecutive_failures", 0)
         if type(failures) is int and failures > 0:
             health_ok = False
+            diagnostic_issues.append("consecutive_failures")
         if health.get("status") == "running":
             try:
                 heartbeat = _parse_aware_datetime(
                     health.get("heartbeat_at"), label="health heartbeat_at"
                 )
                 heartbeat_stale = (
-                    datetime.now(UTC) - heartbeat > settings.stale_heartbeat_after
+                    checked_at - heartbeat > settings.stale_heartbeat_after
                 )
             except AutomationError:
                 heartbeat_stale = True
             if heartbeat_stale:
                 health_ok = False
+                diagnostic_issues.append("heartbeat_stale")
         else:
             schedule_hours = settings.retry_hours or (settings.schedule_hour,)
             schedule_minutes = sorted(
@@ -3970,11 +4103,12 @@ def launch_agent_status(settings: AutomationSettings) -> dict[str, Any]:
                 updated = _parse_aware_datetime(
                     health.get("updated_at"), label="health updated_at"
                 )
-                health_stale = datetime.now(UTC) - updated > terminal_stale_after
+                health_stale = checked_at - updated > terminal_stale_after
             except AutomationError:
                 health_stale = True
             if health_stale:
                 health_ok = False
+                diagnostic_issues.append("health_stale")
     scheduler_healthy = bool(
         installed
         and loaded
@@ -3983,9 +4117,42 @@ def launch_agent_status(settings: AutomationSettings) -> dict[str, Any]:
         and provider_rights_ok
         and authorization_ok
     )
+    public_data_as_of: datetime | None = None
+    verified_at: datetime | None = None
+    try:
+        public_data_as_of = _parse_aware_datetime(
+            (health or {}).get("public_data_as_of"), label="public data_as_of"
+        )
+    except AutomationError:
+        diagnostic_issues.append("public_data_as_of_invalid")
+    publication_lagging = bool(
+        public_data_as_of is not None
+        and public_data_as_of < eligible_publication_cutoff
+    )
+    if publication_lagging:
+        diagnostic_issues.append("publication_lagging")
+    elif (
+        public_data_as_of is not None
+        and public_data_as_of > eligible_publication_cutoff
+    ):
+        diagnostic_issues.append("publication_ahead_of_expected_cutoff")
+    try:
+        verified_at = _parse_aware_datetime(
+            (health or {}).get("last_public_verification_at"),
+            label="last public verification_at",
+        )
+    except AutomationError:
+        diagnostic_issues.append("publication_verification_missing_or_invalid")
+    if verified_at is not None and verified_at > checked_at:
+        diagnostic_issues.append("publication_verification_in_future")
+    if not health or health.get("publication_current") is not True:
+        diagnostic_issues.append("publication_not_verified")
     publication_current = bool(
         health
         and health.get("publication_current") is True
+        and public_data_as_of == eligible_publication_cutoff
+        and verified_at is not None
+        and verified_at <= checked_at
         and not health_stale
     )
     end_to_end_proven = bool(
@@ -3994,12 +4161,17 @@ def launch_agent_status(settings: AutomationSettings) -> dict[str, Any]:
         and health.get("last_full_success_at")
     )
     return {
-        "ok": scheduler_healthy,
+        "ok": scheduler_healthy and publication_current,
         # Compatibility alias; callers should migrate to the three explicit
         # status dimensions below.
-        "operational": scheduler_healthy,
+        "operational": scheduler_healthy and publication_current,
         "scheduler_healthy": scheduler_healthy,
         "publication_current": publication_current,
+        "expected_public_data_as_of": eligible_publication_cutoff.isoformat(),
+        "publication_lagging": publication_lagging,
+        "diagnostic_issues": diagnostic_issues,
+        "operating_source_root": str(settings.root),
+        "state_root": str(settings.storage_root),
         "end_to_end_proven": end_to_end_proven,
         "installed": installed,
         "loaded": loaded,
@@ -4018,7 +4190,9 @@ def launch_agent_status(settings: AutomationSettings) -> dict[str, Any]:
 
 def command_automation(args: argparse.Namespace) -> int:
     try:
-        settings = AutomationSettings.load(args.config)
+        state_root = getattr(args, "state_root", None)
+        settings = (AutomationSettings.load(args.config, state_root=state_root)
+                    if state_root is not None else AutomationSettings.load(args.config))
         force_retry = bool(getattr(args, "force_retry", False))
         force_blocked_recovery = bool(
             getattr(args, "force_blocked_recovery", False)
@@ -4045,6 +4219,8 @@ def command_automation(args: argparse.Namespace) -> int:
                     args.acknowledge_personal_noncommercial_publication
                 ),
             )
+        elif args.action == "restore":
+            result = restore_launch_agent(settings)
         elif args.action == "uninstall":
             result = uninstall_launch_agent(settings)
         elif args.action == "status":

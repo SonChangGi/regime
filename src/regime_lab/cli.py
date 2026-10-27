@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 from copy import deepcopy
 from contextlib import nullcontext
+from contextvars import ContextVar
 from datetime import date, datetime, timezone
 import hashlib
 import json
@@ -234,12 +235,15 @@ def _root_path(value: str) -> Path:
     return path if path.is_absolute() else project_root() / path
 
 
+_CLI_STATE_ROOT: ContextVar[Path | None] = ContextVar("regime_cli_state_root", default=None)
+
+
 def _mutable_path(value: str | Path, *, label: str) -> Path:
     """Confine a CLI write target without restricting read-only inputs."""
 
     return confined_mutable_path(
         value,
-        project_directory=project_root(),
+        project_directory=_CLI_STATE_ROOT.get() or project_root(),
         label=label,
     )
 
@@ -2013,6 +2017,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     build = subparsers.add_parser("build", help="collect live PIT data and train models")
     build.add_argument("--config", type=Path, default=default_config_path())
+    build.add_argument("--state-root", type=Path,
+                       help="confine private build outputs to this existing state directory")
     build.add_argument("--database", default="data/regime.sqlite3")
     build.add_argument(
         "--backup-directory",
@@ -2245,12 +2251,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     automation.add_argument(
         "action",
-        choices=("preflight", "run", "install", "uninstall", "status"),
+        choices=("preflight", "run", "install", "restore", "uninstall", "status"),
     )
     automation.add_argument(
         "--config",
         type=Path,
         default=Path("config/automation.json"),
+    )
+    automation.add_argument(
+        "--state-root",
+        type=Path,
+        help="reuse private state and the existing venv from this directory in an isolated source checkout",
     )
     automation.add_argument(
         "--alfred-rights-confirmed",
@@ -2285,11 +2296,19 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    state_root = getattr(args, "state_root", None)
+    if state_root is not None:
+        state_root = state_root.resolve(strict=True)
+        if not state_root.is_dir():
+            parser.error("--state-root must be an existing directory")
+    state_token = _CLI_STATE_ROOT.set(state_root)
     try:
         return int(args.func(args) or 0)
     except KeyboardInterrupt:
         print("중단됨", file=sys.stderr)
         return 130
+    finally:
+        _CLI_STATE_ROOT.reset(state_token)
 
 
 if __name__ == "__main__":

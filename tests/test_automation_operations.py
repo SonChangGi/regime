@@ -157,6 +157,15 @@ def test_launch_agent_status_compares_plists_semantically_and_reports_drift(
         heartbeat_at=datetime.now(UTC),
         consecutive_failures=0,
     )
+    health = json.loads(settings.status_path.read_text())
+    health.update(
+        publication_current=True,
+        public_data_as_of=automation.last_completed_week_cutoff(
+            datetime.now(UTC) - settings.minimum_cutoff_age
+        ).isoformat(),
+        last_public_verification_at=datetime.now(UTC).isoformat(),
+    )
+    _write_json(settings.status_path, health)
     automation._write_local_authorization(
         settings,
         alfred_rights_confirmed=True,
