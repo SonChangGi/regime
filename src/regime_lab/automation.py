@@ -2160,10 +2160,18 @@ def _verify_candidate_package(
         _run(
             command,
             cwd=settings.root,
+            cpu_percent=30,
+            heartbeat=lambda: _heartbeat_status(settings, stage="audit_candidate"),
+            heartbeat_interval=settings.heartbeat_interval.total_seconds(),
+            paused_heartbeat=lambda: _compute_pause_heartbeat(settings),
         )
         _run(
             [sys.executable, "scripts/verify_public_package.py", str(output)],
             cwd=settings.root,
+            cpu_percent=30,
+            heartbeat=lambda: _heartbeat_status(settings, stage="audit_candidate"),
+            heartbeat_interval=settings.heartbeat_interval.total_seconds(),
+            paused_heartbeat=lambda: _compute_pause_heartbeat(settings),
         )
         if (output / PUBLIC_PAYLOAD_PATH).read_bytes() != candidate_path.read_bytes():
             raise AutomationError("verified package payload bytes differ from the candidate")

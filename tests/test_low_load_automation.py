@@ -15,6 +15,41 @@ from regime_lab import automation
 from regime_lab.compute_budget import ActiveClock, ComputeBudgetError
 
 
+@pytest.mark.parametrize("mismatched_bytes", [False, True])
+def test_package_and_verify_share_cpu_budget_and_retain_byte_contract(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mismatched_bytes: bool,
+) -> None:
+    from test_weekly_automation import _settings
+
+    settings = _settings(tmp_path)
+    candidate = tmp_path / "candidate.json"
+    candidate.write_bytes(b"strictly-validated-candidate")
+    calls = []
+
+    def run(command, **kwargs):
+        assert kwargs["cpu_percent"] == 30
+        assert callable(kwargs["heartbeat"])
+        assert callable(kwargs["paused_heartbeat"])
+        assert kwargs["heartbeat_interval"] == settings.heartbeat_interval.total_seconds()
+        calls.append(command)
+        if "scripts/package_public_demo.py" in command:
+            output = Path(command[command.index("--output") + 1])
+            payload = output / automation.PUBLIC_PAYLOAD_PATH
+            payload.parent.mkdir(parents=True)
+            payload.write_bytes(b"changed" if mismatched_bytes else candidate.read_bytes())
+        return b""
+
+    monkeypatch.setattr(automation, "_run", run)
+    if mismatched_bytes:
+        with pytest.raises(automation.AutomationError, match="payload bytes differ"):
+            automation._verify_candidate_package(settings, candidate, None, None)
+    else:
+        automation._verify_candidate_package(settings, candidate, None, None)
+    assert [command[1] for command in calls] == [
+        "scripts/package_public_demo.py", "scripts/verify_public_package.py",
+    ]
+
+
 class _FakeProcess:
     pid = 987650
 
