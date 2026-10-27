@@ -17,9 +17,14 @@ from regime_lab.schema import SCHEMA_VERSION, STATE_ORDER, validate_dashboard_pa
 STATE_DEFINITIONS = [
     dict(value) for value in load_operating_contract().state_definitions
 ]
+PROBABILITY_SCALE = 100_000_000
 
 
-def normalized_probabilities(values: Mapping[str, float] | list[float] | np.ndarray) -> dict[str, float]:
+def normalized_probabilities(
+    values: Mapping[str, float] | list[float] | np.ndarray,
+    *,
+    conserve_mass: bool = False,
+) -> dict[str, float]:
     """Validate probabilities before correcting only numerical round-off.
 
     Invalid model output must fail at the publication boundary; silently
@@ -42,11 +47,31 @@ def normalized_probabilities(values: Mapping[str, float] | list[float] | np.ndar
     if not math.isclose(total, 1.0, rel_tol=0.0, abs_tol=1e-6):
         raise ValueError("probabilities must sum to one within rounding tolerance")
     raw /= total
+    if conserve_mass:
+        # Allocate a fixed number of probability units jointly. Independently
+        # rounded state probabilities can sum to 1 +/- one unit, making the
+        # canonical one-week destinations incompatible with departure totals.
+        scaled = raw * PROBABILITY_SCALE
+        units = np.floor(scaled).astype(np.int64)
+        remaining = PROBABILITY_SCALE - int(units.sum())
+        order = sorted(
+            range(len(STATE_ORDER)),
+            key=lambda index: (-(float(scaled[index]) - int(units[index])), index),
+        )
+        if not 0 <= remaining <= len(STATE_ORDER):
+            raise ValueError("probabilities cannot be quantized to a unit distribution")
+        for index in order[:remaining]:
+            units[index] += 1
+        return {state: int(units[index]) / PROBABILITY_SCALE for index, state in enumerate(STATE_ORDER)}
     return {state: round(float(raw[index]), 8) for index, state in enumerate(STATE_ORDER)}
 
 
-def estimate_from_probabilities(values: Mapping[str, float] | list[float] | np.ndarray) -> dict[str, Any]:
-    probabilities = normalized_probabilities(values)
+def estimate_from_probabilities(
+    values: Mapping[str, float] | list[float] | np.ndarray,
+    *,
+    conserve_mass: bool = False,
+) -> dict[str, Any]:
+    probabilities = normalized_probabilities(values, conserve_mass=conserve_mass)
     winner = max(STATE_ORDER, key=lambda state: probabilities[state])
     nonzero = [prob for prob in probabilities.values() if prob > 0]
     entropy = -sum(prob * math.log(prob) for prob in nonzero) / math.log(len(STATE_ORDER))

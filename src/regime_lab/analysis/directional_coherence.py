@@ -9,12 +9,14 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import timedelta
+import math
 from typing import Any, Mapping
 
 import numpy as np
 import pandas as pd
 
 from regime_lab.schema import STATE_ORDER
+from regime_lab.payload import PROBABILITY_SCALE
 
 COHERENCE_VERSION = "canonical-one-week-joint-first-destination/2"
 HORIZONS = (1, 4, 13)
@@ -47,6 +49,35 @@ def _polygon_projection(
     return min(
         candidates, key=lambda candidate: float(np.square(candidate - point).sum())
     )
+
+
+def _quantize_joint_pair(
+    projected: np.ndarray,
+    target: np.ndarray,
+    anchor_units: int,
+    delta4_units: int,
+    delta13_units: int,
+) -> tuple[int, int]:
+    """Choose the nearest feasible grid pair without independent rounding."""
+    scaled = projected * PROBABILITY_SCALE
+    candidates = sorted({
+        (x, y)
+        for x in (math.floor(scaled[0]), math.ceil(scaled[0]))
+        for y in (math.floor(scaled[1]), math.ceil(scaled[1]))
+        if anchor_units <= x <= anchor_units + delta4_units and x <= y <= x + delta13_units
+    })
+    if not candidates:
+        raise ValueError("joint directional projection has no feasible quantized pair")
+    base = np.asarray(candidates[0], dtype=float)
+    offset = base - target * PROBABILITY_SCALE
+
+    def cost(candidate: tuple[int, int]) -> float:
+        # Compare L2 differences from a shared base. Squaring two large target
+        # distances first would discard the one-unit differences we need here.
+        delta = np.asarray(candidate, dtype=float) - base
+        return float(delta @ (2 * offset + delta))
+
+    return min(candidates, key=lambda candidate: (cost(candidate), candidate))
 
 
 def reconcile_directional_path(
@@ -105,6 +136,20 @@ def reconcile_directional_path(
         max(0.0, totals[1] - anchor_total),
         max(0.0, totals[2] - totals[1]),
     )
+    probability_units = np.rint(probabilities * PROBABILITY_SCALE).astype(np.int64)
+    total_units = np.rint(totals * PROBABILITY_SCALE).astype(np.int64)
+    joint_units = None
+    if (
+        all(float(value) == int(unit) / PROBABILITY_SCALE for value, unit in zip(probabilities, probability_units, strict=True))
+        and all(float(value) == int(unit) / PROBABILITY_SCALE for value, unit in zip(totals, total_units, strict=True))
+        and int(probability_units.sum()) == PROBABILITY_SCALE
+        and int(total_units[0]) == sum(int(probability_units[STATE_ORDER.index(state)]) for state in alternatives)
+        and total_units[0] <= total_units[1] <= total_units[2]
+    ):
+        joint_units = _quantize_joint_pair(
+            projected, target, int(probability_units[STATE_ORDER.index(alternatives[0])]),
+            int(total_units[1] - total_units[0]), int(total_units[2] - total_units[1]),
+        )
     first = [anchor, *projected.tolist()]
     result = deepcopy(dict(raw_directional_rows))
     for i, h in enumerate(HORIZONS):
@@ -115,6 +160,13 @@ def reconcile_directional_path(
                 for s in STATE_ORDER
             }
             row["model"] = canonical_model
+        elif joint_units is not None:
+            left_units = joint_units[i - 1]
+            destinations = {
+                current_state: 0.0,
+                alternatives[0]: left_units / PROBABILITY_SCALE,
+                alternatives[1]: (int(total_units[i]) - left_units) / PROBABILITY_SCALE,
+            }
         else:
             left = round(float(first[i]), 8)
             destinations = {
