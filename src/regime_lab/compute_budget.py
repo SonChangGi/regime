@@ -23,10 +23,12 @@ import os
 import resource
 import signal
 import subprocess
+import sys
 import threading
 import time
 from collections.abc import Callable, Iterable, Mapping
 from typing import Protocol
+from pathlib import Path
 
 
 class ComputeBudgetError(RuntimeError):
@@ -122,6 +124,31 @@ def parse_cpu_time(value: str) -> float:
         raise ComputeBudgetError(f"invalid ps CPU time: {value!r}") from exc
 
 
+def parse_linux_cpu_stat(text: str, *, pid: int, pgid: int, clock_ticks: int) -> float:
+    """Read Linux process CPU ticks without ps TIME's whole-second rounding.
+
+    The comm field may contain spaces and parentheses, so numeric fields begin
+    after its final closing parenthesis.  The PID and group belong to the same
+    stat snapshot as utime/stime; an unexpected group is never charged as owned.
+    """
+    try:
+        header, closing, tail = text.rpartition(")")
+        if not closing or not header.startswith(f"{pid} ("):
+            raise ValueError("unexpected stat PID or comm field")
+        fields = tail.split()
+        if len(fields) < 13 or int(fields[2]) != pgid:
+            raise ValueError("short stat record or unexpected process group")
+        user_ticks, system_ticks = int(fields[11]), int(fields[12])
+        if clock_ticks <= 0 or user_ticks < 0 or system_ticks < 0:
+            raise ValueError("invalid CPU tick counter")
+        result = (user_ticks + system_ticks) / clock_ticks
+        if not math.isfinite(result):
+            raise ValueError("invalid CPU tick total")
+        return result
+    except (ValueError, OverflowError, ZeroDivisionError) as exc:
+        raise ComputeBudgetError("invalid owned-child Linux CPU stat") from exc
+
+
 class ProcessCpuSampler:
     """Sample the owned group, returning aggregate CPU under its leader PID.
 
@@ -155,35 +182,53 @@ class ProcessCpuSampler:
                 raise ComputeBudgetError("owned-child group inventory is invalid") from exc
             if self.pgid not in group_pids or any(pid <= 1 for pid in group_pids):
                 raise ComputeBudgetError("owned-child group leader is missing")
-            completed = subprocess.run(
-                [
-                    "ps",
-                    "-p",
-                    ",".join(str(pid) for pid in group_pids),
-                    "-o",
-                    "pid=,pgid=,time=",
-                ],
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=self.timeout,
-            )
         except (OSError, subprocess.SubprocessError) as exc:
             raise ComputeBudgetError("owned-child CPU sampler failed") from exc
-        if completed.returncode != 0:
-            raise ComputeBudgetError("owned-child CPU sampler returned an error")
         samples: dict[int, float] = {}
-        try:
-            for line in completed.stdout.splitlines():
-                pid_text, pgid_text, cpu_text = line.split()
-                pid, pgid = int(pid_text), int(pgid_text)
-                if pid not in group_pids or pid in samples or pgid != self.pgid:
-                    raise ValueError("unexpected PID or process group")
-                samples[pid] = parse_cpu_time(cpu_text)
-        except (ValueError, ComputeBudgetError) as exc:
-            raise ComputeBudgetError("owned-child CPU sampler returned invalid data") from exc
-        if set(samples) != set(group_pids):
-            raise ComputeBudgetError("owned-child CPU sampler missed a tracked process")
+        if sys.platform.startswith("linux"):
+            # Linux ps TIME normally rounds to whole seconds.  Read only the
+            # already inventoried owned PIDs to preserve subsecond budgeting.
+            try:
+                clock_ticks = os.sysconf("SC_CLK_TCK")
+                for pid in group_pids:
+                    samples[pid] = parse_linux_cpu_stat(
+                        Path(f"/proc/{pid}/stat").read_text(encoding="utf-8"),
+                        pid=pid,
+                        pgid=self.pgid,
+                        clock_ticks=clock_ticks,
+                    )
+            except (OSError, ValueError) as exc:
+                raise ComputeBudgetError("owned-child Linux CPU sampler failed") from exc
+        else:
+            try:
+                completed = subprocess.run(
+                    [
+                        "ps",
+                        "-p",
+                        ",".join(str(pid) for pid in group_pids),
+                        "-o",
+                        "pid=,pgid=,time=",
+                    ],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=self.timeout,
+                )
+            except (OSError, subprocess.SubprocessError) as exc:
+                raise ComputeBudgetError("owned-child CPU sampler failed") from exc
+            if completed.returncode != 0:
+                raise ComputeBudgetError("owned-child CPU sampler returned an error")
+            try:
+                for line in completed.stdout.splitlines():
+                    pid_text, pgid_text, cpu_text = line.split()
+                    pid, pgid = int(pid_text), int(pgid_text)
+                    if pid not in group_pids or pid in samples or pgid != self.pgid:
+                        raise ValueError("unexpected PID or process group")
+                    samples[pid] = parse_cpu_time(cpu_text)
+            except (ValueError, ComputeBudgetError) as exc:
+                raise ComputeBudgetError("owned-child CPU sampler returned invalid data") from exc
+            if set(samples) != set(group_pids):
+                raise ComputeBudgetError("owned-child CPU sampler missed a tracked process")
         for pid, value in samples.items():
             if value < self._observed_cpu.get(pid, 0.0):
                 raise ComputeBudgetError("owned-child per-PID CPU counter decreased")
@@ -358,7 +403,7 @@ class CpuBudget:
             # accounting costs create an endless stop/re-account cycle.
             self._rest_until = now + (self._capacity - self._credit) / self._rate
             if self._child_credit < 0:
-                self.active_clock.pause(until=self._rest_until)
+                self.active_clock.pause(until=min(self._rest_until, now - self._child_credit / self._rate))
             else:
                 # Supervisor overhead can require rest, but an idle child must
                 # still age toward the real no-progress watchdog deadline.

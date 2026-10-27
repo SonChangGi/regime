@@ -836,6 +836,7 @@ def _run_low_load(
 
                 timer = threading.Timer(.03, stop_cleanup_group)
                 timer.daemon = True
+                quantum_started = time.monotonic()
                 try:
                     timer.start()
                     os.killpg(process.pid, signal.SIGCONT)
@@ -846,6 +847,10 @@ def _run_low_load(
                             process.wait(timeout=.03)
                     except subprocess.TimeoutExpired:
                         pass
+                    if _compute_group_alive(process.pid):
+                        # wait() returns immediately after a leader's exit.
+                        # Its surviving workers still need a real grace slice.
+                        time.sleep(max(0, .03 - (time.monotonic() - quantum_started)))
                 except BaseException:
                     break
                 finally:

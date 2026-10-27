@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import signal
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -318,6 +319,7 @@ def test_cpu_counter_decrease_fails_closed():
 
 
 def test_sampler_discovers_only_owned_group_and_counts_observed_live_workers(monkeypatch):
+    monkeypatch.setattr(compute_budget.sys, "platform", "darwin")
     calls = []
 
     def run(args, **kwargs):
@@ -337,6 +339,7 @@ def test_sampler_discovers_only_owned_group_and_counts_observed_live_workers(mon
 
 
 def test_darwin_reaped_worker_cpu_is_retained_when_parent_time_does_not_increase(monkeypatch):
+    monkeypatch.setattr(compute_budget.sys, "platform", "darwin")
     snapshots = iter(
         [
             ("4321\n4322\n", "4321 4321 00:00.10\n4322 4321 00:00.30\n"),
@@ -367,6 +370,7 @@ def test_darwin_reaped_worker_cpu_is_retained_when_parent_time_does_not_increase
 
 
 def test_group_sampler_rejects_per_pid_counter_reset_instead_of_hiding_usage(monkeypatch):
+    monkeypatch.setattr(compute_budget.sys, "platform", "darwin")
     cpu = iter(["00:00.30", "00:00.10"])
 
     def run(args, **kwargs):
@@ -384,6 +388,7 @@ def test_group_sampler_rejects_per_pid_counter_reset_instead_of_hiding_usage(mon
     "output", ["4321 9999 00:01.00\n", "4321 4321 00:01.00\n", "4321 4321 nan\n4322 4321 00:01.00\n"]
 )
 def test_group_sampler_rejects_group_change_missing_member_or_bad_cpu(monkeypatch, output):
+    monkeypatch.setattr(compute_budget.sys, "platform", "darwin")
     def run(args, **kwargs):
         return subprocess.CompletedProcess(args, 0, "4321\n4322\n" if args[0] == "pgrep" else output, "")
 
@@ -406,3 +411,86 @@ def test_invalid_configuration_cannot_start_a_child(kwargs):
     with pytest.raises(ValueError):
         world.budget(**kwargs)
     assert world.signals == []
+
+
+def _linux_stat(*, pid=4321, pgid=4321, comm="cpu worker (child)", user=7, system=4):
+    # Fields 3..15: state, ppid, pgrp, session, tty, tpgid, flags,
+    # minflt, cminflt, majflt, cmajflt, utime, stime.
+    return f"{pid} ({comm}) S 100 {pgid} 4321 0 -1 0 0 0 0 0 {user} {system}"
+
+
+@pytest.mark.parametrize("comm", ["worker", "cpu worker", "cpu (nested) worker)"])
+def test_linux_stat_cpu_retains_subsecond_precision_with_comm_spaces(comm):
+    assert compute_budget.parse_linux_cpu_stat(
+        _linux_stat(comm=comm), pid=4321, pgid=4321, clock_ticks=100
+    ) == pytest.approx(0.11)
+
+
+@pytest.mark.parametrize(
+    "text,clock_ticks",
+    [
+        (_linux_stat(pgid=9999), 100),
+        (_linux_stat(pid=9999), 100),
+        ("4321 (short worker) S 100 4321", 100),
+        ("4321 missing comm S 100 4321", 100),
+        (_linux_stat(user=-1), 100),
+        (_linux_stat(system="bad"), 100),
+        (_linux_stat(), 0),
+    ],
+)
+def test_linux_stat_rejects_wrong_group_pid_short_or_invalid_counters(text, clock_ticks):
+    with pytest.raises(ComputeBudgetError):
+        compute_budget.parse_linux_cpu_stat(text, pid=4321, pgid=4321, clock_ticks=clock_ticks)
+
+
+def test_linux_group_sampler_reads_only_owned_proc_stat_and_preserves_reaped_cpu(monkeypatch):
+    monkeypatch.setattr(compute_budget.sys, "platform", "linux")
+    monkeypatch.setattr(compute_budget.os, "sysconf", lambda name: 100)
+    inventories = iter(["4321\n4322\n", "4321\n"])
+    proc_paths = []
+
+    def run(args, **kwargs):
+        assert args == ["pgrep", "-g", "4321"]
+        return subprocess.CompletedProcess(args, 0, next(inventories), "")
+
+    def read_text(path, **kwargs):
+        proc_paths.append(str(path))
+        pid = int(path.parent.name)
+        return _linux_stat(pid=pid, user=5 if pid == 4321 else 7, system=1)
+
+    monkeypatch.setattr(compute_budget.subprocess, "run", run)
+    monkeypatch.setattr(Path, "read_text", read_text)
+    sampler = ProcessCpuSampler(4321)
+    assert sampler((4321,)) == {4321: pytest.approx(0.14)}
+    assert sampler((4321,)) == {4321: pytest.approx(0.14)}
+    assert proc_paths == ["/proc/4321/stat", "/proc/4322/stat", "/proc/4321/stat"]
+
+
+def test_linux_proc_access_failure_does_not_fall_back_to_coarse_ps(monkeypatch):
+    monkeypatch.setattr(compute_budget.sys, "platform", "linux")
+    monkeypatch.setattr(
+        compute_budget.subprocess,
+        "run",
+        lambda args, **kwargs: subprocess.CompletedProcess(args, 0, "4321\n", ""),
+    )
+
+    def denied(path, **kwargs):
+        raise PermissionError("owned proc stat denied")
+
+    monkeypatch.setattr(Path, "read_text", denied)
+    with pytest.raises(ComputeBudgetError, match="Linux CPU sampler failed"):
+        ProcessCpuSampler(4321)((4321,))
+
+
+def test_controller_rest_and_reserve_do_not_hide_idle_after_tiny_child_debt():
+    world = World(cores=0.7)
+    budget = world.budget()
+    budget.tick()
+    world.overhead = 3.0
+    world.advance(0.05)
+    # The child used 0.035 CPU seconds: only 0.005 beyond its accrued
+    # 0.030 allowance.  Controller debt must not erase the next ten seconds.
+    world.advance(5.0)
+    assert budget.stopped
+    assert budget.active_clock.paused_seconds == pytest.approx(0.005 / 0.30)
+    assert budget.active_clock.now() > 5.0

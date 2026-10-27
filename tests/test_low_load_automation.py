@@ -169,6 +169,74 @@ def test_fake_low_load_leader_exit_does_not_release_live_worker_lease(
     assert all(sig not in (signal.SIGKILL, signal.SIGTERM) for _, sig in signals)
 
 
+def test_fake_exited_leader_gives_streamed_worker_full_cancellation_quantum(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    process = _FakeProcess(complete_after=1)
+    process.returncode = 0
+    clock = [0.0]
+    worker_alive = [True]
+    running_since = [None]
+    signals = []
+    lock_path = tmp_path / "automation.lock"
+
+    class Thread:
+        ident = 1
+
+        def __init__(self, **_kwargs):
+            pass
+
+        def start(self):
+            pass
+
+        def join(self, **_kwargs):
+            assert not worker_alive[0]
+
+    class Timer:
+        def __init__(self, *_args):
+            pass
+
+        def start(self):
+            pass
+
+        def cancel(self):
+            pass
+
+    def signal_group(pid, sig):
+        signals.append((sig, clock[0]))
+        if sig == signal.SIGCONT:
+            running_since[0] = clock[0]
+        if sig == signal.SIGSTOP:
+            assert running_since[0] is not None
+            assert clock[0] - running_since[0] >= .03
+            worker_alive[0] = False
+
+    def sleep(seconds):
+        assert worker_alive[0]
+        with pytest.raises(automation.AlreadyRunning):
+            with automation.automation_lock(lock_path):
+                pytest.fail("lease must remain held for the worker's entire grace slice")
+        clock[0] += seconds
+
+    monkeypatch.setattr(automation.subprocess, "Popen", lambda *_a, **_kw: process)
+    monkeypatch.setattr(automation.threading, "Thread", Thread)
+    monkeypatch.setattr(automation.threading, "Timer", Timer)
+    monkeypatch.setattr(automation.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(automation.time, "sleep", sleep)
+    monkeypatch.setattr(automation, "_compute_group_alive", lambda _pid: worker_alive[0], raising=False)
+    monkeypatch.setattr(automation.os, "killpg", signal_group)
+    with automation.automation_lock(lock_path):
+        with pytest.raises(ComputeBudgetError, match="leader exited"):
+            automation._run(
+                ["fake"], cwd=tmp_path, cpu_percent=30,
+                output_activity=lambda: None,
+            )
+    assert not worker_alive[0]
+    assert signals == [
+        (signal.SIGINT, 0.0), (signal.SIGCONT, 0.0), (signal.SIGSTOP, .03),
+    ]
+
+
 def test_fake_low_load_reader_start_failure_still_cancels_owned_child(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
