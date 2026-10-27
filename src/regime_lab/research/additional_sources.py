@@ -149,9 +149,20 @@ def collect_sources(directory: Path, *, refresh: bool = False) -> dict:
         return key, record
 
     results = {}
+    failures: list[Exception] = []
     with ThreadPoolExecutor(max_workers=3) as pool:
-        for key, record in pool.map(collect, SOURCES.items()):
-            results[key] = record
+        pending = [pool.submit(collect, item) for item in SOURCES.items()]
+        for future in pending:
+            try:
+                key, record = future.result()
+                results[key] = record
+            except Exception as exc:
+                failures.append(exc)
+    if failures:
+        # Inspect every source before classifying the collection. A transport
+        # outage must never hide another source's denial or integrity failure.
+        # Within each class, input order keeps the chosen error deterministic.
+        raise next((exc for exc in failures if not isinstance(exc, AdditionalSourceUnavailable)), failures[0])
     manifest = {"schema_version": "regime-additional-sources/1", "sources": results}
     temporary = directory / ".manifest.json.tmp"
     temporary.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
