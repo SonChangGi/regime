@@ -25,6 +25,7 @@ from regime_lab.contract_v5 import (
 )
 from regime_lab.config import project_root
 from regime_lab.io import write_json_atomic
+from regime_lab.path_safety import confined_generation_path, generation_contract_path
 from regime_lab.integrity import (
     IntegrityError,
     bind_payload_to_generation_manifest,
@@ -416,7 +417,14 @@ def promote(
     output_manifest_path: Path | None = None,
     output_selection_family_path: Path | None = None,
     publication_contract_directory: Path | None = None,
+    state_root: Path | None = None,
 ) -> dict[str, Any]:
+    if state_root is not None:
+        candidate_path = confined_generation_path(candidate_path, root=state_root, label="candidate payload")
+        v5_artifacts = confined_generation_path(v5_artifacts, root=state_root, label="candidate artifacts")
+        comparison_path = confined_generation_path(comparison_path, root=state_root, label="candidate comparison")
+        generation_manifest_path = confined_generation_path(generation_manifest_path, root=state_root, label="candidate manifest")
+        output_path = confined_generation_path(output_path, root=state_root, label="reviewed payload")
     reviewed_comparison_path = output_comparison_path or output_path.with_name(
         "v5-vs-v4-comparison.json"
     )
@@ -427,10 +435,17 @@ def promote(
         output_selection_family_path
         or output_path.with_name("selection-family-audit.json")
     )
+    if state_root is not None:
+        reviewed_comparison_path = confined_generation_path(reviewed_comparison_path, root=state_root, label="reviewed comparison")
+        reviewed_manifest_path = confined_generation_path(reviewed_manifest_path, root=state_root, label="reviewed manifest")
+        reviewed_selection_family_path = confined_generation_path(reviewed_selection_family_path, root=state_root, label="reviewed selection-family")
     contract_directory = (
         publication_contract_directory
         if publication_contract_directory is not None
-        else output_path.parent
+        else (
+            generation_contract_path(output_path, source_root=project_root(), state_root=state_root, label="reviewed payload").parent
+            if state_root is not None else output_path.parent
+        )
     )
     if not contract_directory.is_absolute():
         contract_directory = project_root() / contract_directory
@@ -439,6 +454,10 @@ def promote(
     contract_selection_family_path = (
         contract_directory / "selection-family-audit.json"
     )
+    if state_root is not None:
+        contract_payload_path = confined_generation_path(contract_payload_path, root=project_root(), label="reviewed payload contract")
+        contract_comparison_path = confined_generation_path(contract_comparison_path, root=project_root(), label="reviewed comparison contract")
+        contract_selection_family_path = confined_generation_path(contract_selection_family_path, root=project_root(), label="reviewed selection-family contract")
     outputs = (
         output_path,
         reviewed_comparison_path,
@@ -458,6 +477,9 @@ def promote(
     enhancement_output = output_path.with_name(FILENAME)
     if DECLARATION in candidate.get("research", {}):
         enhancement_source = v5_artifacts / FILENAME
+        if state_root is not None:
+            enhancement_source = confined_generation_path(enhancement_source, root=state_root, label="candidate forecast enhancement")
+            enhancement_output = confined_generation_path(enhancement_output, root=state_root, label="reviewed forecast enhancement")
         if enhancement_source.is_symlink() or not enhancement_source.is_file():
             raise PromotionError("required forecast enhancement artifact is missing")
         enhancement = _read_json(enhancement_source, label="forecast enhancement")
@@ -465,6 +487,16 @@ def promote(
         if enhancement_output.exists() or enhancement_output.is_symlink():
             raise PromotionError("reviewed forecast enhancement output already exists")
     comparison = _read_json(comparison_path, label="V5 comparison")
+    source_selection_family_path = v5_artifacts / "selection-family-audit.json"
+    if state_root is not None:
+        # Manifest declarations identify the source-relative contract. Read
+        # the actual generation only through its explicit state members.
+        source_selection_family_path = confined_generation_path(source_selection_family_path, root=state_root, label="candidate selection-family")
+        document = _read_json(generation_manifest_path, label="candidate generation manifest")
+        for name in ("payload", "comparison_sidecar", "selection_family_sidecar", "label_spec"):
+            record = document.get(name)
+            if isinstance(record, Mapping) and isinstance(record.get("path"), str):
+                confined_generation_path(record["path"], root=project_root(), label=f"candidate {name} contract")
     try:
         generation = validate_generation_manifest(
             generation_manifest_path,
@@ -475,7 +507,19 @@ def promote(
             require_comparison=False,
             require_selection_family=True,
             artifact_directory=v5_artifacts,
+            **({
+                "payload_path_override": candidate_path,
+                "selection_family_path_override": source_selection_family_path,
+            } if state_root is not None else {}),
         )
+        if state_root is not None:
+            expected_paths = (
+                generation_contract_path(candidate_path, source_root=project_root(), state_root=state_root, label="candidate payload"),
+                generation_contract_path(source_selection_family_path, source_root=project_root(), state_root=state_root, label="candidate selection-family"),
+            )
+            declared_paths = (generation["declared_payload_path"], generation["declared_selection_family_path"])
+            if declared_paths != expected_paths:
+                raise PromotionError("candidate manifest logical paths differ from the state generation")
         if generation["payload_path"].resolve() != candidate_path.resolve():
             raise PromotionError("generation manifest points to a different candidate")
         if generation["artifact_directory"].resolve() != v5_artifacts.resolve():
@@ -730,6 +774,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--reviewed-at",
         help="ISO-8601 decision time; defaults to the current UTC time",
     )
+    parser.add_argument("--state-root", type=Path, help="Explicit private generation root; source contracts remain project-relative")
     return parser.parse_args(argv)
 
 
@@ -756,6 +801,7 @@ def main(argv: list[str] | None = None) -> int:
             output_selection_family_path=args.output_selection_family,
             publication_contract_directory=args.publication_contract_directory,
             reviewed_at=reviewed_at,
+            state_root=args.state_root,
         )
     except (PromotionError, OSError, ValueError) as exc:
         print(f"V5 publication promotion refused: {exc}", file=sys.stderr)

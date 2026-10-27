@@ -88,4 +88,37 @@ def confined_mutable_path(
     return lexical
 
 
-__all__ = ["UnsafeMutablePath", "confined_mutable_path"]
+def confined_generation_path(
+    value: str | Path,
+    *,
+    root: str | Path,
+    label: str = "generation member",
+) -> Path:
+    """Bind a generation member to one explicit root, without a temp fallback."""
+
+    return confined_mutable_path(
+        value,
+        project_directory=root,
+        temporary_directory=root,
+        label=label,
+    )
+
+
+def generation_contract_path(
+    value: str | Path,
+    *,
+    source_root: str | Path,
+    state_root: str | Path,
+    label: str = "generation member",
+) -> Path:
+    """Map a confined physical state member to its source-relative contract."""
+
+    physical = confined_generation_path(value, root=state_root, label=label)
+    relative = physical.relative_to(_canonical_root(state_root))
+    return confined_generation_path(relative, root=source_root, label=label)
+
+
+__all__ = [
+    "UnsafeMutablePath", "confined_mutable_path", "confined_generation_path",
+    "generation_contract_path",
+]

@@ -1915,10 +1915,7 @@ def _verify_candidate_package(
     selection_family_path: Path | None = None,
 ) -> None:
     settings.state_directory.mkdir(parents=True, exist_ok=True)
-    # Public packaging remains confined to the source checkout even when the
-    # authoritative private database and generation live in the state root.
-    package_directory = (settings.root / "build" / "weekly-package-checks"
-                         if settings.storage_root != settings.root else settings.state_directory)
+    package_directory = settings.state_directory
     package_directory.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(
         prefix=".package-check-", dir=package_directory
@@ -1935,6 +1932,10 @@ def _verify_candidate_package(
             "--output",
             str(output),
         ]
+        if settings.storage_root != settings.root:
+            command.extend(["--state-root", str(settings.storage_root)])
+            if generation_manifest_path is not None:
+                command.extend(["--artifacts", str(settings.artifacts)])
         if comparison_path is not None:
             command.extend(["--comparison", str(comparison_path)])
         if generation_manifest_path is not None:
@@ -2714,15 +2715,26 @@ def _build_candidate_generation(
         [sys.executable, "-m", "regime_lab", "validate", str(settings.payload)],
         cwd=settings.root,
     )
+    generation_audit_command = [
+        sys.executable,
+        "scripts/audit_outputs.py",
+        "--target",
+        "local-generation",
+        "--manifest",
+        str(settings.build_generation_manifest_path),
+        "--payload",
+        str(settings.payload),
+        "--artifacts",
+        str(settings.artifacts),
+    ]
+    if settings.contract == "v5":
+        generation_audit_command.extend([
+            "--selection-family", str(settings.artifacts / "selection-family-audit.json"),
+        ])
+    if settings.storage_root != settings.root:
+        generation_audit_command.extend(["--state-root", str(settings.storage_root)])
     _run(
-        [
-            sys.executable,
-            "scripts/audit_outputs.py",
-            "--target",
-            "local-generation",
-            "--manifest",
-            str(settings.build_generation_manifest_path),
-        ],
+        generation_audit_command,
         cwd=settings.root,
     )
     if settings.contract == "v5":
@@ -2761,6 +2773,8 @@ def _build_candidate_generation(
                 str(settings.reviewed_selection_family_path),
                 "--publication-contract-directory",
                 "publication/live",
+                *(["--state-root", str(settings.storage_root)]
+                  if settings.storage_root != settings.root else []),
             ],
             cwd=settings.root,
         )
@@ -2792,6 +2806,8 @@ def _build_candidate_generation(
                 str(selection_family_path),
                 "--artifacts",
                 str(settings.artifacts),
+                *(["--state-root", str(settings.storage_root)]
+                  if settings.storage_root != settings.root else []),
             ],
             cwd=settings.root,
         )

@@ -49,6 +49,7 @@ from regime_lab.integrity import (
     validate_reviewed_candidate_hash,
 )
 from regime_lab.operating_contract import load_operating_contract
+from regime_lab.path_safety import confined_generation_path
 from regime_lab.publication_contract import (
     PublicContractError,
     validate_v5_comparison_sidecar,
@@ -10720,7 +10721,30 @@ def _audit_local_generation(
     comparison_path: Path | None = None,
     selection_family_path: Path | None = None,
     artifact_directory: Path | None = None,
+    state_root: Path | None = None,
 ) -> dict[str, Any]:
+    if state_root is not None:
+        # A source member with the same relative name is never a fallback for
+        # an explicitly isolated private generation.
+        require(payload_path is not None and artifact_directory is not None,
+                "split-root generation audit requires explicit payload and artifacts")
+        manifest_path = confined_generation_path(manifest_path, root=state_root, label="generation manifest")
+        payload_path = confined_generation_path(payload_path, root=state_root, label="generation payload")
+        artifact_directory = confined_generation_path(artifact_directory, root=state_root, label="generation artifacts")
+        if comparison_path is not None:
+            comparison_path = confined_generation_path(comparison_path, root=state_root, label="generation comparison")
+        if selection_family_path is not None:
+            selection_family_path = confined_generation_path(selection_family_path, root=state_root, label="generation selection-family")
+        document = json.loads(manifest_path.read_text(encoding="utf-8"))
+        require(isinstance(document, Mapping), "generation manifest must be an object")
+        require(document.get("comparison_sidecar") is None or comparison_path is not None,
+                "split-root generation audit requires explicit comparison")
+        require(document.get("selection_family_sidecar") is None or selection_family_path is not None,
+                "split-root generation audit requires explicit selection-family")
+        for name in ("payload", "comparison_sidecar", "selection_family_sidecar", "label_spec"):
+            record = document.get(name)
+            if isinstance(record, Mapping) and isinstance(record.get("path"), str):
+                confined_generation_path(record["path"], root=PROJECT_ROOT, label=f"generation {name} contract")
     generation = validate_generation_manifest(
         manifest_path,
         artifact_directory=artifact_directory,
@@ -10781,6 +10805,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--comparison", type=Path)
     parser.add_argument("--selection-family", type=Path)
     parser.add_argument("--artifacts", type=Path)
+    parser.add_argument("--state-root", type=Path)
     args = parser.parse_args(argv)
     if args.target == "local-generation" and args.manifest is None:
         parser.error("--target local-generation requires --manifest PATH")
@@ -10796,6 +10821,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         value is not None for value in staged_values
     ):
         parser.error("staged member overrides require --target local-generation")
+    if args.target != "local-generation" and args.state_root is not None:
+        parser.error("--state-root requires --target local-generation")
     return args
 
 
@@ -10811,6 +10838,7 @@ def main(argv: list[str] | None = None) -> int:
                 comparison_path=args.comparison,
                 selection_family_path=args.selection_family,
                 artifact_directory=args.artifacts,
+                state_root=args.state_root,
             )
         else:
             summary = _audit_frozen_v4_target()

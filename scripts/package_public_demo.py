@@ -35,7 +35,7 @@ from regime_lab.integrity import (
     validate_reviewed_candidate_hash,
 )
 from regime_lab.selection_family_audit import validate_selection_family_audit
-from regime_lab.path_safety import UnsafeMutablePath, confined_mutable_path
+from regime_lab.path_safety import UnsafeMutablePath, confined_generation_path, confined_mutable_path
 from regime_lab.provider_rights import (
     ProviderRightsError,
     verify_provider_rights,
@@ -69,6 +69,7 @@ from regime_lab.web_contract import (
 from regime_lab.forecast_exports import build_forecast_exports, validate_forecast_exports
 from regime_lab.forecast_enhancement_publication import (
     DESTINATION as ENHANCEMENT_DESTINATION, POLICY_MODES, package_sidecar,
+    FILENAME as FORECAST_ENHANCEMENT_FILENAME,
     validate_packaged_sidecar,
 )
 
@@ -308,16 +309,31 @@ def package_public_dashboard(
     staged_generation_contract_directory: str | Path | None = None,
     forecast_enhancements_path: str | Path | None = None,
     forecast_enhancements_mode: str = "auto",
+    state_root: str | Path | None = None,
+    artifact_directory: str | Path | None = None,
 ) -> dict[str, Any]:
     """Build a new static directory from an explicit, minimal allowlist."""
 
     web_root = Path(web_root)
     payload_path = Path(payload_path)
-    output_directory = confined_mutable_path(
-        output_directory,
-        project_directory=project_root(),
-        label="public dashboard output",
-    )
+    if state_root is not None:
+        web_root = confined_generation_path(web_root, root=project_root(), label="dashboard web source")
+        payload_path = confined_generation_path(payload_path, root=state_root, label="dashboard payload")
+        output_directory = confined_generation_path(output_directory, root=state_root, label="public dashboard output")
+        if artifact_directory is not None:
+            artifact_directory = confined_generation_path(artifact_directory, root=state_root, label="generation artifacts")
+            if output_directory.is_relative_to(artifact_directory) or artifact_directory.is_relative_to(output_directory):
+                raise PackagingError("public dashboard output must not overlap generation artifacts")
+        for name, value in (("comparison", comparison_path), ("manifest", generation_manifest_path),
+                            ("selection-family", selection_family_path), ("forecast enhancement", forecast_enhancements_path)):
+            if value is not None:
+                confined_generation_path(value, root=state_root, label=f"dashboard {name}")
+    else:
+        output_directory = confined_mutable_path(
+            output_directory,
+            project_directory=project_root(),
+            label="public dashboard output",
+        )
 
     if output_directory.exists() or output_directory.is_symlink():
         raise PackagingError(
@@ -326,14 +342,18 @@ def package_public_dashboard(
 
     files: dict[str, bytes] = {}
     for relative_path in STATIC_ALLOWLIST:
+        source_asset = web_root / relative_path
+        if state_root is not None:
+            source_asset = confined_generation_path(source_asset, root=project_root(), label=f"web asset {relative_path}")
         files[relative_path] = _read_regular_file(
-            web_root / relative_path,
+            source_asset,
             label=f"allowlisted web asset {relative_path}",
         )
     try:
-        generated_contract_raw = validate_generated_browser_contract(
-            web_root / GENERATED_BROWSER_CONTRACT
-        )
+        browser_contract_path = web_root / GENERATED_BROWSER_CONTRACT
+        if state_root is not None:
+            browser_contract_path = confined_generation_path(browser_contract_path, root=project_root(), label="generated browser contract")
+        generated_contract_raw = validate_generated_browser_contract(browser_contract_path)
     except BrowserContractError as exc:
         raise PackagingError(str(exc)) from exc
     files["index.html"] = rewrite_index_asset_versions(
@@ -360,6 +380,8 @@ def package_public_dashboard(
             if comparison_path is not None
             else payload_path.with_name(V5_COMPARISON_FILENAME)
         )
+        if state_root is not None:
+            resolved_comparison_path = confined_generation_path(resolved_comparison_path, root=state_root, label="reviewed comparison")
         comparison_raw = _read_regular_file(
             resolved_comparison_path,
             label="reviewed V5/V4 comparison sidecar",
@@ -379,6 +401,12 @@ def package_public_dashboard(
                 if generation_manifest_path is not None
                 else payload_path.with_name("generation-manifest.json")
             )
+            if state_root is not None and artifact_directory is None:
+                # The manifest's sibling artifacts can belong to a different
+                # generation; require the actual private evidence explicitly.
+                raise PackagingError("split-root packaging requires explicit generation artifacts")
+            if state_root is not None:
+                resolved_manifest_path = confined_generation_path(resolved_manifest_path, root=state_root, label="reviewed generation manifest")
             try:
                 manifest_document = _decode_payload(
                     _read_regular_file(
@@ -398,27 +426,36 @@ def package_public_dashboard(
                 if selection_family_path is not None
                 else payload_path.with_name(SELECTION_FAMILY_FILENAME)
             )
+            if state_root is not None:
+                resolved_selection_family_path = confined_generation_path(resolved_selection_family_path, root=state_root, label="reviewed selection-family")
+                for name in ("payload", "comparison_sidecar", "selection_family_sidecar", "label_spec"):
+                    record = manifest_document.get(name)
+                    if isinstance(record, dict) and isinstance(record.get("path"), str):
+                        confined_generation_path(record["path"], root=project_root(), label=f"reviewed {name} contract")
             contract_directory = None
             if staged_generation_contract_directory is not None:
                 contract_directory = Path(staged_generation_contract_directory)
                 if not contract_directory.is_absolute():
                     contract_directory = project_root() / contract_directory
+                if state_root is not None:
+                    contract_directory = confined_generation_path(contract_directory / "regime-results.json", root=project_root(), label="staged publication contract").parent
             try:
                 generation = validate_generation_manifest(
                     resolved_manifest_path,
                     require_comparison=True,
-                    require_artifacts=False,
+                    require_artifacts=state_root is not None,
+                    artifact_directory=artifact_directory,
                     payload_path_override=(
-                        payload_path if contract_directory is not None else None
+                        payload_path if contract_directory is not None or state_root is not None else None
                     ),
                     comparison_path_override=(
                         resolved_comparison_path
-                        if contract_directory is not None
+                        if contract_directory is not None or state_root is not None
                         else None
                     ),
                     selection_family_path_override=(
                         resolved_selection_family_path
-                        if contract_directory is not None and has_selection_family
+                        if (contract_directory is not None or state_root is not None) and has_selection_family
                         else None
                     ),
                 )
@@ -530,6 +567,11 @@ def package_public_dashboard(
         forecast_files = build_forecast_exports(payload)
         files.update(forecast_files)
 
+    if state_root is not None and forecast_enhancements_mode != "omit":
+        forecast_enhancements_path = confined_generation_path(
+            forecast_enhancements_path if forecast_enhancements_path is not None else payload_path.with_name(FORECAST_ENHANCEMENT_FILENAME),
+            root=state_root, label="forecast enhancement",
+        )
     enhancement_files, enhancement_metadata = package_sidecar(
         payload, payload_raw=payload_raw, payload_path=payload_path,
         path=Path(forecast_enhancements_path) if forecast_enhancements_path is not None else None,
@@ -719,6 +761,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         description="Package an allowlisted Regime dashboard for static publication"
     )
     parser.add_argument("--web-root", type=Path, default=Path("web"))
+    parser.add_argument("--state-root", type=Path)
+    parser.add_argument("--artifacts", type=Path, help="Explicit private artifact directory for split-root verification")
     parser.add_argument("--payload", type=Path, required=True)
     parser.add_argument("--forecast-enhancements", type=Path,
                         help="Generation-bound forecast comparison; auto otherwise checks the payload sibling")
@@ -785,6 +829,8 @@ def main(argv: list[str] | None = None) -> int:
             ),
             forecast_enhancements_path=args.forecast_enhancements,
             forecast_enhancements_mode=args.forecast_enhancements_mode,
+            state_root=args.state_root,
+            artifact_directory=args.artifacts,
         )
     except (PackagingError, UnsafeMutablePath, OSError) as exc:
         print(f"public dashboard package refused: {exc}", file=sys.stderr)
