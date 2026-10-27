@@ -38,6 +38,7 @@ from regime_lab.collection import (
 )
 from regime_lab.config import load_config, project_root
 from regime_lab.runtime_inputs import prepare_runtime_inputs
+from regime_lab.research.additional_sources import AdditionalSourceUnavailable, SOURCES as ADDITIONAL_SOURCES
 from regime_lab.frozen_v4 import FrozenV4BaselineError
 from regime_lab.v5_preflight import V5PreflightError, verify_v5_preflight
 from regime_lab.io import write_json_atomic
@@ -2342,6 +2343,34 @@ def _load_collection_report(
     return value
 
 
+def _post_collection_failure(
+    settings: AutomationSettings,
+    report: Mapping[str, Any],
+    target: datetime,
+    failure_at: datetime,
+) -> ScheduledRetry | None:
+    """Trust only a complete, cutoff-bound typed research transport receipt."""
+    cutoff = target.astimezone(UTC).isoformat()
+    if (type(report.get("schema_version")) is not int or report["schema_version"] != 1
+            or report.get("ready_for_training") is not True or report.get("expected_cutoff") != cutoff
+            or report.get("model_cutoff") != cutoff or report.get("gate_error") is not None):
+        return None
+    failure = report.get("post_collection_failure")
+    if (not isinstance(failure, dict)
+            or set(failure) != {"schema_version", "error_code", "source_id", "expected_cutoff"}
+            or type(failure.get("schema_version")) is not int or failure["schema_version"] != 1
+            or failure.get("error_code") != AdditionalSourceUnavailable.error_code
+            or not isinstance(failure.get("source_id"), str) or failure["source_id"] not in ADDITIONAL_SOURCES
+            or failure.get("expected_cutoff") != cutoff):
+        return None
+    return ScheduledRetry(
+        f"additional research source {failure['source_id']} is temporarily unavailable",
+        error_code=AdditionalSourceUnavailable.error_code,
+        retry_class="transient",
+        next_retry_at=failure_at.astimezone(UTC) + settings.transient_retry_delay,
+    )
+
+
 def _collection_failure(
     settings: AutomationSettings,
     *,
@@ -2671,6 +2700,11 @@ def _build_candidate_generation(
                 retry_class="transient",
                 next_retry_at=attempt_started_at + settings.transient_retry_delay,
             ) from exc
+        research_failure = _post_collection_failure(settings, report, target, datetime.now(UTC))
+        if research_failure is not None:
+            if _candidate_context(settings) != dict(context):
+                raise AutomationError("tracked source or config changed during live build") from exc
+            raise research_failure from exc
         raise
     if _candidate_context(settings) != dict(context):
         raise AutomationError("tracked source or config changed during live build")

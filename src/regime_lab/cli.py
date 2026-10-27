@@ -95,6 +95,8 @@ from regime_lab.publication_contract import (
 )
 from regime_lab.pipeline import build_dashboard_result
 from regime_lab.research.publication import compose_live_publication_research
+from regime_lab.research import publication as research_publication
+from regime_lab.research.additional_sources import AdditionalSourceUnavailable
 from regime_lab.schema import validate_dashboard_payload
 from regime_lab.server import serve_dashboard
 from regime_lab.smoke import main as smoke_main
@@ -269,6 +271,31 @@ def _backup_database_before_mutation(
         retain=4,
         source_code_fingerprint_sha256=source_code_fingerprint_sha256,
     )
+
+
+def _record_additional_source_failure(
+    collection_report: Path | None,
+    expected_cutoff: datetime,
+    exc: AdditionalSourceUnavailable,
+) -> None:
+    """Preserve a narrow retry signal across the child-process boundary."""
+    if collection_report is None:
+        return
+    try:
+        report = json.loads(collection_report.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    cutoff = expected_cutoff.astimezone(timezone.utc).isoformat()
+    if (not isinstance(report, dict) or type(report.get("schema_version")) is not int
+            or report["schema_version"] != 1 or report.get("ready_for_training") is not True
+            or report.get("expected_cutoff") != cutoff or report.get("model_cutoff") != cutoff
+            or report.get("gate_error") is not None):
+        return
+    report["post_collection_failure"] = {
+        "schema_version": 1, "error_code": exc.error_code,
+        "source_id": exc.source_id, "expected_cutoff": cutoff,
+    }
+    write_json_atomic(collection_report, report)
 
 
 _CONTRACT_DEFAULT_TARGETS: dict[tuple[str, str], tuple[str, str]] = {
@@ -1613,6 +1640,12 @@ def command_build(args: argparse.Namespace) -> int:
                         "live build stopped before analysis: "
                         f"{h10_gate_error}"
                     )
+            if contract_version == "v5" and args.profile in {"standard", "full"}:
+                print("확장 연구 추가 자료 스냅샷 사전 준비", flush=True)
+                research_publication._source_snapshot(
+                    artifacts.parent / "research-cache" / "additional-sources",
+                    expected_cutoff.astimezone(timezone.utc).isoformat(),
+                )
             print("Point-in-time weekly frame 조립", flush=True)
             dataset = build_weekly_dataset(
                 config,
@@ -1879,6 +1912,8 @@ def command_build(args: argparse.Namespace) -> int:
                 status="interrupted",
                 detail={"error_type": type(exc).__name__},
             )
+        if isinstance(exc, AdditionalSourceUnavailable):
+            _record_additional_source_failure(collection_report, expected_cutoff, exc)
         raise
     print(
         json.dumps(

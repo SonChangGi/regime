@@ -13,10 +13,20 @@ from regime_lab import cli
 from regime_lab.automation import automation_lock
 from regime_lab.collection import LiveCollection
 from regime_lab.data import HealthStatus
+from regime_lab.research.additional_sources import AdditionalSourceUnavailable
+from regime_lab.run_registry import RunRegistryError
 from regime_lab.v5_preflight import V5PreflightError
 
 
 TARGET = datetime(2026, 8, 14, 20, tzinfo=timezone.utc)
+
+
+@pytest.fixture(autouse=True)
+def forbid_unexpected_additional_source_collection(monkeypatch: pytest.MonkeyPatch) -> None:
+    def unexpected(*_args, **_kwargs):
+        pytest.fail("additional source collection must be explicitly stubbed; no network in build tests")
+
+    monkeypatch.setattr(cli.research_publication, "_source_snapshot", unexpected)
 
 
 def test_build_checks_keychain_then_backs_up_inside_lock_before_collection(
@@ -377,9 +387,15 @@ def test_v5_preflight_stops_before_provider_access(
         cli.command_build(args)
 
 
+@pytest.mark.parametrize("profile", ["standard", "full"])
+@pytest.mark.parametrize("prewarm_failure,registry_failure", [(False, False), (True, False), (True, True)],
+                         ids=["prewarmed", "source_unavailable", "registry_failure"])
 def test_v5_live_build_forwards_preflight_fingerprint_and_private_checkpoint(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    profile: str,
+    prewarm_failure: bool,
+    registry_failure: bool,
 ) -> None:
     import regime_lab.data as data_module
     import regime_lab.h10_store as h10_store_module
@@ -402,7 +418,23 @@ def test_v5_live_build_forwards_preflight_fingerprint_and_private_checkpoint(
     artifacts = tmp_path / "v5-live" / "artifacts"
     report = tmp_path / "collection-report.json"
     captured: dict[str, object] = {}
+    events: list[str] = []
+    output.parent.mkdir(parents=True)
+    output.write_bytes(b"previous payload must survive failed builds\n")
+    payload_before = output.read_bytes(), output.stat().st_mtime_ns, output.stat().st_ino
+    artifacts.mkdir()
+    prior_artifact = artifacts / "existing.txt"
+    prior_artifact.write_bytes(b"previous artifacts\n")
+    artifact_before = prior_artifact.read_bytes(), prior_artifact.stat().st_mtime_ns, prior_artifact.stat().st_ino
     source_fingerprint = "c" * 64
+    append_event = cli.append_run_event
+
+    def append_with_registry_failure(*args, **kwargs):
+        if registry_failure and kwargs.get("status") == "interrupted":
+            raise RunRegistryError("checksum integrity")
+        return append_event(*args, **kwargs)
+
+    monkeypatch.setattr(cli, "append_run_event", append_with_registry_failure)
     monkeypatch.setattr(
         cli,
         "load_config",
@@ -422,18 +454,20 @@ def test_v5_live_build_forwards_preflight_fingerprint_and_private_checkpoint(
     monkeypatch.setattr(
         cli,
         "collect_live_data",
-        lambda *_args, **_kwargs: _ready_collection(database),
+        lambda *_args, **_kwargs: events.append("primary_collection") or _ready_collection(database),
     )
-    monkeypatch.setattr(
-        cli,
-        "build_weekly_dataset",
-        lambda *_args, **_kwargs: argparse.Namespace(
+
+    def dataset(*_args, **_kwargs):
+        assert events == ["primary_collection", "h10_archive", "h10_current", "source_snapshot"]
+        events.append("dataset")
+        return argparse.Namespace(
             features=pd.DataFrame(
                 [[0.0, 1.0]] * 700,
                 columns=["one", "two"],
             )
-        ),
-    )
+        )
+
+    monkeypatch.setattr(cli, "build_weekly_dataset", dataset)
     monkeypatch.setattr(data_module, "SQLiteSnapshotStore", DummyStore)
     archive_client = object()
     h10_client = object()
@@ -445,6 +479,7 @@ def test_v5_live_build_forwards_preflight_fingerprint_and_private_checkpoint(
         assert actual_client is archive_client
         assert kwargs["as_of"] == TARGET
         h10_calls.append("archive")
+        events.append("h10_archive")
         return object()
 
     monkeypatch.setattr(
@@ -458,6 +493,7 @@ def test_v5_live_build_forwards_preflight_fingerprint_and_private_checkpoint(
         assert kwargs["as_of"] == TARGET
         assert h10_calls == ["archive"]
         h10_calls.append("current")
+        events.append("h10_current")
         pending = json.loads(report.read_text(encoding="utf-8"))
         assert pending["ready_for_training"] is False
         assert pending["overall_health"] == "pending"
@@ -479,14 +515,33 @@ def test_v5_live_build_forwards_preflight_fingerprint_and_private_checkpoint(
         refresh_h10,
     )
 
+    ready_report: dict[str, object] = {}
+
+    def source_snapshot(cache, cutoff):
+        assert cache == artifacts.parent / "research-cache" / "additional-sources"
+        assert cutoff == TARGET.isoformat()
+        assert events == ["primary_collection", "h10_archive", "h10_current"]
+        ready_report.update(json.loads(report.read_text(encoding="utf-8")))
+        assert ready_report["ready_for_training"] is True
+        assert ready_report["gate_error"] is None
+        assert ready_report["sources"][-1]["status"] == "ok"
+        events.append("source_snapshot")
+        if prewarm_failure:
+            raise AdditionalSourceUnavailable("vix")
+        return cache / TARGET.date().isoformat()
+
+    monkeypatch.setattr(cli.research_publication, "_source_snapshot", source_snapshot)
+
     def intercept(*_args, **kwargs):
+        assert events == ["primary_collection", "h10_archive", "h10_current", "source_snapshot", "dataset"]
+        events.append("model")
         captured.update(kwargs)
         raise BuildIntercept
 
     monkeypatch.setattr(cli, "build_dashboard_result", intercept)
     args = argparse.Namespace(
         alfred_rights_confirmed=True,
-        profile="standard",
+        profile=profile,
         contract="v5",
         config=tmp_path / "series.json",
         database=database,
@@ -499,14 +554,24 @@ def test_v5_live_build_forwards_preflight_fingerprint_and_private_checkpoint(
         require_ac_power=False,
     )
 
-    with pytest.raises(BuildIntercept):
+    expected_failure = (RunRegistryError if registry_failure else
+                        AdditionalSourceUnavailable if prewarm_failure else BuildIntercept)
+    with pytest.raises(expected_failure) as caught:
         cli.command_build(args)
+    if registry_failure:
+        assert str(caught.value) == "checksum integrity"
 
-    assert captured["checkpoint_directory"] == (
-        output.parent / ".private-checkpoints" / "base-walk-forward"
+    assert events == ["primary_collection", "h10_archive", "h10_current", "source_snapshot"] + (
+        [] if prewarm_failure else ["dataset", "model"]
     )
-    assert captured["source_fingerprint_sha256"] == source_fingerprint
-    assert captured["minimum_log_loss_improvement"] == 0.01
+    if prewarm_failure:
+        assert captured == {}
+    else:
+        assert captured["checkpoint_directory"] == (
+            output.parent / ".private-checkpoints" / "base-walk-forward"
+        )
+        assert captured["source_fingerprint_sha256"] == source_fingerprint
+        assert captured["minimum_log_loss_improvement"] == 0.01
     receipt = json.loads(report.read_text(encoding="utf-8"))
     assert receipt["ready_for_training"] is True
     assert receipt["gate_error"] is None
@@ -518,6 +583,18 @@ def test_v5_live_build_forwards_preflight_fingerprint_and_private_checkpoint(
     assert receipt["sources"][-1]["status"] == "ok"
     assert receipt["sources"][-1]["issues"] == []
     assert h10_calls == ["archive", "current"]
+    if prewarm_failure and not registry_failure:
+        assert receipt.pop("post_collection_failure") == {
+            "schema_version": 1, "error_code": "additional_source_unavailable",
+            "source_id": "vix", "expected_cutoff": TARGET.isoformat(),
+        }
+        assert receipt == ready_report
+    else:
+        assert "post_collection_failure" not in receipt
+        if registry_failure:
+            assert receipt == ready_report
+    assert (output.read_bytes(), output.stat().st_mtime_ns, output.stat().st_ino) == payload_before
+    assert (prior_artifact.read_bytes(), prior_artifact.stat().st_mtime_ns, prior_artifact.stat().st_ino) == artifact_before
 
 
 def test_v5_h10_degradation_updates_report_and_stops_before_analysis(

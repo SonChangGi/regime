@@ -225,6 +225,32 @@ def test_failed_source_collection_does_not_publish_a_cutoff_snapshot(monkeypatch
     assert not (tmp_path / "2026-09-04").exists()
 
 
+@pytest.mark.parametrize("tamper", [False, True])
+def test_composition_revalidates_prewarmed_snapshot_without_downloading_again(monkeypatch, tmp_path, generation, tamper):
+    real_snapshot = publication._source_snapshot
+    fake_studies(monkeypatch, tmp_path)
+    monkeypatch.setattr(publication, "_source_snapshot", real_snapshot)
+    calls = []
+
+    def fetch(url, **kwargs):
+        calls.append(url)
+        return SimpleNamespace(content=url.encode(), raise_for_status=lambda: None)
+
+    monkeypatch.setattr(additional_sources.requests, "get", fetch)
+    snapshot = cli.research_publication._source_snapshot(tmp_path / "cache", CUTOFF)
+    assert len(calls) == len(additional_sources.SOURCES)
+    before = deepcopy(generation[0])
+    if tamper:
+        record = json.loads((snapshot / "manifest.json").read_text())["sources"]["vix"]
+        (snapshot / record["file"]).write_bytes(b"invalid prewarmed snapshot")
+        with pytest.raises(ValueError, match="checksum"):
+            compose(generation, tmp_path)
+    else:
+        assert compose(generation, tmp_path)["research"]["extensions"]["build"]["data_as_of"] == CUTOFF
+    assert len(calls) == len(additional_sources.SOURCES)
+    assert generation[0] == before
+
+
 @pytest.mark.parametrize("fail", [False, True])
 def test_cli_composes_before_publication_and_does_not_cut_over_on_failure(monkeypatch, tmp_path, generation, fail):
     import regime_lab.data as data_module
@@ -270,6 +296,14 @@ def test_cli_composes_before_publication_and_does_not_cut_over_on_failure(monkey
     monkeypatch.setattr(cli, "ForecastLedger", lambda p: nullcontext(ledger))
     monkeypatch.setattr(cli, "prospective_ledger_shadow_contract", lambda v: {})
 
+    def prewarm(cache, cutoff):
+        assert cache == artifacts.parent / "research-cache" / "additional-sources"
+        assert cutoff == CUTOFF
+        events.append("prewarm")
+        return cache / "2026-09-04"
+
+    monkeypatch.setattr(publication, "_source_snapshot", prewarm)
+
     def enrich(actual, **kwargs):
         events.append("compose")
         assert kwargs["dataset"] is dataset and kwargs["benchmark"] is benchmark
@@ -296,7 +330,7 @@ def test_cli_composes_before_publication_and_does_not_cut_over_on_failure(monkey
         assert "publish" not in events
     else:
         assert cli.command_build(args) == 0
-        assert events == ["source_check", "compose", "source_check", "publish"]
+        assert events == ["prewarm", "source_check", "compose", "source_check", "publish"]
     assert output.read_bytes() == b"previous complete result"
     assert (artifacts / "marker").read_bytes() == b"previous complete artifacts"
 
