@@ -1,7 +1,7 @@
 {
   "schema_version": "selection-family-audit/v2",
   "status": "completed",
-  "generation_id": "20261027T214834.210666Z",
+  "generation_id": "20261101T045453.353800Z",
   "evidence_track": "reconstructed_oos",
   "evidence_status": "historical_reconstructed_oos",
   "candidate_manifest_sha256": "c167514c2f5daa8353dc3a2ba951f7a8cc0aca16076ad78c3b77e611258093ca",
@@ -17,8 +17,8 @@
   "source_artifacts": {
     "oos_predictions": {
       "path": "oos-predictions.csv",
-      "sha256": "b466791dacf5accae2b1a2dca5249fd44136404a1051a8f750ea493fbd038665",
-      "row_count": 6193
+      "sha256": "8c06c60729df0deb49d615daee1d8ecbc40effd985c77cfa0956ce59b1af6d4f",
+      "row_count": 6204
     },
     "selection_diagnostics": {
       "path": "selection-diagnostics.csv",
@@ -5137,5 +5137,5 @@
     },
     "sha256": "f0a9e5c25cda6dc5da59c572db58be07bfccaa83efa084049503164f8f31a16e"
   },
-  "sha256": "f16376d838dc9c1893f436e1d67a93315eeb029552199011bc71786264836002"
+  "sha256": "5b56966d8d0356e7aeb2e8d24bbc100fffec339d8b2f9eb2399eea4369d20e3c"
 }

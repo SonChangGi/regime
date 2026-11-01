@@ -122,12 +122,12 @@
       },
       "oos_predictions": {
         "path": "oos-predictions.csv",
-        "row_count": 6193,
-        "sha256": "b466791dacf5accae2b1a2dca5249fd44136404a1051a8f750ea493fbd038665"
+        "row_count": 6204,
+        "sha256": "8c06c60729df0deb49d615daee1d8ecbc40effd985c77cfa0956ce59b1af6d4f"
       },
       "regime_results": {
         "path": "regime-results.json",
-        "sha256": "d40d88e8029cf4612b27097dfde96ceed1280cfaa60cb65be33b673d86c4f585"
+        "sha256": "c670a6bdcb839919de3bac3b79409b5ab6d9bc206e18465727ff7814e0c6d427"
       },
       "selection_diagnostics": {
         "path": "selection-diagnostics.csv",
@@ -142,44 +142,44 @@
   "schema_version": "regime-v5-v4-matched-comparison/1",
   "v5_causal_multiscale_ensemble_vs_v5_markov": {
     "common_keys": {
-      "count": 563,
-      "sha256": "8d68438f85908028f8597e2b0ef2b9727acaebf83e9089a9346b7211c31548ad"
+      "count": 564,
+      "sha256": "48074afeef36da12c2152b384c13cdcb0cf4284020b5cf37b22d5bd76d7452b1"
     },
     "join": {
-      "common_key_count": 563,
-      "left_key_count": 563,
+      "common_key_count": 564,
+      "left_key_count": 564,
       "left_model": "causal_multiscale_ensemble",
       "model_equivalence": "fixed_pair_same_origin_and_target",
-      "right_key_count": 563,
+      "right_key_count": 564,
       "right_model": "markov"
     },
     "post_selection_holdout": {
       "common_keys": {
-        "count": 198,
-        "sha256": "a47e2b81696700d94c5df9cfd2bc753b944a098183d9e205d8ab5592dd3ec1e4"
+        "count": 199,
+        "sha256": "3da823a0208b14c65ffa7c135a3234cf80e3dbb8045b2bb04b15fb060f9cc9b4"
       },
       "delta_left_minus_right": {
-        "balanced_accuracy": -0.005042282820060584,
-        "brier": -0.04873098792703906,
+        "balanced_accuracy": -0.005092468507102543,
+        "brier": -0.04847326647823558,
         "fallback_rate": 0.0,
-        "log_loss": -0.10451548063658
+        "log_loss": -0.10401323346426095
       },
       "metrics": {
         "causal_multiscale_ensemble": {
-          "balanced_accuracy": 0.7986478542034098,
-          "brier": 0.29911442346135914,
+          "balanced_accuracy": 0.799651567944251,
+          "brier": 0.2978952832014705,
           "fallback_count": 0,
           "fallback_rate": 0.0,
-          "log_loss": 0.49277971798506026,
-          "n": 198
+          "log_loss": 0.4913083748036906,
+          "n": 199
         },
         "v5_markov": {
-          "balanced_accuracy": 0.8036901370234704,
-          "brier": 0.3478454113883982,
+          "balanced_accuracy": 0.8047440364513535,
+          "brier": 0.3463685496797061,
           "fallback_count": 0,
           "fallback_rate": 0.0,
-          "log_loss": 0.5972951986216403,
-          "n": 198
+          "log_loss": 0.5953216082679516,
+          "n": 199
         }
       }
     },
@@ -260,7 +260,7 @@
     },
     "join": {
       "common_key_count": 552,
-      "left_key_count": 563,
+      "left_key_count": 564,
       "left_model": "markov",
       "model_equivalence": "exact_name",
       "right_key_count": 552,
