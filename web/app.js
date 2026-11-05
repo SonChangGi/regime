@@ -5424,6 +5424,7 @@
     setText(dom["drivers-caption"], membership ? "" : "52주 표준점수");
     dom["drivers-caption"].hidden = membership;
     dom["history-chart-legend"].setAttribute("aria-label", historyMeta.legendLabel);
+    for(const label of dom["history-chart-legend"].querySelectorAll('[data-state-label]')){const old=label.parentElement;if(old.tagName==='BUTTON')continue;const button=createElement('button',old.className);button.type='button';button.dataset.qrChartId='regime-history';button.dataset.qrSeriesId='observed'+label.dataset.stateLabel;button.setAttribute('aria-label','관측 '+label.textContent);button.append(...old.childNodes);old.replaceWith(button)}
     dom["history-table-scroll"].setAttribute("aria-label", historyMeta.tableLabel);
     dom["probability-chart-wrap"].setAttribute("aria-label", historyMeta.tableLabel);
     setText(dom["history-table-caption"], historyMeta.tableCaption);
@@ -5475,6 +5476,7 @@
     const entropy = finiteNumber(isObject(result) ? result[entropyField] : null);
     const entropyLabel = isCurrent && isV5Payload() ? "소속도" : isCurrent ? "불확실성" : "예측 불확실성";
     setText(dom[`${prefix}-entropy`], `${entropyLabel} 엔트로피 ${formatNumber(entropy, 3)}`);
+    window.QuantRange?.categories({id:'regime-probability-'+prefix,element:probabilityContainer,itemSelector:'.probability-row',domain:STATE_ORDER.map(key=>({key,label:stateMeta(key).label})),series:[{id:'probability',label:semantic,unit:'%',measure:'pp',scale:100,points:STATE_ORDER.map(key=>({key,value:isCurrent?getCurrentMeasure(result,key):getProbability(result,key)}))}]});
   }
 
   function renderNextModelContext(result) {
@@ -5572,6 +5574,8 @@
       );
       container.append(row);
     }
+    const qrRows=INSIGHTS.transitionOutlook(week);
+    window.QuantRange?.categories({id:'regime-transition-horizons',element:container,itemSelector:'.transition-horizon-row',domain:qrRows.map(r=>({key:String(r.horizon),label:r.horizon+'주'})),series:['probability','baseline'].map((k,i)=>({id:k,label:i?'과거 기준률':'이탈 확률',unit:'%',measure:'pp',scale:100,points:qrRows.map(r=>({key:String(r.horizon),value:r[k]}))}))});
     container.hidden = false;
   }
 
@@ -5821,6 +5825,7 @@
   }
 
   function previewChartDateFromPointer(event, pin) {
+    if(pin&&!event.target?.closest?.("[data-qr-series-id]"))return;
     if (!state.chartHistory.length) return;
     const rect = dom["probability-chart"].getBoundingClientRect();
     if (!rect.width || finiteNumber(event.clientX) === null) return;
@@ -5984,6 +5989,7 @@
       },
     ];
 
+    window.QuantRange?.svg({id:'regime-history',element:svg,currentIndex:()=>{const i=history.findIndex(w=>w.date===(state.chartPreviewDate||state.chartPinnedDate));return i<0?null:i},onSeriesRequest:(id,ctx)=>{if(Number.isInteger(ctx.index)){state.chartPinnedDate=history[ctx.index].date;state.chartPreviewDate=null;renderChartReadout(state.chartPinnedDate)}},onReset:()=>{state.chartPinnedDate=history.at(-1).date;state.chartPreviewDate=null;resetChartPreview()},host:dom['probability-chart-wrap'].parentElement,domain:history.map(w=>({key:w.date,label:w.date})),series:panels.flatMap(panel=>STATE_ORDER.map(code=>({id:panel.key+code,label:panel.title+' '+stateMeta(code).label,unit:'%',measure:'pp',scale:100,points:history.map(w=>({key:w.date,value:panel.measure(w,code)}))}))),x:i=>x(i),plotTop:margin.top,plotBottom:height-margin.bottom});
     for (const panel of panels) {
       svg.append(createSvg("rect", {
         x: margin.left, y: panel.top, width: width - margin.left - margin.right,
@@ -6097,7 +6103,7 @@
         if (pathData) {
           svg.append(createSvg("path", {
             d: pathData,
-            class: `chart-series ${code} ${panel.key}`,
+            class: `chart-series ${code} ${panel.key}`, "data-qr-series-id": panel.key+code,
             "data-chart-panel": panel.key,
           }));
         }
@@ -6110,7 +6116,7 @@
             cx: point.x,
             cy: point.y,
             r: 2.5,
-            class: `chart-point ${code} ${panel.key}`,
+            class: `chart-point ${code} ${panel.key}`, "data-qr-series-id": panel.key+code, "data-qr-index": history.findIndex(w=>w.date===point.week.date),
             "data-date": point.week.date,
             focusable: "false",
             "aria-hidden": "true",
@@ -6342,6 +6348,7 @@
       row.append(label, track, value);
       dom["factor-scores"].append(row);
     }
+    window.QuantRange?.categories({id:'regime-factor-scores',element:dom['factor-scores'],itemSelector:'.factor-row',domain:entries.map(r=>({key:r.key,label:r.label})),series:[{id:'score',label:'팩터 점수',measure:'absolute',unit:'점',points:entries.map(r=>({key:r.key,value:r.value}))}]});
   }
 
   function driverValue(driver) {
@@ -6382,6 +6389,7 @@
       item.append(copy, track, impact);
       dom["top-drivers"].append(item);
     }
+    window.QuantRange?.categories({id:'regime-drivers',element:dom['top-drivers'],itemSelector:'.driver-item',domain:sorted.map((r,i)=>({key:String(i),label:textValue(firstValue(r,['label','feature','name','id']))})),series:[{id:'contribution',label:'기여도',unit:'점',measure:'absolute',points:sorted.map((r,i)=>({key:String(i),value:driverValue(r)}))}]});
   }
 
   function contextFeatureBase(feature) {
@@ -6455,6 +6463,7 @@
       item.append(copy, track, value);
       dom["top-drivers"].append(item);
     }
+    window.QuantRange?.categories({id:'regime-drivers',element:dom['top-drivers'],itemSelector:'.driver-item',domain:groups.map((r,i)=>({key:String(i),label:r.family.label})),series:[{id:'z',label:'52주 z-score',unit:'σ',measure:'absolute',points:groups.map((r,i)=>({key:String(i),value:r.representative.z_score}))}]});
   }
 
   function appendMetric(container, label, value) {
@@ -7318,11 +7327,12 @@
     container.append(xGuide, yGuide);
     const coordinates = createElement("span", "context-coordinate", `추세 ${formatNumber(point.trend, 2)} · 스트레스 ${formatNumber(point.stress, 2)}`);
     container.append(coordinates);
-    const marker = createElement("span", "context-position");
+    const marker = createElement("span", "context-position"); marker.dataset.qrPointId="current";
     marker.style.left = `${point.x}%`;
     marker.style.top = `${point.y}%`;
     container.append(marker);
     container.setAttribute("aria-label", `추세 ${formatNumber(point.trend, 2)}, 스트레스 ${formatNumber(point.stress, 2)}. 위로 스트레스 증가, 오른쪽으로 추세 강세.`);
+    window.QuantRange?.register({id:'regime-context-plane',element:container,kind:'scatter',scatter:[{id:'current',label:'선택 주',x:point.trend,y:point.stress}],scatterAxes:{xLabel:'추세 점수',yLabel:'스트레스 점수'},xDomain:[-point.scale*50/42,point.scale*50/42],yDomain:[-point.scale*50/42,point.scale*50/42],locate:e=>{const r=container.getBoundingClientRect();return {x:((e.clientX-r.left)/r.width*100-50)/42*point.scale,y:(50-(e.clientY-r.top)/r.height*100)/42*point.scale}},project:s=>{const r=container.getBoundingClientRect(),x=v=>(50+v/point.scale*42)/100*r.width,y=v=>(50-v/point.scale*42)/100*r.height;return {left:Math.min(x(s.start.x),x(s.end.x)),top:Math.min(y(s.start.y),y(s.end.y)),width:Math.abs(x(s.start.x)-x(s.end.x)),height:Math.abs(y(s.start.y)-y(s.end.y))}}});
   }
 
   function renderConditionalCellDetail(row, basisLabel, horizonLabel) {
@@ -8501,6 +8511,7 @@
       );
       grid.append(item);
     }
+    window.QuantRange?.categories({id:'regime-sector-ranking',element:grid,itemSelector:'.sector-ranking-row',domain:rows.map(r=>({key:r.symbol,label:r.symbol})),series:[{id:'score',label:metricLabel,unit:'점',measure:'absolute',points:rows.map(r=>({key:r.symbol,value:r.score}))}]});
     section.hidden = false;
     return true;
   }
@@ -8814,7 +8825,7 @@
       const isOperating = item.name === operatingModel;
       const isSelected = item.name === state.comparisonModel;
       const isHoldoutBest = Boolean(holdoutBestName) && item.name === holdoutBestName;
-      const chartRow = createElement("div", "model-loss-row");
+      const chartRow = createElement("div", "model-loss-row");chartRow.dataset.qrSeriesId=item.selection===null?"holdout":"selection";
       chartRow.dataset.model = item.name;
       if (isChampion) chartRow.classList.add("is-champion");
       if (isHoldoutBest) chartRow.classList.add("is-holdout-best");
@@ -8854,13 +8865,13 @@
         const connector = createElement("span", "model-loss-connector");
         connector.style.left = `${Math.min(selectionPosition, holdoutPosition).toFixed(2)}%`;
         connector.style.width = `${Math.abs(holdoutPosition - selectionPosition).toFixed(2)}%`;
-        const selectionMarker = createElement("span", "model-loss-point selection");
+        const selectionMarker = createElement("span", "model-loss-point selection");selectionMarker.dataset.qrSeriesId="selection";
         selectionMarker.style.left = `${selectionPosition.toFixed(2)}%`;
-        const holdoutMarker = createElement("span", "model-loss-point holdout");
+        const holdoutMarker = createElement("span", "model-loss-point holdout");holdoutMarker.dataset.qrSeriesId="holdout";
         holdoutMarker.style.left = `${holdoutPosition.toFixed(2)}%`;
         track.append(connector, selectionMarker, holdoutMarker);
       } else {
-        const holdoutMarker = createElement("span", "model-loss-point holdout");
+        const holdoutMarker = createElement("span", "model-loss-point holdout");holdoutMarker.dataset.qrSeriesId="holdout";
         holdoutMarker.style.left = `${Math.max(0, Math.min(100, (item.holdout / axisMax) * 100)).toFixed(2)}%`;
         track.append(holdoutMarker);
       }
@@ -8877,6 +8888,7 @@
       chartRow.append(label, track, exact);
       container.append(chartRow);
     }
+    window.QuantRange?.categories({id:'regime-model-loss',element:container,itemSelector:'.model-loss-row',domain:eligible.map(r=>({key:r.name,label:modelForecastLabel(r.name)})),series:['selection','holdout'].map((key,i)=>({id:key,label:i?'평가 Log loss':'선택 Log loss',measure:'absolute',points:eligible.map(r=>({key:r.name,value:r[key]}))}))});
   }
 
   function markSelectedComparisonRows(body = dom["leaderboard-body"], requestedModel = state.comparisonModel) {
@@ -8959,6 +8971,7 @@
       row.append(label, track, display);
       container.append(row);
     }
+    window.QuantRange?.categories({id:'regime-model-probabilities',element:container,itemSelector:'.probability-row',domain:STATE_ORDER.map(key=>({key,label:stateMeta(key).label})),series:[{id:'probability',label:'예측 확률',unit:'%',measure:'pp',scale:100,points:STATE_ORDER.map(key=>({key,value:getProbability(forecast,key)}))}]});
   }
 
   function forecastComparisonForView() {

@@ -292,6 +292,7 @@
       if (reference?.probabilities) { row.classList.add("has-comparison"); row.append(el("small", null, `${signed((forecast.probabilities[code] - reference.probabilities[code]) * 100, 1)}%p`)); }
       probabilities.append(row);
     }
+    probabilities.dataset.qrSpec=encodeURIComponent(JSON.stringify({id:'regime-enhanced-probabilities',kind:'category',itemSelector:'.enhancement-probability',domain:STATES.map(key=>({key,label:STATE_LABELS[key]})),series:[{id:'probability',label:'예측 확률',unit:'%',measure:'pp',scale:100,points:STATES.map(key=>({key,value:forecast.probabilities[key]}))}]}));
     result.append(probabilities);
     const events = [["기간 말 악화", pct(forecast.worsening_probability)], ["기간 말 회복", pct(forecast.recovery_probability)]];
     if (finite(forecast.first_departure_probability)) events.push(["기간 내 최초 이탈", pct(forecast.first_departure_probability)]);
@@ -389,6 +390,7 @@
     }
     add("text", { x: 178, y: 220, "text-anchor": "middle" }, "평균 예측확률");
     add("text", { x: 48, y: 13 }, "실제 빈도");
+    svg.dataset.qrSpec=encodeURIComponent(JSON.stringify({id:'regime-reliability',kind:'scatter',scatter:bins.map((b,i)=>({id:String(i),label:String(b.n)+'주',x:b.mean_probability*100,y:b.observed_rate*100})),scatterAxes:{xLabel:'평균 예측확률 %',yLabel:'실제 빈도 %'},bounds:{left:48,right:308,top:26,bottom:176},xDomain:[0,100],yDomain:[0,100]}));
     return svg;
   }
 

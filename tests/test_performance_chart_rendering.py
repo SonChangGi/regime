@@ -10,7 +10,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 HARNESS = r"""
 const {createPerformanceRenderers}=require('./web/insights.js');
-function node(tag,className,text){return {tag,className:className||'',textContent:text||'',attrs:{},style:{},children:[],append(...nodes){this.children.push(...nodes)},setAttribute(key,value){this.attrs[key]=value}}}
+function node(tag,className,text){return {tag,className:className||'',textContent:text||'',attrs:{},dataset:{},style:{},children:[],append(...nodes){this.children.push(...nodes)},setAttribute(key,value){this.attrs[key]=value}}}
 function svg(tag,attrs={}){const n=node(tag,attrs.class);n.attrs=attrs;return n}
 const finite=v=>typeof v==='number'&&Number.isFinite(v)?v:null;
 const api=createPerformanceRenderers({createElement:node,createSvg:svg,finiteNumber:finite,

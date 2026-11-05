@@ -60,6 +60,7 @@ class Node {
  setAttribute(key,value){this.attrs[key]=String(value);if(key==='class')this.className=String(value);
   if(key.startsWith('data-'))this.dataset[key.slice(5).replace(/-([a-z])/g,(_,c)=>c.toUpperCase())]=String(value)}
  getAttribute(key){return this.attrs[key]??null}
+ closest(selector){if(selector==='[data-qr-series-id]'&&this.dataset.qrSeriesId)return this;return this.parentNode?.closest(selector)||null}
  append(...nodes){nodes.forEach(n=>{n.parentNode=this;this.children.push(n)})}
  replaceChildren(...nodes){this.children=[];this._text='';this.append(...nodes)}
  querySelectorAll(selector){return this.children.flatMap(n=>[...(matches(n,selector)?[n]:[]),...n.querySelectorAll(selector)])}
@@ -144,7 +145,7 @@ svg.rect={{left:-143,top:25,width:canvas*.75,height:420}};
 const points=find('.chart-point.risk_on.observed'),hits=[];
 for(const i of [0,Math.floor((rows.length-1)/2),rows.length-1]){{
  const x=Number(points[i].attrs.cx);
- chart.previewChartDateFromPointer({{clientX:svg.rect.left+x/canvas*svg.rect.width,clientY:90}},true);
+ chart.previewChartDateFromPointer({{clientX:svg.rect.left+x/canvas*svg.rect.width,clientY:90,target:points[i]}},true);
  hits.push({{...inspection(),expected:rows[i].date,expectedText:dateText(rows[i].date),x,
   endpointDates:find('.chart-endpoint-label').map(n=>n.dataset.date)}});
 }}
@@ -255,7 +256,7 @@ const input=[{y:190,value:.1},{y:189,value:.11},{y:190,value:.12}],before=JSON.s
 const labels=api.chartEndpointPositions(input,40,200);
 render(weeks(1),360);const single={points:find('.chart-point').map(n=>[Number(n.attrs.cx),Number(n.attrs.cy)]),
  labels:find('.chart-endpoint-label').length,bands:find('.chart-regime-band').map(n=>[Number(n.attrs.x),Number(n.attrs.width)])};
-chart.previewChartDateFromPointer({clientX:10000,clientY:80},true);single.date=chart.state.chartPinnedDate;
+chart.previewChartDateFromPointer({clientX:10000,clientY:80,target:find('.chart-point.risk_on.observed')[0]},true);single.date=chart.state.chartPinnedDate;
 render([],360);chart.handleChartKeydown(key('Home'));chart.previewChartDateFromPointer({clientX:0},true);
 console.log(JSON.stringify({labels,unchanged:before===JSON.stringify(input),single,
  empty:{paths:find('.chart-series').length,endpoints:find('.chart-endpoint-label').length,bands:find('.chart-regime-band').length,text:svg.textContent,readout:chart.dom['chart-readout-date'].textContent}}));
@@ -392,3 +393,12 @@ console.log(JSON.stringify({{bands:bands.map(n=>[Number(n.attrs.x),Number(n.attr
         [[42, 75.75], [117.75, 151.5], [269.25, 75.75]]
         if width == 411 else [[42, 76], [118, 152], [270, 76]]
     )
+
+
+def test_blank_plot_does_not_commit_a_native_observation_pin():
+    result = run_js(r"""
+render(weeks(5));const before=inspection();
+chart.previewChartDateFromPointer({clientX:100,clientY:80,target:svg},true);
+console.log(JSON.stringify({before,after:inspection()}));
+""")
+    assert result["after"] == result["before"]

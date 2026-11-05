@@ -574,8 +574,8 @@
           const area = `${line} L${xForIndex(segment.at(-1).index).toFixed(2)},${zeroY.toFixed(2)} L${xForIndex(segment[0].index).toFixed(2)},${zeroY.toFixed(2)} Z`;
           svg.append(createSvg("path", { class: "performance-drawdown-area", d: area }));
         }
-        svg.append(createSvg("path", { class: className, d: line, fill: "none" }));
-        if (segment.length === 1) svg.append(createSvg("circle", { class: `${className} performance-endpoint-dot`, cx: xForIndex(segment[0].index), cy: yForValue(segment[0].value), r: 2.5 }));
+        svg.append(createSvg("path", { class: className, "data-qr-series-id":item.key, d: line, fill: "none" }));
+        if (segment.length === 1) svg.append(createSvg("circle", { "data-qr-series-id":item.key,"data-qr-index":segment[0].index, class: `${className} performance-endpoint-dot`, cx: xForIndex(segment[0].index), cy: yForValue(segment[0].value), r: 2.5 }));
       }
     }
   }
@@ -658,12 +658,14 @@
       role: "img",
       "aria-label": `${evaluationRange} 누적 자산 지수. ${series.map((item) => item.label).join(", ")} 비교`,
     });
+    svg.dataset.qrSpec=encodeURIComponent(JSON.stringify({id:'regime-renderPerformanceLineChart',domain:rows.map((r,i)=>({key:String(i),label:r.date||r.week||String(i+1)})),series:series.map(s=>({id:s.key,label:s.label,measure:'relative',unit:'지수',scale:1,points:s.values.map((value,i)=>({key:String(i),value}))})),xs:rows.map((r,i)=>xForIndex(i)),plotTop:margin.top,plotBottom:height-margin.bottom}));
     appendPerformanceAxes(svg, rows, scale, xForIndex, yForValue, width, height, margin, (value) => formatNumber(value, 2), 1);
     appendPerformanceSeries(svg, series, xForIndex, yForValue, primaryKey);
     appendPerformanceEndpoints(svg, series, rows, xForIndex, yForValue, width, height, margin, (value) => formatNumber(value, 2));
     const legend = createElement("div", "performance-legend");
     for (const item of series) {
-      const legendItem = createElement("span", `performance-legend-${item.key}${benchmarkClass(item.key)}${item.key === primaryKey ? " is-primary" : ""}`);
+      const legendItem = createElement("button", `performance-legend-${item.key}${benchmarkClass(item.key)}${item.key === primaryKey ? " is-primary" : ""}`);
+      legendItem.type='button';legendItem.dataset.qrChartId='regime-renderPerformanceLineChart';legendItem.dataset.qrSeriesId=item.key;
       const swatch = createSvg("svg", { class: "performance-legend-swatch performance-chart", viewBox: "0 0 26 10", "aria-hidden": "true" });
       swatch.append(createSvg("line", { class: `performance-series performance-series-${item.key}${benchmarkClass(item.key)}${item.key === primaryKey ? " is-primary" : ""}`, x1: 1, x2: 25, y1: 5, y2: 5 }));
       legendItem.append(swatch, createElement("span", null, item.label));
@@ -712,6 +714,7 @@
       role: "img",
       "aria-label": `${evaluationRange} 낙폭. 0선 포함`,
     });
+    svg.dataset.qrSpec=encodeURIComponent(JSON.stringify({id:'regime-renderPerformanceDrawdownChart',domain:rows.map((r,i)=>({key:String(i),label:r.date||r.week||String(i+1)})),series:series.map(s=>({id:s.key,label:s.label,measure:'pp',unit:'%',scale:100,points:s.values.map((value,i)=>({key:String(i),value}))})),xs:rows.map((r,i)=>xForIndex(i)),plotTop:margin.top,plotBottom:height-margin.bottom}));
     appendPerformanceAxes(svg, rows, scale, xForIndex, yForValue, width, height, margin, (value) => formatSignedPercent(value, scale.step < 0.01 ? 1 : 0));
     appendPerformanceSeries(svg, series, xForIndex, yForValue, primaryKey, zeroY);
     appendPerformanceEndpoints(svg, series, rows, xForIndex, yForValue, width, height, margin, (value) => formatSignedPercent(value, 1));
@@ -747,6 +750,7 @@
       bars.append(item);
     }
     appendPerformanceBarAxis(bars, scale, (value) => formatSignedPercent(value, scale.step < 0.01 ? 1 : 0));
+    bars.dataset.qrSpec=encodeURIComponent(JSON.stringify({id:'regime-renderPerformanceFallback',kind:'category',itemSelector:'.performance-summary-bar',domain:rows.map(r=>({key:r.key,label:r.label})),series:[{id:'value',label:'누적 수익률',unit:'%',measure:'pp',scale:100,points:rows.map(r=>({key:r.key,value:r.value}))}]}));
     card.append(heading, bars);
     return card;
   }
@@ -786,7 +790,7 @@
       const x = margin.left + column * (index + 0.5);
       const top = yForValue(Math.max(step.start, step.end));
       const bottom = yForValue(Math.min(step.start, step.end));
-      const bar = createSvg("rect", { class: `performance-bridge-bar is-${step.kind}`, x: x - barWidth / 2, y: top, width: barWidth, height: bottom - top });
+      const bar = createSvg("rect", { "data-qr-series-id":"return","data-qr-index":index, class: `performance-bridge-bar is-${step.kind}`, x: x - barWidth / 2, y: top, width: barWidth, height: bottom - top });
       bridge.append(bar);
       if (index < steps.length - 1) bridge.append(createSvg("line", { class: "performance-bridge-connector", x1: x + barWidth / 2, x2: x + column - barWidth / 2, y1: yForValue(step.end), y2: yForValue(step.end) }));
       const value = createSvg("text", { class: "performance-bridge-value", x, y: Math.max(16, top - 9), "text-anchor": "middle" });
@@ -795,6 +799,7 @@
       label.textContent = step.label;
       bridge.append(value, label);
     }
+    bridge.dataset.qrSpec=encodeURIComponent(JSON.stringify({id:'regime-cost-bridge',kind:'category',domain:steps.map((r,i)=>({key:String(i),label:r.label})),series:[{id:'return',label:'성과 구성',unit:'%',measure:'pp',scale:100,points:steps.map((r,i)=>({key:String(i),value:r.value}))}],xs:steps.map((r,i)=>margin.left+column*(i+.5)),plotTop:margin.top,plotBottom:height-margin.bottom}));
     card.append(heading, bridge);
     return card;
   }
@@ -840,6 +845,7 @@
       bars.append(item);
     }
     appendPerformanceBarAxis(bars, scale, (value) => formatSignedPercent(value, scale.step < 0.01 ? 1 : 0));
+    bars.dataset.qrSpec=encodeURIComponent(JSON.stringify({id:'regime-renderPerformanceTurnover',kind:'category',itemSelector:'.performance-turnover-row',domain:rows.map(r=>({key:r.key,label:r.label})),series:[{id:'value',label:'연환산 회전율',unit:'%',measure:'pp',scale:100,points:rows.map(r=>({key:r.key,value:r.oneWay}))}]}));
     card.append(heading, bars);
     return card;
   }

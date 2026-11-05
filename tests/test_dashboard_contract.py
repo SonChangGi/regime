@@ -1295,7 +1295,7 @@ def test_dashboard_assets_are_local_and_present() -> None:
     )
 
     shared_base = "https://sonchanggi.github.io/quant-dashboard/shared/navigation/v1/"
-    startup_base = "https://sonchanggi.github.io/quant-dashboard/shared/design/startup/1.0.0/"
+    startup_base = "https://sonchanggi.github.io/quant-dashboard/shared/design/startup/1.1.0/"
     external_scripts = [
         str(script.get("src", "")) for script in parser.scripts
         if str(script.get("src", "")).startswith(("http://", "https://", "//"))
