@@ -28,6 +28,7 @@ const marker='const dashboardApi = Object.freeze({';
 if (!source.includes(marker)) throw Error('dashboard export boundary not found');
 source=source.replace(marker, marker+' _holdingsTest: {state, dom, initializeDom, bindEvents, calculatorPortfolio, syncHoldingsCalculator, renderHoldingsResult},');
 const context={module:{exports:{}},require:createRequire(process.cwd()+'/web/app.js'),document,console};
+context.QuantFormat=require('./tests/fixtures/quant-number.js');
 vm.runInNewContext(source,context,{filename:'web/app.js'});
 const test=context.module.exports._holdingsTest;
 context.window={addEventListener(){}};

@@ -41,6 +41,7 @@ const dashboardApi = Object.freeze({
    selectWeek=index=>{state.selectedIndex=index};
   }
  },`);
+context.QuantFormat=require('./tests/fixtures/quant-number.js');
 vm.runInContext(program,context);
 const api=context.module.exports,chart=api.testChart;
 let activeNode=null;

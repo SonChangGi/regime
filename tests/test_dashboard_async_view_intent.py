@@ -28,6 +28,7 @@ program=program.replace('const dashboardApi = Object.freeze({', `const dashboard
       syncHistoryWindowControl=()=>{};setSnapNote=()=>{};ensureHistory=async()=>false;
     }
   },`);
+context.QuantFormat=require('./tests/fixtures/quant-number.js');
 vm.runInContext(program,context);
 const api=context.module.exports,loader=api.testLoader;
 context.document={documentElement:{dataset:{}}};

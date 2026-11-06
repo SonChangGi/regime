@@ -13,6 +13,7 @@ const context=vm.createContext({module:{exports:{}},
 const program=fs.readFileSync('web/app.js','utf8').replace(
   'const dashboardApi = Object.freeze({',
   'const dashboardApi = Object.freeze({testResearch:{state,dom,renderResearchUpgrades},');
+context.QuantFormat=require('./tests/fixtures/quant-number.js');
 vm.runInContext(program,context);
 const api=context.module.exports.testResearch;
 function node(tag){
@@ -64,9 +65,9 @@ def test_changed_filters_keep_the_same_rows_after_whole_research_rerender():
 show();const initial=snapshot();choose(0,'all_departure');choose(1,'12');
 const chosen=snapshot();show();console.log(JSON.stringify({initial,chosen,rerendered:snapshot()}));
 """)
-    assert "11.0%" in result["initial"]["text"]
-    assert "93.0%" in result["chosen"]["text"]
-    assert "11.0%" not in result["chosen"]["text"]
+    assert "11%" in result["initial"]["text"]
+    assert "93%" in result["chosen"]["text"]
+    assert "11%" not in result["chosen"]["text"]
     assert result["chosen"]["selection"] == ["all_departure", "12"]
     assert result["chosen"]["intent"] == ["all_departure", 12]
     assert result["rerendered"] == result["chosen"]
@@ -82,8 +83,8 @@ console.log(JSON.stringify({chosen,missingRows,hidden,partial,restored:snapshot(
     for phase in ("missingRows", "partial"):
         assert result[phase]["selection"] == ["all_departure", "12"]
         assert "선택 조건의 경보 진단이 없습니다." in result[phase]["text"]
-        assert "11.0%" not in result[phase]["text"]
-        assert "93.0%" not in result[phase]["text"]
+        assert "11%" not in result[phase]["text"]
+        assert "93%" not in result[phase]["text"]
     assert result["hidden"]["hidden"] is True
     assert result["hidden"]["selection"] == []
     assert result["hidden"]["intent"] == ["all_departure", 12]
@@ -100,10 +101,10 @@ console.log(JSON.stringify({normalized,missing,changed}));
 """)
     assert result["normalized"]["selection"] == ["risk_worsening", "4"]
     assert result["normalized"]["intent"] == ["risk_worsening", 4]
-    assert "11.0%" in result["normalized"]["text"]
+    assert "11%" in result["normalized"]["text"]
     assert result["missing"]["selection"] == ["all_departure", "8"]
     assert result["missing"]["intent"] == ["all_departure", 8]
     assert "선택 조건의 경보 진단이 없습니다." in result["missing"]["text"]
     assert result["changed"]["selection"] == ["all_departure", "12"]
     assert result["changed"]["intent"] == ["all_departure", 12]
-    assert "93.0%" in result["changed"]["text"]
+    assert "93%" in result["changed"]["text"]

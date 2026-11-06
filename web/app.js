@@ -960,35 +960,19 @@
   function formatSignedPercent(value, digits = 1) {
     const number = finiteNumber(value);
     if (number === null) return "—";
-    const factor = 10 ** (digits + 2);
-    const rounded = Math.round(number * factor) / factor;
-    const normalized = Object.is(rounded, -0) ? 0 : rounded;
-    return new Intl.NumberFormat("ko-KR", {
-      style: "percent",
-      minimumFractionDigits: digits,
-      maximumFractionDigits: digits,
-    }).format(normalized);
+    return globalThis.QuantFormat.number(number, { style: "percent" });
   }
 
   function formatNumber(value, digits = 2) {
     const number = finiteNumber(value);
     if (number === null) return "—";
-    const factor = 10 ** digits;
-    const rounded = Math.round(number * factor) / factor;
-    const normalized = Object.is(rounded, -0) ? 0 : rounded;
-    return new Intl.NumberFormat("ko-KR", {
-      maximumFractionDigits: digits,
-      minimumFractionDigits: 0,
-    }).format(normalized);
+    return globalThis.QuantFormat.number(number);
   }
 
   function formatCompactNumber(value, digits = 2) {
     const number = finiteNumber(value);
     if (number === null) return "—";
-    return new Intl.NumberFormat("ko-KR", {
-      notation: Math.abs(number) >= 1000 ? "compact" : "standard",
-      maximumFractionDigits: digits,
-    }).format(number);
+    return globalThis.QuantFormat.number(number, { notation: Math.abs(number) >= 1000 ? "compact" : "standard" });
   }
 
   function parseDate(value) {
@@ -6039,7 +6023,7 @@
           "text-anchor": "end",
           class: "chart-axis-label",
         });
-        label.textContent = `${Math.round(tick * 100)}%`;
+        label.textContent = `${globalThis.QuantFormat.number(tick * 100)}%`;
         svg.append(label);
       }
     }
@@ -7469,7 +7453,7 @@
 
   function formatResearchDelta(value) {
     const number = finiteNumber(value);
-    return number !== null && number !== 0 && Math.abs(number) < 0.0001 ? number.toExponential(2) : formatNumber(number, 4);
+    return formatNumber(number);
   }
 
   function renderForecastMethodNotes(research) {
@@ -8282,7 +8266,7 @@
               : "";
         const formatted = value === null
           ? "—"
-          : `${value > 0 ? "+" : ""}${formatSignedPercent(value, comparisonDigits)}`;
+          : `${decisionMetrics.mean > 0 ? "+" : ""}${formatSignedPercent(decisionMetrics.mean)}`;
         const cell = createElement(
           "td",
           `conditional-matrix-cell state-${code}${value === null ? " is-limited" : intervalIncludesZero ? " is-uncertain" : value < 0 ? " is-negative" : " is-positive"}`,
@@ -8293,7 +8277,7 @@
         }
         const intervalText = intervalLower === null || intervalUpper === null
           ? "CI —"
-          : `CI ${formatSignedPercent(intervalLower, comparisonDigits)}–${formatSignedPercent(intervalUpper, comparisonDigits)}`;
+          : `CI ${formatSignedPercent(decisionMetrics.lower)}–${formatSignedPercent(decisionMetrics.upper)}`;
         const inspect = createElement("button", "conditional-cell-button");
         inspect.type = "button";
         inspect.setAttribute("aria-label", `${asset} ${stateMeta(code).label} ${formatted} 상세`);
@@ -8661,7 +8645,7 @@
       const wrapper = createElement("div");
       wrapper.append(createElement("dt", null, parts.label), createElement("dd", null, formatMetric(key, raw)));
       if (parts.percentile !== null) {
-        wrapper.append(createElement("small", "metric-percentile", `52주 ${Math.round(parts.percentile * 100)}백분위`));
+        wrapper.append(createElement("small", "metric-percentile", `52주 ${globalThis.QuantFormat.number(parts.percentile * 100)}백분위`));
       }
       dom["market-context"].append(wrapper);
     }

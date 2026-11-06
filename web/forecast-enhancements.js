@@ -29,7 +29,7 @@
   const finite = (value) => typeof value === "number" && Number.isFinite(value);
   const date = (value) => typeof value === "string" && Number.isFinite(Date.parse(value)) ? value.slice(0, 10) : null;
   const rows = (value) => Array.isArray(value) ? value.filter((row) => row && typeof row === "object") : [];
-  const n = (value, digits = 3) => finite(value) ? new Intl.NumberFormat("ko-KR", { maximumFractionDigits: digits, minimumFractionDigits: digits }).format(value) : "—";
+  const n = (value, digits = 3) => finite(value) ? globalThis.QuantFormat.number(value) : "—";
   const pct = (value) => finite(value) ? `${n(value * 100, 1)}%` : "—";
   const signed = (value, digits = 4) => finite(value) ? `${value > 0 ? "+" : ""}${n(value, digits)}` : "—";
   const count = (value) => finite(value) ? n(value, 0) : "—";

@@ -305,6 +305,6 @@ def test_collapsed_detail_cards_omit_general_warning_surfaces() -> None:
 
 def test_probability_chart_declares_honest_fixed_axis() -> None:
     assert "for (const tick of [0, 0.25, 0.5, 0.75, 1])" in JS
-    assert '`${Math.round(tick * 100)}%`' in JS
+    assert '`${globalThis.QuantFormat.number(tick * 100)}%`' in JS
     assert 'aria-valuemin="0"' in HTML and 'aria-valuemax="100"' in HTML
     assert "`${range} · ${history.length}주`" in JS

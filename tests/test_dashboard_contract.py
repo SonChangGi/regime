@@ -1295,7 +1295,7 @@ def test_dashboard_assets_are_local_and_present() -> None:
     )
 
     shared_base = "https://sonchanggi.github.io/quant-dashboard/shared/navigation/v1/"
-    startup_base = "https://sonchanggi.github.io/quant-dashboard/shared/design/startup/1.1.0/"
+    startup_base = "https://sonchanggi.github.io/quant-dashboard/shared/design/startup/1.2.0/"
     external_scripts = [
         str(script.get("src", "")) for script in parser.scripts
         if str(script.get("src", "")).startswith(("http://", "https://", "//"))
@@ -3401,7 +3401,7 @@ def test_conditional_performance_leads_with_asset_class_mean_comparison() -> Non
     assert 'createElement("span", "conditional-ci-bound", `하 ${formatSignedPercent' not in script
     assert 'createElement("span", "conditional-ci-bound", `상 ${formatSignedPercent' not in script
     assert '" is-uncertain"' in script
-    assert '`${value > 0 ? "+" : ""}${formatSignedPercent(value, comparisonDigits)}`' in script
+    assert '`${decisionMetrics.mean > 0 ? "+" : ""}${formatSignedPercent(decisionMetrics.mean)}`' in script
     assert 'sampleValues.length === 1 ? `n ${formatNumber(sampleValues[0], 0)}` : ""' not in script
     assert '표본 ${sample}, 95% 구간 ${intervalText.replace("CI ", "")}' in script
     assert "unconditional_benchmark_mean_return" in script

@@ -26,15 +26,21 @@ def published_payload():
 
 
 def number_text(value, digits=0):
+    """Independent display oracle; score calculations above remain full precision."""
+    from decimal import Decimal, ROUND_HALF_UP
     if value is None or not math.isfinite(value):
         return "—"
-    rounded = math.floor(value * 10 ** digits + .5) / 10 ** digits
-    text = f"{rounded:,.{digits}f}"
+    value = Decimal(str(value))
+    exponent = value.copy_abs().adjusted() - 1 if value and abs(value) < Decimal("0.01") else -2
+    rounded = value.quantize(Decimal(1).scaleb(exponent), rounding=ROUND_HALF_UP)
+    if not rounded:
+        rounded = abs(rounded)
+    text = f"{rounded:,f}"
     return text.rstrip("0").rstrip(".") if "." in text else text
 
 
 def percent_text(value):
-    return "—" if value is None else f"{math.floor(value * 1000 + .5) / 10:.1f}%"
+    return "—" if value is None else f"{number_text(value * 100)}%"
 
 
 @lru_cache
@@ -150,6 +156,7 @@ const program=source.replace('const dashboardApi = Object.freeze({',`const dashb
   renderDecisionShadowCurrentSummary=()=>{};renderExecutionBrief=()=>{};syncHoldingsCalculator=()=>{};
   applyExpiredForecastDomState=()=>{};renderTransitionModels=()=>{};renderConditionalStats=()=>{};
  },setHistoryLoader(loader){ensureHistory=loader},bumpLoad(){loadSequence+=1}},`);
+context.QuantFormat=require('./tests/fixtures/quant-number.js');
 vm.runInContext(program,context);
 context.document={createElement:node,createTextNode(text){const n=node('text');n.textContent=text;return n},
  getElementById(id){return htmlIds.has(id)?api.dom[id]||null:null}};
@@ -457,7 +464,7 @@ console.log(JSON.stringify(target.textContent));
     assert "대상 시각 전 저장·발행 확인" in result and "5주" in result
     assert "매매 예정시각 전 발행" in result
     assert "지연·발행 미확인 제외" in result and "3주" in result
-    assert "0.321" in result and "0.123" in result
+    assert "0.32" in result and "0.12" in result
     assert "라벨 확정 평가 전체" in result
 
 
@@ -489,7 +496,7 @@ console.log(JSON.stringify({text:target.textContent,methods:api.dom['forecast-me
     assert "기존 발행 Log loss" in result["text"]
     assert "새 보정 연구 Log loss" in result["text"]
     assert "새 최종 연구 Log loss" in result["text"]
-    assert "0.4377" in result["text"] and "0.3196" in result["text"] and "—" in result["text"]
+    assert "0.44" in result["text"] and "0.32" in result["text"] and "—" in result["text"]
     assert "운영 반영 여부는 별도" not in result["text"]
     assert "전향적 축적" not in result["text"] and "전향적 축적" in result["methods"]
     assert "비교 가능한 완료 표본이 없습니다" in result["text"]
@@ -506,7 +513,7 @@ console.log(JSON.stringify(target.textContent));
     assert "2주 / 4건" in result
     assert "대상 시각 전 저장·발행 확인" in result and "2주" in result
     assert "동일 대상 중복 2건 제외" in result
-    assert "1.3539" in result and "0.831" in result
+    assert "1.35" in result and "0.83" in result
 
 
 def test_information_comparison_preserves_small_deltas_and_prospective_evidence_labels():
@@ -522,8 +529,8 @@ const target=node();api.renderForecastAuditPanels({forecast_information:{
 """)
     assert "191주" in result["text"] and "과거 진단" in result["text"]
     assert "VIX3M 기간구조" in result["text"] and "경계 + VIX3M" in result["text"]
-    assert "0.3732" in result["text"] and "0.3739" in result["text"]
-    assert "6.30e-6" in result["text"]
+    assert result["text"].count("0.37") >= 2
+    assert "0.0000063" in result["text"]
     assert "EBP: 최초 확보 이후 평가 자료 축적" in result["methods"]
     assert "최초 확보" not in result["text"]
     assert "prospective_only" not in result["methods"]
@@ -572,9 +579,9 @@ console.log(JSON.stringify({paths,asymmetric:api.dom['multistate-forecast'].text
  publicationUnchanged:publicationBefore===JSON.stringify(full),
  officialUnchanged:official===JSON.stringify(api.state.raw.weekly.at(-1).next_week),query:Object.fromEntries(current.searchParams)}));
 """)
-    assert "다음 주 위험선호 80.0%" in result["paths"]
-    assert "위험회피 진입" in result["paths"] and "40.0%" in result["paths"]
-    assert "다음 주 위험선호 30.0%" in result["asymmetric"]
+    assert "다음 주 위험선호 80%" in result["paths"]
+    assert "위험회피 진입" in result["paths"] and "40%" in result["paths"]
+    assert "다음 주 위험선호 30%" in result["asymmetric"]
     assert result["oneWeekNote"] == "1주 예측"
     assert "위험회피 진입" not in result["asymmetric"]
     assert "191주" in result["paths"] and "후보와 기준선" in result["paths"]
@@ -593,5 +600,5 @@ api.renderTransitionHorizons(researchWeek);console.log(JSON.stringify({pending,r
     assert "불러오는 중" in result["pending"]["text"]
     assert "결과가 아직 없습니다" not in result["pending"]["text"]
     assert result["pending"]["busy"] == "true" and result["busy"] == "false"
-    assert "40.0%" in result["ready"]
+    assert "40%" in result["ready"]
     assert result["publicationUnchanged"]

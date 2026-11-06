@@ -78,6 +78,7 @@ let program=fs.readFileSync('web/app.js','utf8').replace('const dashboardApi = O
  configure(){renderDecisionShadowCurrentSummary=()=>{};renderDecisionShadowEconomicSummary=()=>{};
  clearDecisionShadowEntryTimer=()=>{};scheduleDecisionShadowEntryRerender=()=>{};
  decisionShadowTimingPolicy=()=>null;renderHoldingsInputs=()=>{};}},`);
+context.QuantFormat=require('./tests/fixtures/quant-number.js');
 vm.runInContext(program,context);const exported=context.module.exports,api=exported.testView;api.configure();
 context.document={createElement:node};let current=new URL('http://localhost/?unrelated=keep#performance');
 context.window={get location(){return current},history:{replaceState(_a,_b,value){current=new URL(value,current)}},setTimeout:()=>0};
@@ -107,7 +108,7 @@ console.log(JSON.stringify({chosen,copied,restored}));})();
 """)
     chosen = result["chosen"]
     assert chosen["selectedControls"] == ["all_departure", "12"]
-    assert "93.0%" in chosen["text"] and "11.0%" not in chosen["text"]
+    assert "93%" in chosen["text"] and "11.0%" not in chosen["text"]
     assert chosen["visible"] == ["static_60_40", "spy_buy_and_hold"]
     assert result["restored"]["strategies"] == chosen["visible"]
     assert result["restored"]["alert"] == chosen["alert"] == "all_departure"
