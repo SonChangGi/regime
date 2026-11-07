@@ -36,6 +36,7 @@ from scripts.package_public_demo import (  # noqa: E402
     validate_dashboard_split,
     validate_v5_comparison_sidecar,
 )
+from regime_lab.design_contract.verify_design import verify_html
 from regime_lab.publication_contract import validate_index_asset_versions  # noqa: E402
 from regime_lab.forecast_exports import (  # noqa: E402
     build_forecast_exports,
@@ -232,6 +233,7 @@ def verify_public_package(directory: str | Path) -> dict[str, Any]:
         validate_generated_browser_contract(
             package_root / GENERATED_BROWSER_CONTRACT
         )
+        verify_html((package_root / "index.html").read_text(encoding="utf-8"), "regime")
         validate_index_asset_versions(
             (package_root / "index.html").read_bytes(),
             styles_raw=(package_root / "styles.css").read_bytes(),
@@ -244,7 +246,7 @@ def verify_public_package(directory: str | Path) -> dict[str, Any]:
                 for name in ("fonts.css", "insights.js", "insights.css", "forecast-enhancements.js", "forecast-enhancements.css")
             },
         )
-    except (BrowserContractError, PackagingError) as exc:
+    except (BrowserContractError, PackagingError, ValueError) as exc:
         raise VerificationError(str(exc)) from exc
 
     try:

@@ -52,15 +52,8 @@ def _web_root(tmp_path: Path) -> Path:
     web = tmp_path / "web"
     web.mkdir()
     (web / "index.html").write_text(
-        '<link rel="stylesheet" href="./fonts.css?v=manual">\n'
-        '<link rel="stylesheet" href="./styles.css?v=manual">\n'
-        '<link rel="stylesheet" href="./insights.css?v=manual">\n'
-        '<link rel="stylesheet" href="./forecast-enhancements.css?v=manual">\n'
-        '<main>demo</main>'
-        '<script src="./insights.js?v=manual"></script>\n'
-        '<script src="./forecast-enhancements.js?v=manual"></script>\n'
-        '<script src="./operating-contract.generated.js?v=manual"></script>\n'
-        '<script src="./app.js?v=manual"></script>\n',
+        (ROOT / "web/index.html").read_text().split("</head>", 1)[0]
+        + "</head><body><main>demo</main></body></html>",
         encoding="utf-8",
     )
     (web / "fonts").mkdir()
@@ -818,3 +811,38 @@ def test_verifier_refuses_credential_like_material_even_with_matching_manifest(
         match="credential-like",
     ):
         verify_public_package.verify_public_package(output)
+
+
+@pytest.mark.parametrize("mutation", ["old-pin", "missing-start", "async-start", "duplicate-start", "duplicate-nav", "early-app"])
+def test_design_regression_rejected_after_manifest_refresh(tmp_path: Path, mutation: str) -> None:
+    output = _package(tmp_path)
+    index = output / "index.html"
+    html = index.read_text()
+    startup = re.search(r'<script[^>]*data-quant-design-project="regime"[^>]*></script>', html).group()
+    nav = re.search(r'<script[^>]*data-quant-project="regime"[^>]*></script>', html).group()
+    if mutation == "old-pin":
+        html = html.replace("/startup/1.2.0/", "/startup/1.1.0/")
+    elif mutation == "missing-start":
+        html = html.replace(startup, "")
+    elif mutation == "async-start":
+        html = html.replace(startup, startup.replace("<script", "<script async"))
+    elif mutation == "duplicate-start":
+        html = html.replace(startup, startup * 2)
+    elif mutation == "duplicate-nav":
+        html = html.replace(nav, nav * 2)
+    else:
+        html = html.replace("<head>", '<head><script defer src="./early-app.js"></script>')
+    index.write_text(html)
+    _refresh_manifest_record(output, "index.html")
+    with pytest.raises(verify_public_package.VerificationError, match="Design contract:"):
+        verify_public_package.verify_public_package(output)
+
+
+def test_packaging_blocks_old_design_before_creating_output(tmp_path: Path) -> None:
+    web = _web_root(tmp_path)
+    index = web / "index.html"
+    index.write_text(index.read_text().replace("/startup/1.2.0/", "/startup/1.1.0/"))
+    output = tmp_path / "rejected-public"
+    with pytest.raises(package_public_demo.PackagingError, match="Design contract:"):
+        package_public_demo.package_public_dashboard(web_root=web, payload_path=_payload(tmp_path), output_directory=output)
+    assert not output.exists()

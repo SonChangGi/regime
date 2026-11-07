@@ -1304,18 +1304,16 @@ def test_dashboard_assets_are_local_and_present() -> None:
         str(link.get("href", "")) for link in parser.links
         if str(link.get("href", "")).startswith(("http://", "https://", "//"))
     ]
-    assert external_scripts == [shared_base + "nav.js", startup_base + "start.js"]
+    assert external_scripts == [startup_base + "start.js", shared_base + "nav.js"]
     assert external_styles == [shared_base + "nav.css", startup_base + "regime.css"]
     shared_script = next(script for script in parser.scripts if script.get("src") == shared_base + "nav.js")
     assert shared_script["data-quant-project"] == "regime"
     startup_script = next(script for script in parser.scripts if script.get("src") == startup_base + "start.js")
     assert startup_script["data-quant-design-project"] == "regime"
     assert not {"async", "defer", "type"}.intersection(startup_script)
-    head = HTML_PATH.read_text(encoding="utf-8").split("</head>", 1)[0]
-    assert head.rstrip().endswith(
-        f'<link rel="stylesheet" href="{startup_base}regime.css" data-quant-first-paint-css>\n'
-        f'<script src="{startup_base}start.js" data-quant-design-project="regime"></script>'
-    )
+    from regime_lab.design_contract.verify_design import verify_html
+    assert verify_html(HTML_PATH.read_text(encoding="utf-8"), "regime")["contract"] == "1.0.0"
+
 
     allowed_external_links = {
         "https://sonchanggi.github.io/quant-dashboard/",

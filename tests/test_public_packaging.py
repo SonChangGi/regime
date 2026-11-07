@@ -121,15 +121,8 @@ def _web_root(tmp_path: Path) -> Path:
     root = tmp_path / "web"
     root.mkdir()
     (root / "index.html").write_text(
-        '<link rel="stylesheet" href="./fonts.css?v=manual">\n'
-        '<link rel="stylesheet" href="./styles.css?v=manual">\n'
-        '<link rel="stylesheet" href="./insights.css?v=manual">\n'
-        '<link rel="stylesheet" href="./forecast-enhancements.css?v=manual">\n'
-        '<script src="./insights.js?v=manual"></script>\n'
-        '<script src="./forecast-enhancements.js?v=manual"></script>\n'
-        '<main>demo</main>'
-        '<script src="./operating-contract.generated.js?v=manual"></script>\n'
-        '<script src="./app.js?v=manual"></script>\n',
+        (ROOT / "web/index.html").read_text().split("</head>", 1)[0]
+        + "</head><body><main>demo</main></body></html>",
         encoding="utf-8",
     )
     (root / "fonts").mkdir()

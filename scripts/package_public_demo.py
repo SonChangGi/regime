@@ -20,6 +20,7 @@ import sys
 import tempfile
 from typing import Any
 
+from regime_lab.design_contract.verify_design import verify_html
 from regime_lab.schema import ContractError, validate_dashboard_payload
 from regime_lab.config import project_root
 from regime_lab.frozen_v4 import (
@@ -363,6 +364,11 @@ def package_public_dashboard(
         operating_contract_raw=generated_contract_raw,
         extra_assets={name: files[name] for name in ("fonts.css", "insights.js", "insights.css", "forecast-enhancements.js", "forecast-enhancements.css")},
     )
+
+    try:
+        verify_html(files["index.html"].decode("utf-8"), "regime")
+    except ValueError as exc:
+        raise PackagingError(str(exc)) from exc
 
     payload_raw = _read_regular_file(payload_path, label="dashboard payload")
     payload = _decode_payload(payload_raw)
@@ -724,6 +730,10 @@ def package_public_dashboard(
                 label="staged generated browser contract",
             ),
         )
+        try:
+            verify_html(_read_regular_file(staging / "index.html", label="staged index.html").decode("utf-8"), "regime")
+        except ValueError as exc:
+            raise PackagingError(str(exc)) from exc
         if output_directory.exists() or output_directory.is_symlink():
             raise PackagingError(
                 f"output appeared during packaging; refusing overwrite: {output_directory}"

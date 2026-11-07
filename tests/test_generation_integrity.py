@@ -515,7 +515,8 @@ def test_packaging_requires_manifest_when_payload_carries_generation_binding(
     spec.loader.exec_module(module)
     web = tmp_path / "web"
     web.mkdir()
-    (web / "index.html").write_text("<main>test</main>\n", encoding="utf-8")
+    (web / "index.html").write_text(
+        (ROOT / "web/index.html").read_text(), encoding="utf-8")
     (web / "styles.css").write_text("main {}\n", encoding="utf-8")
     (web / "fonts").mkdir()
     for name in ("fonts.css", "fonts/PretendardVariable-1.3.9.woff2", "fonts/OFL.txt"):

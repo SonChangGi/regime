@@ -1,13 +1,15 @@
 # 공통 웹 디자인
 
-[Quant Research 웹 디자인 지침 2.8.0](https://github.com/SonChangGi/quant-dashboard/blob/main/docs/web-design.md)을 기준으로 유지합니다.
+[Quant Research 웹 디자인 지침 2.9.0](https://github.com/SonChangGi/quant-dashboard/blob/main/docs/web-design.md)을 기준으로 유지합니다.
 
-- 공통 UI 0.7.0 · startup 1.2.0 · QuantRange 1.3.0을 사용합니다.
-- 프로젝트 CSS 다음, head 마지막에서 버전이 고정된 공통 CSS와 blocking `start.js`를 읽습니다. 차트 엔진은 페이지의 defer/module 스크립트 실행 전에 준비됩니다.
+- 공통 UI 0.7.0 · startup 1.2.0 · QuantRange 1.3.0 · QuantFormat 1.0.0을 사용합니다.
+- head의 선언 순서는 프로젝트·내비게이션 CSS → 공통 first-paint CSS → 동기 `start.js` → 앱 defer/module → 내비게이션 defer입니다. 공통 초기화는 중복 로드하지 않습니다.
 - 선을 누르면 해당 관측값과 날짜를 표시하고, 구간 선택 중에는 같은 구간을 유지하며 계열만 바꿉니다. 빈 차트 영역을 누르면 선택과 네이티브 고정을 해제합니다. 계열 숨기기는 별도 컨트롤입니다.
 - 가격·지수는 변동률, 확률·수익률은 %p를 표시합니다. 0·음수 기준은 절대 변화량, 산점도는 실제 점의 개수와 범위를 표시합니다. 원자료·계산식·관측 날짜는 바꾸지 않습니다.
 - 숫자는 최대 소수 2자리, 끝 0 생략을 적용하며 표시 단위에서 절댓값이 0.01 미만이면 유효숫자 2자리로 표시합니다. 날짜·종목코드·원자료·계산값은 유지합니다.
 - 카드·표·필터의 여백은 공통 번들에서 관리합니다. 좁은 표의 좌우 음영은 더 스크롤할 방향만 표시합니다.
 - 공통 번들 공개 확인 후 소비 페이지를 배포하고, 공개 파일 일치와 실제 첫 화면·차트 동작을 확인합니다.
+
+자동 생성·승격·패키징에는 [디자인 계약 1.0.0](https://github.com/SonChangGi/quant-dashboard/tree/main/shared/design/contracts/1.0.0)의 동일 Python guard와 JSON을 사용합니다. 구버전 pin, 누락·중복 loader, 비동기 startup, 로딩 순서 위반은 기존 정상 결과를 교체하기 전에 차단합니다. 계약 업데이트 시 두 파일을 함께 갱신합니다.
 
 프로젝트별 검증과 배포 규칙은 저장소의 기존 지침을 함께 따릅니다.
