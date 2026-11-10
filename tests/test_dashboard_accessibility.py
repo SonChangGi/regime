@@ -285,7 +285,9 @@ def test_collapsed_detail_cards_omit_general_warning_surfaces() -> None:
     assert 'id="forecast-contract-status"' not in HTML
     assert 'id="forecast-expired-notice"' not in HTML
     assert 'id="research-evidence-details"' in HTML
-    assert 'id="research-methods" class="research-methods card"' in HTML
+    methods = re.search(r'<details\b[^>]*id="research-methods"[^>]*>', HTML)
+    assert methods and 'class="research-methods card"' in methods.group()
+    assert not re.search(r"\bopen(?:\s|=|>)", methods.group())
     assert 'id="fx-ablation-status"' in HTML
     assert 'id="model-evidence-summary"' in HTML
     assert '"전향적 shadow"' in JS

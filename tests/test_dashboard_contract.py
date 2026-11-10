@@ -3629,7 +3629,7 @@ def test_decision_action_and_shadow_are_visible_before_conditional_results() -> 
     assert positions == sorted(positions)
     for element_id in ("holdings-calculator", "conditional-weighting", "conditional-cell-detail"):
         assert element_id in parsed_html().ids
-    assert 'id="research-methods" class="research-methods card" open' not in document
+    assert not re.search(r'<details\b(?=[^>]*\bid="research-methods")(?=[^>]*\bopen(?:\s|=|>))[^>]*>', document)
 
 
 def test_investment_summary_helpers_report_coverage_support_and_economic_result() -> None:
@@ -3729,7 +3729,7 @@ def test_operations_are_collapsed_below_results_without_warning_surfaces() -> No
     assert document.index('id="data-health"') > methods
     assert document.index('id="forecast-window-section"') < document.index('id="overview"')
     assert document.index('id="research-evidence"') > methods
-    assert 'id="research-methods" class="research-methods card" open' not in document
+    assert not re.search(r'<details\b(?=[^>]*\bid="research-methods")(?=[^>]*\bopen(?:\s|=|>))[^>]*>', document)
     assert 'id="data-health" class="operations-section"' in document
     assert 'class="operations-section meta-only-section"' not in document
 
