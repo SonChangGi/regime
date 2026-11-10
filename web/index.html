@@ -13,14 +13,15 @@
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23111727'/%3E%3Cpath d='M14 43 26 31l9 8 15-20' fill='none' stroke='%2334d399' stroke-width='7' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
     <link rel="preload" href="./fonts/PretendardVariable-1.3.9.woff2" as="font" type="font/woff2" crossorigin>
     <link rel="stylesheet" href="./fonts.css?v=8f7120c59d879fc2a19c102fb1dcf3d151f38037d52410562bf03f64d9242fcd">
-    <link rel="stylesheet" href="./styles.css?v=2ac4964cf4be50633fd0a6102bc84a83d7bd95774c3d59619d830590b1bbebe5">
+    <link rel="stylesheet" href="./styles.css?v=6a2595d0a0b299fc417b276d1f1960d6d984f5a665ceb751aa758453785f66e3">
     <link rel="stylesheet" href="./insights.css?v=6f92c8db6392bad88657d9a0f88a1c09673a2d2c681c2f31c5d8a74c06389abe">
     <link rel="stylesheet" href="./forecast-enhancements.css?v=8513b4ae050b28e674dbed5316d0860076ea8ffe476c0f0e57c6ecac7c9c7c9f">
     <link rel="stylesheet" href="https://sonchanggi.github.io/quant-dashboard/shared/navigation/v1/nav.css">
-    <link rel="stylesheet" href="https://sonchanggi.github.io/quant-dashboard/shared/design/startup/1.2.0/regime.css" data-quant-first-paint-css>
+    <link rel="stylesheet" href="https://sonchanggi.github.io/quant-dashboard/shared/design/tokens/0.4.2/shell.css?v=d3ef280dc5d3" data-quant-design="0.4.2">
+  <link rel="stylesheet" href="https://sonchanggi.github.io/quant-dashboard/shared/design/startup/1.2.0/regime.css" data-quant-first-paint-css>
     <script src="https://sonchanggi.github.io/quant-dashboard/shared/design/startup/1.2.0/start.js" data-quant-design-project="regime"></script>
     <script src="./vendor/echarts.min.js?v=b66b25aeb4df84e33199dc21694014d336d222cbd9deb0e5a7c14bd6aa0d0fd0" defer></script>
-    <script src="./chart-engine.js?v=06e204f046b6688939a5b1e6b6054bca734bc984afddc2f22d5ad06f809acb21" defer></script>
+    <script src="./chart-engine.js?v=5e7f770f12fed3479e6738d44c21d6721950e7e6498d67ee103d07fc891ad22d" defer></script>
     <script src="./insights.js?v=81393682dbfb8b8530873f74572d0a6a193dc2a70bbfc838e8a388640bad82cb" defer></script>
     <script src="./forecast-enhancements.js?v=639153a37bb3d585bb39f6216c6044ae2e6b80237a13576975ea41daf6ceb361" defer></script>
     <script src="./operating-contract.generated.js?v=5078635e5a1fb2b9300e56f045b51c4e85ee047a21a3f64a15cd4e69261c9a20" defer></script>
@@ -160,7 +161,7 @@
           </div>
 
           <div id="hero-results" class="hero-grid decision-pipeline" aria-label="현재 국면과 다음 주 공식 예측">
-          <article id="current-regime-card" class="regime-card card decision-stage decision-stage-regime" data-flow-stage="regime">
+          <article id="current-regime-card" data-quant-card class="regime-card card decision-stage decision-stage-regime" data-flow-stage="regime">
             <div class="decision-stage-heading">
               <span class="decision-stage-index" aria-hidden="true">1</span>
               <strong>국면 판단</strong>
@@ -195,7 +196,7 @@
             </div>
           </article>
 
-          <article id="next-regime-card" class="regime-card card decision-stage decision-stage-forecast" data-flow-stage="forecast">
+          <article id="next-regime-card" data-quant-card class="regime-card card decision-stage decision-stage-forecast" data-flow-stage="forecast">
             <div class="decision-stage-heading">
               <span class="decision-stage-index" aria-hidden="true">2</span>
               <strong>모델 예측</strong>
@@ -220,14 +221,14 @@
           <div id="label-boundary-brief" class="label-boundary-brief" hidden></div>
         </section>
 
-        <section id="forecast-enhancements" class="dashboard-section card forecast-enhancements" data-dashboard-view="execution transition" aria-label="국면 예측 비교" hidden></section>
+        <section id="forecast-enhancements" data-quant-card class="dashboard-section card forecast-enhancements" data-dashboard-view="execution transition" aria-label="국면 예측 비교" hidden></section>
 
-        <section id="transition-outlook" class="dashboard-section transition-outlook card" data-dashboard-view="execution transition" aria-labelledby="transition-outlook-title">
+        <section id="transition-outlook" data-quant-card class="dashboard-section transition-outlook card" data-dashboard-view="execution transition" aria-labelledby="transition-outlook-title">
           <div class="card-heading"><div><h2 id="transition-outlook-title">4·13주 국면 이탈</h2></div></div>
           <div class="forecast-outlook-grid">
             <div><div id="transition-horizon-bars" class="transition-horizon-bars" aria-live="polite" hidden></div>
             </div>
-          <article id="duration-context-card" class="card v5-only" aria-labelledby="duration-context-title" hidden>
+          <article id="duration-context-card" data-quant-card class="card v5-only" aria-labelledby="duration-context-title" hidden>
             <div class="card-heading">
               <div>
                 <h2 id="duration-context-title">현재 국면 지속</h2>
@@ -240,11 +241,11 @@
           </div>
           <div id="multistate-forecast" class="multistate-forecast" aria-live="polite"></div>
         </section>
-        <section id="forecast-alert-research" class="dashboard-section card" data-dashboard-view="transition" aria-label="경보 정책 검증" hidden></section>
+        <section id="forecast-alert-research" data-quant-card class="dashboard-section card" data-dashboard-view="transition" aria-label="경보 정책 검증" hidden></section>
 
-        <section id="decision-shadow-block" class="dashboard-section decision-shadow-section card v5-only" data-dashboard-view="performance" aria-labelledby="decision-shadow-title" hidden>
+        <section id="decision-shadow-block" data-quant-card class="dashboard-section decision-shadow-section card v5-only" data-dashboard-view="performance" aria-labelledby="decision-shadow-title" hidden>
           <p id="execution-brief" class="execution-brief" aria-live="polite"></p>
-          <article id="decision-action-card" hidden class="decision-action-card card v5-only decision-stage decision-stage-allocation" data-flow-stage="allocation" aria-labelledby="decision-action-title">
+          <article id="decision-action-card" hidden data-quant-card class="decision-action-card card v5-only decision-stage decision-stage-allocation" data-flow-stage="allocation" aria-labelledby="decision-action-title">
             <div class="decision-stage-heading">
               <span class="decision-stage-index" aria-hidden="true">↗</span>
               <strong>자산배분</strong>
@@ -273,7 +274,7 @@
         <details id="holdings-calculator" class="holdings-calculator"><summary>내 보유 비중으로 조정량 계산</summary><form id="holdings-form"><div id="holdings-inputs" class="holdings-inputs"></div><label class="holdings-total">평가금액 (USD)<input id="holdings-total" type="number" min="0" step="100" value="10000"></label><label class="holdings-target-label">비교 목표<select id="holdings-target-basis"><option value="policy">정책 목표</option><option value="execution">이번 실행 목표</option></select></label><button class="button" type="submit">계산</button></form><div id="holdings-result" aria-live="polite"></div></details>
         </section>
 
-        <section id="conditional-stats" class="dashboard-section conditional-stats-section card v5-only" data-dashboard-view="assets" aria-labelledby="conditional-stats-title" hidden>
+        <section id="conditional-stats" data-quant-card class="dashboard-section conditional-stats-section card v5-only" data-dashboard-view="assets" aria-labelledby="conditional-stats-title" hidden>
           <div class="card-heading conditional-stats-heading">
             <div>
               <h2 id="conditional-stats-title">예측 위험 국면별 자산 성과</h2>
@@ -376,7 +377,7 @@
         </section>
 
         <section id="history" class="dashboard-section analysis-grid" data-dashboard-view="model" aria-label="시장 위험 상태와 시장 맥락 추이">
-          <article class="chart-card card wide-card" aria-labelledby="probability-chart-title">
+          <article data-quant-card class="chart-card card wide-card" aria-labelledby="probability-chart-title">
             <div class="card-heading">
               <div>
                 <h2 id="probability-chart-title">관측 소속도와 1주 예측확률</h2>
@@ -492,7 +493,7 @@
             </details>
           </article>
 
-          <article class="card factor-card" aria-labelledby="factor-title">
+          <article data-quant-card class="card factor-card" aria-labelledby="factor-title">
             <div class="card-heading">
               <div>
                 <h2 id="factor-title">국면 팩터</h2>
@@ -507,7 +508,7 @@
           </article>
         </section>
 
-        <section class="timeline-section card" data-dashboard-view="model" aria-labelledby="timeline-title">
+        <section data-quant-card class="timeline-section card" data-dashboard-view="model" aria-labelledby="timeline-title">
           <div class="card-heading">
             <div>
               <h2 id="timeline-title">위험 상태 타임라인</h2>
@@ -526,10 +527,10 @@
           </div>
         </section>
 
-        <details class="decision-evidence-disclosure card" data-dashboard-view="execution">
+        <details data-quant-card class="decision-evidence-disclosure card" data-dashboard-view="execution">
           <summary>시장 맥락</summary>
         <section id="evidence" class="dashboard-section detail-grid" data-dashboard-view="execution" aria-label="근거 지표와 시장 맥락">
-          <article class="card evidence-drivers-card" aria-labelledby="drivers-title">
+          <article data-quant-card class="card evidence-drivers-card" aria-labelledby="drivers-title">
             <div class="card-heading">
               <div>
                 <h2 id="drivers-title">주요 지표</h2>
@@ -540,7 +541,7 @@
             <ol id="top-drivers" class="driver-list"></ol>
           </article>
 
-          <article class="card market-context-card" aria-labelledby="market-title">
+          <article data-quant-card class="card market-context-card" aria-labelledby="market-title">
             <div class="card-heading">
               <div>
                 <h2 id="market-title">시장 맥락</h2>
@@ -551,7 +552,7 @@
 
 
 
-          <article id="fx-context-card" class="card v5-only" aria-labelledby="fx-context-title" hidden>
+          <article id="fx-context-card" data-quant-card class="card v5-only" aria-labelledby="fx-context-title" hidden>
             <div class="card-heading">
               <div>
                 <h2 id="fx-context-title">USD 맥락</h2>
@@ -564,7 +565,7 @@
         </section>
         </details>
 
-        <section id="models" class="dashboard-section model-section card" data-dashboard-view="model" aria-labelledby="model-title">
+        <section id="models" data-quant-card class="dashboard-section model-section card" data-dashboard-view="model" aria-labelledby="model-title">
           <div class="card-heading">
             <div>
               <div class="model-title-row">
@@ -657,7 +658,7 @@
           </details>
         </section>
 
-        <section id="transition-model-section" class="dashboard-section transition-model-section card" data-dashboard-view="model" aria-labelledby="transition-model-title" hidden>
+        <section id="transition-model-section" data-quant-card class="dashboard-section transition-model-section card" data-dashboard-view="model" aria-labelledby="transition-model-title" hidden>
           <div class="card-heading transition-model-heading">
             <div>
               <h2 id="transition-model-title">위험 상태 이탈 모델 비교</h2>
@@ -697,7 +698,7 @@
           </details>
         </section>
 
-        <details id="research-methods" class="research-methods card">
+        <details id="research-methods" data-quant-card class="research-methods card">
           <summary>검증·운영 상세</summary>
           <div class="research-methods-body">
             <section class="model-evaluation-details" aria-labelledby="model-details-title">
@@ -740,7 +741,7 @@
           </div>
         </details>
 
-        <details id="interpretation-methods" class="research-methods card">
+        <details id="interpretation-methods" data-quant-card class="research-methods card">
           <summary>해석·계산 기준</summary>
           <div class="research-methods-body interpretation-notes">
             <section id="contract-overview-grid" class="v5-only" hidden>

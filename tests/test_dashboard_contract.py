@@ -4,6 +4,7 @@ from copy import deepcopy
 from html.parser import HTMLParser
 import hashlib
 import json
+import re
 from pathlib import Path
 import subprocess
 
@@ -1305,7 +1306,7 @@ def test_dashboard_assets_are_local_and_present() -> None:
         if str(link.get("href", "")).startswith(("http://", "https://", "//"))
     ]
     assert external_scripts == ["https://sonchanggi.github.io/quant-dashboard/shared/preferences/1.0.1/preferences.js", startup_base + "start.js", shared_base + "nav.js"]
-    assert external_styles == [shared_base + "nav.css", startup_base + "regime.css"]
+    assert external_styles == [shared_base + "nav.css", "https://sonchanggi.github.io/quant-dashboard/shared/design/tokens/0.4.2/shell.css?v=d3ef280dc5d3", startup_base + "regime.css"]
     shared_script = next(script for script in parser.scripts if script.get("src") == shared_base + "nav.js")
     assert shared_script["data-quant-project"] == "regime"
     startup_script = next(script for script in parser.scripts if script.get("src") == startup_base + "start.js")
@@ -1599,9 +1600,9 @@ def test_results_first_layout_keeps_decision_flow_and_wide_history() -> None:
     script = JS_PATH.read_text(encoding="utf-8") + (WEB / "insights.js").read_text(encoding="utf-8")
     styles = CSS_PATH.read_text(encoding="utf-8") + (WEB / "insights.css").read_text(encoding="utf-8")
     assert 'class="probability-shift-card card"' not in document
-    assert 'id="duration-context-card" class="card v5-only"' in document
-    assert 'id="fx-context-card" class="card v5-only"' in document
-    assert 'id="conditional-stats" class="dashboard-section conditional-stats-section card v5-only"' in document
+    assert re.search(r'id="duration-context-card"[^>]*class="card v5-only"', document)
+    assert re.search(r'id="fx-context-card"[^>]*class="card v5-only"', document)
+    assert re.search(r'id="conditional-stats"[^>]*class="dashboard-section conditional-stats-section card v5-only"', document)
     # Actual width, tick density and date mapping are exercised by
     # test_probability_chart_rendering rather than frozen implementation strings.
     assert 'id="probability-chart"' in document
@@ -1630,7 +1631,7 @@ def test_v5_only_sections_fail_closed_for_v4_payloads() -> None:
     ):
         assert f'id="{section_id}"' in document
         start = document.index(f'id="{section_id}"')
-        assert "hidden" in document[start : start + 180]
+        assert re.search(r"\bhidden(?:\s|=|$)", document[start : document.index(">", start)])
     assert ".v5-only[hidden]" in styles
     assert "if (!isV5Payload() || !isObject(duration))" in script
     assert "if (!isV5Payload() || !isObject(fx))" in script
@@ -1642,8 +1643,10 @@ def test_full_model_and_conditional_tables_are_collapsed_by_default() -> None:
     assert "<summary>모델별 지표</summary>" in document
     assert "<summary>이탈 모델별 지표</summary>" in document
     assert "상세 성과 표" in document
-    assert '<details id="research-methods" class="research-methods card">' in document
-    collapsed_methods = document.split('<details id="research-methods"', 1)[1]
+    methods = re.search(r'<details\b[^>]*id="research-methods"[^>]*>', document)
+    assert methods and 'class="research-methods card"' in methods.group()
+    assert not re.search(r"\bopen(?:\s|=|>)", methods.group())
+    collapsed_methods = document[methods.end():]
     for detail_id in ("model-health-strip", "model-input-comparison", "model-evaluation-note", "model-forecast-rank"):
         assert f'id="{detail_id}"' in collapsed_methods
     assert 'class="compact-table-details" open' not in document
