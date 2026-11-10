@@ -1305,8 +1305,8 @@ def test_dashboard_assets_are_local_and_present() -> None:
         str(link.get("href", "")) for link in parser.links
         if str(link.get("href", "")).startswith(("http://", "https://", "//"))
     ]
-    assert external_scripts == ["https://sonchanggi.github.io/quant-dashboard/shared/preferences/1.0.1/preferences.js", startup_base + "start.js", shared_base + "nav.js"]
-    assert external_styles == [shared_base + "nav.css", "https://sonchanggi.github.io/quant-dashboard/shared/design/tokens/0.4.2/shell.css?v=d3ef280dc5d3", startup_base + "regime.css"]
+    assert external_scripts == ["https://sonchanggi.github.io/quant-dashboard/shared/preferences/1.0.1/preferences.js", startup_base + "start.js", "https://sonchanggi.github.io/quant-dashboard/shared/design/tokens/0.4.3/touch.js?v=2f4fb1f32f46", shared_base + "nav.js"]
+    assert external_styles == [shared_base + "nav.css", "https://sonchanggi.github.io/quant-dashboard/shared/design/tokens/0.4.3/shell.css?v=8414ab0c137f", startup_base + "regime.css"]
     shared_script = next(script for script in parser.scripts if script.get("src") == shared_base + "nav.js")
     assert shared_script["data-quant-project"] == "regime"
     startup_script = next(script for script in parser.scripts if script.get("src") == startup_base + "start.js")

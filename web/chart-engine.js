@@ -4,33 +4,45 @@
  const colors={risk_on:'#8eb1ff',transition:'#f3c46f',risk_off:'#ff9abd'};
  const mounted=new Set();
  const palette=['#63cbd4','#b4a1ed','#e8bb62','#83bce8'];
- function tokens(){const light=document.documentElement.dataset.theme==='light';return {text:light?'#172725':'#edf3f2',muted:light?'#536762':'#a6b4b6',grid:light?'#c6d3ce':'#364247',surface:light?'#fff':'#20282c'};}
+ function tokens(){
+  const style=root.getComputedStyle?.(document.documentElement),light=document.documentElement.dataset.theme==='light';
+  const token=(key,fallback)=>style?.getPropertyValue('--qs-'+key).trim()||fallback;
+  return {text:token('text',light?'#18253a':'#edf2fb'),muted:token('muted',light?'#526480':'#a8b5cc'),grid:token('grid',light?'#dde5f0':'#2b3850'),surface:token('raised',light?'#e9eff7':'#222d42')};
+ }
 // Direct range interaction. Native vertical touch scrolling remains available.
-function bindDirectRange(host, chart, spec, onRange, onClear){
+function bindDirectRange(host, chart, spec, onRange, onClear, onInspect){
  if(!host.addEventListener)return {clear(){},dispose(){}};
  const doc=host.ownerDocument,output=doc.createElement('div'),band=doc.createElement('div');
  output.className='qe-direct-range';output.setAttribute('aria-live','polite');output.hidden=true;
- Object.assign(output.style,{padding:'12px',border:'1px solid var(--line, #344247)',borderRadius:'8px',fontSize:'12px',lineHeight:'1.6',position:'absolute',left:'12px',right:'12px',bottom:'12px',maxHeight:'180px',overflow:'auto',background:'var(--surface, var(--panel, #171d20))',color:'var(--ink, #edf3f2)',zIndex:'4',boxShadow:'0 4px 18px #0003'});
+ output.dataset.quantChartReadout='';
+ host.after(output);
  Object.assign(band.style,{position:'absolute',top:'28px',bottom:'28px',background:'rgba(96,200,210,.13)',borderLeft:'1px solid #60c8d2',borderRight:'1px solid #60c8d2',pointerEvents:'none',zIndex:'2'});band.hidden=true;
- host.title='드래그: 구간 변화 · Alt+드래그: 이동 · Esc: 해제';host.style.position='relative';host.style.touchAction='pan-y';host.style.userSelect='none';host.append(band,output);
- let drag=null,range=null,suppress=false;const pointers=new Map();let gesture=null;
- const index=x=>Math.max(0,Math.min(spec.dates.length-1,Math.round(chart.convertFromPixel({xAxisIndex:0},x-host.getBoundingClientRect().left))));
+ host.style.position='relative';host.style.touchAction='pan-y';host.style.userSelect='none';host.append(band);
+ let drag=null,range=null,suppress=false;
+ const index=x=>Math.max(0,Math.min(spec.dates.length-1,Math.round(chart.convertFromPixel({xAxisIndex:0},x))));
+ const local=e=>{const rect=host.getBoundingClientRect();return [e.clientX-rect.left,e.clientY-rect.top];};
+ const hit=(point,clamp)=>clamp||chart.containPixel({gridIndex:'all'},point)?index(point[0]):null;
  const draw=()=>{if(!range)return;const x=range.map(i=>chart.convertToPixel({xAxisIndex:0},i));band.style.left=Math.min(...x)+'px';band.style.width=Math.max(1,Math.abs(x[1]-x[0]))+'px';};
  const format=(v,s)=>Number.isFinite(v)?(v*(s.scale||1)).toLocaleString('ko-KR',{maximumFractionDigits:2})+(s.unit||''):'관측 없음';
  const clear=()=>{chart.setOption({tooltip:{showContent:true}});range=null;band.hidden=true;output.hidden=true;onClear?.();};
  const present=(a,b)=>{chart.setOption({tooltip:{showContent:false}});chart.dispatchAction({type:'hideTip'});range=[Math.min(a,b),Math.max(a,b)];const [lo,hi]=range;output.replaceChildren();const heading=doc.createElement('strong');heading.textContent=spec.dates[lo]+' — '+spec.dates[hi];output.append(heading);
-  for(const s of spec.series){if(chart.getOption().legend?.[0]?.selected?.[s.legendName||s.name]===false)continue;const x=s.values[lo],y=s.values[hi],valid=typeof x==='number'&&typeof y==='number'&&Number.isFinite(x)&&Number.isFinite(y);let change='관측 없음';if(valid){const delta=(y-x)*(s.scale||1);change=s.measure==='pp'?delta.toLocaleString('ko-KR',{maximumFractionDigits:2})+'%p':s.measure==='absolute'?delta.toLocaleString('ko-KR',{maximumFractionDigits:2})+(s.unit||''):x>0?((y/x-1)*100).toLocaleString('ko-KR',{maximumFractionDigits:2})+'%':delta.toLocaleString('ko-KR',{maximumFractionDigits:2})+(s.unit||'')+' · 상대 비교 불가';}const row=doc.createElement('div');row.textContent=s.name+'  '+format(x,s)+' → '+format(y,s)+'  · '+change;output.append(row);}
+  for(const s of spec.series){if(chart.getOption().legend?.[0]?.selected?.[s.legendName||s.name]===false)continue;const x=s.values[lo],y=s.values[hi],valid=typeof x==='number'&&typeof y==='number'&&Number.isFinite(x)&&Number.isFinite(y);let change='관측 없음';if(valid){const delta=(y-x)*(s.scale||1);change=s.measure==='pp'?delta.toLocaleString('ko-KR',{maximumFractionDigits:2})+'%p':s.measure==='absolute'?delta.toLocaleString('ko-KR',{maximumFractionDigits:2})+(s.unit||''):x>0?((y/x-1)*100).toLocaleString('ko-KR',{maximumFractionDigits:2})+'%':delta.toLocaleString('ko-KR',{maximumFractionDigits:2})+(s.unit||'')+' · 상대 비교 불가';}const row=doc.createElement('span');row.textContent=s.name+'  '+format(x,s)+' → '+format(y,s)+'  · '+change;output.append(row);}
   band.hidden=false;output.hidden=false;draw();onRange?.(lo,hi);
  };
- const down=e=>{if(e.button!==0&&e.pointerType!=='touch')return;pointers.set(e.pointerId,{x:e.clientX,y:e.clientY});if(pointers.size===2){drag=null;const p=[...pointers.values()];gesture={center:(p[0].x+p[1].x)/2,distance:Math.max(1,Math.hypot(p[0].x-p[1].x,p[0].y-p[1].y)),zoom:chart.getOption().dataZoom[0]};suppress=true;return;}if(e.altKey)return;const rect=host.getBoundingClientRect(),x=e.clientX-rect.left,y=e.clientY-rect.top;if(!chart.containPixel({gridIndex:'all'},[x,y]))return;drag={id:e.pointerId,x:e.clientX,y:e.clientY,index:index(e.clientX),active:false};};
- const move=e=>{if(pointers.has(e.pointerId))pointers.set(e.pointerId,{x:e.clientX,y:e.clientY});if(gesture&&pointers.size===2){const p=[...pointers.values()],center=(p[0].x+p[1].x)/2,distance=Math.max(1,Math.hypot(p[0].x-p[1].x,p[0].y-p[1].y)),z=gesture.zoom,span=Math.min(100,(z.end-z.start)*gesture.distance/distance),mid=(z.start+z.end)/2-(center-gesture.center)/host.clientWidth*(z.end-z.start),start=Math.max(0,Math.min(100-span,mid-span/2));chart.dispatchAction({type:'dataZoom',start,end:start+span});e.preventDefault();e.stopPropagation();return;}if(!drag||drag.id!==e.pointerId)return;const dx=e.clientX-drag.x,dy=e.clientY-drag.y;if(!drag.active&&Math.abs(dy)>Math.abs(dx)&&Math.abs(dy)>7){drag=null;return;}if(!drag.active&&Math.abs(dx)<6)return;drag.active=true;suppress=true;host.setPointerCapture?.(e.pointerId);e.preventDefault();e.stopPropagation();const rect=host.getBoundingClientRect();output.style.bottom='auto';output.style.top=Math.max(8,Math.min(e.clientY-rect.top+18,(doc.defaultView?.innerHeight||1000)-rect.top-200,host.clientHeight-200))+'px';present(drag.index,index(e.clientX));};
- const up=e=>{pointers.delete(e.pointerId);if(!pointers.size)setTimeout(()=>{suppress=false;},0);if(pointers.size<2)gesture=null;if(drag?.id===e.pointerId){if(drag.active){suppress=true;setTimeout(()=>{suppress=false;},0);}drag=null;}if(e.type==='pointercancel')suppress=false;};
- const click=e=>{if(suppress){e.preventDefault();e.stopImmediatePropagation();suppress=false;}else clear();};
+ const bindTouch=root.QuantTouchChart;
+ const touchCleanup=bindTouch?.bindTouchChart(host,{
+   hit,inspect:i=>{if(onInspect)onInspect(i);else chart.dispatchAction({type:'showTip',seriesIndex:0,dataIndex:i});},
+   compare:present,clear,rangeReadout:()=>output,navigate:(a,b)=>bindTouch.navigateECharts(chart,a,b)
+ });
+ const down=e=>{if(e.button!==0||e.pointerType==='touch')return;suppress=false;if(e.altKey)return;const value=hit(local(e));if(value!=null)drag={id:e.pointerId,x:e.clientX,index:value,active:false};};
+ const move=e=>{if(!drag||drag.id!==e.pointerId||(!drag.active&&Math.abs(e.clientX-drag.x)<6))return;if(!drag.active){drag.active=true;try{host.setPointerCapture?.(e.pointerId);}catch{}}e.preventDefault();e.stopImmediatePropagation();present(drag.index,index(local(e)[0]));};
+ const up=e=>{if(drag?.id!==e.pointerId)return;suppress=drag.active;drag=null;};
+ const click=e=>{if(suppress){e.preventDefault();e.stopImmediatePropagation();suppress=false;}else if(hit(local(e))!=null)clear();};
  const key=e=>{if(e.key==='Escape')clear();};
  host.addEventListener('pointerdown',down,true);host.addEventListener('pointermove',move,{capture:true,passive:false});host.addEventListener('pointerup',up,true);host.addEventListener('pointercancel',up,true);host.addEventListener('click',click,true);host.addEventListener('keydown',key,true);
  chart.on('datazoom',draw);chart.on('legendselectchanged',()=>{if(range)present(...range);});
  const resizeRange=typeof ResizeObserver!=='undefined'?new ResizeObserver(draw):null;resizeRange?.observe(host);
- return {clear,present,dispose(){resizeRange?.disconnect();for(const [type,fn]of [['pointerdown',down],['pointermove',move],['pointerup',up],['pointercancel',up],['click',click],['keydown',key]])host.removeEventListener(type,fn,true);band.remove();output.remove();}};
+ return {clear,present,dispose(){touchCleanup?.();resizeRange?.disconnect();for(const [type,fn]of [['pointerdown',down],['pointermove',move],['pointerup',up],['pointercancel',up],['click',click],['keydown',key]])host.removeEventListener(type,fn,true);band.remove();output.remove();}};
 }
 
  function mount(host,build,height,onSelect,selection={}){
@@ -39,13 +51,13 @@ function bindDirectRange(host, chart, spec, onRange, onClear){
   const chart=root.echarts.init(host,null,{renderer:'svg'});host._qe=chart;mounted.add(host);
   const option=build();if(previous?.legend?.[0]?.selected&&option.legend)option.legend.selected=previous.legend[0].selected;
   chart.setOption(option);
-  const direct=bindDirectRange(host,chart,{dates:option.xAxis[0].data,series:option.series.filter(s=>s.type==='line').map(s=>({name:(option.title?.[s.xAxisIndex]?.text?option.title[s.xAxisIndex].text+' · ':'')+s.name,legendName:s.name,values:s.data,measure:s.rangePercent?'pp':'relative',scale:s.rangePercent?100:1,unit:s.rangePercent?'%':''}))});
-  let reset=host.parentElement.querySelector(':scope > .qe-reset');if(!reset){reset=document.createElement('button');reset.type='button';reset.className='qe-reset';reset.textContent='전체 보기';host.after(reset);}reset.hidden=true;
-  reset.onclick=()=>chart.dispatchAction({type:'dataZoom',start:0,end:100});chart.on('datazoom',()=>{const z=chart.getOption().dataZoom?.[0];reset.hidden=!z||(z.start===0&&z.end===100);});
+  const direct=bindDirectRange(host,chart,{dates:option.xAxis[0].data,series:option.series.filter(s=>s.type==='line').map(s=>({name:(option.title?.[s.xAxisIndex]?.text?option.title[s.xAxisIndex].text+' · ':'')+s.name,legendName:s.name,values:s.data,measure:s.rangePercent?'pp':'relative',scale:s.rangePercent?100:1,unit:s.rangePercent?'%':''}))},undefined,undefined,i=>choose(i));
+  let reset=host.parentElement.querySelector(':scope > .qe-reset');if(!reset){reset=document.createElement('button');reset.type='button';reset.className='qe-reset';reset.textContent='전체 기간';reset.dataset.quantResetView='';host.after(reset);}reset.hidden=true;
+  reset.onclick=()=>chart.dispatchAction({type:'dataZoom',start:0,end:100});host.ondblclick=reset.onclick;chart.on('datazoom',()=>{const z=chart.getOption().dataZoom?.[0];reset.hidden=!z||(z.start===0&&z.end===100);});
   const lastIndex=option.xAxis?.[0]?.data?.length-1||0;let selected=Number.isInteger(selection.initialIndex)&&selection.initialIndex>=0?selection.initialIndex:lastIndex;
   const choose=i=>{const count=chart.getOption().xAxis?.[0]?.data?.length||0;selected=Math.max(0,Math.min(count-1,i));onSelect?.(selected);chart.dispatchAction({type:'showTip',seriesIndex:0,dataIndex:selected});};
   chart.getZr().on('click',e=>{const x=chart.convertFromPixel({xAxisIndex:0},e.offsetX);if(Number.isFinite(x))choose(Math.round(x));});
-  host.onkeydown=e=>{if(['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Home','End','Escape'].includes(e.key)){e.preventDefault();e.stopPropagation();if(e.key==='Escape'){choose(Number.isInteger(selection.resetIndex)&&selection.resetIndex>=0?selection.resetIndex:lastIndex);chart.dispatchAction({type:'hideTip'});}else choose(e.key==='Home'?0:e.key==='End'?lastIndex:selected+(['ArrowLeft','ArrowUp'].includes(e.key)?-1:1));}};
+  host.onkeydown=e=>{if(e.key==='0'){e.preventDefault();reset.click();return;}if(['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Home','End','Escape'].includes(e.key)){e.preventDefault();e.stopPropagation();if(e.key==='Escape'){choose(Number.isInteger(selection.resetIndex)&&selection.resetIndex>=0?selection.resetIndex:lastIndex);chart.dispatchAction({type:'hideTip'});}else choose(e.key==='Home'?0:e.key==='End'?lastIndex:selected+(['ArrowLeft','ArrowUp'].includes(e.key)?-1:1));}};
   const resize=new ResizeObserver(()=>{if(host.clientWidth>0)chart.resize();});resize.observe(host);
   const theme=new MutationObserver(()=>{const current=chart.getOption(),next=build();if(next.legend)next.legend.selected=current.legend?.[0]?.selected;next.dataZoom=current.dataZoom;chart.setOption(next,true);});theme.observe(document.documentElement,{attributes:true,attributeFilter:['data-theme']});
   const dispose=chart.dispose.bind(chart);chart.dispose=()=>{resize.disconnect();theme.disconnect();mounted.delete(host);direct.dispose();dispose();};host.dataset.renderer='echarts';
@@ -54,7 +66,7 @@ function bindDirectRange(host, chart, spec, onRange, onClear){
   return {animation:false,textStyle:{color:t.text,fontFamily:'Pretendard, sans-serif'},grid:panels.map((_,i)=>({left:52,right:22,top:46+i*270,height:205,containLabel:false})),
    title:panels.map((p,i)=>({text:p.title,left:12,top:14+i*270,textStyle:{color:t.text,fontSize:13,fontWeight:600}})),
    legend:{type:'scroll',top:panels.length*270+2,textStyle:{color:t.muted},pageTextStyle:{color:t.muted}},
-   tooltip:{trigger:'axis',confine:true,backgroundColor:t.surface,borderColor:t.grid,textStyle:{color:t.text,fontSize:12},axisPointer:{type:'line'}},axisPointer:{link:[{xAxisIndex:'all'}]},
+   tooltip:{trigger:'axis',confine:true,hideDelay:0,transitionDuration:0,className:'qe-point-tooltip',backgroundColor:t.surface,borderColor:t.grid,textStyle:{color:t.text,fontSize:12},axisPointer:{type:'line'}},axisPointer:{link:[{xAxisIndex:'all'}]},
    xAxis:panels.map((_,i)=>({type:'category',gridIndex:i,data:spec.dates,boundaryGap:false,axisLabel:{color:t.muted,hideOverlap:true,fontSize:11,formatter:v=>v.slice(2,7)},axisTick:{show:false},axisLine:{lineStyle:{color:t.grid}}})),
    yAxis:panels.map((p,i)=>({type:'value',gridIndex:i,min:p.probability?0:undefined,max:p.probability?1:undefined,interval:p.probability?.25:undefined,scale:true,splitNumber:4,axisLabel:{color:t.muted,fontSize:11,formatter:v=>p.percent?`${+(v*100).toFixed(1)}%`:`${+v.toFixed(2)}`},splitLine:{lineStyle:{color:t.grid,type:'dashed'}}})),
    dataZoom:[{type:'inside',xAxisIndex:panels.map((_,i)=>i),filterMode:'none',preventDefaultMouseMove:false,moveOnMouseMove:'alt'}],

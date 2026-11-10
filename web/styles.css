@@ -8971,3 +8971,8 @@ html[data-design-engine] body .performance-visual+.performance-visual{padding-to
 html[data-design-engine] body .decision-shadow-grid{gap:var(--qs-section-gap,32px)}
 html[data-design-engine] body .card-heading{margin-bottom:20px}
 html[data-design-engine] body .performance-visual{border:0!important;background:transparent!important;border-radius:0!important;box-shadow:none!important}
+
+/* Plot gestures own zoom and range selection. */
+html[data-theme] body :is(.qd-focus-button,.qd-focus-tools) {display:none!important}
+[data-quant-touch-chart]:focus-visible {outline:2px solid var(--qs-focus);outline-offset:3px}
+[data-quant-touch-chart][data-quant-gesture=compare] .qe-point-tooltip {visibility:hidden!important}
