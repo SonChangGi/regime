@@ -72,6 +72,7 @@ jobs:
       pages: write
       id-token: write
     runs-on: ubuntu-24.04
+    timeout-minutes: 35
     needs: build
     steps:
       - name: Refuse a stale main deployment
@@ -85,3 +86,7 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0
+        with:
+          # The reviewed 66 MB package can remain in file sync beyond ten minutes.
+          timeout: 1800000
+          reporting_interval: 10000
