@@ -1,0 +1,53 @@
+/* Shared 0.4.1 chart grammar, with Regime probabilities and meaning colours preserved. */
+(function(root){
+ 'use strict';
+ const colors={risk_on:'#8eb1ff',transition:'#f3c46f',risk_off:'#ff9abd'};
+ const mounted=new Set();
+ const palette=['#63cbd4','#b4a1ed','#e8bb62','#83bce8'];
+ function tokens(){const light=document.documentElement.dataset.theme==='light';return {text:light?'#26383e':'#edf3f2',muted:light?'#52676e':'#a6b4b6',grid:light?'#dce3e5':'#2c373d',surface:light?'#fff':'#20282c'};}
+ function mount(host,build,height,onSelect){
+  if(!root.echarts)return;
+  const previous=host._qe?.getOption();host._qe?.dispose();host.replaceChildren();host.classList.add('qe-responsive-chart');host.style.height=height+'px';host.tabIndex=0;
+  const chart=root.echarts.init(host,null,{renderer:'svg'});host._qe=chart;mounted.add(host);
+  const option=build();if(previous?.legend?.[0]?.selected&&option.legend)option.legend.selected=previous.legend[0].selected;
+  chart.setOption(option);
+  let reset=host.parentElement.querySelector(':scope > .qe-reset');if(!reset){reset=document.createElement('button');reset.type='button';reset.className='qe-reset';reset.textContent='전체 보기';host.after(reset);}reset.hidden=true;
+  reset.onclick=()=>chart.dispatchAction({type:'dataZoom',start:0,end:100});chart.on('datazoom',()=>{const z=chart.getOption().dataZoom?.[0];reset.hidden=!z||(z.start===0&&z.end===100);});
+  let selected=option.xAxis?.[0]?.data?.length-1||0;
+  const choose=i=>{const count=chart.getOption().xAxis?.[0]?.data?.length||0;selected=Math.max(0,Math.min(count-1,i));onSelect?.(selected);chart.dispatchAction({type:'showTip',seriesIndex:0,dataIndex:selected});};
+  chart.getZr().on('click',e=>{const x=chart.convertFromPixel({xAxisIndex:0},e.offsetX);if(Number.isFinite(x))choose(Math.round(x));});
+  host.onkeydown=e=>{if(['ArrowLeft','ArrowRight','Home','End'].includes(e.key)){e.preventDefault();choose(e.key==='Home'?0:e.key==='End'?1e9:selected+(e.key==='ArrowLeft'?-1:1));}else if(e.key==='Escape')chart.dispatchAction({type:'hideTip'});};
+  const resize=new ResizeObserver(()=>{if(host.clientWidth>0)chart.resize();});resize.observe(host);
+  const theme=new MutationObserver(()=>{const current=chart.getOption(),next=build();if(next.legend)next.legend.selected=current.legend?.[0]?.selected;next.dataZoom=current.dataZoom;chart.setOption(next,true);});theme.observe(document.documentElement,{attributes:true,attributeFilter:['data-theme']});
+  const dispose=chart.dispose.bind(chart);chart.dispose=()=>{resize.disconnect();theme.disconnect();mounted.delete(host);dispose();};host.dataset.renderer='echarts';
+ }
+ function trend(spec){const t=tokens(),panels=spec.panels||[{title:'',series:spec.series}];
+  return {animation:false,textStyle:{color:t.text,fontFamily:'Pretendard, sans-serif'},grid:panels.map((_,i)=>({left:12,right:18,top:46+i*270,height:205,containLabel:true})),
+   title:panels.map((p,i)=>({text:p.title,left:12,top:14+i*270,textStyle:{color:t.text,fontSize:13,fontWeight:600}})),
+   legend:{type:'scroll',top:panels.length*270+2,textStyle:{color:t.muted},pageTextStyle:{color:t.muted}},
+   tooltip:{trigger:'axis',confine:true,backgroundColor:t.surface,borderColor:t.grid,textStyle:{color:t.text,fontSize:12},axisPointer:{type:'line'}},axisPointer:{link:[{xAxisIndex:'all'}]},
+   xAxis:panels.map((_,i)=>({type:'category',gridIndex:i,data:spec.dates,boundaryGap:false,axisLabel:{color:t.muted,hideOverlap:true,fontSize:11,formatter:v=>v.slice(2,7)},axisTick:{show:false},axisLine:{lineStyle:{color:t.grid}}})),
+   yAxis:panels.map((p,i)=>({type:'value',gridIndex:i,min:p.probability?0:undefined,max:p.probability?1:undefined,interval:p.probability?.25:undefined,scale:true,splitNumber:4,axisLabel:{color:t.muted,fontSize:11,formatter:v=>p.percent?`${+(v*100).toFixed(1)}%`:`${+v.toFixed(2)}`},splitLine:{lineStyle:{color:t.grid,type:'dashed'}}})),
+   dataZoom:[{type:'inside',xAxisIndex:panels.map((_,i)=>i),filterMode:'none',preventDefaultMouseMove:false,moveOnMouseMove:true}],
+   series:panels.flatMap((p,i)=>p.series.map((s,j)=>({name:s.label,type:'line',xAxisIndex:i,yAxisIndex:i,data:s.values,showSymbol:false,connectNulls:false,lineStyle:{width:2.2,color:s.color||palette[j%palette.length],type:s.dashed?'dashed':'solid'},itemStyle:{color:s.color||palette[j%palette.length]},tooltip:{valueFormatter:v=>v==null?'—':p.percent?`${(v*100).toFixed(2)}%`:`${+v.toFixed(3)}`},emphasis:{focus:'series'},...(s.bands?{markArea:{silent:true,label:{show:false},data:s.bands}}:{})}))) };
+ }
+ function history(wrap,spec,onSelect){let host=wrap.querySelector('.qe-regime-history');if(!host){host=document.createElement('div');host.className='qe-regime-history';wrap.append(host);}wrap.classList.add('qe-history-wrap');mount(host,()=>{const themed={...spec,panels:spec.panels.map(p=>({...p,series:p.series.map(s=>({...s,color:s.code?getComputedStyle(document.documentElement).getPropertyValue('--'+s.code.replace('_','-')).trim():s.color,bands:s.bands?.map(b=>[{...b[0],itemStyle:{color:getComputedStyle(document.documentElement).getPropertyValue('--'+String(b[0].state||'unknown').replace('_','-')).trim(),opacity:.045}},b[1]])}))}))};const option=trend(themed);option.legend.show=false;return option;},spec.panels.length*270+12,onSelect);
+  const labels={risk_on:'위험선호',transition:'전환',risk_off:'위험회피'};for(const button of document.querySelectorAll('#history-chart-legend button')){const code=button.dataset.qrSeriesId?.replace('observed','');if(!labels[code])continue;button.setAttribute('aria-pressed',String(host._qe.getOption().legend?.[0]?.selected?.[labels[code]]!==false));button.onclick=()=>{const visible=button.getAttribute('aria-pressed')==='true';const buttons=[...document.querySelectorAll('#history-chart-legend button')];if(visible&&buttons.filter(b=>b.getAttribute('aria-pressed')==='true').length<=1)return;host._qe.dispatchAction({type:visible?'legendUnSelect':'legendSelect',name:labels[code]});button.setAttribute('aria-pressed',String(!visible));};}
+  wrap.querySelector('.qe-outcomes')?.remove();
+  if(spec.outcomes){const outcomes=document.createElement('div');outcomes.className='qe-outcomes';const label=document.createElement('span');label.textContent=spec.outcomeTitle;outcomes.append(label);const strip=document.createElement('div');strip.className='qe-outcomes-strip';spec.outcomes.forEach((o,i)=>{const item=document.createElement('span');item.style.background=colors[o.state]||'transparent';item.style.borderColor=colors[o.state]||'var(--line)';item.title=spec.dates[i]+' · '+({risk_on:'위험선호',transition:'전환',risk_off:'위험회피'}[o.state]||o.status);strip.append(item);});outcomes.append(strip);wrap.append(outcomes);}}
+
+ function upgrade(){
+  if(!root.echarts)return;
+  for(const host of mounted)if(!host.isConnected)host._qe?.dispose();
+  for(const svg of document.querySelectorAll('svg[data-qr-spec]')){
+   if(svg.dataset.qeConverted){const owner=svg.closest('.performance-visual');owner?.querySelectorAll('.qr-measure,.performance-legend').forEach(e=>e.hidden=true);continue;}
+   const spec=JSON.parse(decodeURIComponent(svg.dataset.qrSpec));if(!spec.series||spec.kind==='category')continue;
+   const host=document.createElement('div');host.className='qe-performance';host.setAttribute('role','img');host.setAttribute('aria-label',svg.getAttribute('aria-label')||'성과 추이');svg.after(host);svg.hidden=true;svg.style.display='none';svg.dataset.qeConverted='true';svg.removeAttribute('data-qr-spec');svg.closest('.performance-visual')?.classList.add('qe-converted-performance');
+   const lines=spec.series.map((s,i)=>({label:s.label,color:getComputedStyle(svg.querySelector('[data-qr-series-id=\"'+s.id+'\"]')||svg).stroke||palette[i%palette.length],values:spec.domain.map(d=>s.points.find(p=>p.key===d.key)?.value??null)}));
+   mount(host,()=>{const percent=spec.series[0]?.unit==='%';const option=trend({dates:spec.domain.map(d=>d.label),panels:[{title:'',percent,series:lines.map((s,i)=>({...s,color:getComputedStyle(svg.querySelector('[data-qr-series-id=\"'+spec.series[i].id+'\"]')||svg).stroke||s.color}))}]});if(percent)option.yAxis[0].max=0;option.series[0].markLine={silent:true,symbol:'none',label:{show:false},lineStyle:{color:tokens().muted,type:'dashed',width:1},data:[{yAxis:percent?0:1}]};return option;},320);
+   const guide=svg.closest('.card')?.querySelector('.performance-scroll-guide');if(guide)guide.hidden=true;
+  }
+ }
+ root.RegimeCharts={history,upgrade,colors,trend};
+ if(typeof document!=='undefined')document.addEventListener('DOMContentLoaded',()=>{let pending=false;new MutationObserver(()=>{if(pending)return;pending=true;requestAnimationFrame(()=>{pending=false;upgrade();});}).observe(document.body,{childList:true,subtree:true});upgrade();});
+})(globalThis);

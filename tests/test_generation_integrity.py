@@ -523,6 +523,9 @@ def test_packaging_requires_manifest_when_payload_carries_generation_binding(
         (web / name).write_bytes((ROOT / "web" / name).read_bytes())
     (web / "insights.css").write_text(".insight {}\n", encoding="utf-8")
     (web / "forecast-enhancements.css").write_text(".insight {}\n", encoding="utf-8")
+    (web / "vendor").mkdir(exist_ok=True)
+    for asset in ("chart-engine.js", "vendor/echarts.min.js", "vendor/ECHARTS-LICENSE", "vendor/ECHARTS-NOTICE"):
+        (web / asset).write_bytes(b"")
     (web / "insights.js").write_text("'use strict';\n", encoding="utf-8")
     (web / "forecast-enhancements.js").write_text("'use strict';\n", encoding="utf-8")
     (web / "operating-contract.generated.js").write_bytes(

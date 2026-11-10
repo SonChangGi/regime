@@ -155,8 +155,8 @@ console.log(JSON.stringify({{canvas,scroll:wrap.classList.contains('is-scroll-mo
  ticks:find('.chart-date-label').map(n=>({{x:Number(n.attrs.x),date:n.querySelector('title').textContent}})),
  axes:find('.chart-axis-label').map(n=>n.textContent)}}));
 """)
-    assert result["canvas"] == (728 if count == 52 else width)
-    assert result["scroll"] == (count == 52)
+    assert result["canvas"] == width
+    assert result["scroll"] is False
     assert result["unchanged"]
     left, right = (42, 66) if result["canvas"] <= 560 else (52, 142)
     assert result["bounds"] == [left, result["canvas"] - right]

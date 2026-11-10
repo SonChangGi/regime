@@ -135,6 +135,9 @@ def _web_root(tmp_path: Path) -> Path:
     (root / "app.js").write_text("console.log('demo');\n", encoding="utf-8")
     (root / "insights.css").write_text(".insight { color: black; }\n")
     (root / "forecast-enhancements.css").write_text(".insight { color: black; }\n")
+    (root / "vendor").mkdir(exist_ok=True)
+    for asset in ("chart-engine.js", "vendor/echarts.min.js", "vendor/ECHARTS-LICENSE", "vendor/ECHARTS-NOTICE"):
+        (root / asset).write_bytes(b"")
     (root / "insights.js").write_text("window.RegimeInsights = {};\n")
     (root / "forecast-enhancements.js").write_text("window.RegimeInsights = {};\n")
     return root
@@ -814,6 +817,10 @@ def test_package_copies_only_allowlisted_assets_and_synthetic_payload(tmp_path: 
         "fonts/OFL.txt",
         "insights.css",
         "forecast-enhancements.css",
+        "chart-engine.js",
+        "vendor/echarts.min.js",
+        "vendor/ECHARTS-LICENSE",
+        "vendor/ECHARTS-NOTICE",
         "insights.js",
         "forecast-enhancements.js",
         "operating-contract.generated.js",

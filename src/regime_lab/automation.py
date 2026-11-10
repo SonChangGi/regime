@@ -117,6 +117,10 @@ PUBLIC_STATIC_ASSET_PATHS = (
     "insights.css",
     "forecast-enhancements.js",
     "forecast-enhancements.css",
+    "chart-engine.js",
+    "vendor/echarts.min.js",
+    "vendor/ECHARTS-LICENSE",
+    "vendor/ECHARTS-NOTICE",
 )
 AUTOMATION_LABEL = "com.sonchanggi.regime.weekly-release"
 AUTOMATION_TRAILER = "Regime-Automation: weekly-release-v1"
@@ -3392,7 +3396,7 @@ def _expected_static_assets(settings: AutomationSettings) -> dict[str, bytes]:
             styles_raw=assets["styles.css"],
             app_raw=assets["app.js"],
             operating_contract_raw=operating_contract_raw,
-            extra_assets={name: assets[name] for name in ("fonts.css", "insights.js", "insights.css", "forecast-enhancements.js", "forecast-enhancements.css")},
+            extra_assets={name: assets[name] for name in ("fonts.css", "insights.js", "insights.css", "forecast-enhancements.js", "forecast-enhancements.css", "chart-engine.js", "vendor/echarts.min.js")},
         )
     except (BrowserContractError, PublicContractError) as exc:
         raise AutomationError(f"expected dashboard assets are invalid: {exc}") from exc

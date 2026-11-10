@@ -243,7 +243,7 @@ def verify_public_package(directory: str | Path) -> dict[str, Any]:
             app_raw=(package_root / "app.js").read_bytes(),
             extra_assets={
                 name: (package_root / name).read_bytes()
-                for name in ("fonts.css", "insights.js", "insights.css", "forecast-enhancements.js", "forecast-enhancements.css")
+                for name in ("fonts.css", "insights.js", "insights.css", "forecast-enhancements.js", "forecast-enhancements.css", "chart-engine.js", "vendor/echarts.min.js")
             },
         )
     except (BrowserContractError, PackagingError, ValueError) as exc:

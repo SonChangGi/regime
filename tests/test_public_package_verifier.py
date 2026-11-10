@@ -62,6 +62,9 @@ def _web_root(tmp_path: Path) -> Path:
     (web / "styles.css").write_text("main { color: black; }\n", encoding="utf-8")
     (web / "insights.css").write_text(".insight { display: block; }\n", encoding="utf-8")
     (web / "forecast-enhancements.css").write_text(".insight { display: block; }\n", encoding="utf-8")
+    (web / "vendor").mkdir(exist_ok=True)
+    for asset in ("chart-engine.js", "vendor/echarts.min.js", "vendor/ECHARTS-LICENSE", "vendor/ECHARTS-NOTICE"):
+        (web / asset).write_bytes(b"")
     (web / "insights.js").write_text("window.insights = {};\n", encoding="utf-8")
     (web / "forecast-enhancements.js").write_text("window.insights = {};\n", encoding="utf-8")
     (web / "operating-contract.generated.js").write_bytes(

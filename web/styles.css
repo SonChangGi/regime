@@ -8916,3 +8916,17 @@ html[data-design-engine="0.4.0"] .qe-table-tools[open]>button {display:block;mar
 html[data-design-engine="0.4.0"] .qe-filter-clear {min-height:44px;}
 html[data-design-engine="0.4.0"] .qe-filter-clear[hidden] {display:none !important;}
 @media(max-width:640px){html[data-design-engine="0.4.0"] :is(.table-sort,.history-series-controls button,.chart-series-controls button) {min-height:44px !important;}}
+
+/* 0.4.1: chart canvas and axes fit the available column. */
+.qe-history-wrap{overflow:hidden!important}.qe-history-wrap>svg{display:none!important}
+.qe-responsive-chart{width:100%;min-width:0;max-width:100%;position:relative;overflow:hidden;touch-action:pan-y}
+.qe-responsive-chart svg{min-width:0!important;max-width:none!important;aspect-ratio:auto!important}
+.qe-reset{min-height:44px;margin:8px 0 0 auto;display:block}.qe-reset[hidden]{display:none!important}
+.performance-chart-scroll:has(.qe-responsive-chart){overflow:hidden}.performance-chart-scroll .qe-responsive-chart{min-width:0!important}
+.card{min-width:0}.card h2,.card h3{overflow-wrap:anywhere}.metric-value,.metric-card strong{font-variant-numeric:tabular-nums}
+@media(max-width:600px){.card{padding:16px}.chart-card{padding:14px}.chart-readout-grid{grid-template-columns:1fr 1fr}.history-chart-toolbar{flex-wrap:wrap}.chart-panel-title{font-size:13px}}
+
+.qe-outcomes{padding:10px 12px;color:var(--muted);font-size:12px}.qe-outcomes-strip{display:flex;gap:1px;margin-top:8px}.qe-outcomes-strip span{flex:1;min-width:0;height:10px;border:1px solid;border-radius:2px}
+
+.qe-converted-performance .qr-measure,.qe-converted-performance .performance-legend{display:none!important}
+.qe-converted-performance .performance-chart-scroll{overflow:hidden;min-width:0}

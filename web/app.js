@@ -5906,7 +5906,7 @@
     const mobile = typeof window !== "undefined"
       && typeof window.matchMedia === "function"
       && window.matchMedia("(max-width: 760px)").matches;
-    const expanded = mobile && history.length > 26 && state.historyWindow !== 26;
+    const expanded = false; // The chart fits the viewport; data zoom handles dense histories.
     const mobileWidth = Math.min(1600, Math.max(720, history.length * 14));
     const width = expanded ? mobileWidth : Math.max(320, wrap.clientWidth || CHART_DIMENSIONS.width);
     chartDimensions = {
@@ -5973,7 +5973,7 @@
       },
     ];
 
-    window.QuantRange?.svg({id:'regime-history',element:svg,currentIndex:()=>{const i=history.findIndex(w=>w.date===(state.chartPreviewDate||state.chartPinnedDate));return i<0?null:i},onSeriesRequest:(id,ctx)=>{if(Number.isInteger(ctx.index)){state.chartPinnedDate=history[ctx.index].date;state.chartPreviewDate=null;renderChartReadout(state.chartPinnedDate)}},onReset:()=>{state.chartPinnedDate=history.at(-1).date;state.chartPreviewDate=null;resetChartPreview()},host:dom['probability-chart-wrap'].parentElement,domain:history.map(w=>({key:w.date,label:w.date})),series:panels.flatMap(panel=>STATE_ORDER.map(code=>({id:panel.key+code,label:panel.title+' '+stateMeta(code).label,unit:'%',measure:'pp',scale:100,points:history.map(w=>({key:w.date,value:panel.measure(w,code)}))}))),x:i=>x(i),plotTop:margin.top,plotBottom:height-margin.bottom});
+    (!window.echarts ? window.QuantRange : null)?.svg({id:'regime-history',element:svg,currentIndex:()=>{const i=history.findIndex(w=>w.date===(state.chartPreviewDate||state.chartPinnedDate));return i<0?null:i},onSeriesRequest:(id,ctx)=>{if(Number.isInteger(ctx.index)){state.chartPinnedDate=history[ctx.index].date;state.chartPreviewDate=null;renderChartReadout(state.chartPinnedDate)}},onReset:()=>{state.chartPinnedDate=history.at(-1).date;state.chartPreviewDate=null;resetChartPreview()},host:dom['probability-chart-wrap'].parentElement,domain:history.map(w=>({key:w.date,label:w.date})),series:panels.flatMap(panel=>STATE_ORDER.map(code=>({id:panel.key+code,label:panel.title+' '+stateMeta(code).label,unit:'%',measure:'pp',scale:100,points:history.map(w=>({key:w.date,value:panel.measure(w,code)}))}))),x:i=>x(i),plotTop:margin.top,plotBottom:height-margin.bottom});
     for (const panel of panels) {
       svg.append(createSvg("rect", {
         x: margin.left, y: panel.top, width: width - margin.left - margin.right,
@@ -6160,7 +6160,14 @@
     const range = `${formatDate(history[0].date)}–${formatDate(history[history.length - 1].date)}`;
     dom["history-caption"].textContent = `${range} · ${history.length}주`;
     renderChartReadout(state.chartPinnedDate);
-    requestAnimationFrame(() => scrollChartDateIntoView(state.chartPinnedDate));
+    if (window.RegimeCharts && window.echarts) {
+      window.RegimeCharts.history(dom["probability-chart-wrap"], {
+        dates: history.map(week => week.date),
+        panels: panels.map(panel => ({title: panel.title, probability:true, percent:true,
+          series:STATE_ORDER.map(code=>({code,label:stateMeta(code).ko,color:window.RegimeCharts.colors[code],values:history.map(week=>panel.measure(week,code)),bands:code===STATE_ORDER[0]?history.slice(0,-1).map((week,i)=>[{xAxis:week.date,state:historyStateForWeek(week,panel.key,state.comparisonModel,state.raw)},{xAxis:history[i+1].date}]):undefined}))})),
+        outcomes:history.map(week=>actualNextWeekForWeek(week)), outcomeTitle:`실제 t+${state.modelForecastHorizon}`
+      }, index=>{state.chartPinnedDate=history[index].date;state.chartPreviewDate=null;renderChartReadout(state.chartPinnedDate);});
+    } else requestAnimationFrame(() => scrollChartDateIntoView(state.chartPinnedDate));
   }
 
   function hideChartTooltip() {

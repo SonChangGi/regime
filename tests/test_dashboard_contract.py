@@ -3494,7 +3494,7 @@ process.stdout.write(JSON.stringify({{
     assert result["independentRole"] == "독립 horizon"
 
 
-def test_mobile_history_defaults_to_overview_and_expands_only_on_request() -> None:
+def test_mobile_history_keeps_responsive_canvas_for_all_windows() -> None:
     document = HTML_PATH.read_text(encoding="utf-8")
     script = JS_PATH.read_text(encoding="utf-8") + (WEB / "insights.js").read_text(encoding="utf-8")
     styles = CSS_PATH.read_text(encoding="utf-8") + (WEB / "insights.css").read_text(encoding="utf-8")
@@ -3503,7 +3503,7 @@ def test_mobile_history_defaults_to_overview_and_expands_only_on_request() -> No
     assert '<option value="104">104주</option>' in document
     assert '<option value="all">전체</option>' in document
     assert 'window.matchMedia("(max-width: 760px)").matches' in script
-    assert "const expanded = mobile && history.length > 26 && state.historyWindow !== 26" in script
+    assert "const expanded = false" in script
     assert 'wrap.classList.toggle("is-scroll-mode", expanded)' in script
     assert 'id="history-scroll-guide"' in document
     assert 'id="history-range-start"' in document and 'id="history-range-end"' in document

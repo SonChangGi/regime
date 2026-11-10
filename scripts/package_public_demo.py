@@ -88,6 +88,10 @@ STATIC_ALLOWLIST = (
     "forecast-enhancements.js",
     GENERATED_BROWSER_CONTRACT,
     "app.js",
+    "chart-engine.js",
+    "vendor/echarts.min.js",
+    "vendor/ECHARTS-LICENSE",
+    "vendor/ECHARTS-NOTICE",
 )
 PAYLOAD_DESTINATION = "data/regime-results.json"
 V5_COMPARISON_FILENAME = "v5-vs-v4-comparison.json"
@@ -362,7 +366,7 @@ def package_public_dashboard(
         styles_raw=files["styles.css"],
         app_raw=files["app.js"],
         operating_contract_raw=generated_contract_raw,
-        extra_assets={name: files[name] for name in ("fonts.css", "insights.js", "insights.css", "forecast-enhancements.js", "forecast-enhancements.css")},
+        extra_assets={name: files[name] for name in ("fonts.css", "insights.js", "insights.css", "forecast-enhancements.js", "forecast-enhancements.css", "chart-engine.js", "vendor/echarts.min.js")},
     )
 
     try:
@@ -724,7 +728,7 @@ def package_public_dashboard(
                 staging / "app.js",
                 label="staged app.js",
             ),
-            extra_assets={name: _read_regular_file(staging / name, label="staged insight asset") for name in ("fonts.css", "insights.js", "insights.css", "forecast-enhancements.js", "forecast-enhancements.css")},
+            extra_assets={name: _read_regular_file(staging / name, label="staged insight asset") for name in ("fonts.css", "insights.js", "insights.css", "forecast-enhancements.js", "forecast-enhancements.css", "chart-engine.js", "vendor/echarts.min.js")},
             operating_contract_raw=_read_regular_file(
                 staging / GENERATED_BROWSER_CONTRACT,
                 label="staged generated browser contract",

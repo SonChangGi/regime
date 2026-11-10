@@ -834,6 +834,10 @@ def test_public_readback_requires_exact_payload_manifest_and_consumer(
         "forecast-enhancements.js": b"",
         "insights.css": b"",
         "forecast-enhancements.css": b"",
+        "chart-engine.js": b"",
+        "vendor/echarts.min.js": b"",
+        "vendor/ECHARTS-LICENSE": b"",
+        "vendor/ECHARTS-NOTICE": b"",
         **FONT_ASSETS,
     }
     manifest = json.dumps(
@@ -946,6 +950,8 @@ def test_public_readback_expects_packaged_content_hash_index(tmp_path: Path) -> 
         b'<script src="./app.js?v=manual"></script>'
         b'<script src="./insights.js?v=manual"></script>'
         b'<script src="./forecast-enhancements.js?v=manual"></script>'
+        b'<script src="./chart-engine.js?v=manual"></script>'
+        b'<script src="./vendor/echarts.min.js?v=manual"></script>'
         b'<link rel="stylesheet" href="./insights.css?v=manual">'
         b'<link rel="stylesheet" href="./forecast-enhancements.css?v=manual">'
         b'<link rel="stylesheet" href="./fonts.css?v=manual">'
@@ -958,6 +964,9 @@ def test_public_readback_expects_packaged_content_hash_index(tmp_path: Path) -> 
     (web / "forecast-enhancements.js").write_bytes(b"")
     (web / "insights.css").write_bytes(b"")
     (web / "forecast-enhancements.css").write_bytes(b"")
+    (web / "vendor").mkdir(exist_ok=True)
+    for asset in ("chart-engine.js", "vendor/echarts.min.js", "vendor/ECHARTS-LICENSE", "vendor/ECHARTS-NOTICE"):
+        (web / asset).write_bytes(b"")
     (web / "fonts").mkdir()
     for name, raw in FONT_ASSETS.items():
         (web / name).write_bytes(raw)
@@ -970,6 +979,8 @@ def test_public_readback_expects_packaged_content_hash_index(tmp_path: Path) -> 
         f'<script src="./app.js?v={hashlib.sha256(app).hexdigest()}"></script>'
         f'<script src="./insights.js?v={hashlib.sha256(b"").hexdigest()}"></script>'
         f'<script src="./forecast-enhancements.js?v={hashlib.sha256(b"").hexdigest()}"></script>'
+        f'<script src="./chart-engine.js?v={hashlib.sha256(b"").hexdigest()}"></script>'
+        f'<script src="./vendor/echarts.min.js?v={hashlib.sha256(b"").hexdigest()}"></script>'
         f'<link rel="stylesheet" href="./insights.css?v={hashlib.sha256(b"").hexdigest()}">'
         f'<link rel="stylesheet" href="./forecast-enhancements.css?v={hashlib.sha256(b"").hexdigest()}">'
         f'<link rel="stylesheet" href="./fonts.css?v={hashlib.sha256(FONT_ASSETS["fonts.css"]).hexdigest()}">'
@@ -983,6 +994,10 @@ def test_public_readback_expects_packaged_content_hash_index(tmp_path: Path) -> 
         "forecast-enhancements.js": b"",
         "insights.css": b"",
         "forecast-enhancements.css": b"",
+        "chart-engine.js": b"",
+        "vendor/echarts.min.js": b"",
+        "vendor/ECHARTS-LICENSE": b"",
+        "vendor/ECHARTS-NOTICE": b"",
         **FONT_ASSETS,
     }
     payload_sha256 = hashlib.sha256(LIVE_PAYLOAD).hexdigest()
@@ -1051,6 +1066,10 @@ def test_v5_public_readback_requires_hash_bound_core_and_research_split(
         "forecast-enhancements.js": b"",
         "insights.css": b"",
         "forecast-enhancements.css": b"",
+        "chart-engine.js": b"",
+        "vendor/echarts.min.js": b"",
+        "vendor/ECHARTS-LICENSE": b"",
+        "vendor/ECHARTS-NOTICE": b"",
         **FONT_ASSETS,
     }
     published = {
@@ -1153,6 +1172,9 @@ def test_expected_static_assets_reject_one_sided_application_shell(
     (web / "forecast-enhancements.js").write_bytes(b"")
     (web / "insights.css").write_bytes(b"")
     (web / "forecast-enhancements.css").write_bytes(b"")
+    (web / "vendor").mkdir(exist_ok=True)
+    for asset in ("chart-engine.js", "vendor/echarts.min.js", "vendor/ECHARTS-LICENSE", "vendor/ECHARTS-NOTICE"):
+        (web / asset).write_bytes(b"")
     (web / "fonts").mkdir()
     for name, raw in FONT_ASSETS.items():
         (web / name).write_bytes(raw)
