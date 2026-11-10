@@ -23,3 +23,26 @@ console.log(JSON.stringify({grids:o.grid.map(g=>[g.left,g.right,g.containLabel])
     assert result["changes"][1:] == [-10, None]
 
     assert result["grids"] == [[52, 22, False], [52, 22, False]]
+
+
+def test_keyboard_navigation_is_single_step_and_retains_local_selection():
+    source = Path(__file__).resolve().parents[1] / "web/chart-engine.js"
+    script = """
+const calls=[],actions=[];let option;
+globalThis.document={documentElement:{dataset:{theme:'dark'}},addEventListener(){},querySelectorAll(){return []}};
+globalThis.ResizeObserver=globalThis.MutationObserver=class{observe(){}disconnect(){}};
+const chart={dispose(){},getOption(){return option},setOption(o){option=o},on(){},getZr(){return{on(){}}},dispatchAction(a){actions.push(a)}};globalThis.echarts={init(){return chart}};
+const reset={hidden:true},host={style:{},dataset:{},classList:{add(){}},replaceChildren(){},setAttribute(){},isConnected:true};
+const wrap={classList:{add(){}},querySelector(s){return s==='.qe-regime-history'?host:s.includes('.qe-reset')?reset:null}};host.parentElement=wrap;
+require(process.argv[1]);
+RegimeCharts.history(wrap,{dates:['a','b','c','d'],selection:{initialIndex:2,resetIndex:3},panels:[{series:[{label:'risk',values:[.1,.2,.3,.4]}]}]},i=>calls.push(i));
+let parentCalls=0;function press(key){let stopped=false;host.onkeydown({key,preventDefault(){},stopPropagation(){stopped=true}});if(!stopped)parentCalls++;}
+press('ArrowLeft');press('ArrowRight');press('Home');press('End');press('ArrowUp');press('ArrowDown');press('Escape');
+console.log(JSON.stringify({calls,parentCalls,tooltipIndices:actions.filter(a=>a.type==='showTip').map(a=>a.dataIndex),lastAction:actions.at(-1).type,wrapperTabIndex:wrap.tabIndex}));
+"""
+    result = json.loads(subprocess.check_output(["node", "-e", script, str(source)], text=True))
+    assert result["calls"] == [1, 2, 0, 3, 2, 3, 3]
+    assert result["tooltipIndices"] == result["calls"]
+    assert result["parentCalls"] == 0
+    assert result["lastAction"] == "hideTip"
+    assert result["wrapperTabIndex"] == -1

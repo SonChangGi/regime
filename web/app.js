@@ -6163,6 +6163,7 @@
     if (window.RegimeCharts && window.echarts) {
       window.RegimeCharts.history(dom["probability-chart-wrap"], {
         dates: history.map(week => week.date),
+        selection:{initialIndex:history.findIndex(week=>week.date===state.chartPinnedDate),resetIndex:history.findIndex(week=>week.date===selectedWeek()?.date)},
         panels: panels.map(panel => ({title: panel.title, probability:true, percent:true,
           series:STATE_ORDER.map(code=>({code,label:stateMeta(code).ko,color:window.RegimeCharts.colors[code],values:history.map(week=>panel.measure(week,code)),bands:code===STATE_ORDER[0]?history.slice(0,-1).map((week,i)=>[{xAxis:week.date,state:historyStateForWeek(week,panel.key,state.comparisonModel,state.raw)},{xAxis:history[i+1].date}]):undefined}))})),
         outcomes:history.map(week=>actualNextWeekForWeek(week)), outcomeTitle:`실제 t+${state.modelForecastHorizon}`
