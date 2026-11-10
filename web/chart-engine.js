@@ -22,7 +22,7 @@
   const dispose=chart.dispose.bind(chart);chart.dispose=()=>{resize.disconnect();theme.disconnect();mounted.delete(host);dispose();};host.dataset.renderer='echarts';
  }
  function trend(spec){const t=tokens(),panels=spec.panels||[{title:'',series:spec.series}];
-  return {animation:false,textStyle:{color:t.text,fontFamily:'Pretendard, sans-serif'},grid:panels.map((_,i)=>({left:12,right:18,top:46+i*270,height:205,containLabel:true})),
+  return {animation:false,textStyle:{color:t.text,fontFamily:'Pretendard, sans-serif'},grid:panels.map((_,i)=>({left:52,right:22,top:46+i*270,height:205,containLabel:false})),
    title:panels.map((p,i)=>({text:p.title,left:12,top:14+i*270,textStyle:{color:t.text,fontSize:13,fontWeight:600}})),
    legend:{type:'scroll',top:panels.length*270+2,textStyle:{color:t.muted},pageTextStyle:{color:t.muted}},
    tooltip:{trigger:'axis',confine:true,backgroundColor:t.surface,borderColor:t.grid,textStyle:{color:t.text,fontSize:12},axisPointer:{type:'line'}},axisPointer:{link:[{xAxisIndex:'all'}]},
@@ -45,9 +45,12 @@
    const host=document.createElement('div');host.className='qe-performance';host.setAttribute('role','img');host.setAttribute('aria-label',svg.getAttribute('aria-label')||'성과 추이');svg.after(host);svg.hidden=true;svg.style.display='none';svg.dataset.qeConverted='true';svg.removeAttribute('data-qr-spec');svg.closest('.performance-visual')?.classList.add('qe-converted-performance');
    const lines=spec.series.map((s,i)=>({label:s.label,color:getComputedStyle(svg.querySelector('[data-qr-series-id=\"'+s.id+'\"]')||svg).stroke||palette[i%palette.length],values:spec.domain.map(d=>s.points.find(p=>p.key===d.key)?.value??null)}));
    mount(host,()=>{const percent=spec.series[0]?.unit==='%';const option=trend({dates:spec.domain.map(d=>d.label),panels:[{title:'',percent,series:lines.map((s,i)=>({...s,color:getComputedStyle(svg.querySelector('[data-qr-series-id=\"'+spec.series[i].id+'\"]')||svg).stroke||s.color}))}]});if(percent)option.yAxis[0].max=0;option.series[0].markLine={silent:true,symbol:'none',label:{show:false},lineStyle:{color:tokens().muted,type:'dashed',width:1},data:[{yAxis:percent?0:1}]};return option;},320);
+   const details=document.createElement('details');details.className='qe-performance-range';const summary=document.createElement('summary');summary.textContent='구간 비교';details.append(summary);
+   const start=document.createElement('input'),end=document.createElement('input');start.type=end.type='date';start.setAttribute('aria-label','구간 시작');end.setAttribute('aria-label','구간 종료');start.min=end.min=spec.domain[0].label;start.max=end.max=spec.domain.at(-1).label;start.value=start.min;end.value=end.max;const apply=document.createElement('button');apply.type='button';apply.textContent='비교';const output=document.createElement('div');output.setAttribute('aria-live','polite');apply.onclick=()=>{const first=spec.domain.findIndex(d=>d.label>=start.value),last=spec.domain.findLastIndex(d=>d.label<=end.value);output.replaceChildren();if(first<0||last<=first){output.textContent='비교할 두 관측일을 선택하세요.';return;}for(const series of spec.series){const a=series.points.find(p=>p.key===spec.domain[first].key)?.value,b=series.points.find(p=>p.key===spec.domain[last].key)?.value;const row=document.createElement('p');const value=rangeChange(a,b,series.measure);row.textContent=series.label+' · '+(value===null?'관측 없음':value.toLocaleString('ko-KR',{maximumFractionDigits:2})+(series.measure==='pp'?'%p':'%'));output.append(row);}};details.append(start,end,apply,output);host.parentElement.after(details);
    const guide=svg.closest('.card')?.querySelector('.performance-scroll-guide');if(guide)guide.hidden=true;
   }
  }
- root.RegimeCharts={history,upgrade,colors,trend};
+ function rangeChange(a,b,measure){if(typeof a!=='number'||typeof b!=='number'||!Number.isFinite(a)||!Number.isFinite(b))return null;return measure==='pp'?(b-a)*100:a!==0?(b/a-1)*100:null;}
+ root.RegimeCharts={history,upgrade,colors,trend,rangeChange};
  if(typeof document!=='undefined')document.addEventListener('DOMContentLoaded',()=>{let pending=false;new MutationObserver(()=>{if(pending)return;pending=true;requestAnimationFrame(()=>{pending=false;upgrade();});}).observe(document.body,{childList:true,subtree:true});upgrade();});
 })(globalThis);
